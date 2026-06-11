@@ -10,11 +10,12 @@
 //! 2. A bug *inside* a migration function that writes logically-inconsistent
 //!    state — the transaction commits cleanly but the data is wrong.
 //!
-//! Before any DDL runs, we snapshot `index.db` (and its WAL/SHM sidecars if
-//! present) to a sibling `{stem}.bak-v{from}-v{to}-{unix_ts}.db` file via
-//! `crate::fs::atomic_replace`. If any migration step fails, the DB is
-//! restored from the backup atomically; the caller sees either pre-migrate
-//! or post-migrate state, never a partial write.
+//! Before any DDL runs, we snapshot `index.db` to a sibling
+//! `{stem}.bak-v{from}-v{to}-{unix_ts}.db` file via `VACUUM INTO`, which writes
+//! a single transactionally-consistent DB file (no WAL/SHM sidecars) even
+//! under concurrent writers. If any migration step fails, the DB is restored
+//! from the backup via `crate::fs::atomic_replace`; the caller sees either
+//! pre-migrate or post-migrate state, never a partial write.
 //!
 //! Backups are pruned on success: the newest two (including the one just
 //! written) are kept, older ones are deleted.
@@ -87,11 +88,11 @@ pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
     ))
 }
 
-/// Take a filesystem snapshot of `index.db` (+ `-wal`/`-shm` if present)
-/// before a migration runs.
+/// Take a transactionally-consistent snapshot of `index.db` before a
+/// migration runs.
 ///
 /// Returns:
-/// - `Ok(Some(backup_db_path))` on a successful copy — the caller can pass
+/// - `Ok(Some(backup_db_path))` on a successful snapshot — the caller can pass
 ///   this to `restore_from_backup` on migration failure.
 /// - `Ok(None)` if the backup step failed *and* the user has explicitly set
 ///   `CQS_MIGRATE_REQUIRE_BACKUP=0` (opt-out). The migration proceeds
@@ -103,10 +104,22 @@ pub(crate) fn backup_path_for(db_path: &Path, from: i32, to: i32) -> PathBuf {
 ///   a data-loss hazard on a subsequent commit failure.
 ///
 /// Implementation:
-/// 1. `PRAGMA wal_checkpoint(FULL)` drains the WAL into the main DB so the
-///    backup captures a point-in-time consistent state.
-/// 2. Copy `db_path` via `atomic_replace` (fsync temp, rename, fsync parent).
-/// 3. If `-wal`/`-shm` exist, copy them too (absent on cleanly-closed DBs).
+/// 1. `PRAGMA wal_checkpoint(FULL)` drains the WAL into the main DB. This is
+///    not what makes the snapshot consistent (VACUUM INTO does that under its
+///    own read transaction); it bounds WAL growth so the post-snapshot
+///    migration tx starts from a quiesced file.
+/// 2. `VACUUM INTO 'backup_db'` writes a single self-contained DB file under a
+///    read transaction. Unlike the previous `wal_checkpoint` + `fs::copy`
+///    pair, this is consistent under concurrent writers: a live daemon
+///    committing (and triggering its own autocheckpoint) between the
+///    checkpoint and the snapshot can no longer rewrite pages mid-copy into a
+///    torn backup. The output has no `-wal`/`-shm` sidecars — it is one file.
+///
+/// VACUUM INTO requires the target path to not already exist. The
+/// per-process-disambiguated filename makes collisions essentially
+/// impossible, but a leftover backup from an earlier crashed run could still
+/// occupy the path, so any pre-existing file (and stale sidecars) is removed
+/// first — matching the overwrite tolerance the prior `copy_triplet` had.
 pub(crate) async fn backup_before_migrate(
     pool: &SqlitePool,
     db_path: &Path,
@@ -115,10 +128,11 @@ pub(crate) async fn backup_before_migrate(
 ) -> Result<Option<PathBuf>, StoreError> {
     let _span = tracing::info_span!("backup_before_migrate", from, to).entered();
 
-    // Drain the WAL into the main DB so the backup is a consistent snapshot.
-    // PASSIVE would skip blocked writers; FULL waits until all readers are
+    // Drain the WAL into the main DB to bound WAL growth before the migration
+    // tx. PASSIVE would skip blocked writers; FULL waits until all readers are
     // past the checkpoint. We're about to take an exclusive write txn for
-    // the migration anyway — a brief wait is the right trade.
+    // the migration anyway — a brief wait is the right trade. Consistency of
+    // the snapshot itself comes from VACUUM INTO's read transaction, not this.
     if let Err(e) = sqlx::query("PRAGMA wal_checkpoint(FULL)")
         .execute(pool)
         .await
@@ -131,7 +145,7 @@ pub(crate) async fn backup_before_migrate(
 
     let backup_db = backup_path_for(db_path, from, to);
 
-    match copy_triplet(db_path, &backup_db) {
+    match vacuum_into(pool, &backup_db).await {
         Ok(()) => {
             tracing::info!(
                 backup = %backup_db.display(),
@@ -177,15 +191,16 @@ pub(crate) async fn backup_before_migrate(
     }
 }
 
-/// Restore a DB file (+ WAL/SHM sidecars) from a backup. Called on migration
-/// failure to leave the DB in its pre-migrate state. Uses `atomic_replace` so
-/// each individual file write is per-file atomic. The restore sequence is
-/// kill-safe: live sidecars are unlinked first, then the main DB is restored,
-/// then the backup's sidecars (if any). A kill at any point leaves
-/// pre-migrate state — either the caller re-runs the failed migration, or
-/// SQLite recreates fresh sidecars from the restored main on next open. This
-/// avoids a "post-migrate WAL contaminates restored pre-migrate main"
-/// failure mode.
+/// Restore the main DB from a backup. Called on migration failure to leave the
+/// DB in its pre-migrate state. Uses `atomic_replace` so the write is atomic.
+///
+/// The backup is a `VACUUM INTO` snapshot — a single self-contained `.db` file
+/// with no `-wal`/`-shm` sidecars. The restore sequence is kill-safe: the live
+/// sidecars (from the failed migration) are unlinked first, then the main DB
+/// is replaced from the backup, and any stale destination sidecar is cleared.
+/// A kill at any point leaves (restored main + no sidecars) — SQLite recreates
+/// fresh sidecars from the restored main on next open. This avoids a
+/// "post-migrate WAL contaminates restored pre-migrate main" failure mode.
 ///
 /// # Caller contract (must close pool first)
 ///
@@ -322,6 +337,36 @@ pub(crate) fn prune_old_backups(db_path: &Path) -> Result<(), StoreError> {
         }
         tracing::info!(path = %path.display(), "Pruned old migration backup");
     }
+    Ok(())
+}
+
+/// Snapshot the live DB into `dst` via `VACUUM INTO`.
+///
+/// `VACUUM INTO` reads the source database under its own read transaction and
+/// writes a fresh, defragmented, single-file copy. Because the read
+/// transaction provides a stable snapshot, the result is consistent even while
+/// other connections (a live `cqs watch` daemon) keep committing — there is no
+/// torn-page window the old `wal_checkpoint` + `fs::copy` had. The output is a
+/// single `.db` file with no `-wal`/`-shm` sidecars.
+///
+/// SQLite requires the `INTO` target to not already exist. Any pre-existing
+/// file at `dst` (and stale sidecars from an aborted prior run) is removed
+/// first so this is robust to leftover backups; the per-process-disambiguated
+/// filename makes a genuine concurrent collision essentially impossible.
+async fn vacuum_into(pool: &SqlitePool, dst: &Path) -> Result<(), StoreError> {
+    // Clear any leftover file at the target — VACUUM INTO refuses to overwrite.
+    if dst.exists() {
+        remove_triplet(dst);
+    }
+
+    // Bind the destination path as a parameter so paths with quotes/spaces are
+    // handled without manual escaping. SQLite accepts a bound expression for
+    // the VACUUM INTO target.
+    let dst_str = dst.to_string_lossy();
+    sqlx::query("VACUUM INTO ?")
+        .bind(dst_str.as_ref())
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -615,6 +660,160 @@ mod tests {
             .unwrap()
     }
 
+    /// Build an on-disk WAL pool for the VACUUM INTO snapshot tests.
+    async fn wal_pool(db_path: &Path) -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// `backup_before_migrate` must produce a single, self-contained,
+    /// integrity-clean snapshot even while another connection commits
+    /// concurrently. The old `wal_checkpoint` + `fs::copy` path could tear the
+    /// backup when a live daemon's autocheckpoint rewrote pages mid-copy;
+    /// VACUUM INTO reads under a stable transaction so the snapshot is
+    /// consistent and has no `-wal`/`-shm` sidecars.
+    #[test]
+    fn vacuum_into_snapshot_is_consistent_under_concurrent_writes() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        rt.block_on(async {
+            let pool = wal_pool(&db_path).await;
+            // Seed some rows so the snapshot has content to verify.
+            for i in 0..200i64 {
+                sqlx::query("INSERT INTO t (id, v) VALUES (?, ?)")
+                    .bind(i)
+                    .bind(format!("seed-{i}"))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+
+            // Concurrent writer: hammers the DB on a second connection while
+            // the backup runs, so a torn-copy path would be exercised.
+            let writer_pool = pool.clone();
+            let writer = tokio::spawn(async move {
+                for i in 1000..2000i64 {
+                    let _ = sqlx::query("INSERT OR REPLACE INTO t (id, v) VALUES (?, ?)")
+                        .bind(i)
+                        .bind(format!("concurrent-{i}"))
+                        .execute(&writer_pool)
+                        .await;
+                }
+            });
+
+            let result = backup_before_migrate(&pool, &db_path, 27, 28)
+                .await
+                .expect("backup must succeed");
+            let backup = result.expect("backup path returned");
+
+            let _ = writer.await;
+            pool.close().await;
+
+            // The snapshot is one file — no -wal/-shm sidecars.
+            assert!(backup.exists(), "snapshot file must exist");
+            assert!(
+                !sidecar_path(&backup, "-wal").exists(),
+                "VACUUM INTO snapshot must not have a -wal sidecar"
+            );
+            assert!(
+                !sidecar_path(&backup, "-shm").exists(),
+                "VACUUM INTO snapshot must not have a -shm sidecar"
+            );
+
+            // Open the snapshot and run an integrity check.
+            let snap_pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&backup)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let (integrity,): (String,) = sqlx::query_as("PRAGMA integrity_check")
+                .fetch_one(&snap_pool)
+                .await
+                .unwrap();
+            assert_eq!(integrity, "ok", "snapshot integrity_check must be ok");
+
+            // The seeded rows are present in the snapshot.
+            let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM t WHERE v LIKE 'seed-%'")
+                .fetch_one(&snap_pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 200, "all seeded rows must be in the snapshot");
+            snap_pool.close().await;
+        });
+    }
+
+    /// `vacuum_into` tolerates a pre-existing file at the target path (a
+    /// leftover from an aborted prior run) — SQLite refuses to overwrite, so
+    /// the helper clears it first.
+    #[test]
+    fn vacuum_into_overwrites_preexisting_target() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let backup = dir.path().join("leftover.db");
+
+        rt.block_on(async {
+            let pool = wal_pool(&db_path).await;
+            sqlx::query("INSERT INTO t (id, v) VALUES (1, 'x')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // A stale file already occupies the target path.
+            std::fs::write(&backup, b"garbage-leftover").unwrap();
+            std::fs::write(sidecar_path(&backup, "-wal"), b"stale").unwrap();
+
+            vacuum_into(&pool, &backup)
+                .await
+                .expect("vacuum_into must overwrite a pre-existing target");
+            pool.close().await;
+
+            // The leftover sidecar is gone and the snapshot is a valid DB.
+            assert!(!sidecar_path(&backup, "-wal").exists());
+            let snap_pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&backup)
+                        .read_only(true),
+                )
+                .await
+                .unwrap();
+            let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM t")
+                .fetch_one(&snap_pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+            snap_pool.close().await;
+        });
+    }
+
     /// When the env var is **unset**, a backup failure is promoted to `Err`
     /// (unset = require = hard error), so the destructive v18→v19 migration
     /// never runs without a recovery snapshot.
@@ -631,20 +830,22 @@ mod tests {
         rt.block_on(async {
             let pool = in_memory_pool().await;
             let dir = tempfile::tempdir().unwrap();
-            // Point at a DB path whose source file does NOT exist — the
-            // copy step inside copy_triplet will fail with ENOENT, which
+            // Point the DB path inside a directory that does NOT exist so
+            // the backup's `VACUUM INTO` target can't be created — this
             // exercises the Err branch of backup_before_migrate.
-            let missing_db = dir.path().join("does_not_exist.db");
+            let missing_db = dir.path().join("nonexistent_dir").join("does_not_exist.db");
 
             let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
+            // VACUUM INTO into a missing directory surfaces a SQLite error
+            // (StoreError::Database); the contract under default require-backup
+            // is simply "backup failed → Err", not a specific variant.
             match result {
-                Err(StoreError::Io(_)) => {}
+                Err(_) => {}
                 Ok(v) => panic!(
-                    "expected Err(Io) when CQS_MIGRATE_REQUIRE_BACKUP is unset \
+                    "expected Err when CQS_MIGRATE_REQUIRE_BACKUP is unset \
                      and backup fails, got Ok({:?})",
                     v
                 ),
-                Err(other) => panic!("expected Err(Io), got: {:?}", other),
             }
         });
     }
@@ -666,7 +867,7 @@ mod tests {
         rt.block_on(async {
             let pool = in_memory_pool().await;
             let dir = tempfile::tempdir().unwrap();
-            let missing_db = dir.path().join("does_not_exist.db");
+            let missing_db = dir.path().join("nonexistent_dir").join("does_not_exist.db");
 
             let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
             assert_matches!(
@@ -692,7 +893,7 @@ mod tests {
         rt.block_on(async {
             let pool = in_memory_pool().await;
             let dir = tempfile::tempdir().unwrap();
-            let missing_db = dir.path().join("does_not_exist.db");
+            let missing_db = dir.path().join("nonexistent_dir").join("does_not_exist.db");
 
             let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
             assert!(
@@ -719,11 +920,11 @@ mod tests {
         rt.block_on(async {
             let pool = in_memory_pool().await;
             let dir = tempfile::tempdir().unwrap();
-            let missing_db = dir.path().join("does_not_exist.db");
+            let missing_db = dir.path().join("nonexistent_dir").join("does_not_exist.db");
 
             let result = backup_before_migrate(&pool, &missing_db, 18, 19).await;
             assert!(
-                matches!(result, Err(StoreError::Io(_))),
+                result.is_err(),
                 "non-opt-out env values must keep the default hard-error \
                  behaviour, got {:?}",
                 result

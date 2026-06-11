@@ -250,10 +250,21 @@ fn collect_slot_entry(project_cqs_dir: &Path, name: &str, active: &str) -> SlotL
     }
     let (chunks, model, dim) = match cqs::Store::open_readonly_small(&index_path) {
         Ok(store) => {
-            let count = store.chunk_count().ok();
             // Mirror the open-store warn ladder for metadata-read failures
             // so a corrupt-but-openable slot surfaces in journald instead of
-            // showing a blank model column identical to a fresh slot.
+            // showing a blank chunks/model column identical to a fresh slot.
+            let count = match store.chunk_count() {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    tracing::warn!(
+                        slot = name,
+                        error = %e,
+                        path = %index_path.display(),
+                        "Slot chunk count read failed during listing — chunks column will be empty"
+                    );
+                    None
+                }
+            };
             let model = match store.try_stored_model_name() {
                 Ok(opt) => opt,
                 Err(e) => {

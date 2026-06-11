@@ -2728,8 +2728,6 @@ mod tests {
             pool.close().await;
         });
 
-        let pre_migrate_bytes = std::fs::read(&db_path).unwrap();
-
         // Phase 2: reopen, set the failure hook, run migrate(17 -> 19).
         // The hook makes step v18 succeed then fail the overall migration.
         // On error, restore should put the DB file back to pre_migrate_bytes.
@@ -2764,14 +2762,45 @@ mod tests {
 
         TEST_FAIL_AFTER_VERSION.with(|c| c.set(0));
 
-        // The DB file must be byte-identical to the pre-migrate snapshot.
-        // If restore didn't fire, the ALTER from migrate_v17_to_v18 would
-        // have changed the schema pages and the bytes would differ.
-        let post_migrate_bytes = std::fs::read(&db_path).unwrap();
-        assert_eq!(
-            post_migrate_bytes, pre_migrate_bytes,
-            "DB file bytes must match pre-migrate state after failed migration + restore"
-        );
+        // The DB must be back at its pre-migrate LOGICAL state. The backup is
+        // now a `VACUUM INTO` snapshot — logically identical to the source but
+        // not byte-identical (VACUUM defragments page layout), so we assert on
+        // content rather than raw bytes: schema_version is 17 and the column
+        // that migrate_v17_to_v18 would have added (`embedding_base`) is
+        // absent. If restore didn't fire, the ALTER would have added the
+        // column and bumped the version.
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+
+            let (version,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                version, "17",
+                "schema_version must be restored to pre-migrate value 17"
+            );
+
+            let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+                sqlx::query_as("PRAGMA table_info(chunks)")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert!(
+                !columns.iter().any(|(_, name, ..)| name == "embedding_base"),
+                "the v17->v18 `embedding_base` column must be absent after restore"
+            );
+            pool.close().await;
+        });
     }
 
     /// When a migration fails, the live pool must be closed BEFORE

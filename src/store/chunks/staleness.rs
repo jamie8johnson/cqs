@@ -248,6 +248,95 @@ fn build_normalized_set(existing_files: &HashSet<PathBuf>) -> HashSet<String> {
         .collect()
 }
 
+/// Delete every chunk (FTS + `chunks` + per-file `function_calls`) for the
+/// given origins inside an already-open write transaction, then sweep orphan
+/// `sparse_vectors`. Returns the number of `chunks` rows deleted.
+///
+/// Shared by all three wholesale-origin prune paths (`prune_missing`,
+/// `prune_all`, `prune_gitignored`). Each used to inline this ~25-line
+/// FTS+chunks+sparse sequence, and they had diverged on `function_calls`:
+/// `prune_missing` deleted per batch, `prune_all` did a global sweep, and
+/// `prune_gitignored` skipped it entirely — leaving orphan call-graph rows
+/// (ghost callers) for gitignore-driven prunes until the next `prune_all`.
+/// Routing all three through here closes that divergence: `function_calls`
+/// is always cleaned for the origins being removed.
+///
+/// `function_calls` has no FK to `chunks` (it is keyed by `file`, not chunk
+/// ID), so deleting chunks does not cascade; the explicit per-batch DELETE
+/// over the same `file` values is required. The sparse sweep mirrors the FK
+/// CASCADE the table can't express via SQL alone.
+///
+/// `origins` must be non-empty; callers short-circuit on the empty case.
+async fn delete_origins_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    origins: &[String],
+    span_label: &'static str,
+) -> Result<u32, StoreError> {
+    // Single-bind IN-list batched at the modern SQLite variable limit. The
+    // caller's single transaction wraps ALL batches — a partial prune on
+    // crash would leave the index inconsistent with disk.
+    const BATCH_SIZE: usize = max_rows_per_statement(1);
+    let mut deleted = 0u32;
+
+    for batch in origins.chunks(BATCH_SIZE) {
+        let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
+
+        // Delete from FTS first.
+        let fts_query = format!(
+            "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
+            placeholder_str
+        );
+        let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
+        for origin in batch {
+            fts_stmt = fts_stmt.bind(origin);
+        }
+        fts_stmt.execute(&mut **tx).await?;
+
+        // Delete from chunks.
+        let chunks_query = format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
+        let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
+        for origin in batch {
+            chunks_stmt = chunks_stmt.bind(origin);
+        }
+        let result = chunks_stmt.execute(&mut **tx).await?;
+        deleted += result.rows_affected() as u32;
+
+        // Delete orphan `function_calls` for the same files. Without this,
+        // prune leaves call-graph rows that surface as ghost callers in
+        // `cqs callers`/`callees`/`dead`.
+        let calls_query = format!(
+            "DELETE FROM function_calls WHERE file IN ({})",
+            placeholder_str
+        );
+        let mut calls_stmt = sqlx::query(sqlx::AssertSqlSafe(calls_query.as_str()));
+        for origin in batch {
+            calls_stmt = calls_stmt.bind(origin);
+        }
+        calls_stmt.execute(&mut **tx).await?;
+    }
+
+    // Sweep orphan sparse_vectors inside the same transaction so no window
+    // exists where stale sparse vectors inflate the SPLADE index.
+    if deleted > 0 {
+        let sparse_result = sqlx::query(
+            "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
+             (SELECT id FROM chunks)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        let pruned_sparse = sparse_result.rows_affected();
+        if pruned_sparse > 0 {
+            tracing::debug!(
+                pruned_sparse,
+                label = span_label,
+                "Pruned orphan sparse vectors"
+            );
+        }
+    }
+
+    Ok(deleted)
+}
+
 /// Result of running all GC prune operations atomically.
 #[derive(Debug, Clone)]
 pub struct PruneAllResult {
@@ -285,11 +374,10 @@ impl Store<ReadWrite> {
             // lock closes it.
             let (_guard, mut tx) = self.begin_write().await?;
 
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
-            )
-            .fetch_all(&mut *tx)
-            .await?;
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
+                    .fetch_all(&mut *tx)
+                    .await?;
 
             // Reconcile stored origins against current filesystem state via
             // `origin_exists`. Pre-compute the slash-normalized string set
@@ -308,72 +396,18 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Single-bind IN-list batched at the modern SQLite variable
-            // limit. Single transaction wraps ALL batches — partial prune
-            // on crash would leave the index inconsistent with disk.
-            const BATCH_SIZE: usize = max_rows_per_statement(1);
-            let mut deleted = 0u32;
-
-            for batch in missing.chunks(BATCH_SIZE) {
-                let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
-
-                // Delete from FTS first
-                let fts_query = format!(
-                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
-                    placeholder_str
-                );
-                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
-                for origin in batch {
-                    fts_stmt = fts_stmt.bind(origin);
-                }
-                fts_stmt.execute(&mut *tx).await?;
-
-                // Delete from chunks
-                let chunks_query =
-                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
-                for origin in batch {
-                    chunks_stmt = chunks_stmt.bind(origin);
-                }
-                let result = chunks_stmt.execute(&mut *tx).await?;
-                deleted += result.rows_affected() as u32;
-
-                // `function_calls` has no FK to `chunks` (it is keyed by
-                // `file`, not chunk ID), so deleting chunks does not cascade.
-                // Without this DELETE, prune leaves orphan call-graph rows
-                // that surface as ghost callers in
-                // `cqs callers`/`callees`/`dead`. Use the same chunked-IN
-                // pattern over `file` values so we stay under the SQLite
-                // parameter limit.
-                let calls_query = format!(
-                    "DELETE FROM function_calls WHERE file IN ({})",
-                    placeholder_str
-                );
-                let mut calls_stmt = sqlx::query(sqlx::AssertSqlSafe(calls_query.as_str()));
-                for origin in batch {
-                    calls_stmt = calls_stmt.bind(origin);
-                }
-                calls_stmt.execute(&mut *tx).await?;
-            }
-
-            // Delete orphan sparse_vectors inside the same transaction.
-            if deleted > 0 {
-                let sparse_result = sqlx::query(
-                    "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
-                     (SELECT id FROM chunks)",
-                )
-                .execute(&mut *tx)
-                .await?;
-                let pruned_sparse = sparse_result.rows_affected();
-                if pruned_sparse > 0 {
-                    tracing::debug!(pruned_sparse, "Pruned orphan sparse vectors in prune_missing tx");
-                }
-            }
+            // Delete FTS + chunks + function_calls per batch and sweep orphan
+            // sparse_vectors — shared with prune_all / prune_gitignored.
+            let deleted = delete_origins_in_tx(&mut tx, &missing, "prune_missing").await?;
 
             tx.commit().await?;
 
             if deleted > 0 {
-                tracing::info!(deleted, files = missing.len(), "Pruned chunks for missing files");
+                tracing::info!(
+                    deleted,
+                    files = missing.len(),
+                    "Pruned chunks for missing files"
+                );
             }
 
             Ok(deleted)
@@ -407,11 +441,10 @@ impl Store<ReadWrite> {
             // begin_write is reflected here; any reindex that committed
             // *after* will be queued behind our write lock. Either way the
             // missing-set lines up with what's actually deletable.
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
-            )
-            .fetch_all(&mut *tx)
-            .await?;
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
+                    .fetch_all(&mut *tx)
+                    .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
             // Pre-compute the slash-normalized string set once so the
@@ -425,43 +458,41 @@ impl Store<ReadWrite> {
                 .map(|(origin,)| origin)
                 .collect();
 
-            // 2a. Delete chunks for missing files (single-bind IN-list,
-            // batched at the modern SQLite variable limit).
-            const BATCH_SIZE: usize = max_rows_per_statement(1);
-            let mut pruned_chunks = 0u32;
-
-            for batch in missing.chunks(BATCH_SIZE) {
-                let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
-
-                // Delete from FTS first (referential)
-                let fts_query = format!(
-                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
-                    placeholder_str
-                );
-                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
-                for origin in batch {
-                    fts_stmt = fts_stmt.bind(origin);
+            // 2a+2b. Delete FTS + chunks + per-file function_calls for the
+            // missing origins, then sweep orphan sparse_vectors — shared with
+            // prune_missing / prune_gitignored.
+            //
+            // Capture the pre-delete count of function_calls rows attached to
+            // the missing files so the reported `pruned_calls` reflects the
+            // call-graph rows this prune removed. (The shared helper deletes
+            // them per batch; counting up front keeps the metric without a
+            // second pass.)
+            let pruned_calls = if missing.is_empty() {
+                0u64
+            } else {
+                let mut total = 0u64;
+                const COUNT_BATCH: usize = max_rows_per_statement(1);
+                for batch in missing.chunks(COUNT_BATCH) {
+                    let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                    let sql = format!(
+                        "SELECT COUNT(*) FROM function_calls WHERE file IN ({})",
+                        placeholders
+                    );
+                    let mut q = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql.as_str()));
+                    for origin in batch {
+                        q = q.bind(origin);
+                    }
+                    let (n,): (i64,) = q.fetch_one(&mut *tx).await?;
+                    total += n as u64;
                 }
-                fts_stmt.execute(&mut *tx).await?;
+                total
+            };
 
-                // Delete from chunks
-                let chunks_query =
-                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
-                for origin in batch {
-                    chunks_stmt = chunks_stmt.bind(origin);
-                }
-                let result = chunks_stmt.execute(&mut *tx).await?;
-                pruned_chunks += result.rows_affected() as u32;
-            }
-
-            // 2b. Delete orphan function_calls (file no longer in chunks)
-            let calls_result = sqlx::query(
-                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
-            )
-            .execute(&mut *tx)
-            .await?;
-            let pruned_calls = calls_result.rows_affected();
+            let pruned_chunks = if missing.is_empty() {
+                0u32
+            } else {
+                delete_origins_in_tx(&mut tx, &missing, "prune_all").await?
+            };
 
             // 2c. Delete orphan type_edges (source_chunk_id no longer in chunks)
             let types_result = sqlx::query(
@@ -480,24 +511,17 @@ impl Store<ReadWrite> {
             .await?;
             let pruned_summaries = summaries_result.rows_affected() as usize;
 
-            // 2e. Delete orphan sparse_vectors inside the same transaction so
-            // no window exists where stale sparse vectors inflate the SPLADE
-            // index.
-            let sparse_result = sqlx::query(
-                "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
-                 (SELECT id FROM chunks)",
-            )
-            .execute(&mut *tx)
-            .await?;
-            let pruned_sparse = sparse_result.rows_affected() as usize;
-            if pruned_sparse > 0 {
-                tracing::debug!(pruned_sparse, "Pruned orphan sparse vectors in prune_all tx");
-            }
+            // Orphan sparse_vectors are swept inside `delete_origins_in_tx`
+            // above (same transaction), so no separate sweep is needed here.
 
             tx.commit().await?;
 
             if pruned_chunks > 0 {
-                tracing::info!(pruned_chunks, files = missing.len(), "Pruned chunks for missing files");
+                tracing::info!(
+                    pruned_chunks,
+                    files = missing.len(),
+                    "Pruned chunks for missing files"
+                );
             }
             if pruned_calls > 0 {
                 tracing::info!(pruned_calls, "Pruned stale call graph entries");
@@ -554,11 +578,10 @@ impl Store<ReadWrite> {
 
             // Collect distinct origins via the tx's read snapshot so reads
             // and deletes serialise as one unit.
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
-            )
-            .fetch_all(&mut *tx)
-            .await?;
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
+                    .fetch_all(&mut *tx)
+                    .await?;
 
             let cap = max_paths.unwrap_or(usize::MAX);
             let mut ignored: Vec<String> = Vec::new();
@@ -589,55 +612,12 @@ impl Store<ReadWrite> {
                 return Ok(0);
             }
 
-            // Batched delete in the SAME transaction started above. Same
-            // shape as `prune_missing` so a partial prune on crash leaves
-            // the index consistent with the remaining rows in `chunks`.
-            const BATCH_SIZE: usize = max_rows_per_statement(1);
-            let mut deleted = 0u32;
-
-            for batch in ignored.chunks(BATCH_SIZE) {
-                let placeholder_str = crate::store::helpers::make_placeholders(batch.len());
-
-                // Delete from FTS first
-                let fts_query = format!(
-                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
-                    placeholder_str
-                );
-                let mut fts_stmt = sqlx::query(sqlx::AssertSqlSafe(fts_query.as_str()));
-                for origin in batch {
-                    fts_stmt = fts_stmt.bind(origin);
-                }
-                fts_stmt.execute(&mut *tx).await?;
-
-                // Delete from chunks
-                let chunks_query =
-                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
-                let mut chunks_stmt = sqlx::query(sqlx::AssertSqlSafe(chunks_query.as_str()));
-                for origin in batch {
-                    chunks_stmt = chunks_stmt.bind(origin);
-                }
-                let result = chunks_stmt.execute(&mut *tx).await?;
-                deleted += result.rows_affected() as u32;
-            }
-
-            // Sweep orphan sparse_vectors inside the same transaction so a
-            // crash between DELETE chunks and DELETE sparse_vectors doesn't
-            // leave the SPLADE index over-counted.
-            if deleted > 0 {
-                let sparse_result = sqlx::query(
-                    "DELETE FROM sparse_vectors WHERE chunk_id NOT IN \
-                     (SELECT id FROM chunks)",
-                )
-                .execute(&mut *tx)
-                .await?;
-                let pruned_sparse = sparse_result.rows_affected();
-                if pruned_sparse > 0 {
-                    tracing::debug!(
-                        pruned_sparse,
-                        "Pruned orphan sparse vectors in prune_gitignored tx"
-                    );
-                }
-            }
+            // Delete FTS + chunks + per-file function_calls and sweep orphan
+            // sparse_vectors — shared with prune_missing / prune_all. Before
+            // this routed through the shared helper, prune_gitignored skipped
+            // the function_calls DELETE entirely, leaving orphan call-graph
+            // rows (ghost callers) for gitignore-driven prunes.
+            let deleted = delete_origins_in_tx(&mut tx, &ignored, "prune_gitignored").await?;
 
             tx.commit().await?;
 
@@ -2209,6 +2189,57 @@ mod tests {
         // The src/lib.rs chunk survives.
         let stats = store.stats().unwrap();
         assert_eq!(stats.total_chunks, 1);
+    }
+
+    /// `prune_gitignored` must remove the `function_calls` rows for the
+    /// pruned origins, not just the chunks. Before the shared
+    /// `delete_origins_in_tx` helper, this path skipped the function_calls
+    /// DELETE entirely, leaving orphan call-graph rows (ghost callers) for a
+    /// file the indexer no longer owns until the next full `prune_all`.
+    #[test]
+    fn test_prune_gitignored_removes_function_calls() {
+        use crate::parser::{CallSite, FunctionCalls};
+
+        let (store, dir) = setup_store();
+
+        // Chunk + call edges for a file that `.gitignore` will start ignoring.
+        let ignored_chunk = make_chunk("cache_helper", "target/cache.rs");
+        store
+            .upsert_chunks_batch(&[(ignored_chunk, mock_embedding(1.0))], Some(1000))
+            .unwrap();
+
+        // Seed a call edge: target/cache.rs's `cache_helper` calls
+        // `ghost_callee`. The `file` recorded matches the chunk origin
+        // (`target/cache.rs`) so the prune's per-file DELETE can match it.
+        store
+            .upsert_function_calls(
+                std::path::Path::new("target/cache.rs"),
+                &[FunctionCalls {
+                    name: "cache_helper".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "ghost_callee".to_string(),
+                        line_number: 2,
+                    }],
+                }],
+            )
+            .unwrap();
+
+        // Sanity: the caller exists before the prune.
+        let before = store.get_callers_full("ghost_callee").unwrap();
+        assert_eq!(before.len(), 1, "edge must exist before prune");
+
+        let matcher = matcher_from_lines(dir.path(), &["target/"]);
+        let pruned = store.prune_gitignored(&matcher, dir.path(), None).unwrap();
+        assert_eq!(pruned, 1, "target/cache.rs chunk must be pruned");
+
+        // The call-graph row must be gone too — no ghost callers survive a
+        // gitignore-driven prune.
+        let after = store.get_callers_full("ghost_callee").unwrap();
+        assert!(
+            after.is_empty(),
+            "function_calls rows for the gitignored file must be pruned, got {after:?}"
+        );
     }
 
     /// Pass 2 baseline — when `.gitignore` only matches `target/`, a chunk

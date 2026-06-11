@@ -521,9 +521,44 @@ fn finalize_output(
         }
 
         if opts.overwrite {
-            std::fs::write(&output_path, cleaned).with_context(|| {
-                format!("Failed to write output file: {}", output_path.display())
-            })?;
+            // Stage to a same-directory temp + atomic_replace so a crash
+            // mid-write can't leave a truncated output file in place of the
+            // prior content. Matches the durability the create-new branch
+            // gets from a single open()+write() on a fresh inode.
+            use std::io::Write;
+            let dir = output_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let name = output_path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "output".to_string());
+            let tmp_path = dir.join(format!(
+                ".{}.{}.{:016x}.tmp",
+                name,
+                std::process::id(),
+                crate::temp_suffix()
+            ));
+            let write_result = (|| -> std::io::Result<()> {
+                let mut f = std::fs::File::create(&tmp_path)?;
+                f.write_all(cleaned.as_bytes())?;
+                f.flush()?;
+                Ok(())
+            })();
+            if let Err(e) = write_result {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(anyhow::Error::new(e).context(format!(
+                    "Failed to write output file: {}",
+                    output_path.display()
+                )));
+            }
+            if let Err(e) = crate::fs::atomic_replace(&tmp_path, &output_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(anyhow::Error::new(e).context(format!(
+                    "Failed to write output file: {}",
+                    output_path.display()
+                )));
+            }
         } else {
             // Atomic create — avoids TOCTOU race between exists() check and write
             use std::io::Write;
@@ -862,6 +897,54 @@ mod tests {
                 "{name} should NOT be classified as python"
             );
         }
+    }
+
+    /// `--overwrite` stages to a temp + `atomic_replace`, so it must replace
+    /// pre-existing content with the new output (no partial/truncated file).
+    #[test]
+    #[cfg(feature = "convert")]
+    fn test_finalize_output_overwrite_replaces_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_dir = dir.path().join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        // A pre-existing output file with stale content.
+        let out_path = out_dir.join("doc.md");
+        std::fs::write(&out_path, "OLD CONTENT THAT MUST BE REPLACED").unwrap();
+
+        // A distinct source file (the overwrite guard must not trip).
+        let source = dir.path().join("doc.pdf");
+        std::fs::write(&source, b"%PDF-1.4 fake").unwrap();
+
+        let opts = ConvertOptions {
+            output_dir: out_dir.clone(),
+            overwrite: true,
+            dry_run: false,
+            clean_tags: Vec::new(),
+        };
+
+        let result = finalize_output(
+            &source,
+            "# New Title\n\nfresh body",
+            "doc.md",
+            "New Title",
+            1,
+            DocFormat::Pdf,
+            &opts,
+        );
+        assert!(
+            result.is_ok(),
+            "overwrite finalize must succeed: {:?}",
+            result.err()
+        );
+
+        let written = std::fs::read_to_string(&out_path).unwrap();
+        assert_eq!(written, "# New Title\n\nfresh body");
+        // No leftover temp files in the output directory.
+        let leftover_tmp = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!leftover_tmp, "no .tmp staging file should remain");
     }
 
     /// The Windows allowlist for python interpreters must reject anything that
