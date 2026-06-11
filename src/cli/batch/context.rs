@@ -760,6 +760,29 @@ impl BatchContext {
         Ok(())
     }
 
+    /// Write a success payload to `out`, logging and counting a write failure
+    /// instead of silently dropping it. For the daemon path `out` is an
+    /// in-memory `Vec` (infallible); for the stdin batch surface `out` is
+    /// stdout, where an EPIPE or full-disk redirect would otherwise leave the
+    /// agent with no response line, no log, and no `error_count` bump. Mirrors
+    /// the daemon socket's `write_daemon_error_tracked` (socket.rs).
+    fn write_ok_tracked(&self, out: &mut impl std::io::Write, value: &serde_json::Value) {
+        if let Err(e) = write_json_line(out, value) {
+            self.error_count.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(error = %e, "Batch dispatch: failed to write response line");
+        }
+    }
+
+    /// Write an error envelope to `out`, logging a write failure. The caller
+    /// has already bumped `error_count` for the dispatch error itself, so this
+    /// only warns when the envelope write also fails (e.g. EPIPE on stdout) —
+    /// the symptom is otherwise invisible.
+    fn write_err_tracked(&self, out: &mut impl std::io::Write, code: &str, message: &str) {
+        if let Err(e) = write_envelope_error(out, code, message) {
+            tracing::warn!(error = %e, "Batch dispatch: failed to write error envelope");
+        }
+    }
+
     /// Dispatch a single command line (e.g. "search foo -n 5 --json") and
     /// write the JSON result to `out`. Used by the daemon socket handler.
     ///
@@ -785,7 +808,7 @@ impl BatchContext {
                 self.error_count.fetch_add(1, Ordering::Relaxed);
                 let msg = format!("Parse error: {e}");
                 tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch_line: tokenization failed");
-                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
+                self.write_err_tracked(out, error_codes::PARSE_ERROR, &msg);
                 return;
             }
         };
@@ -841,7 +864,7 @@ impl BatchContext {
                 error = msg,
                 "Batch dispatch: NUL byte in tokens"
             );
-            let _ = write_envelope_error(out, error_codes::INVALID_INPUT, msg);
+            self.write_err_tracked(out, error_codes::INVALID_INPUT, msg);
             return;
         }
         self.check_idle_timeout();
@@ -858,7 +881,7 @@ impl BatchContext {
                 if matches!(input.cmd, commands::BatchCmd::Refresh) {
                     match self.invalidate() {
                         Ok(()) => {
-                            let _ = write_json_line(
+                            self.write_ok_tracked(
                                 out,
                                 &serde_json::json!({
                                     "status": "ok",
@@ -869,14 +892,14 @@ impl BatchContext {
                         Err(e) => {
                             self.error_count.fetch_add(1, Ordering::Relaxed);
                             let (code, msg) = crate::cli::json_envelope::redact_error(&e);
-                            let _ = write_envelope_error(out, code.as_str(), &msg);
+                            self.write_err_tracked(out, code.as_str(), &msg);
                         }
                     }
                     return;
                 }
                 match commands::dispatch(&view, input.cmd) {
                     Ok(value) => {
-                        let _ = write_json_line(out, &value);
+                        self.write_ok_tracked(out, &value);
                     }
                     Err(e) => {
                         self.error_count.fetch_add(1, Ordering::Relaxed);
@@ -887,7 +910,7 @@ impl BatchContext {
                         // via tracing::warn! inside redact_error so an operator
                         // can correlate by chain-id.
                         let (code, msg) = crate::cli::json_envelope::redact_error(&e);
-                        let _ = write_envelope_error(out, code.as_str(), &msg);
+                        self.write_err_tracked(out, code.as_str(), &msg);
                     }
                 }
             }
@@ -898,7 +921,7 @@ impl BatchContext {
                 // correct its query. No redaction needed.
                 let msg = format!("{e:#}");
                 tracing::warn!(code = error_codes::PARSE_ERROR, error = %msg, "Batch dispatch: clap parse failed");
-                let _ = write_envelope_error(out, error_codes::PARSE_ERROR, &msg);
+                self.write_err_tracked(out, error_codes::PARSE_ERROR, &msg);
             }
         }
     }

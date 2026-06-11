@@ -12,67 +12,27 @@ use super::{HnswError, HnswGraph, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
 /// Configurable HNSW graph file size limit via `CQS_HNSW_MAX_GRAPH_BYTES`
 /// env var. Defaults to 500MB. Cached in OnceLock for single parse.
+/// Parse/warn/default goes through the shared `crate::limits::parse_env_u64`.
 fn hnsw_max_graph_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_GRAPH_BYTES") {
-        Ok(val) => match val.parse::<u64>() {
-            Ok(n) if n > 0 => {
-                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_GRAPH_BYTES override");
-                n
-            }
-            _ => {
-                tracing::warn!(
-                    value = %val,
-                    "Invalid CQS_HNSW_MAX_GRAPH_BYTES, using default 500MB"
-                );
-                500 * 1024 * 1024
-            }
-        },
-        Err(_) => 500 * 1024 * 1024,
-    })
+    *MAX.get_or_init(|| crate::limits::parse_env_u64("CQS_HNSW_MAX_GRAPH_BYTES", 500 * 1024 * 1024))
 }
 
 /// Configurable HNSW data file size limit via `CQS_HNSW_MAX_DATA_BYTES`
 /// env var. Defaults to 1GB. Cached in OnceLock for single parse.
+/// Parse/warn/default goes through the shared `crate::limits::parse_env_u64`.
 fn hnsw_max_data_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_DATA_BYTES") {
-        Ok(val) => match val.parse::<u64>() {
-            Ok(n) if n > 0 => {
-                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_DATA_BYTES override");
-                n
-            }
-            _ => {
-                tracing::warn!(
-                    value = %val,
-                    "Invalid CQS_HNSW_MAX_DATA_BYTES, using default 1GB"
-                );
-                1024 * 1024 * 1024
-            }
-        },
-        Err(_) => 1024 * 1024 * 1024,
-    })
+    *MAX.get_or_init(|| crate::limits::parse_env_u64("CQS_HNSW_MAX_DATA_BYTES", 1024 * 1024 * 1024))
 }
 
 /// Configurable HNSW ID map file size limit via `CQS_HNSW_MAX_ID_MAP_BYTES`
 /// env var. Defaults to 500MB. Cached in OnceLock for single parse.
+/// Parse/warn/default goes through the shared `crate::limits::parse_env_u64`.
 fn hnsw_max_id_map_bytes() -> u64 {
     static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| match std::env::var("CQS_HNSW_MAX_ID_MAP_BYTES") {
-        Ok(val) => match val.parse::<u64>() {
-            Ok(n) if n > 0 => {
-                tracing::info!(max_bytes = n, "CQS_HNSW_MAX_ID_MAP_BYTES override");
-                n
-            }
-            _ => {
-                tracing::warn!(
-                    value = %val,
-                    "Invalid CQS_HNSW_MAX_ID_MAP_BYTES, using default 500MB"
-                );
-                500 * 1024 * 1024
-            }
-        },
-        Err(_) => 500 * 1024 * 1024,
+    *MAX.get_or_init(|| {
+        crate::limits::parse_env_u64("CQS_HNSW_MAX_ID_MAP_BYTES", 500 * 1024 * 1024)
     })
 }
 

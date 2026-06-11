@@ -98,7 +98,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | ID | Finding | Location | Status |
 |----|---------|----------|--------|
 | DOC-V1.42-4 | README HNSW tuning table presents mid-tier values as fixed; defaults are corpus-tiered | README.md:696-710 | ✅ PR #1738 |
-| EH-V1.42-3 | Batch dispatch swallows response-write failures via `let _ =` (7 sites) — daemon side built tracked writes for exactly this | src/cli/batch/context.rs:684-797 | open |
+| EH-V1.42-3 | Batch dispatch swallows response-write failures via `let _ =` (7 sites) — daemon side built tracked writes for exactly this | src/cli/batch/context.rs:684-797 | ✅ PR #1765 |
 | EH-V1.42-4 | chunk_count().ok() blanks slot-list chunks column silently; adjacent model-name read got the warn ladder | src/cli/commands/infra/slot.rs:253 | ✅ PR #1759 |
 | RB-V1.42-3 | extract_signature UntilAs loop bound makes end-of-string guard unreachable — trailing "AS" never matched | src/parser/chunk.rs:302-306 | ✅ PR #1757 |
 | RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | ✅ PR #1738 |
@@ -120,10 +120,10 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | CQ-V1.42-4 | CagraIndex::save ~75-line test-only twin of save_with_store hardcoding splade_generation: 0 | src/cagra.rs:1013-1086 | ✅ PR #1764 |
 | CQ-V1.42-5 | CommandContext.project_cqs_dir/slot_name written never read, masked by #[allow(dead_code)] | src/cli/store.rs:162-168 | open |
 | CQ-V1.42-6 | ScoutOptions knobs unreachable from any surface | src/scout.rs:101, :135 | open |
-| CQ-V1.42-10 | Env-knob parsing re-implemented across six sites; cli/limits.rs private copy; divergent silent-swallow semantics | hnsw/persist.rs, cli/limits.rs, onboard.rs, note.rs, diff.rs, task.rs | open |
+| CQ-V1.42-10 | Env-knob parsing re-implemented across six sites; cli/limits.rs private copy; divergent silent-swallow semantics | hnsw/persist.rs, cli/limits.rs, onboard.rs, note.rs, diff.rs, task.rs | ✅ PR #1765 |
 | CQ-V1.42-15 | Library llm modules eprintln! user-facing hints directly | src/llm/summary.rs:101, doc_comments.rs:281, batch.rs:638 | open |
 | CQ-V1.42-16 | Crate root accretes utilities that have dedicated homes (serde/path/fs helpers in lib.rs) | src/lib.rs:410-645 | open |
-| SEC-V1.42-3 | Cleartext-http API-key guard split across two layers with contradictory localhost policy — local.rs re-check unreachable; under ALLOW_INSECURE=1 silently drops opted-into header | src/llm/mod.rs:357-372, local.rs:146-171 | open |
+| SEC-V1.42-3 | Cleartext-http API-key guard split across two layers with contradictory localhost policy — local.rs re-check unreachable; under ALLOW_INSECURE=1 silently drops opted-into header | src/llm/mod.rs:357-372, local.rs:146-171 | ✅ PR #1765 |
 | PB-V1.42-2 | linux_fs_resolution magic table omits V9FS_MAGIC (0x01021997) — manually mounted DrvFS gets fine-grained mtime treatment, re-opening dropped-second-save bug | src/config.rs:270-289 | ✅ PR #1764 |
 | RM-V1.42-1 | CAGRA interrupted-save tmp orphans never swept on load — HNSW/SPLADE both sweep theirs; multi-hundred-MB accumulation under crash-looping daemon | src/cagra.rs:1186, :1426, :1556 | open |
 | PERF-V1.42-7 | `cqs task` computes the full test-reachability BFS twice with identical inputs | src/task.rs:144, :194 | open |
@@ -133,7 +133,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
 | TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | ✅ PR #1760 |
 | TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | open |
-| TC-HAP-V1.42-9 | telemetry_core populated path and all:true flag have zero assertions — telemetry feeds real decisions | src/cli/commands/infra/telemetry_cmd.rs:395 | open |
+| TC-HAP-V1.42-9 | telemetry_core populated path and all:true flag have zero assertions — telemetry feeds real decisions | src/cli/commands/infra/telemetry_cmd.rs:395 | ✅ PR #1765 |
 | DS-V1.42-9 | checkpoint_legacy_index opens via URL parsing — special-char paths silently skip the WAL drain the slot migration depends on | src/slot/mod.rs:1053 | ✅ PR #1764 |
 | DS-V1.42-11 | slot create --model killed between dir creation and slot.toml write loses the model pin; retry guidance steers toward wrong-model indexing | src/cli/commands/infra/slot.rs:313-325 | open |
 | DS-V1.42-12 | `cqs convert --overwrite` writes via bare fs::write — truncated doc ingested as valid content on next index | src/convert/mod.rs:523-526 | ✅ PR #1759 |
@@ -150,7 +150,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | CQ-V1.42-13 | serve/data.rs writes raw SQL via pub(crate) pool access — schema knowledge in two modules | src/serve/data.rs:224-1124 | open |
 | CQ-V1.42-14 | store ↔ search bidirectional coupling — Store's search API implemented in search module on private fields (root cause of CQ-V1.42-12's gate-in-dead-code) | src/search/query.rs:67, src/store/search.rs:8 | open |
 | PERF-V1.42-9 | build_cluster streams the entire function_calls table per /api/embed/2d request, aggregating degree counts Rust-side — push GROUP BY into SQL like build_graph | src/serve/data.rs:1011-1026 | open |
-| TC-HAP-V1.42-4 | task e2e tests #[ignore]d AND vacuous (assertions satisfiable by any outcome); --tokens waterfall branch never executed | tests/task_test.rs:285-327, train/task.rs:609-641 | open |
+| TC-HAP-V1.42-4 | task e2e tests #[ignore]d AND vacuous (assertions satisfiable by any outcome); --tokens waterfall branch never executed | tests/task_test.rs:285-327, train/task.rs:609-641 | ✅ PR #1765 |
 
 ## Suggested fix clustering (for the next implementation session)
 

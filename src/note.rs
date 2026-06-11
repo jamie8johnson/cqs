@@ -53,22 +53,16 @@ pub const MAX_NOTE_MENTION_BYTES: usize = 256;
 /// `CQS_NOTES_MAX_FILE_SIZE`.
 const MAX_NOTES_FILE_SIZE_DEFAULT: u64 = 10 * 1024 * 1024;
 
-/// Resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB).
+/// Resolve `CQS_NOTES_MAX_FILE_SIZE` (default 10 MiB). Parse/warn/default via
+/// the shared `crate::limits::parse_env_u64` (warns on a malformed value).
 fn max_notes_file_size() -> u64 {
-    std::env::var("CQS_NOTES_MAX_FILE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_NOTES_FILE_SIZE_DEFAULT)
+    crate::limits::parse_env_u64("CQS_NOTES_MAX_FILE_SIZE", MAX_NOTES_FILE_SIZE_DEFAULT)
 }
 
-/// Resolve `CQS_NOTES_MAX_ENTRIES` (default 10_000).
+/// Resolve `CQS_NOTES_MAX_ENTRIES` (default 10_000). Parse/warn/default via
+/// the shared `crate::limits::parse_env_usize` (warns on a malformed value).
 fn max_notes() -> usize {
-    std::env::var("CQS_NOTES_MAX_ENTRIES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_NOTES_DEFAULT)
+    crate::limits::parse_env_usize("CQS_NOTES_MAX_ENTRIES", MAX_NOTES_DEFAULT)
 }
 
 /// Errors that can occur when parsing notes

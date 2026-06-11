@@ -152,28 +152,13 @@ impl GatherOptions {
 
 /// Read CQS_GATHER_MAX_NODES once via OnceLock, not on every GatherOptions::default().
 ///
-/// Public so CLI text-mode warnings can report the actual cap.
+/// Public so CLI text-mode warnings can report the actual cap. Parse/warn/
+/// default goes through the shared `crate::limits::parse_env_usize`; the
+/// OnceLock cache keeps it a single env read per process.
 pub fn gather_max_nodes() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CAP.get_or_init(|| match std::env::var("CQS_GATHER_MAX_NODES") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) if n > 0 => {
-                tracing::info!(
-                    max_nodes = n,
-                    "BFS node cap overridden via CQS_GATHER_MAX_NODES"
-                );
-                n
-            }
-            _ => {
-                tracing::warn!(
-                    value = %val,
-                    "Invalid CQS_GATHER_MAX_NODES, using default {}",
-                    DEFAULT_MAX_EXPANDED_NODES
-                );
-                DEFAULT_MAX_EXPANDED_NODES
-            }
-        },
-        Err(_) => DEFAULT_MAX_EXPANDED_NODES,
+    *CAP.get_or_init(|| {
+        crate::limits::parse_env_usize("CQS_GATHER_MAX_NODES", DEFAULT_MAX_EXPANDED_NODES)
     })
 }
 

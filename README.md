@@ -863,7 +863,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_LOCAL_LLM_TIMEOUT_SECS` | `120` | Per-request timeout (seconds) for `CQS_LLM_PROVIDER=local`. Local inference can be slow, so the default is 2× the Anthropic 60s ceiling. |
 | `CQS_MAX_CONNECTIONS` | `4` | SQLite write-pool max connections |
 | `CQS_MAX_REFERENCES` | `20` | Max number of reference indexes loaded from `[references]` blocks. Each reference holds a separate SQLite DB + HNSW index (~50-100 MB RAM each). Hit on a `cqs ref`-heavy workspace? Bump it; `0`/garbage falls back to default. SHL-V1.30-6. |
-| `CQS_GATHER_DEPTH` | `1` (`gather` default) | BFS expansion depth for the shared `gather` pipeline. Honored as a fallback by `task` when `CQS_TASK_GATHER_DEPTH` is unset. SHL-V1.30-4. |
+| `CQS_GATHER_DEPTH` | `2` (task fallback) | BFS expansion depth fallback for the `task` pipeline when `CQS_TASK_GATHER_DEPTH` is unset. `cqs gather` itself takes its depth from the `--depth` flag, not this env var. SHL-V1.30-4. |
 | `CQS_TASK_GATHER_DEPTH` | `2` | BFS expansion depth used inside `cqs task` (number of call-graph hops from each modify target). Takes precedence over `CQS_GATHER_DEPTH` for the task pipeline only. SHL-V1.30-4. |
 | `CQS_TASK_WATERFALL_SCOUT` | `0.15` | Fraction of `cqs task --max-tokens` allocated to the scout section (file groups + chunk roles). Operators packing more code or impact info can shift weight via this knob. Bounded `0.0..=1.0`. v1.38: EX-V1.38-5 / #1463. |
 | `CQS_TASK_WATERFALL_CODE` | `0.50` | Fraction of `cqs task --max-tokens` allocated to the code section (gathered chunks). v1.38: EX-V1.38-5 / #1463. |

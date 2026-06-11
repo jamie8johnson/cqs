@@ -272,35 +272,50 @@ pub fn blast_high_min() -> usize {
 
 // ============ shared parsing helpers ============
 //
-// A single contract for env-driven size limits: missing/empty/garbage/zero
-// -> default, otherwise the parsed value. Zero is treated as invalid by all
-// three helpers — call sites that *want* zero to mean "disabled" need to
-// spell it (`if value == 0 { return default; }` after a custom parse).
+// A single contract for env-driven size limits: missing -> default;
+// empty/garbage/zero -> default *with a warn* so an operator who typoed the
+// value sees the silent fall-through instead of debugging "why isn't my env
+// var doing anything." Zero is treated as invalid by all three helpers —
+// call sites that *want* zero to mean "disabled" need to spell it
+// (`if value == 0 { return default; }` after a custom parse).
 
 /// Parse a finite positive `f32`-shaped env var, falling back to
 /// `default` on missing/empty/garbage/non-finite/non-positive values.
 /// Mirrors `parse_env_usize`'s "reject zero" stance so env-driven risk
 /// thresholds can't silently collapse the classification by pinning 0.
+/// Warns on a malformed-but-set value.
 pub fn parse_env_f32(key: &str, default: f32) -> f32 {
     match std::env::var(key) {
-        Ok(v) => v
-            .parse::<f32>()
-            .ok()
-            .filter(|n| n.is_finite() && *n > 0.0)
-            .unwrap_or(default),
+        Ok(v) => match v.parse::<f32>() {
+            Ok(n) if n.is_finite() && n > 0.0 => n,
+            _ => {
+                tracing::warn!(
+                    env = key,
+                    value = %v,
+                    "Invalid env var (must be a finite positive number), using default {default}"
+                );
+                default
+            }
+        },
         Err(_) => default,
     }
 }
 
 /// Parse a `usize`-shaped env var, falling back to `default` on
-/// missing/empty/garbage/zero values.
+/// missing/empty/garbage/zero values. Warns on a malformed-but-set value.
 pub fn parse_env_usize(key: &str, default: usize) -> usize {
     match std::env::var(key) {
-        Ok(v) => v
-            .parse::<usize>()
-            .ok()
-            .filter(|n| *n > 0)
-            .unwrap_or(default),
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    env = key,
+                    value = %v,
+                    "Invalid env var (must be a positive usize), using default {default}"
+                );
+                default
+            }
+        },
         Err(_) => default,
     }
 }
@@ -427,9 +442,20 @@ pub fn serve_blocking_permits() -> usize {
 }
 
 /// Same as [`parse_env_usize`] but for `u64`-shaped byte limits.
+/// Warns on a malformed-but-set value.
 pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     match std::env::var(key) {
-        Ok(v) => v.parse::<u64>().ok().filter(|n| *n > 0).unwrap_or(default),
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    env = key,
+                    value = %v,
+                    "Invalid env var (must be a positive u64), using default {default}"
+                );
+                default
+            }
+        },
         Err(_) => default,
     }
 }

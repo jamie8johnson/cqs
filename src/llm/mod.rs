@@ -322,6 +322,13 @@ impl LlmConfig {
     /// Returns `Err` if `CQS_LLM_API_BASE` uses cleartext `http://` and the
     /// explicit opt-in `CQS_LLM_ALLOW_INSECURE=1` is not set. Prevents the
     /// API key from being sent in the clear on every call.
+    ///
+    /// This is the *single* gate for the cleartext-auth trust decision. Any
+    /// `http://` base — loopback, RFC1918, or public — is refused here without
+    /// `CQS_LLM_ALLOW_INSECURE=1`. Setting that flag means "I accept cleartext
+    /// auth, send the header": downstream providers (`LocalProvider::new`)
+    /// then honor the resolved config unconditionally and attach the bearer
+    /// token, rather than re-deciding host trust and silently dropping it.
     pub fn resolve(config: &crate::config::Config) -> Result<Self, LlmError> {
         let _span = tracing::info_span!("resolve_llm_config").entered();
 
