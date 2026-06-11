@@ -934,4 +934,24 @@ impl crate::cli::commands::search::search_ctx::SearchCtx for BatchView {
     fn audit_state(&self) -> cqs::audit::AuditMode {
         BatchView::audit_state(self)
     }
+
+    fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+        // The daemon hands back its LRU-cached `Arc<ReferenceIndex>` snapshots
+        // directly — no per-call config load.
+        self.get_all_refs()
+    }
+
+    fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>> {
+        // Resolve through the same LRU `references()` uses: `get_ref` primes
+        // the cache (with the `is_stale` self-heal that reloads after
+        // `cqs ref update`), `borrow_ref` hands back the cached Arc. Keeps the
+        // two seam accessors on one config snapshot + one staleness policy,
+        // and avoids reloading the reference store + HNSW per request.
+        self.get_ref(name)?;
+        self.borrow_ref(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{name}' evicted from cache between prime and borrow — retry the query"
+            )
+        })
+    }
 }
