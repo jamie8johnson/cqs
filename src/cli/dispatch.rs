@@ -261,6 +261,34 @@ pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
 }
 
+/// `true` when this invocation requests JSON output and so is forwardable to
+/// the daemon, which serves the structured JSON payload.
+///
+/// Resolution:
+/// - Top-level `--json` (`cli.json`) forces JSON for every command.
+/// - Subcommands resolve their own `--json` / `--format json` via
+///   [`Commands::effective_output_format`].
+/// - The bare-query path (`cqs "query"`, no subcommand) has no per-command
+///   output group; it is JSON only when top-level `--json` is set.
+///
+/// Text mode (everything else) returns `false` so the caller keeps the
+/// command on the CLI path: text-mode invocations render the payload through
+/// the command's own renderer, so output is surface-independent rather than
+/// the raw daemon JSON payload.
+#[cfg(unix)]
+fn daemon_invocation_is_json(cli: &Cli) -> bool {
+    use crate::cli::definitions::OutputFormat;
+    if cli.json {
+        return true;
+    }
+    match cli.command.as_ref() {
+        Some(cmd) => matches!(cmd.effective_output_format(), Some(OutputFormat::Json)),
+        // Bare-query search: text by default, JSON only under top-level
+        // `--json` (handled above).
+        None => false,
+    }
+}
+
 /// `true` when the `CQS_SLOT` env var pins a slot — i.e. it is set to a
 /// non-empty (post-trim) value. Mirrors the semantics of
 /// `slot::resolve_slot_name`, which trims and treats empty/whitespace (and
@@ -361,6 +389,19 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         if cmd.batch_support() == BatchSupport::Cli {
             return Ok(None);
         }
+    }
+
+    // Text-mode invocations stay on the CLI path. The daemon wire shape is
+    // structured JSON (the agent-facing contract); the CLI renders prose for
+    // text mode through each command's own renderer, which often needs the
+    // open store (e.g. `impact` re-resolves the relative file label) and so
+    // can't be reproduced from the JSON payload alone. Forwarding a text-mode
+    // query would print that JSON payload instead of the rendered text —
+    // output would depend on whether a daemon happened to serve it. Bypassing
+    // here keeps text output surface-independent at the cost of the daemon
+    // fast path for text mode only; `--json` keeps the fast path.
+    if !daemon_invocation_is_json(cli) {
+        return Ok(None);
     }
 
     let sock_path = super::daemon_socket_path(cqs_dir);
@@ -709,5 +750,121 @@ mod tests {
             !spec.bare_query_strip.contains("--rrf"),
             "`--rrf` is a search knob and must forward on bare queries"
         );
+    }
+
+    /// Parse `argv` (after the implicit `cqs`) into a `Cli`, returning the
+    /// JSON-mode decision the daemon-forward gate makes for it.
+    fn gate_is_json(argv: &[&str]) -> bool {
+        use clap::Parser as _;
+        let mut full = vec!["cqs"];
+        full.extend_from_slice(argv);
+        let cli = Cli::try_parse_from(full).expect("argv must parse");
+        daemon_invocation_is_json(&cli)
+    }
+
+    /// Every daemon-dispatchable command must report a concrete output format
+    /// (`Some(..)`) so the text-mode gate can classify it. A new daemon
+    /// command added without an arm in `Commands::effective_output_format`
+    /// returns `None` → treated as text → silently bypasses the daemon. That
+    /// is the safe failure direction (correct output, slower), but it also
+    /// means the new command never gets the daemon fast path even with
+    /// `--json`. This test makes that omission loud at test time.
+    ///
+    /// `daemon_capable_variant_names` is emitted by the `CqsCommands` derive;
+    /// it lists exactly the top-level variants with `batch = "daemon"`.
+    #[test]
+    fn daemon_dispatchable_variants_report_an_output_format() {
+        use crate::cli::definitions::Commands;
+        use clap::Parser as _;
+        // Representative argv per daemon-capable command. Kept minimal: only
+        // the required positionals so the parse succeeds. The gate predicate
+        // only inspects the output flags, not the args.
+        let argv_for: &[(&str, &[&str])] = &[
+            ("stats", &["stats"]),
+            ("blame", &["blame", "foo"]),
+            ("deps", &["deps", "foo"]),
+            ("callers", &["callers", "foo"]),
+            ("callees", &["callees", "foo"]),
+            ("onboard", &["onboard", "foo"]),
+            ("explain", &["explain", "foo"]),
+            ("similar", &["similar", "foo"]),
+            ("impact", &["impact", "foo"]),
+            ("impact-diff", &["impact-diff"]),
+            ("review", &["review"]),
+            ("ci", &["ci"]),
+            ("trace", &["trace", "foo", "bar"]),
+            ("test-map", &["test-map", "foo"]),
+            ("context", &["context", "foo"]),
+            ("dead", &["dead"]),
+            ("gather", &["gather", "foo"]),
+            ("health", &["health"]),
+            ("stale", &["stale"]),
+            ("read", &["read", "foo"]),
+            ("related", &["related", "foo"]),
+            ("where", &["where", "foo"]),
+            ("scout", &["scout", "foo"]),
+            ("plan", &["plan", "foo"]),
+            ("task", &["task", "foo"]),
+            ("refresh", &["refresh"]),
+            // `notes` is daemon-capable for the `list` subcommand (runtime
+            // classification); its output format lives on the subcommand.
+            ("notes", &["notes", "list"]),
+            // `suggest` is daemon-capable when no `--apply` mutation runs
+            // (runtime classification); it carries `TextJsonArgs`.
+            ("suggest", &["suggest"]),
+        ];
+        let covered: std::collections::BTreeSet<&str> =
+            argv_for.iter().map(|(name, _)| *name).collect();
+
+        // The derive lists exactly the `batch = "daemon"` top-level variants.
+        for name in Commands::daemon_capable_variant_names() {
+            assert!(
+                covered.contains(name),
+                "daemon-capable command `{name}` has no coverage in this test — \
+                 add an argv entry and an arm in Commands::effective_output_format"
+            );
+        }
+
+        for (name, argv) in argv_for {
+            let cli = {
+                let mut full = vec!["cqs"];
+                full.extend_from_slice(argv);
+                Cli::try_parse_from(full)
+                    .unwrap_or_else(|e| panic!("argv for `{name}` must parse: {e}"))
+            };
+            let cmd = cli.command.as_ref().unwrap_or_else(|| {
+                panic!("argv for `{name}` must produce a subcommand");
+            });
+            assert!(
+                cmd.effective_output_format().is_some(),
+                "daemon-capable command `{name}` must report an output format \
+                 (Some) so the text-mode gate can classify it"
+            );
+        }
+    }
+
+    /// Text-mode invocations are not daemon-forwardable; JSON-mode ones are.
+    /// Covers the three input shapes: `--json` boolean, `--format json`
+    /// (OutputArgs), and the bare-query path.
+    #[test]
+    fn daemon_gate_text_mode_is_not_forwardable() {
+        // Subcommand text mode → CLI path.
+        assert!(!gate_is_json(&["read", "src/lib.rs"]));
+        assert!(!gate_is_json(&["impact", "foo"]));
+        // Subcommand JSON mode → daemon path.
+        assert!(gate_is_json(&["read", "src/lib.rs", "--json"]));
+        // OutputArgs `--format json` is recognized as JSON.
+        assert!(gate_is_json(&["impact", "foo", "--format", "json"]));
+        assert!(gate_is_json(&["impact", "foo", "--json"]));
+        // Top-level `--json` forces JSON for any command.
+        assert!(gate_is_json(&["--json", "read", "src/lib.rs"]));
+        // Bare query: text by default, JSON under top-level `--json`.
+        assert!(!gate_is_json(&["find the thing"]));
+        assert!(gate_is_json(&["--json", "find the thing"]));
+        // `notes list` resolves its `--json` on the subcommand: text bypasses,
+        // subcommand `--json` forwards (the existing notes round-trip relies
+        // on this).
+        assert!(!gate_is_json(&["notes", "list"]));
+        assert!(gate_is_json(&["notes", "list", "--json"]));
     }
 }

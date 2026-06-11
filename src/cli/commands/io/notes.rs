@@ -136,6 +136,22 @@ pub(crate) enum NotesCommand {
     },
 }
 
+impl NotesCommand {
+    /// The effective output format for this notes subcommand, resolving
+    /// `--json` over the default. Every arm carries a `TextJsonArgs` group, so
+    /// this is always concrete. Consumed by `Commands::effective_output_format`
+    /// so the daemon-forward text-mode gate can classify `notes list` (the
+    /// only daemon-dispatchable notes arm) by its own `--json` flag.
+    pub(crate) fn effective_output_format(&self) -> crate::cli::definitions::OutputFormat {
+        match self {
+            NotesCommand::List { output, .. }
+            | NotesCommand::Add { output, .. }
+            | NotesCommand::Update { output, .. }
+            | NotesCommand::Remove { output, .. } => output.effective_format(),
+        }
+    }
+}
+
 /// Handle all `notes` subcommands.
 ///
 /// Runs in the normal Group-B dispatch path. `ctx` is optional because
