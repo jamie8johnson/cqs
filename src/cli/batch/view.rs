@@ -252,11 +252,11 @@ pub(crate) fn get_all_refs_via_refs_lru(
 // daemon-dispatchable command that mutates BatchContext interior.
 pub(crate) struct BatchView {
     pub(super) store: Arc<Store<ReadOnly>>,
-    /// HNSW snapshot taken at checkout. Handlers that need a fresh build
-    /// fall back to `lazy_vector_index` which rebuilds via the store; the
-    /// rebuild path doesn't touch BatchContext (the Arc<dyn VectorIndex>
-    /// is constructed fresh each time the cached snapshot is None and
-    /// stays local to this view).
+    /// Vector-index snapshot taken at checkout. When `None`, the accessor
+    /// falls back to the shared cell (another view may have built and
+    /// published since checkout), then to a fresh build from the snapshot
+    /// store — which is published back into the shared cell (epoch-guarded)
+    /// so subsequent checkouts snapshot it instead of rebuilding.
     pub(super) cached_vector_index: Option<Arc<dyn VectorIndex>>,
     pub(super) cached_base_vector_index: Option<Arc<dyn VectorIndex>>,
     pub(super) cached_call_graph: Option<Arc<cqs::store::CallGraph>>,
@@ -264,11 +264,23 @@ pub(crate) struct BatchView {
     pub(super) cached_notes: Option<Arc<Vec<cqs::note::Note>>>,
     pub(super) cached_file_set: Option<Arc<HashSet<PathBuf>>>,
     pub(super) cached_splade_index: Option<Arc<cqs::splade::index::SpladeIndex>>,
-    /// Shared `Arc<Mutex<...>>` to the BatchContext's splade_index cell.
-    /// `ensure_splade_index` populates it for handlers running through
-    /// the view; the BatchContext path picks up the same value on its
-    /// next `checkout_view`.
+    /// Shared `Arc<Mutex<...>>` write-back cells aliasing the BatchContext's
+    /// mutable caches. A view-side cache miss builds the value, then
+    /// publishes it back through [`Self::publish_if_current`]; the
+    /// BatchContext path picks the same value up on its next
+    /// `checkout_view`. Cleared by `invalidate_mutable_caches`.
+    pub(super) vector_index_cell: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
+    pub(super) base_vector_index_cell: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
+    pub(super) file_set_cell: Arc<Mutex<Option<Arc<HashSet<PathBuf>>>>>,
+    pub(super) notes_cell: Arc<Mutex<Option<Arc<Vec<cqs::note::Note>>>>>,
     pub(super) splade_index_cell: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    /// Shared invalidation-epoch counter plus the value it held when this
+    /// view was checked out. `publish_if_current` compares the two under
+    /// the cell lock: any invalidation since checkout bumped the counter,
+    /// so a value built from this view's (now stale) store snapshot is
+    /// discarded instead of being published over the fresh invalidation.
+    pub(super) invalidation_epoch: Arc<AtomicU64>,
+    pub(super) checkout_epoch: u64,
     /// Shared `Arc<OnceLock<...>>` to the BatchContext embedder slot. Init
     /// from the view propagates to the BatchContext (and any other view
     /// holding the same Arc).
@@ -319,9 +331,59 @@ impl BatchView {
         Arc::clone(&self.store)
     }
 
-    /// HNSW vector index for this snapshot. If the cache was empty at
-    /// checkout, build a fresh one from the snapshot store (no BatchContext
-    /// access needed).
+    /// Publish a freshly built cache value into a shared BatchContext cell —
+    /// unless an invalidation ran since this view was checked out. The epoch
+    /// is compared under the cell lock, and `invalidate_mutable_caches`
+    /// bumps the counter before clearing the cells, so a build from a
+    /// pre-invalidation store snapshot can never land after (and survive) a
+    /// fresh invalidation. The discarded value still serves the in-flight
+    /// dispatch: it matches the view's own store snapshot, so the current
+    /// query stays internally consistent.
+    fn publish_if_current<T: ?Sized>(
+        &self,
+        cell: &Mutex<Option<Arc<T>>>,
+        value: &Arc<T>,
+        slot: &'static str,
+    ) {
+        let mut guard = cell.lock().unwrap_or_else(|p| p.into_inner());
+        if self.invalidation_epoch.load(Ordering::SeqCst) != self.checkout_epoch {
+            tracing::debug!(
+                slot,
+                "invalidation ran since view checkout — discarding freshly built cache value"
+            );
+            return;
+        }
+        *guard = Some(Arc::clone(value));
+        // An invalidation may have bumped the epoch between the check above
+        // and the store: it found this cell locked and deferred the clear to
+        // the lock holder. Re-check and perform that deferred clear here,
+        // while the lock is still held — otherwise the just-published stale
+        // value would survive until the next sticky retry.
+        if self.invalidation_epoch.load(Ordering::SeqCst) != self.checkout_epoch {
+            *guard = None;
+            tracing::debug!(slot, "invalidation raced the publish — clearing the cell");
+        }
+    }
+
+    /// Read a shared cell — but only when no invalidation has run since this
+    /// view's checkout. A cell populated after an invalidation belongs to a
+    /// NEWER index generation than this view's store snapshot; serving it
+    /// against the old store would mix generations (reindex reassigns chunk
+    /// rowids, so results would be silently wrong). On epoch mismatch the
+    /// caller falls back to building from its own snapshot store, and the
+    /// matching publish guard then discards that build.
+    fn read_cell_if_current<T: ?Sized>(&self, cell: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+        let guard = cell.lock().unwrap_or_else(|p| p.into_inner());
+        if self.invalidation_epoch.load(Ordering::SeqCst) != self.checkout_epoch {
+            return None;
+        }
+        guard.as_ref().map(Arc::clone)
+    }
+
+    /// Vector index for this snapshot. Falls back to the shared cell (a
+    /// sibling view may have built it since checkout), then to a fresh build
+    /// from the snapshot store — published back into the shared cell so the
+    /// next checkout snapshots it instead of rebuilding from disk.
     pub fn vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
         if let Some(arc) = &self.cached_vector_index {
             if !arc.is_poisoned() {
@@ -332,18 +394,51 @@ impl BatchView {
                 "BatchView vector index is poisoned — rebuilding from snapshot store"
             );
         }
+        {
+            // Hand-rolled (not `read_cell_if_current`) because of the poison
+            // handling: a poisoned value is nulled out under the same guard
+            // regardless of epoch — leaving it would let a later reader or
+            // checkout snapshot revive a dead CUDA context — while serving a
+            // healthy value is epoch-gated like every other cell read.
+            let mut guard = self
+                .vector_index_cell
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(arc) = guard.as_ref() {
+                if arc.is_poisoned() {
+                    tracing::warn!(
+                        name = arc.name(),
+                        "Poisoned vector index in shared cell — discarding"
+                    );
+                    *guard = None;
+                } else if self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch {
+                    return Ok(Some(Arc::clone(arc)));
+                }
+            }
+        }
         let _span = tracing::info_span!("batch_view_vector_index_init").entered();
         let idx = build_vector_index(&self.store, &self.cqs_dir, self.config.ef_search)?;
-        Ok(idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() }))
+        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
+        if let Some(arc) = &result {
+            self.publish_if_current(&self.vector_index_cell, arc, "hnsw");
+        }
+        Ok(result)
     }
 
     pub fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
         if let Some(arc) = &self.cached_base_vector_index {
             return Ok(Some(Arc::clone(arc)));
         }
+        if let Some(arc) = self.read_cell_if_current(&self.base_vector_index_cell) {
+            return Ok(Some(arc));
+        }
         let _span = tracing::info_span!("batch_view_base_vector_index_init").entered();
         let idx = crate::cli::build_base_vector_index(&self.store, &self.cqs_dir)?;
-        Ok(idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() }))
+        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
+        if let Some(arc) = &result {
+            self.publish_if_current(&self.base_vector_index_cell, arc, "base_hnsw");
+        }
+        Ok(result)
     }
 
     pub fn embedder(&self) -> Result<&Embedder> {
@@ -395,12 +490,12 @@ impl BatchView {
     }
 
     pub fn ensure_splade_index(&self) {
-        if self
-            .splade_index_cell
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some()
-        {
+        // Epoch-gated: a cell populated after an invalidation belongs to a
+        // newer generation than this view's snapshot store — don't treat it
+        // as "already ensured" for this view. The stale-view rebuild below
+        // is then discarded by the publish guard; that dispatch falls back
+        // to dense-only rather than mixing generations.
+        if self.read_cell_if_current(&self.splade_index_cell).is_some() {
             return;
         }
         let generation = match self.store.splade_generation() {
@@ -456,24 +551,22 @@ impl BatchView {
                 "SPLADE index loaded from disk (view)"
             );
         }
-        *self
-            .splade_index_cell
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(idx));
+        // Epoch-guarded publish: if an invalidation cleared the cell while
+        // the (potentially long) build above ran, the index was built from a
+        // stale snapshot and must not be re-published over the clear.
+        self.publish_if_current(&self.splade_index_cell, &Arc::new(idx), "splade_index");
     }
 
     pub fn borrow_splade_index(&self) -> Option<Arc<cqs::splade::index::SpladeIndex>> {
         // Prefer the snapshot taken at checkout; fall back to the live
         // cell so a freshly populated index (via `ensure_splade_index`
-        // during this dispatch) is observable without re-checkout.
+        // during this dispatch) is observable without re-checkout. The
+        // cell read is epoch-gated — a post-invalidation cell value would
+        // mix generations with this view's store snapshot.
         if let Some(arc) = &self.cached_splade_index {
             return Some(Arc::clone(arc));
         }
-        self.splade_index_cell
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .map(Arc::clone)
+        self.read_cell_if_current(&self.splade_index_cell)
     }
 
     /// Borrowed access keeps the snapshot Config in place; clone-on-access
@@ -494,34 +587,61 @@ impl BatchView {
         if let Some(notes) = &self.cached_notes {
             return Arc::clone(notes);
         }
-        // Snapshot was empty at checkout — load once from disk into a fresh
-        // Arc; we don't write back into the BatchContext cache because the next
-        // `checkout_view` after a real reindex will re-stat notes.toml anyway.
+        if let Some(notes) = self.read_cell_if_current(&self.notes_cell) {
+            return notes;
+        }
+        // Snapshot and cell were both empty — load once from disk and
+        // publish back so subsequent dispatches reuse the parse.
         let notes_path = self.root.join("docs/notes.toml");
         let notes = if notes_path.exists() {
-            cqs::note::parse_notes(&notes_path).unwrap_or_else(|e| {
-                tracing::warn!(
-                    path = %notes_path.display(),
-                    error = %e,
-                    "Failed to parse notes.toml for view"
-                );
-                vec![]
-            })
+            match cqs::note::parse_notes(&notes_path) {
+                Ok(notes) => notes,
+                // Split absent-file (TOCTOU after the .exists() check above)
+                // from genuine parse failures, and include the path in the
+                // warn so the journal isn't ambiguous about which notes file
+                // failed.
+                Err(e) => {
+                    if matches!(
+                        &e,
+                        cqs::NoteError::Io(io_err)
+                            if io_err.kind() == std::io::ErrorKind::NotFound
+                    ) {
+                        tracing::debug!(
+                            path = %notes_path.display(),
+                            "notes.toml disappeared between exists() and parse — treating as empty"
+                        );
+                    } else {
+                        tracing::warn!(
+                            path = %notes_path.display(),
+                            error = %e,
+                            "Failed to parse notes.toml for view"
+                        );
+                    }
+                    vec![]
+                }
+            }
         } else {
             vec![]
         };
-        Arc::new(notes)
+        let arc = Arc::new(notes);
+        self.publish_if_current(&self.notes_cell, &arc, "notes_cache");
+        arc
     }
 
     pub fn file_set(&self) -> Result<Arc<HashSet<PathBuf>>> {
         if let Some(fs) = &self.cached_file_set {
             return Ok(Arc::clone(fs));
         }
+        if let Some(fs) = self.read_cell_if_current(&self.file_set_cell) {
+            return Ok(fs);
+        }
         let _span = tracing::info_span!("batch_view_file_set").entered();
         let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
         let files = cqs::enumerate_files(&self.root, &exts, false)?;
         let set: HashSet<PathBuf> = files.into_iter().collect();
-        Ok(Arc::new(set))
+        let arc = Arc::new(set);
+        self.publish_if_current(&self.file_set_cell, &arc, "file_set");
+        Ok(arc)
     }
 
     pub fn call_graph(&self) -> Result<Arc<cqs::store::CallGraph>> {

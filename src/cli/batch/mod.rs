@@ -445,28 +445,40 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate mutable caches
-        *ctx.file_set.borrow_mut() = Some(std::sync::Arc::new(HashSet::new()));
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        *ctx.file_set.lock().unwrap() = Some(std::sync::Arc::new(HashSet::new()));
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
         *ctx.test_chunks.borrow_mut() = Some(std::sync::Arc::new(vec![]));
 
         // Verify caches are populated
-        assert!(ctx.file_set.borrow().is_some());
-        assert!(ctx.notes_cache.borrow().is_some());
+        assert!(ctx.file_set.lock().unwrap().is_some());
+        assert!(ctx.notes_cache.lock().unwrap().is_some());
         assert!(ctx.call_graph.borrow().is_some());
         assert!(ctx.test_chunks.borrow().is_some());
 
         // Invalidate
+        let epoch_before = ctx.invalidation_epoch.load(Ordering::SeqCst);
         ctx.invalidate().unwrap();
 
         // Verify all mutable caches are cleared
-        assert!(ctx.file_set.borrow().is_none());
-        assert!(ctx.notes_cache.borrow().is_none());
+        assert!(ctx.file_set.lock().unwrap().is_none());
+        assert!(ctx.notes_cache.lock().unwrap().is_none());
         assert!(ctx.call_graph.borrow().is_none());
         assert!(ctx.test_chunks.borrow().is_none());
-        assert!(ctx.hnsw.borrow().is_none());
+        assert!(ctx.hnsw.lock().unwrap().is_none());
+        assert!(ctx.base_hnsw.lock().unwrap().is_none());
+        // Epoch bumps so in-flight view builds can't republish stale values.
+        assert!(
+            ctx.invalidation_epoch.load(Ordering::SeqCst) > epoch_before,
+            "invalidation must bump the epoch"
+        );
+        assert_eq!(
+            ctx.pending_invalidation.get(),
+            0,
+            "full clear must not leave the pending mask set"
+        );
     }
 
     #[test]
@@ -475,13 +487,13 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
-        assert!(ctx.notes_cache.borrow().is_some());
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        assert!(ctx.notes_cache.lock().unwrap().is_some());
 
         // First staleness check — sets baseline mtime, no invalidation
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_some(),
+            ctx.notes_cache.lock().unwrap().is_some(),
             "First check should not invalidate"
         );
 
@@ -503,7 +515,7 @@ mod tests {
         // Second staleness check — mtime changed, should invalidate
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_none(),
+            ctx.notes_cache.lock().unwrap().is_none(),
             "Mtime change should invalidate cache"
         );
     }
@@ -522,10 +534,10 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache and run the first check to capture baseline identity.
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_some(),
+            ctx.notes_cache.lock().unwrap().is_some(),
             "First check should not invalidate"
         );
 
@@ -573,7 +585,7 @@ mod tests {
         // identical (rename-over with same mtime, new inode).
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_none(),
+            ctx.notes_cache.lock().unwrap().is_none(),
             "DS-V1.25-6: rename-over replacement (same mtime, new inode) should invalidate cache"
         );
     }
@@ -592,10 +604,10 @@ mod tests {
 
         // Populate a cache and run the first check to baseline both
         // discriminators (identity + data_version).
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_some(),
+            ctx.notes_cache.lock().unwrap().is_some(),
             "baseline check must not invalidate"
         );
 
@@ -641,7 +653,7 @@ mod tests {
         ctx.last_staleness_check.set(None);
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_none(),
+            ctx.notes_cache.lock().unwrap().is_none(),
             "DS-V1.40-1: WAL commit with no checkpoint must invalidate caches via data_version"
         );
 
@@ -662,9 +674,9 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
-        assert!(ctx.notes_cache.borrow().is_some());
+        assert!(ctx.notes_cache.lock().unwrap().is_some());
 
         // Rename-over (the `cqs index --force` shape).
         let replacement = cqs_dir.join("index.db.replacement");
@@ -676,12 +688,12 @@ mod tests {
         ctx.last_staleness_check.set(None);
         ctx.check_index_staleness(); // identity fires; probe rebaselines here
         assert!(
-            ctx.notes_cache.borrow().is_none(),
+            ctx.notes_cache.lock().unwrap().is_none(),
             "identity change must invalidate"
         );
 
         // Repopulate, then WAL-commit against the NEW file with no checkpoint.
-        *ctx.notes_cache.borrow_mut() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
         let id_before = DbFileIdentity::from_path(&index_path).unwrap();
         let mut writer = ctx
             .runtime
@@ -712,7 +724,7 @@ mod tests {
         ctx.last_staleness_check.set(None);
         ctx.check_index_staleness();
         assert!(
-            ctx.notes_cache.borrow().is_none(),
+            ctx.notes_cache.lock().unwrap().is_none(),
             "probe must be re-opened against the new inode after rename-over — \
              a stale probe fd would never observe this commit"
         );
@@ -1325,5 +1337,275 @@ mod tests {
         // Counter invariant — success bumps query, leaves errors alone.
         assert_eq!(ctx.query_count.load(Ordering::Relaxed), 1);
         assert_eq!(ctx.error_count.load(Ordering::Relaxed), 0);
+    }
+
+    // ===== Shared write-back cells + invalidation epoch =====
+    //
+    // All production dispatch goes through BatchView. The view snapshots the
+    // BatchContext caches at checkout; on a miss it builds the value and
+    // publishes it back into the shared cell (epoch-guarded) so the daemon
+    // doesn't rebuild the vector index / file set / notes on every query.
+
+    /// Minimal `VectorIndex` for cell-plumbing tests — no GPU, no disk.
+    struct MockIdx;
+    impl VectorIndex for MockIdx {
+        fn search(&self, _query: &cqs::embedder::Embedding, _k: usize) -> Vec<cqs::IndexResult> {
+            vec![]
+        }
+        fn len(&self) -> usize {
+            1
+        }
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+        fn dim(&self) -> usize {
+            cqs::EMBEDDING_DIM
+        }
+    }
+
+    /// A view whose checkout snapshotted empty caches must (1) serve a
+    /// populated shared cell without rebuilding, and (2) publish its own
+    /// fallback builds back into the cells so the next checkout snapshots
+    /// them instead of rebuilding.
+    #[test]
+    fn test_view_fallback_writes_back_to_shared_cells() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let view = ctx.build_view(None);
+        assert!(view.cached_file_set.is_none(), "first checkout is a miss");
+        assert!(view.cached_notes.is_none(), "first checkout is a miss");
+
+        let _ = view.file_set().unwrap();
+        let _ = view.notes();
+
+        assert!(
+            ctx.file_set.lock().unwrap().is_some(),
+            "view fallback must write the file set back into the shared cell"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_some(),
+            "view fallback must write notes back into the shared cell"
+        );
+
+        let second = ctx.build_view(None);
+        assert!(
+            second.cached_file_set.is_some(),
+            "second checkout must snapshot the published file set"
+        );
+        assert!(
+            second.cached_notes.is_some(),
+            "second checkout must snapshot the published notes"
+        );
+    }
+
+    /// The vector-index cell is shared: a view checked out before the cell
+    /// was populated still serves the cell value (no rebuild), and a later
+    /// checkout snapshots it.
+    #[test]
+    fn test_view_vector_index_served_from_shared_cell() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Checkout while the cell is empty — snapshot is a miss.
+        let view = ctx.build_view(None);
+        assert!(view.cached_vector_index.is_none());
+
+        // A sibling view publishes (simulated by writing the cell directly).
+        *ctx.hnsw.lock().unwrap() = Some(std::sync::Arc::new(MockIdx));
+
+        // The earlier view falls back to the live cell — no rebuild.
+        let idx = view.vector_index().unwrap().expect("cell value served");
+        assert_eq!(idx.name(), "mock");
+
+        // The next checkout snapshots the published value.
+        let second = ctx.build_view(None);
+        assert!(
+            second.cached_vector_index.is_some(),
+            "checkout must snapshot the populated vector-index cell"
+        );
+    }
+
+    /// A deferred invalidation (handler held a borrow on a cache slot while
+    /// invalidation fired) must be retried by the next staleness check even
+    /// though the identity / data_version discriminators were already
+    /// consumed — the sticky pending flag is the only remaining trigger.
+    #[test]
+    fn test_deferred_invalidation_retries_via_sticky_flag() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
+            cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
+        ));
+        ctx.check_index_staleness(); // baseline both discriminators
+
+        // Hold a borrow across the invalidation — the live shape is a search
+        // handler holding a cache value while a concurrent refresh fires.
+        let held = ctx.call_graph.borrow();
+        ctx.invalidate().unwrap();
+        drop(held);
+
+        assert!(
+            ctx.call_graph.borrow().is_some(),
+            "borrowed slot must be deferred, not cleared (and not panic)"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_none(),
+            "unborrowed slots clear immediately"
+        );
+        assert_ne!(
+            ctx.pending_invalidation.get(),
+            0,
+            "deferral must set the sticky pending mask"
+        );
+
+        // Nothing changed on disk since invalidate() (identity refreshed,
+        // probe rebaselined, rate-limit freshly armed) — only the sticky
+        // flag can drive this retry.
+        ctx.check_index_staleness();
+        assert!(
+            ctx.call_graph.borrow().is_none(),
+            "pending retry must clear the deferred slot"
+        );
+        assert_eq!(
+            ctx.pending_invalidation.get(),
+            0,
+            "mask clears once every deferred slot actually cleared"
+        );
+    }
+
+    /// A view-side cache build that races an invalidation must not publish:
+    /// the value was built from the pre-invalidation store snapshot, and
+    /// re-publishing it would serve stale data indefinitely on a quiet repo.
+    #[test]
+    fn test_stale_epoch_publish_is_discarded() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        let view = ctx.build_view(None);
+        // Invalidation runs after checkout — mid-dispatch from the view's
+        // perspective. Bumps the epoch and clears the cells.
+        ctx.invalidate().unwrap();
+
+        // The in-flight dispatch still gets its (snapshot-consistent) values…
+        let _ = view.file_set().unwrap();
+        let _ = view.notes();
+
+        // …but the stale-snapshot builds must not land in the shared cells.
+        assert!(
+            ctx.file_set.lock().unwrap().is_none(),
+            "stale-epoch file_set publish must be discarded"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_none(),
+            "stale-epoch notes publish must be discarded"
+        );
+    }
+
+    /// The read direction of the epoch guard: a view checked out BEFORE an
+    /// invalidation must not serve cell values published AFTER it — those
+    /// belong to the next index generation, and mixing them with the view's
+    /// older store snapshot returns silently wrong rowids. The stale view
+    /// must fall back to building from its own snapshot (whose publish is
+    /// then discarded), leaving the sibling's published values untouched.
+    #[test]
+    fn test_stale_view_does_not_read_post_invalidation_cells() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Checkout with empty snapshots at the pre-invalidation epoch.
+        let view = ctx.build_view(None);
+
+        // Invalidation runs, then a post-invalidation sibling publishes
+        // next-generation values into the shared cells (simulated by
+        // writing the cells directly).
+        ctx.invalidate().unwrap();
+        *ctx.hnsw.lock().unwrap() = Some(std::sync::Arc::new(MockIdx));
+        let sentinel = PathBuf::from("/sentinel/from/next/generation");
+        *ctx.file_set.lock().unwrap() = Some(std::sync::Arc::new(
+            [sentinel.clone()].into_iter().collect::<HashSet<_>>(),
+        ));
+
+        // The stale view must not serve either next-generation value.
+        if let Some(idx) = view.vector_index().unwrap() {
+            assert_ne!(
+                idx.name(),
+                "mock",
+                "stale view must not serve a post-invalidation cell index"
+            );
+        }
+        let fs = view.file_set().unwrap();
+        assert!(
+            !fs.contains(&sentinel),
+            "stale view must enumerate from its own snapshot, not read the newer cell"
+        );
+
+        // And its own (discarded) rebuilds must not overwrite the sibling's
+        // published next-generation values.
+        assert_eq!(
+            ctx.hnsw
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|i| i.name())
+                .unwrap_or("<cleared>"),
+            "mock",
+            "stale view's rebuild must not displace the published index"
+        );
+        assert!(
+            ctx.file_set
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|fs| fs.contains(&sentinel)),
+            "stale view's rebuild must not displace the published file set"
+        );
+    }
+
+    /// The sticky retry is clear-only and masked: it must not re-bump the
+    /// epoch (which would discard every in-flight fresh publish) and must
+    /// not wipe slots that already cleared and were freshly rebuilt —
+    /// otherwise one contended slot reintroduces the rebuild-per-query cost
+    /// for all the others.
+    #[test]
+    fn test_sticky_retry_is_clear_only_and_masked() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
+            cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
+        ));
+        ctx.check_index_staleness(); // baseline discriminators
+
+        // Invalidation fires while a handler holds the call_graph borrow —
+        // that slot defers, everything else clears.
+        let held = ctx.call_graph.borrow();
+        ctx.invalidate().unwrap();
+        drop(held);
+        assert_ne!(ctx.pending_invalidation.get(), 0);
+
+        // A fresh post-invalidation rebuild lands in a non-deferred slot.
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        let epoch_after_invalidate = ctx.invalidation_epoch.load(Ordering::SeqCst);
+
+        // The retry clears ONLY the deferred slot.
+        ctx.check_index_staleness();
+        assert_eq!(
+            ctx.invalidation_epoch.load(Ordering::SeqCst),
+            epoch_after_invalidate,
+            "retry must not re-bump the epoch"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_some(),
+            "retry must not wipe freshly rebuilt non-deferred slots"
+        );
+        assert!(
+            ctx.call_graph.borrow().is_none(),
+            "retry must clear the deferred slot"
+        );
+        assert_eq!(ctx.pending_invalidation.get(), 0);
     }
 }

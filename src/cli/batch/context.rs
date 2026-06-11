@@ -34,6 +34,21 @@ pub(super) struct DataVersionProbe {
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
+/// One bit per mutable-cache slot, used by the deferred-invalidation mask
+/// (`BatchContext::pending_invalidation`) so a retry clears only the slots
+/// that were actually deferred.
+mod slot {
+    pub(super) const HNSW: u8 = 1 << 0;
+    pub(super) const BASE_HNSW: u8 = 1 << 1;
+    pub(super) const CALL_GRAPH: u8 = 1 << 2;
+    pub(super) const TEST_CHUNKS: u8 = 1 << 3;
+    pub(super) const FILE_SET: u8 = 1 << 4;
+    pub(super) const NOTES: u8 = 1 << 5;
+    pub(super) const SPLADE: u8 = 1 << 6;
+    pub(super) const REFS: u8 = 1 << 7;
+    pub(super) const ALL: u8 = u8::MAX;
+}
+
 /// Shared resources for a batch session.
 ///
 /// Store is opened once. Embedder and vector index are lazily initialized on
@@ -48,8 +63,11 @@ pub(super) struct DataVersionProbe {
 /// **Stable caches** (embedder, reranker, config, audit_state) use `OnceLock`
 /// and live for the session. ONNX sessions are cleared after idle timeout.
 ///
-/// **Mutable caches** (hnsw, call_graph, test_chunks, file_set, notes_cache)
-/// use `RefCell<Option<T>>` and are auto-invalidated when index.db changes —
+/// **Mutable caches** (hnsw, base_hnsw, file_set, notes_cache, splade_index)
+/// are shared `Arc<Mutex<Option<Arc<T>>>>` write-back cells carried by every
+/// `BatchView`; call_graph / test_chunks stay view-local `RefCell`s (their
+/// rebuild is a Store-internal cache hit). All are auto-invalidated when
+/// index.db changes —
 /// detected via file identity (inode/size/mtime) OR `PRAGMA data_version` on
 /// a long-lived probe connection (the latter catches WAL-mode incremental
 /// writes that never touch the main file; see [`Self::check_index_staleness`]).
@@ -104,18 +122,47 @@ pub(crate) struct BatchContext {
     /// 30 s); the file carries its own embedded `expires_at` so the load
     /// itself respects expiration.
     pub(super) audit_state: RefCell<Option<CachedReload<cqs::audit::AuditMode>>>,
-    // Mutable caches — RefCell<Option<T>> for invalidation on index change
-    pub(super) hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
-    pub(super) base_hnsw: RefCell<Option<Arc<dyn VectorIndex>>>,
+    // Mutable caches — invalidated on index change.
+    //
+    // `hnsw` / `base_hnsw` / `file_set` / `notes_cache` are shared write-back
+    // cells (`Arc<Mutex<Option<Arc<T>>>>`, same shape as `splade_index`):
+    // `BatchView` carries a clone of each cell, and a view that builds the
+    // value on a cache miss publishes it back (epoch-guarded, see
+    // `invalidation_epoch`) so the next checkout snapshots it instead of
+    // rebuilding. Without the write-back, every daemon search rebuilt the
+    // vector index from disk (~400 ms per query against a 3-19 ms budget).
+    //
+    // `call_graph` / `test_chunks` stay view-local `RefCell`s: their view
+    // fallback goes through the snapshot Store, which holds its own internal
+    // `OnceLock` caches, so a per-view rebuild is a cheap cache hit there.
+    pub(super) hnsw: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
+    pub(super) base_hnsw: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
     pub(super) call_graph: RefCell<Option<Arc<cqs::store::CallGraph>>>,
     pub(super) test_chunks: RefCell<Option<Arc<Vec<cqs::store::ChunkSummary>>>>,
     /// Cache returns `Arc<HashSet<PathBuf>>` so callers don't clone the full
-    /// set on every invocation. Mirrors `call_graph` / `test_chunks`.
-    pub(super) file_set: RefCell<Option<Arc<HashSet<PathBuf>>>>,
+    /// set on every invocation.
+    pub(super) file_set: Arc<Mutex<Option<Arc<HashSet<PathBuf>>>>>,
     /// Cached notes returned as `Arc<Vec<Note>>` so callers don't clone the
-    /// full Vec on every dispatch. Mirrors `call_graph` / `test_chunks` /
-    /// `file_set`.
-    pub(super) notes_cache: RefCell<Option<Arc<Vec<cqs::note::Note>>>>,
+    /// full Vec on every dispatch.
+    pub(super) notes_cache: Arc<Mutex<Option<Arc<Vec<cqs::note::Note>>>>>,
+    /// Monotonic counter bumped at the start of every mutable-cache
+    /// invalidation. Views snapshot it at checkout; a view-side cache build
+    /// publishes into the shared cells only while the epoch is unchanged, so
+    /// a value built from a pre-invalidation store snapshot can never land
+    /// after (and survive) a fresh invalidation.
+    pub(super) invalidation_epoch: Arc<AtomicU64>,
+    /// Sticky per-slot deferral mask (bits from the `slot` constants below;
+    /// `0` = nothing pending). Set when [`Self::invalidate_mutable_caches`]
+    /// had to defer at least one slot (a handler held its borrow/lock
+    /// mid-invalidation). [`Self::check_index_staleness`] honors it
+    /// regardless of the identity / data_version discriminators — those were
+    /// already consumed when the invalidation first fired, so without the
+    /// mask the deferred slots would never be retried. The retry clears ONLY
+    /// the masked slots and does NOT bump the epoch: re-bumping would
+    /// discard every in-flight fresh publish and wipe freshly rebuilt slots
+    /// on every dispatch while one slot stays contended. Cleared (to 0) only
+    /// when every deferred slot actually cleared.
+    pub(super) pending_invalidation: Cell<u8>,
     // LRU caps at 2 — each ReferenceIndex holds Store + HNSW (50-200MB).
     // Values are `Arc` so `get_all_refs` can fan out refs to parallel
     // `--include-refs` searches without cloning the index bytes.
@@ -238,12 +285,14 @@ impl BatchContext {
             config: RefCell::new(None),
             reranker: Arc::new(OnceLock::new()),
             audit_state: RefCell::new(None),
-            hnsw: RefCell::new(None),
-            base_hnsw: RefCell::new(None),
+            hnsw: Arc::new(Mutex::new(None)),
+            base_hnsw: Arc::new(Mutex::new(None)),
             call_graph: RefCell::new(None),
             test_chunks: RefCell::new(None),
-            file_set: RefCell::new(None),
-            notes_cache: RefCell::new(None),
+            file_set: Arc::new(Mutex::new(None)),
+            notes_cache: Arc::new(Mutex::new(None)),
+            invalidation_epoch: Arc::new(AtomicU64::new(0)),
+            pending_invalidation: Cell::new(0),
             splade_encoder: Arc::new(OnceLock::new()),
             splade_index: Arc::new(Mutex::new(None)),
             refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
@@ -380,14 +429,23 @@ impl BatchContext {
     /// so the probe falls back to identity-only (with a warn) rather than
     /// blocking the check when it can't be opened or queried.
     ///
-    /// Rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`]. Every
-    /// `ctx.store()` and every `vector_index` / `file_set` / etc. accessor
-    /// calls this.
+    /// Rate-limited to at most once per [`STALENESS_CHECK_INTERVAL`] —
+    /// except when a prior invalidation deferred a busy slot, in which case
+    /// the sticky `pending_invalidation` flag forces a retry. Every
+    /// `ctx.store()`, every `build_view` checkout, and the remaining
+    /// BatchContext accessors call this.
     pub(crate) fn check_index_staleness(&self) {
+        // A pending (deferred) invalidation bypasses the rate limit: the
+        // discriminators below were already consumed when the invalidation
+        // first fired (probe baseline advanced, index_id refreshed), so
+        // waiting on them would never retry the deferred slots.
+        let pending = self.pending_invalidation.get();
         let now = Instant::now();
-        if let Some(prev) = self.last_staleness_check.get() {
-            if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
-                return;
+        if pending == 0 {
+            if let Some(prev) = self.last_staleness_check.get() {
+                if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
+                    return;
+                }
             }
         }
         self.last_staleness_check.set(Some(now));
@@ -464,6 +522,15 @@ impl BatchContext {
                     tracing::warn!(error = %e, "Failed to re-open Store after index change");
                 }
             }
+        } else if pending != 0 {
+            // Retry a deferred invalidation. The Store re-open, probe
+            // rebaseline, and epoch bump already happened when the
+            // invalidation first fired; only the slots that were busy still
+            // need clearing. Clear-only, masked: no epoch re-bump (which
+            // would discard in-flight fresh publishes) and no wipe of slots
+            // that were already cleared and freshly rebuilt since.
+            let _span = tracing::info_span!("batch_index_invalidation_retry").entered();
+            self.clear_cache_slots(pending);
         }
         self.index_id.set(Some(current_id));
     }
@@ -564,64 +631,101 @@ impl BatchContext {
     /// `splade_index` must be cleared here too — otherwise a long-lived batch
     /// session that had loaded the SPLADE posting map once would serve results
     /// from the pre-reindex generation forever after a concurrent `cqs index`.
-    /// Clearing the RefCell lets `ensure_splade_index` see `None` on the next
+    /// Clearing the cell lets `ensure_splade_index` see `None` on the next
     /// call and rebuild from
     /// the freshly persisted `splade.index.bin` (or SQLite fallback).
-    fn invalidate_mutable_caches(&self) {
-        // Use try_borrow_mut: a search handler may still hold a Ref<...>
-        // to splade_index or hnsw across an accessor call that triggers
-        // staleness re-check (for example handlers/search.rs does
-        // `let splade_index_ref = ctx.borrow_splade_index()` then later
-        // calls `ctx.store().search_hybrid(...)`). Panicking on
-        // borrow_mut() would crash the whole batch session for what is
-        // just a deferral case. Slots that are busy stay populated; we
-        // reset the rate-limit so the next accessor retries the
-        // invalidation as soon as the in-flight handler releases its Ref.
-        let mut all_clear = true;
-        macro_rules! try_clear_to_none {
-            ($field:expr, $name:literal) => {
-                match $field.try_borrow_mut() {
-                    Ok(mut g) => *g = None,
-                    Err(_) => {
-                        all_clear = false;
-                        tracing::debug!(slot = $name, "borrow held; deferring invalidation");
+    /// Returns `true` when every slot actually cleared; `false` when at
+    /// least one slot was deferred (a handler held its borrow/lock). On
+    /// deferral the sticky `pending_invalidation` mask records the deferred
+    /// slots so [`Self::check_index_staleness`] retries the clear even
+    /// though the identity / data_version discriminators were already
+    /// consumed.
+    fn invalidate_mutable_caches(&self) -> bool {
+        // Bump the epoch BEFORE clearing any slot: a view that snapshotted
+        // the previous epoch at checkout sees the mismatch when it tries to
+        // publish a freshly built value, so an index built from the
+        // pre-invalidation store snapshot is discarded instead of being
+        // re-published over the cleared cell.
+        self.invalidation_epoch.fetch_add(1, Ordering::SeqCst);
+        self.clear_cache_slots(slot::ALL)
+    }
+
+    /// Clear the cache slots named in `mask`. Does NOT bump the epoch — the
+    /// deferred-invalidation retry path depends on that: any value that can
+    /// be published into a slot after the original invalidation was built at
+    /// or after the already-bumped epoch (older builds fail the publish
+    /// guard), so re-bumping here would only discard legitimate fresh
+    /// publishes and re-clear freshly rebuilt slots on every dispatch while
+    /// one slot stays contended.
+    ///
+    /// Uses `try_borrow_mut` / `try_lock`: a search handler may still hold a
+    /// borrow on a cache slot across an accessor call that triggers a
+    /// staleness re-check (for example handlers/search.rs does
+    /// `let splade_index_ref = ctx.borrow_splade_index()` then later calls
+    /// `ctx.store().search_hybrid(...)`). Panicking on borrow_mut() would
+    /// crash the whole batch session for what is just a deferral case.
+    /// Busy slots stay populated and are recorded in the sticky
+    /// `pending_invalidation` mask for the next retry.
+    fn clear_cache_slots(&self, mask: u8) -> bool {
+        let mut deferred: u8 = 0;
+        macro_rules! try_clear_refcell {
+            ($field:expr, $bit:expr, $name:literal) => {
+                if mask & $bit != 0 {
+                    match $field.try_borrow_mut() {
+                        Ok(mut g) => *g = None,
+                        Err(_) => {
+                            deferred |= $bit;
+                            tracing::debug!(slot = $name, "borrow held; deferring invalidation");
+                        }
                     }
                 }
             };
         }
-        try_clear_to_none!(self.hnsw, "hnsw");
-        try_clear_to_none!(self.base_hnsw, "base_hnsw");
-        try_clear_to_none!(self.call_graph, "call_graph");
-        try_clear_to_none!(self.test_chunks, "test_chunks");
-        try_clear_to_none!(self.file_set, "file_set");
-        try_clear_to_none!(self.notes_cache, "notes_cache");
-        // splade_index is `Arc<Mutex<...>>`. Use try_lock to mirror the
-        // borrow-deferral semantics of the RefCell branches.
-        match self.splade_index.try_lock() {
-            Ok(mut g) => *g = None,
-            Err(_) => {
-                all_clear = false;
-                tracing::debug!(slot = "splade_index", "lock held; deferring invalidation");
-            }
+        // Shared write-back cells are `Arc<Mutex<...>>`; `try_lock` mirrors
+        // the borrow-deferral semantics of the RefCell branches.
+        macro_rules! try_clear_cell {
+            ($field:expr, $bit:expr, $name:literal) => {
+                if mask & $bit != 0 {
+                    match $field.try_lock() {
+                        Ok(mut g) => *g = None,
+                        Err(_) => {
+                            deferred |= $bit;
+                            tracing::debug!(slot = $name, "lock held; deferring invalidation");
+                        }
+                    }
+                }
+            };
         }
-        // refs LRU is `Arc<Mutex<...>>` (shared with BatchView).
-        // `try_lock` is the read-only equivalent of `try_borrow_mut`: if a
+        try_clear_cell!(self.hnsw, slot::HNSW, "hnsw");
+        try_clear_cell!(self.base_hnsw, slot::BASE_HNSW, "base_hnsw");
+        try_clear_refcell!(self.call_graph, slot::CALL_GRAPH, "call_graph");
+        try_clear_refcell!(self.test_chunks, slot::TEST_CHUNKS, "test_chunks");
+        try_clear_cell!(self.file_set, slot::FILE_SET, "file_set");
+        try_clear_cell!(self.notes_cache, slot::NOTES, "notes_cache");
+        try_clear_cell!(self.splade_index, slot::SPLADE, "splade_index");
+        // refs LRU is `Arc<Mutex<...>>` (shared with BatchView). If a
         // handler thread holds the mutex (e.g. iterating refs in a parallel
-        // search), the eviction is deferred to the next sweep.
-        match self.refs.try_lock() {
-            Ok(mut g) => g.clear(),
-            Err(_) => {
-                all_clear = false;
-                tracing::debug!(slot = "refs", "lock held; deferring invalidation");
+        // search), the eviction is deferred to the next retry.
+        if mask & slot::REFS != 0 {
+            match self.refs.try_lock() {
+                Ok(mut g) => g.clear(),
+                Err(_) => {
+                    deferred |= slot::REFS;
+                    tracing::debug!(slot = "refs", "lock held; deferring invalidation");
+                }
             }
         }
 
-        if !all_clear {
-            // Reset rate-limit so the next accessor reattempts immediately
-            // (rather than waiting STALENESS_CHECK_INTERVAL with stale caches).
-            self.last_staleness_check.set(None);
-            tracing::debug!("partial cache invalidation; will retry on next accessor");
+        // Sticky: stays set across checks until a retry clears every
+        // deferred slot.
+        self.pending_invalidation.set(deferred);
+        if deferred != 0 {
+            tracing::debug!(
+                deferred_mask = deferred,
+                "partial cache invalidation; pending mask set — next staleness check retries"
+            );
         }
+        deferred == 0
     }
 
     /// Manually invalidate all mutable caches and re-open the Store.
@@ -1079,61 +1183,6 @@ impl BatchContext {
             .map(Arc::clone)
     }
 
-    /// Get or build the vector index (CAGRA/HNSW/brute-force, cached).
-    ///
-    /// Checks index staleness before returning cached value. If the index.db
-    /// changed, rebuilds the vector index from the fresh Store.
-    /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
-    ///
-    /// If the cached index reports `is_poisoned()` (only the CAGRA GPU backend
-    /// currently does), the cache slot is cleared and a fresh index is built.
-    /// Reusing a poisoned CUDA context risks double-free and CUDA faults.
-    pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
-        self.check_index_staleness();
-        {
-            let cached = self.hnsw.borrow();
-            if let Some(arc) = cached.as_ref() {
-                if arc.is_poisoned() {
-                    tracing::warn!(
-                        name = arc.name(),
-                        "Cached vector index is poisoned — discarding and rebuilding"
-                    );
-                } else {
-                    return Ok(Some(std::sync::Arc::clone(arc)));
-                }
-            }
-        }
-        // Clear any poisoned cache before rebuilding.
-        *self.hnsw.borrow_mut() = None;
-        let _span = tracing::info_span!("batch_vector_index_init").entered();
-        // Pull a snapshot Arc and pass `&Store<...>` via auto-deref.
-        let store = self.store_arc_locked();
-        let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
-        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
-        let ret = result.clone();
-        *self.hnsw.borrow_mut() = result;
-        Ok(ret)
-    }
-
-    /// Get or build the base (non-enriched) vector index, cached.
-    /// Returns `None` if the base index files don't exist or `CQS_DISABLE_BASE_INDEX=1`.
-    pub fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
-        self.check_index_staleness();
-        {
-            let cached = self.base_hnsw.borrow();
-            if let Some(arc) = cached.as_ref() {
-                return Ok(Some(Arc::clone(arc)));
-            }
-        }
-        let _span = tracing::info_span!("batch_base_vector_index_init").entered();
-        let store = self.store_arc_locked();
-        let idx = crate::cli::build_base_vector_index(&store, &self.cqs_dir)?;
-        let result = idx.map(|boxed| -> Arc<dyn VectorIndex> { boxed.into() });
-        let ret = result.clone();
-        *self.base_hnsw.borrow_mut() = result;
-        Ok(ret)
-    }
-
     /// Get a cached reference index by name, loading on first access.
     ///
     /// Uses cached config and loads only the target reference, not all
@@ -1166,27 +1215,6 @@ impl BatchContext {
         get_all_refs_via_refs_lru(&self.refs, &self.config())
     }
 
-    /// Get or build the file set for staleness checks (cached).
-    ///
-    /// Returns `Arc<HashSet<PathBuf>>` so callers don't clone the full set per
-    /// invocation. Mirrors `call_graph` / `test_chunks`.
-    pub(super) fn file_set(&self) -> Result<std::sync::Arc<HashSet<PathBuf>>> {
-        self.check_index_staleness();
-        {
-            let cached = self.file_set.borrow();
-            if let Some(fs) = cached.as_ref() {
-                return Ok(std::sync::Arc::clone(fs));
-            }
-        }
-        let _span = tracing::info_span!("batch_file_set").entered();
-        let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
-        let files = cqs::enumerate_files(&self.root, &exts, false)?;
-        let set: HashSet<PathBuf> = files.into_iter().collect();
-        let arc = std::sync::Arc::new(set);
-        *self.file_set.borrow_mut() = Some(std::sync::Arc::clone(&arc));
-        Ok(arc)
-    }
-
     /// Get cached audit state. Reloads from `.cqs/audit-mode.json` when the
     /// cached value is older than [`AUDIT_STATE_RELOAD_INTERVAL`] (default
     /// 30 s), then returns an owned snapshot.
@@ -1216,59 +1244,6 @@ impl BatchContext {
             .expect("audit_state populated above")
             .value
             .clone()
-    }
-
-    /// Get cached notes (parsed once per session, invalidated on index change).
-    /// Returns `Arc<Vec<Note>>` so repeat calls bump a refcount instead of
-    /// cloning the full Vec — mirrors `call_graph` / `test_chunks`.
-    pub(super) fn notes(&self) -> std::sync::Arc<Vec<cqs::note::Note>> {
-        self.check_index_staleness();
-        {
-            let cached = self.notes_cache.borrow();
-            if let Some(notes) = cached.as_ref() {
-                return std::sync::Arc::clone(notes);
-            }
-        }
-        let notes_path = self.root.join("docs/notes.toml");
-        let notes = if notes_path.exists() {
-            match cqs::note::parse_notes(&notes_path) {
-                Ok(notes) => notes,
-                // Split absent-file (TOCTOU after the .exists() check above)
-                // from genuine parse failures, and include the path in the
-                // warn so the journal isn't ambiguous about which notes file
-                // failed.
-                Err(e) => {
-                    if let cqs::NoteError::Io(ref io_err) = e {
-                        if io_err.kind() == std::io::ErrorKind::NotFound {
-                            tracing::debug!(
-                                path = %notes_path.display(),
-                                "notes.toml disappeared between exists() and parse — treating as empty"
-                            );
-                            vec![]
-                        } else {
-                            tracing::warn!(
-                                path = %notes_path.display(),
-                                error = %e,
-                                "Failed to parse notes.toml for batch"
-                            );
-                            vec![]
-                        }
-                    } else {
-                        tracing::warn!(
-                            path = %notes_path.display(),
-                            error = %e,
-                            "Failed to parse notes.toml for batch"
-                        );
-                        vec![]
-                    }
-                }
-            }
-        } else {
-            vec![]
-        };
-        let arc = std::sync::Arc::new(notes);
-        *self.notes_cache.borrow_mut() = Some(std::sync::Arc::clone(&arc));
-        arc
     }
 
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
@@ -1394,18 +1369,24 @@ impl BatchContext {
             let guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
             Arc::clone(&guard)
         };
-        let vector_index = self.hnsw.borrow().as_ref().map(Arc::clone);
-        let base_vector_index = self.base_hnsw.borrow().as_ref().map(Arc::clone);
+        // Epoch is captured after the staleness check above, in the same
+        // critical section as the store snapshot — the pair is coherent. A
+        // later invalidation bumps the shared counter, and the view's
+        // publish-back path compares against this captured value.
+        let checkout_epoch = self.invalidation_epoch.load(Ordering::SeqCst);
+        fn snapshot_cell<T: ?Sized>(cell: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+            cell.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .map(Arc::clone)
+        }
+        let vector_index = snapshot_cell(&self.hnsw);
+        let base_vector_index = snapshot_cell(&self.base_hnsw);
         let call_graph = self.call_graph.borrow().as_ref().map(Arc::clone);
         let test_chunks = self.test_chunks.borrow().as_ref().map(Arc::clone);
-        let notes_cache = self.notes_cache.borrow().as_ref().map(Arc::clone);
-        let file_set = self.file_set.borrow().as_ref().map(Arc::clone);
-        let splade_index_snapshot = self
-            .splade_index
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .map(Arc::clone);
+        let notes_cache = snapshot_cell(&self.notes_cache);
+        let file_set = snapshot_cell(&self.file_set);
+        let splade_index_snapshot = snapshot_cell(&self.splade_index);
         let config = self.config();
         let audit_state = self.audit_state();
         BatchView {
@@ -1417,7 +1398,13 @@ impl BatchContext {
             cached_notes: notes_cache,
             cached_file_set: file_set,
             cached_splade_index: splade_index_snapshot,
+            vector_index_cell: Arc::clone(&self.hnsw),
+            base_vector_index_cell: Arc::clone(&self.base_hnsw),
+            file_set_cell: Arc::clone(&self.file_set),
+            notes_cell: Arc::clone(&self.notes_cache),
             splade_index_cell: Arc::clone(&self.splade_index),
+            invalidation_epoch: Arc::clone(&self.invalidation_epoch),
+            checkout_epoch,
             embedder_slot: Arc::clone(&self.embedder),
             reranker_slot: Arc::clone(&self.reranker),
             splade_encoder_slot: Arc::clone(&self.splade_encoder),
