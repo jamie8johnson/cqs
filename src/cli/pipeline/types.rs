@@ -25,19 +25,36 @@ pub(super) struct RelationshipData {
 pub(super) struct ParsedBatch {
     pub chunks: Vec<Chunk>,
     pub relationships: RelationshipData,
-    /// Disk fingerprint (mtime + size + BLAKE3) per file in this batch,
-    /// read by the parser stage's staleness pre-filter. The store stage
-    /// stamps these onto the chunk rows in the same transaction as the
-    /// upsert so the reconcile path always sees a populated fingerprint.
+    /// Disk fingerprint (mtime + size + BLAKE3) for the files whose **last**
+    /// chunk rides in this batch. A file's chunks can straddle batches (the
+    /// parser drain loop slices at `embed_batch_size`, and a GPU failure
+    /// re-splits a batch into a cached half and a requeued half). Stamping a
+    /// file's fingerprint only when its final chunk lands keeps the stamp
+    /// strictly *after* every one of the file's chunks has been written, so a
+    /// crash between two of a file's batch commits leaves the file unstamped
+    /// and the staleness pre-filter reclassifies it STALE on the next run
+    /// rather than skipping a half-indexed file permanently.
     pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+    /// Files that survived the staleness pre-filter (so they *were* indexed
+    /// before and diverged) but parsed to **zero** chunks this run — e.g. a
+    /// source file whose code was deleted leaving only comments. They carry no
+    /// chunks, so they never appear in `chunks`/`file_fingerprints`; the store
+    /// stage includes them in the phantom-prune pass with an empty live set so
+    /// their stale chunks are removed instead of surviving forever.
+    pub empty_file_fingerprints: HashMap<PathBuf, FileFingerprint>,
 }
 
 pub(super) struct EmbeddedBatch {
     pub chunk_embeddings: Vec<(Chunk, Embedding)>,
     pub relationships: RelationshipData,
     pub cached_count: usize,
-    /// Per-file disk fingerprints, threaded through from `ParsedBatch`.
+    /// Per-file disk fingerprints, threaded through from `ParsedBatch`. Only
+    /// the files whose **last** chunk is in this batch are present — see
+    /// `ParsedBatch::file_fingerprints`.
     pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+    /// Zero-chunk files threaded through from `ParsedBatch` — the store stage
+    /// prunes their stale chunks. See `ParsedBatch::empty_file_fingerprints`.
+    pub empty_file_fingerprints: HashMap<PathBuf, FileFingerprint>,
     /// When `true`, the chunks past index `cached_count` carry
     /// **zero-vec sentinel embeddings** and must be routed to
     /// `upsert_embedded_batch`'s sentinel argument so they're stamped with
@@ -74,8 +91,12 @@ pub(super) struct PreparedEmbedding {
     pub texts: Vec<String>,
     /// Relationships extracted during parsing
     pub relationships: RelationshipData,
-    /// Per-file disk fingerprints (mtime + size + BLAKE3)
+    /// Per-file disk fingerprints (mtime + size + BLAKE3) for files whose last
+    /// chunk is in this batch — see `ParsedBatch::file_fingerprints`.
     pub file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+    /// Zero-chunk files threaded through for the store stage's phantom prune —
+    /// see `ParsedBatch::empty_file_fingerprints`.
+    pub empty_file_fingerprints: HashMap<PathBuf, FileFingerprint>,
 }
 
 /// Shared configuration for GPU and CPU embedding stages.

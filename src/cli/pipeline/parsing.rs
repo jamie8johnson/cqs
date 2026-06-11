@@ -325,44 +325,93 @@ pub(super) fn parser_stage(
 
         parsed_count.fetch_add(file_batch.len(), Ordering::Relaxed);
 
-        if !chunks.is_empty() {
-            // Send in embedding-sized batches with per-file fingerprints and relationships.
-            // Relationships are sent with the first batch only. Per-file data
-            // (function_calls, type_refs) is safe. Per-chunk data (chunk_calls,
-            // type_edges) is deferred in store_stage until all chunks are committed.
-            //
-            // Drain owned chunks into each batch instead of
-            // `chunks.chunks(n)` + `.to_vec()`, which would clone every Chunk
-            // (deep copy of id/file/signature/content/content_hash/...).
-            // We own `chunks` here and never reuse it after this loop, so
-            // moving each window out is safe and saves one full Chunk copy
-            // per indexed chunk per batch.
-            let mut remaining_rels = Some(batch_rels);
-            let mut chunks = chunks;
-            while !chunks.is_empty() {
-                let take = batch_size.min(chunks.len());
-                // Compute fingerprints from a borrow first; `drain` below
-                // will move the same chunks out, so we can't borrow after
-                // that.
-                let batch_fps: std::collections::HashMap<PathBuf, FileFingerprint> = chunks[..take]
-                    .iter()
-                    .filter_map(|c| {
-                        file_fingerprints
-                            .get(&c.file)
-                            .map(|fp| (c.file.clone(), fp.clone()))
-                    })
-                    .collect();
-                let batch: Vec<cqs::Chunk> = chunks.drain(..take).collect();
-                if parse_tx
+        // Files that survived the pre-filter (previously indexed, now
+        // divergent) but produced zero chunks this run: their stale chunks
+        // must be pruned. Count how many chunks each file contributes so the
+        // drain loop below can stamp a file's fingerprint only in the batch
+        // carrying its LAST chunk, and so we can tell which survivors are
+        // empty. A file with a parse ERROR is excluded — it has no
+        // fingerprint-or-zero-chunk entry here, so its old chunks are left
+        // untouched (the next run retries the parse).
+        let mut remaining_per_file: std::collections::HashMap<PathBuf, usize> =
+            std::collections::HashMap::with_capacity(file_fingerprints.len());
+        for c in &chunks {
+            *remaining_per_file.entry(c.file.clone()).or_insert(0) += 1;
+        }
+        let empty_file_fingerprints: std::collections::HashMap<PathBuf, FileFingerprint> =
+            file_fingerprints
+                .iter()
+                .filter(|(rel, _)| !remaining_per_file.contains_key(*rel))
+                .map(|(rel, fp)| (rel.clone(), fp.clone()))
+                .collect();
+
+        if chunks.is_empty() {
+            // No chunks at all in this file batch, but some survivors may have
+            // gone to zero chunks — send a chunk-less batch so the store stage
+            // prunes their stale rows. Skip the send when there is nothing to
+            // prune (e.g. every survivor was a parse error).
+            if !empty_file_fingerprints.is_empty()
+                && parse_tx
                     .send(ParsedBatch {
-                        chunks: batch,
-                        relationships: remaining_rels.take().unwrap_or_default(),
-                        file_fingerprints: batch_fps,
+                        chunks: Vec::new(),
+                        relationships: batch_rels,
+                        file_fingerprints: std::collections::HashMap::new(),
+                        empty_file_fingerprints,
                     })
                     .is_err()
-                {
-                    break; // Receiver dropped
+            {
+                break; // Receiver dropped
+            }
+            continue;
+        }
+
+        // Send in embedding-sized batches. Relationships ride with the first
+        // batch only; per-chunk data (chunk_calls, type_edges) is deferred in
+        // store_stage until all chunks are committed.
+        //
+        // A file's fingerprint is stamped ONLY in the batch carrying its last
+        // chunk (`remaining_per_file` hits zero), so the stamp lands strictly
+        // after every one of the file's chunks has been written — a crash
+        // between two of a file's batch commits leaves it unstamped and the
+        // next run's pre-filter reclassifies it STALE. The empty-file prune
+        // set rides with the first batch (it references no chunks, so ordering
+        // against chunk writes is irrelevant).
+        //
+        // Drain owned chunks into each batch instead of `chunks.chunks(n)` +
+        // `.to_vec()`, which would clone every Chunk. We own `chunks` here and
+        // never reuse it after this loop, so moving each window out is safe.
+        let mut remaining_rels = Some(batch_rels);
+        let mut remaining_empties = Some(empty_file_fingerprints);
+        let mut chunks = chunks;
+        while !chunks.is_empty() {
+            let take = batch_size.min(chunks.len());
+            // Compute the per-batch fingerprint stamp set from a borrow first;
+            // `drain` below moves the same chunks out. Decrement each file's
+            // remaining count as its chunks leave; a file whose count reaches
+            // zero in this window has delivered its last chunk, so stamp it.
+            let mut batch_fps: std::collections::HashMap<PathBuf, FileFingerprint> =
+                std::collections::HashMap::new();
+            for c in &chunks[..take] {
+                if let Some(remaining) = remaining_per_file.get_mut(&c.file) {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        if let Some(fp) = file_fingerprints.get(&c.file) {
+                            batch_fps.insert(c.file.clone(), fp.clone());
+                        }
+                    }
                 }
+            }
+            let batch: Vec<cqs::Chunk> = chunks.drain(..take).collect();
+            if parse_tx
+                .send(ParsedBatch {
+                    chunks: batch,
+                    relationships: remaining_rels.take().unwrap_or_default(),
+                    file_fingerprints: batch_fps,
+                    empty_file_fingerprints: remaining_empties.take().unwrap_or_default(),
+                })
+                .is_err()
+            {
+                break; // Receiver dropped
             }
         }
     }
@@ -603,22 +652,162 @@ mod tests {
             "divergent file must be parsed, got {parsed_files:?}"
         );
 
-        // Every parsed file ships a fully-populated fingerprint for the
-        // store stage to stamp.
+        // Every parsed file ships a fully-populated fingerprint exactly once,
+        // in the batch carrying its last chunk (file-complete stamping). The
+        // union across batches must cover every parsed file.
+        let mut stamped: HashMap<PathBuf, FileFingerprint> = HashMap::new();
         for b in &batches {
-            for c in &b.chunks {
-                let fp = b
-                    .file_fingerprints
-                    .get(&c.file)
-                    .unwrap_or_else(|| panic!("missing fingerprint for {:?}", c.file));
-                assert!(fp.mtime.is_some(), "{:?} fingerprint needs mtime", c.file);
-                assert!(fp.size.is_some(), "{:?} fingerprint needs size", c.file);
+            for (file, fp) in &b.file_fingerprints {
                 assert!(
-                    fp.content_hash.is_some(),
-                    "{:?} fingerprint needs content hash",
-                    c.file
+                    stamped.insert(file.clone(), fp.clone()).is_none(),
+                    "fingerprint for {file:?} stamped in more than one batch"
                 );
             }
         }
+        for file in &parsed_files {
+            let fp = stamped
+                .get(file)
+                .unwrap_or_else(|| panic!("missing fingerprint for {file:?}"));
+            assert!(fp.mtime.is_some(), "{file:?} fingerprint needs mtime");
+            assert!(fp.size.is_some(), "{file:?} fingerprint needs size");
+            assert!(
+                fp.content_hash.is_some(),
+                "{file:?} fingerprint needs content hash"
+            );
+        }
+    }
+
+    /// File-complete fingerprint stamping: a file whose chunks straddle two
+    /// embed batches has its fingerprint stamped ONLY in the batch carrying
+    /// its last chunk — never the earlier batch. Pins the crash-safety
+    /// invariant: the fingerprint lands strictly after all of the file's
+    /// chunks, so a crash between the two batch commits leaves the file
+    /// unstamped (and therefore STALE on the next run) rather than current.
+    #[test]
+    fn parser_stage_stamps_fingerprint_only_on_last_chunk_batch() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // One file with >64 functions so its chunks span at least two
+        // `embed_batch_size`-bounded batches.
+        let mut big = String::new();
+        for i in 0..70 {
+            use std::fmt::Write as _;
+            writeln!(&mut big, "pub fn straddle_{i}() {{}}").unwrap();
+        }
+        std::fs::write(root.join("straddle.rs"), &big).unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        let parser = Arc::new(CqParser::new().unwrap());
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: true,
+            parser,
+            store,
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![PathBuf::from("straddle.rs")], ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        assert!(
+            batches.len() >= 2,
+            "fixture must straddle batches, got {}",
+            batches.len()
+        );
+        let straddle = PathBuf::from("straddle.rs");
+
+        // Fingerprint absent from every batch BEFORE the last, present in the
+        // final batch — and stamped exactly once overall.
+        let (last_idx, _) = batches
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, b)| !b.chunks.is_empty())
+            .expect("at least one non-empty batch");
+        let mut stamp_count = 0;
+        for (i, b) in batches.iter().enumerate() {
+            if b.file_fingerprints.contains_key(&straddle) {
+                stamp_count += 1;
+                assert_eq!(
+                    i, last_idx,
+                    "fingerprint stamped on batch {i}, expected only the last batch {last_idx}"
+                );
+            }
+        }
+        assert_eq!(stamp_count, 1, "fingerprint must be stamped exactly once");
+        assert!(
+            batches[last_idx].file_fingerprints.contains_key(&straddle),
+            "last batch must carry the fingerprint"
+        );
+    }
+
+    /// A previously-indexed file that now parses to ZERO chunks rides the
+    /// pipeline as an `empty_file_fingerprints` entry (not a chunk batch) so
+    /// the store stage can prune its stale chunks. Forces the all-empty
+    /// file-batch path: the only survivor produces no chunks, so a chunk-less
+    /// `ParsedBatch` must still be emitted carrying the empty-file entry.
+    #[test]
+    fn parser_stage_routes_zero_chunk_file_to_empty_set() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        // A Rust file with only comments parses to zero chunks.
+        std::fs::write(root.join("empty.rs"), "// just a comment, no items\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        let parser = Arc::new(CqParser::new().unwrap());
+
+        // Confirm the fixture really parses to zero chunks; otherwise the test
+        // would silently exercise the wrong path.
+        let direct = parser.parse_file_all(&root.join("empty.rs")).unwrap().0;
+        assert!(
+            direct.is_empty(),
+            "fixture must parse to zero chunks, got {}",
+            direct.len()
+        );
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: true, // survivor regardless of stored state
+            parser,
+            store,
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![PathBuf::from("empty.rs")], ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        let empty = PathBuf::from("empty.rs");
+        let carries_empty = batches
+            .iter()
+            .any(|b| b.empty_file_fingerprints.contains_key(&empty));
+        assert!(
+            carries_empty,
+            "zero-chunk survivor must ride as an empty_file_fingerprints entry"
+        );
+        // It must NOT appear as a chunk-bearing fingerprint anywhere.
+        assert!(
+            batches
+                .iter()
+                .all(|b| !b.file_fingerprints.contains_key(&empty)),
+            "zero-chunk file must not be stamped via the chunk path"
+        );
     }
 }
