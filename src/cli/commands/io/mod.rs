@@ -5,7 +5,7 @@ mod brief;
 pub(crate) mod context;
 pub(crate) mod diff;
 pub(crate) mod drift;
-mod notes;
+pub(crate) mod notes;
 pub(crate) mod read;
 mod reconstruct;
 

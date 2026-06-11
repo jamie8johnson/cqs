@@ -72,30 +72,26 @@ pub(in crate::cli::batch) fn dispatch_gather(
 
 /// Dispatches filtered notes from the batch context as a JSON response.
 ///
-/// Retrieves all notes from the provided batch context and filters them based
-/// on the specified criteria. If `warnings` is true, only warning notes are
-/// included; if `patterns` is true, only pattern notes are included;
-/// otherwise, all notes are included. Each note is serialized to JSON with
-/// its text, sentiment score, sentiment label, and mentions.
+/// Thin adapter over the shared [`crate::cli::commands::notes::notes_list_core`]
+/// (same union schema the CLI emits). Filters the always-fresh
+/// `docs/notes.toml` parse by `warnings` / `patterns` / `kind`, computes the
+/// `--check` staleness map, and hands both to the core. Each note carries the
+/// union field set (`id`, `type`, `sentiment`, `sentiment_label`, `text`,
+/// `mentions`, optional `kind` / `stale_mentions`).
 ///
-/// `check: bool` routes staleness checks through the daemon
-/// path so agents calling `cqs notes list --check --json` via the socket
-/// receive `stale_mentions` per note — matching the CLI's `cmd_notes_list`
-/// shape (field present when `--check` is set, absent otherwise).
+/// `check: bool` routes staleness checks through the daemon path so agents
+/// calling `cqs notes list --check --json` via the socket receive
+/// `stale_mentions` per note (present when `--check` is set, absent otherwise).
 ///
 /// # Arguments
 /// * `ctx` - The batch context containing the notes to dispatch
-/// * `warnings` - If true, filter to only warning notes
-/// * `patterns` - If true, filter to only pattern notes
-/// * `check` - If true, run `cqs::suggest::check_note_staleness` and attach
-///   `stale_mentions` to each note in the output.
+/// * `args` - Filter knobs (`warnings` / `patterns` / `kind` / `check`)
 ///
 /// # Returns
-/// A JSON object containing an array of filtered notes and the total count
-/// of notes matching the filter criteria.
+/// A JSON object `{notes: [...], count: N}` over the filtered notes.
 ///
 /// # Errors
-/// Returns an error if JSON serialization or the staleness check fails.
+/// Returns an error if the staleness check fails.
 pub(in crate::cli::batch) fn dispatch_notes(
     ctx: &BatchView,
     args: &NotesListArgs,
@@ -127,7 +123,7 @@ pub(in crate::cli::batch) fn dispatch_notes(
         }
     });
 
-    let filtered: Vec<_> = notes
+    let filtered: Vec<&cqs::note::Note> = notes
         .iter()
         .filter(|n| {
             let sentiment_ok = if warnings {
@@ -143,28 +139,14 @@ pub(in crate::cli::batch) fn dispatch_notes(
             };
             sentiment_ok && kind_ok
         })
-        .map(|n| {
-            let mut entry = serde_json::json!({
-                "text": n.text,
-                "sentiment": n.sentiment,
-                "sentiment_label": n.sentiment_label(),
-                "kind": n.kind,
-                "mentions": n.mentions,
-            });
-            if check {
-                // Emit the key even on clean notes so agents can rely on
-                // field presence when `check` is requested — mirrors CLI.
-                let stale = staleness.get(&n.text).cloned().unwrap_or_default();
-                entry["stale_mentions"] = serde_json::json!(stale);
-            }
-            entry
-        })
         .collect();
 
-    Ok(serde_json::json!({
-        "notes": filtered,
-        "total": filtered.len(),
-    }))
+    // Thin adapter over the shared `notes_list_core` — identical union object
+    // (`{notes, count}` with per-note `id`/`type`/`sentiment_label`) across the
+    // CLI and daemon surfaces. Both read the same fresh `docs/notes.toml` parse.
+    Ok(crate::cli::commands::notes::notes_list_core(
+        &filtered, &staleness, check,
+    ))
 }
 
 /// Dispatches a task execution within a batch context, optionally with token budgeting.

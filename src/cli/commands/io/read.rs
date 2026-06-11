@@ -123,6 +123,12 @@ pub(crate) struct FocusedReadResult {
     /// `ChunkSummary::vendored` (schema v24). Both CLI and daemon JSON paths
     /// emit `trust_level: "vendored-code"` when this is true.
     pub vendored: bool,
+    /// Prompt-injection heuristics that fired on the resolved focus chunk's
+    /// content. Mirrors the per-result `injection_flags` the search/scout
+    /// shape carries (`detect_all_injection_patterns`), so a focused read of a
+    /// chunk containing an injection pattern surfaces the same signal a search
+    /// hit on that chunk would. Empty in the common case (no pattern fired).
+    pub injection_flags: Vec<&'static str>,
 }
 
 /// Build focused-read output: header + hints + notes + target + type deps.
@@ -284,6 +290,11 @@ pub(crate) fn build_focused_output<Mode>(
         }
     }
 
+    // Run the injection detector on the focus chunk content so both surfaces
+    // emit a real `injection_flags` list, matching the per-result shape search
+    // and scout carry. Empty when no heuristic fired (the common case).
+    let injection_flags = cqs::llm::validation::detect_all_injection_patterns(&chunk.content);
+
     Ok(FocusedReadResult {
         output,
         hints,
@@ -291,6 +302,7 @@ pub(crate) fn build_focused_output<Mode>(
         // Surface the resolved chunk's vendored flag so both CLI and daemon
         // JSON paths emit the correct `trust_level` instead of `"user-code"`.
         vendored: chunk.vendored,
+        injection_flags,
     })
 }
 
@@ -298,11 +310,34 @@ pub(crate) fn build_focused_output<Mode>(
 // Output structs
 // ---------------------------------------------------------------------------
 
-/// JSON output for a full file read.
+/// JSON output for a full file read — the union schema both surfaces emit.
+///
+/// `notes_injected` is always present (it's the read-time signal that
+/// `docs/notes.toml` context was prepended to the content). `trust_level` is
+/// skip-when-default (`"user-code"`): the full read tags a vendored path
+/// (`node_modules/`, `vendor/`, …) so a `cqs read node_modules/lodash.js`
+/// reports `"vendored-code"`, matching the per-chunk search shape and
+/// SECURITY.md's trust-signal contract. The path-vendored detection is shared
+/// between surfaces via `vendored_prefixes`.
 #[derive(Debug, serde::Serialize)]
-struct ReadOutput {
+struct FullReadOutput {
     path: String,
     content: String,
+    /// Whether note context from `docs/notes.toml` was injected into the
+    /// content header. Always present (a meaningful read-time signal even when
+    /// `false`), unlike the skip-when-default trust/injection fields below.
+    notes_injected: bool,
+    /// Skip-when-default (`"user-code"`). Emitted as `"vendored-code"` when the
+    /// requested path matches a configured vendored prefix.
+    #[serde(skip_serializing_if = "is_user_code")]
+    trust_level: &'static str,
+}
+
+/// `serde` skip predicate: a `"user-code"` trust level is the default and is
+/// omitted from the wire shape, matching the per-chunk `to_json_with_origin`
+/// skip-when-default rule.
+fn is_user_code(level: &&'static str) -> bool {
+    *level == "user-code"
 }
 
 /// Hints about caller/test coverage for a focused function.
@@ -314,23 +349,24 @@ struct ReadHints {
     no_tests: bool,
 }
 
-/// JSON output for a focused read.
+/// JSON output for a focused read — the union schema both surfaces emit.
 #[derive(Debug, serde::Serialize)]
 struct FocusedReadJsonOutput {
     focus: String,
     content: String,
-    /// Every chunk-returning JSON output carries a trust_level. `read
-    /// --focus` reads from the project store only (no reference-store
-    /// fan-in), so the value is either `"user-code"` or `"vendored-code"`
-    /// depending on the resolved chunk's `chunks.vendored` flag (schema v24).
+    /// `read --focus` reads from the project store only (no reference-store
+    /// fan-in), so the value is either `"user-code"` (default, skipped) or
+    /// `"vendored-code"` depending on the resolved chunk's `chunks.vendored`
+    /// flag (schema v24). Skip-when-default mirrors the per-chunk search shape.
     /// SECURITY.md's mitigation contract is that agents can branch safely on
-    /// this field.
+    /// this field; absence means the default `"user-code"`.
+    #[serde(skip_serializing_if = "is_user_code")]
     trust_level: &'static str,
-    /// Parallel field to chunk JSON. `read --focus` content is delivered as
-    /// a single concatenated string, not a per-chunk list, so there is no
-    /// per-chunk array — a single empty array satisfies the schema-stability
-    /// contract.
-    injection_flags: Vec<String>,
+    /// Prompt-injection heuristics that fired on the focus chunk content.
+    /// Mirrors the per-result `injection_flags` search/scout carry; skipped
+    /// when empty (no heuristic fired — the common case).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    injection_flags: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hints: Option<ReadHints>,
     /// Warnings emitted by the underlying assembly (e.g.
@@ -339,6 +375,81 @@ struct FocusedReadJsonOutput {
     /// failed silently".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
+}
+
+// ─── Surface-agnostic core ────────────────────────────────────────────────────
+
+/// Surface-agnostic JSON core for `cqs read`. Returns the union-schema
+/// `serde_json::Value` both the CLI (`cmd_read --json`) and the daemon
+/// (`dispatch_read`) emit, so the wire shape no longer depends on which surface
+/// served the request. Full and focused reads route through the same
+/// vendored-detection and note-injection logic.
+///
+/// The adapter supplies the resolved `vendored_prefixes` (CLI loads config,
+/// daemon reuses its cached `Config`) so the path-vendored detection for full
+/// reads is shared rather than daemon-only. Reads no env and never prints.
+pub(crate) fn read_core<Mode>(
+    store: &Store<Mode>,
+    root: &Path,
+    args: &crate::cli::args::ReadArgs,
+    audit_state: &cqs::audit::AuditMode,
+    notes: &[Note],
+    vendored_prefixes: &[String],
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("read_core", path = %args.path).entered();
+
+    // Focused read mode.
+    if let Some(focus) = args.focus.as_deref() {
+        let result = build_focused_output(store, focus, root, audit_state, notes)?;
+        let hints = result.hints.as_ref().map(|h| ReadHints {
+            caller_count: h.caller_count,
+            test_count: h.test_count,
+            no_callers: h.caller_count == 0,
+            no_tests: h.test_count == 0,
+        });
+        let output = FocusedReadJsonOutput {
+            focus: focus.to_string(),
+            content: result.output,
+            trust_level: if result.vendored {
+                "vendored-code"
+            } else {
+                "user-code"
+            },
+            injection_flags: result.injection_flags,
+            hints,
+            warnings: result.warnings,
+        };
+        return Ok(serde_json::to_value(&output)?);
+    }
+
+    // Full file read.
+    let path = args.path.as_str();
+    let (file_path, content) = validate_and_read_file(root, path)?;
+    let (header, notes_injected) = build_file_note_header(path, &file_path, audit_state, notes);
+    let enriched = if header.is_empty() {
+        content
+    } else {
+        format!("{}{}", header, content)
+    };
+
+    // Path-vendored detection (shared with the daemon's prior behavior): match
+    // the user-supplied relative path against the configured prefixes so
+    // `cqs read node_modules/lodash.js` reports `"vendored-code"`, matching the
+    // chunks-side labeling.
+    let normalized = cqs::normalize_path(Path::new(path));
+    let trust_level = if cqs::vendored::is_vendored_origin(&normalized, vendored_prefixes) {
+        "vendored-code"
+    } else {
+        "user-code"
+    };
+
+    let output = FullReadOutput {
+        path: path.to_string(),
+        content: enriched,
+        notes_injected,
+        trust_level,
+    };
+    Ok(serde_json::to_value(&output)?)
 }
 
 // ─── CLI commands ───────────────────────────────────────────────────────────
@@ -351,15 +462,7 @@ pub(crate) fn cmd_read(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_read", path).entered();
 
-    // Focused read mode
-    if let Some(focus) = focus {
-        return cmd_read_focused(ctx, focus, json);
-    }
-
     let root = &ctx.root;
-    let (file_path, content) = validate_and_read_file(root, path)?;
-
-    // Build note header
     let cqs_dir = &ctx.cqs_dir;
     let audit_mode = load_audit_state(cqs_dir);
     let notes_path = root.join("docs/notes.toml");
@@ -372,81 +475,47 @@ pub(crate) fn cmd_read(
         vec![]
     };
 
-    let (header, _notes_injected) = build_file_note_header(path, &file_path, &audit_mode, &notes);
-
-    let enriched = if header.is_empty() {
-        content
-    } else {
-        format!("{}{}", header, content)
-    };
-
+    // Text mode keeps the prose renderers (the daemon-forward gate bypasses
+    // text mode entirely). JSON mode routes through the shared `read_core` so
+    // the CLI and daemon emit the identical union shape.
     if json {
-        let result = ReadOutput {
+        let args = crate::cli::args::ReadArgs {
             path: path.to_string(),
-            content: enriched,
+            focus: focus.map(str::to_string),
         };
-        crate::cli::json_envelope::emit_json(&result)?;
-    } else {
-        print!("{}", enriched);
+        // Resolve the vendored prefixes from project config so the full-read
+        // path tags vendored paths identically to the daemon adapter.
+        let cfg = cqs::config::Config::load(root);
+        let prefixes = cqs::vendored::effective_prefixes(
+            cfg.index
+                .as_ref()
+                .and_then(|ic| ic.vendored_paths.as_deref()),
+        );
+        let value = read_core(&ctx.store, root, &args, &audit_mode, &notes, &prefixes)?;
+        crate::cli::json_envelope::emit_json(&value)?;
+        return Ok(());
     }
 
-    Ok(())
-}
-
-fn cmd_read_focused(
-    ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
-    focus: &str,
-    json: bool,
-) -> Result<()> {
-    let _span = tracing::info_span!("cmd_read_focused", %focus).entered();
-
-    let store = &ctx.store;
-    let root = &ctx.root;
-    let cqs_dir = &ctx.cqs_dir;
-
-    let audit_mode = load_audit_state(cqs_dir);
-    let notes_path = root.join("docs/notes.toml");
-    let notes = if notes_path.exists() {
-        parse_notes(&notes_path).unwrap_or_else(|e| {
-            tracing::warn!(path = %notes_path.display(), error = %e, "Failed to parse notes.toml in focused read");
-            vec![]
-        })
-    } else {
-        vec![]
-    };
-
-    let result = build_focused_output(store, focus, root, &audit_mode, &notes)?;
-
-    if json {
-        let hints = result.hints.as_ref().map(|h| ReadHints {
-            caller_count: h.caller_count,
-            test_count: h.test_count,
-            no_callers: h.caller_count == 0,
-            no_tests: h.test_count == 0,
-        });
-        let output = FocusedReadJsonOutput {
-            focus: focus.to_string(),
-            content: result.output,
-            // Honor the resolved chunk's vendored flag so a chunk under
-            // `node_modules/` is reported as `vendored-code`, matching the
-            // index-time labeling shape used by search/scout.
-            trust_level: if result.vendored {
-                "vendored-code"
-            } else {
-                "user-code"
-            },
-            injection_flags: Vec::new(),
-            hints,
-            warnings: result.warnings.clone(),
-        };
-        crate::cli::json_envelope::emit_json(&output)?;
-    } else {
+    // Focused text read.
+    if let Some(focus) = focus {
+        let result = build_focused_output(&ctx.store, focus, root, &audit_mode, &notes)?;
         // Surface warnings on stderr so non-JSON callers also see them.
         for w in &result.warnings {
             eprintln!("warning: {w}");
         }
         print!("{}", result.output);
+        return Ok(());
     }
+
+    // Full text read.
+    let (file_path, content) = validate_and_read_file(root, path)?;
+    let (header, _notes_injected) = build_file_note_header(path, &file_path, &audit_mode, &notes);
+    let enriched = if header.is_empty() {
+        content
+    } else {
+        format!("{}{}", header, content)
+    };
+    print!("{}", enriched);
 
     Ok(())
 }
@@ -460,14 +529,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_output_serialization() {
-        let output = ReadOutput {
+    fn full_read_output_serialization() {
+        // Union shape: path + content + notes_injected always present;
+        // trust_level skipped when "user-code".
+        let output = FullReadOutput {
             path: "src/lib.rs".into(),
             content: "fn main() {}".into(),
+            notes_injected: false,
+            trust_level: "user-code",
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["path"], "src/lib.rs");
         assert_eq!(json["content"], "fn main() {}");
+        assert_eq!(json["notes_injected"], false);
+        assert!(
+            json.get("trust_level").is_none(),
+            "trust_level skip-when-default (user-code), got: {json}"
+        );
+    }
+
+    #[test]
+    fn full_read_output_emits_vendored_trust_level() {
+        let output = FullReadOutput {
+            path: "node_modules/lib.js".into(),
+            content: "module.exports = {}".into(),
+            notes_injected: false,
+            trust_level: "vendored-code",
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(
+            json["trust_level"], "vendored-code",
+            "non-default trust_level must serialize"
+        );
     }
 
     #[test]
@@ -529,13 +622,15 @@ mod tests {
         assert!(warns[0].as_str().unwrap().contains("db locked"));
     }
 
-    /// SECURITY.md:57 promises `read --focus` JSON carries
-    /// `trust_level: "user-code" | "reference-code"` and `injection_flags: []`.
-    /// This regression-pin keeps the contract honest: future removal of
-    /// these fields would silently break SECURITY.md.
+    /// SECURITY.md's trust-signal contract for `read --focus` JSON:
+    /// `trust_level` and `injection_flags` are skip-when-default (their absence
+    /// means the default `"user-code"` / no-pattern case, identical to the
+    /// per-chunk search shape). When non-default they must serialize. This
+    /// regression-pin keeps both halves honest.
     #[test]
-    fn focused_read_output_emits_sec_trust_level_and_injection_flags() {
-        let output = FocusedReadJsonOutput {
+    fn focused_read_output_trust_signals_skip_when_default() {
+        // Default case: both fields absent.
+        let default_out = FocusedReadJsonOutput {
             focus: "f".into(),
             content: "fn f() {}".into(),
             trust_level: "user-code",
@@ -543,16 +638,31 @@ mod tests {
             hints: None,
             warnings: Vec::new(),
         };
-        let json = serde_json::to_value(&output).unwrap();
-        // Both fields must serialize (no skip_serializing_if on these).
-        assert_eq!(
-            json["trust_level"], "user-code",
-            "SECURITY.md:57 promises trust_level on read --focus JSON"
+        let json = serde_json::to_value(&default_out).unwrap();
+        assert!(
+            json.get("trust_level").is_none(),
+            "trust_level skipped when user-code, got: {json}"
         );
-        let flags = json["injection_flags"].as_array().expect(
-            "SECURITY.md:57 promises injection_flags on read --focus JSON; must serialize as array",
+        assert!(
+            json.get("injection_flags").is_none(),
+            "injection_flags skipped when empty, got: {json}"
         );
-        assert!(flags.is_empty(), "no per-content heuristics fired yet");
+
+        // Non-default case: both fields present.
+        let flagged = FocusedReadJsonOutput {
+            focus: "f".into(),
+            content: "fn f() {}".into(),
+            trust_level: "vendored-code",
+            injection_flags: vec!["ignore_previous_instructions"],
+            hints: None,
+            warnings: Vec::new(),
+        };
+        let json = serde_json::to_value(&flagged).unwrap();
+        assert_eq!(json["trust_level"], "vendored-code");
+        let flags = json["injection_flags"]
+            .as_array()
+            .expect("injection_flags serializes as array when non-empty");
+        assert_eq!(flags.len(), 1);
     }
 
     /// A file exceeding `CQS_READ_MAX_FILE_SIZE` is rejected with the
