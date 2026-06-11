@@ -70,7 +70,16 @@ jobs:
 
       - name: Run full test suite (incl. ignored)
         if: ${{ github.event_name == 'schedule' || inputs.include_ignored != 'false' }}
-        run: cargo test --release --verbose -- --include-ignored
+        # --include-ignored is for #[ignore]d unit/integration tests (GPU,
+        # model-download). Doctests run in their own step below WITHOUT it:
+        # rustdoc maps ```ignore blocks to #[ignore] doctests, so a combined
+        # run force-compiles examples that are ignore-marked precisely
+        # because they cannot compile (e.g. pub(crate) item references).
+        run: cargo test --release --verbose --lib --bins --tests -- --include-ignored
+
+      - name: Run doctests (normal ignore semantics)
+        if: ${{ github.event_name == 'schedule' || inputs.include_ignored != 'false' }}
+        run: cargo test --release --verbose --doc
 
       - name: Run regular suite only (manual dispatch fallback)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_ignored == 'false' }}
