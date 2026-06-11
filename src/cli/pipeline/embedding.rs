@@ -114,6 +114,7 @@ pub(super) fn prepare_for_embedding(
         texts,
         relationships: batch.relationships,
         file_fingerprints: batch.file_fingerprints,
+        empty_file_fingerprints: batch.empty_file_fingerprints,
     }
 }
 
@@ -124,6 +125,7 @@ pub(super) fn create_embedded_batch(
     new_embeddings: Vec<Embedding>,
     relationships: RelationshipData,
     file_fingerprints: HashMap<std::path::PathBuf, cqs::store::FileFingerprint>,
+    empty_file_fingerprints: HashMap<std::path::PathBuf, cqs::store::FileFingerprint>,
 ) -> EmbeddedBatch {
     let cached_count = cached.len();
     let mut chunk_embeddings = cached;
@@ -133,6 +135,7 @@ pub(super) fn create_embedded_batch(
         relationships,
         cached_count,
         file_fingerprints,
+        empty_file_fingerprints,
         // Default: real embeddings throughout. The skip-first-pass path
         // builds EmbeddedBatch directly with `uncached_need_embedding: true`
         // (see `gpu_embed_stage` / `cpu_embed_stage`).
@@ -151,21 +154,45 @@ fn flush_to_cpu(
     fail_tx: &Sender<ParsedBatch>,
     embedded_count: &AtomicUsize,
 ) -> bool {
+    // The cached half lands in the store FIRST (sent straight to `embed_tx`);
+    // the requeued half lands LATER (CPU re-embed → `embed_tx`). A file whose
+    // last chunk arrived in this `ParsedBatch` carries its fingerprint here —
+    // but if that file ALSO has chunks in the requeued half, stamping it with
+    // the cached (earlier) half would mark it current before its requeued
+    // chunks were written. So the cached half drops fingerprints for any file
+    // present in `to_embed`; the requeued half keeps the full set. This holds
+    // the fingerprint-strictly-after-data invariant across the GPU split.
+    let requeued_files: std::collections::HashSet<&std::path::PathBuf> =
+        prepared.to_embed.iter().map(|c| &c.file).collect();
+    let cached_fps: HashMap<std::path::PathBuf, cqs::store::FileFingerprint> = prepared
+        .file_fingerprints
+        .iter()
+        .filter(|(file, _)| !requeued_files.contains(file))
+        .map(|(file, fp)| (file.clone(), fp.clone()))
+        .collect();
+
     if !prepared.cached.is_empty() {
         let cached_count = prepared.cached.len();
         embedded_count.fetch_add(cached_count, Ordering::Relaxed);
-        // Send relationships with cached batch only if there's nothing to requeue
-        let rels = if prepared.to_embed.is_empty() {
-            prepared.relationships.clone()
+        // Send relationships with cached batch only if there's nothing to
+        // requeue. Empty-file prune entries ride with the requeued half when
+        // it exists (they reference no chunks, so ordering is irrelevant; we
+        // only avoid duplicating them).
+        let (rels, empty_fps) = if prepared.to_embed.is_empty() {
+            (
+                prepared.relationships.clone(),
+                prepared.empty_file_fingerprints.clone(),
+            )
         } else {
-            RelationshipData::default()
+            (RelationshipData::default(), HashMap::new())
         };
         if embed_tx
             .send(EmbeddedBatch {
                 chunk_embeddings: prepared.cached,
                 relationships: rels,
                 cached_count,
-                file_fingerprints: prepared.file_fingerprints.clone(),
+                file_fingerprints: cached_fps,
+                empty_file_fingerprints: empty_fps,
                 uncached_need_embedding: false,
             })
             .is_err()
@@ -173,17 +200,20 @@ fn flush_to_cpu(
             return false;
         }
     }
-    // Send relationships with the requeued batch so they reach store_stage via CPU path
-    let rels = if prepared.to_embed.is_empty() {
-        RelationshipData::default()
+    // Send relationships + empty-file prune entries with the requeued batch so
+    // they reach store_stage via the CPU path. This half keeps the full
+    // fingerprint set (it lands last, after every requeued chunk is written).
+    let (rels, empty_fps) = if prepared.to_embed.is_empty() {
+        (RelationshipData::default(), HashMap::new())
     } else {
-        prepared.relationships
+        (prepared.relationships, prepared.empty_file_fingerprints)
     };
     if fail_tx
         .send(ParsedBatch {
             chunks: prepared.to_embed,
             relationships: rels,
             file_fingerprints: prepared.file_fingerprints,
+            empty_file_fingerprints: empty_fps,
         })
         .is_err()
     {
@@ -236,6 +266,7 @@ pub(super) fn gpu_embed_stage(
                     relationships: prepared.relationships,
                     cached_count,
                     file_fingerprints: prepared.file_fingerprints,
+                    empty_file_fingerprints: prepared.empty_file_fingerprints,
                     uncached_need_embedding: false,
                 })
                 .is_err()
@@ -273,6 +304,7 @@ pub(super) fn gpu_embed_stage(
                     relationships: prepared.relationships,
                     cached_count,
                     file_fingerprints: prepared.file_fingerprints,
+                    empty_file_fingerprints: prepared.empty_file_fingerprints,
                     uncached_need_embedding: true,
                 })
                 .is_err()
@@ -361,6 +393,7 @@ pub(super) fn gpu_embed_stage(
                         relationships: prepared.relationships,
                         cached_count,
                         file_fingerprints: prepared.file_fingerprints,
+                        empty_file_fingerprints: prepared.empty_file_fingerprints,
                         uncached_need_embedding: false,
                     })
                     .is_err()
@@ -510,6 +543,7 @@ pub(super) fn cpu_embed_stage(
                     relationships: prepared.relationships,
                     cached_count,
                     file_fingerprints: prepared.file_fingerprints,
+                    empty_file_fingerprints: prepared.empty_file_fingerprints,
                     uncached_need_embedding: true,
                 })
                 .is_err()
@@ -564,6 +598,7 @@ pub(super) fn cpu_embed_stage(
             new_embeddings,
             prepared.relationships,
             prepared.file_fingerprints,
+            prepared.empty_file_fingerprints,
         );
 
         ctx.embedded_count
@@ -575,4 +610,140 @@ pub(super) fn cpu_embed_stage(
     }
     tracing::debug!("CPU embedder thread finished");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    fn chunk(file: &str, id: &str) -> Chunk {
+        Chunk {
+            id: format!("{file}:1:{id}"),
+            file: std::path::PathBuf::from(file),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: id.to_string(),
+            signature: String::new(),
+            content: format!("fn {id}() {{}}"),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: blake3::hash(id.as_bytes()).to_hex().to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn fp() -> cqs::store::FileFingerprint {
+        cqs::store::FileFingerprint {
+            mtime: Some(1),
+            size: Some(2),
+            content_hash: Some([7u8; 32]),
+        }
+    }
+
+    /// GPU-failure split: a file straddling the cached/requeued boundary must
+    /// keep its fingerprint with the REQUEUED half (which lands in the store
+    /// LAST, after CPU re-embed). The cached half — committed first — drops
+    /// fingerprints for any file present in `to_embed`, so a crash between the
+    /// two commits never leaves the straddling file stamped-but-incomplete.
+    /// A file fully inside the cached half keeps its fingerprint there.
+    #[test]
+    fn flush_to_cpu_keeps_straddling_fingerprint_with_requeued_half() {
+        // straddle.rs: one chunk cached, one chunk requeued (split file).
+        // done.rs: both chunks cached (complete in the cached half).
+        let cached = vec![
+            (chunk("straddle.rs", "a"), Embedding::new(vec![0.1; 4])),
+            (chunk("done.rs", "x"), Embedding::new(vec![0.1; 4])),
+            (chunk("done.rs", "y"), Embedding::new(vec![0.1; 4])),
+        ];
+        let to_embed = vec![chunk("straddle.rs", "b")];
+        let mut file_fingerprints = HashMap::new();
+        file_fingerprints.insert(std::path::PathBuf::from("straddle.rs"), fp());
+        file_fingerprints.insert(std::path::PathBuf::from("done.rs"), fp());
+
+        let prepared = PreparedEmbedding {
+            cached,
+            to_embed,
+            texts: vec![String::new()],
+            relationships: RelationshipData::default(),
+            file_fingerprints,
+            empty_file_fingerprints: HashMap::new(),
+        };
+
+        let (embed_tx, embed_rx) = unbounded::<EmbeddedBatch>();
+        let (fail_tx, fail_rx) = unbounded::<ParsedBatch>();
+        let counter = AtomicUsize::new(0);
+        assert!(flush_to_cpu(prepared, &embed_tx, &fail_tx, &counter));
+        drop(embed_tx);
+        drop(fail_tx);
+
+        let cached_batch = embed_rx.recv().expect("cached half sent");
+        let requeued = fail_rx.recv().expect("requeued half sent");
+
+        // Cached half: keeps done.rs (complete here), drops straddle.rs.
+        assert!(
+            cached_batch
+                .file_fingerprints
+                .contains_key(&std::path::PathBuf::from("done.rs")),
+            "cached half must stamp the file fully contained in it"
+        );
+        assert!(
+            !cached_batch
+                .file_fingerprints
+                .contains_key(&std::path::PathBuf::from("straddle.rs")),
+            "cached half must NOT stamp a file with chunks in the requeued half"
+        );
+
+        // Requeued half: keeps the straddling file's fingerprint (lands last).
+        assert!(
+            requeued
+                .file_fingerprints
+                .contains_key(&std::path::PathBuf::from("straddle.rs")),
+            "requeued half must carry the straddling file's fingerprint"
+        );
+    }
+
+    /// Empty-file prune entries ride with the requeued half (when one exists)
+    /// and are not duplicated onto the cached half.
+    #[test]
+    fn flush_to_cpu_routes_empty_files_to_requeued_half() {
+        let cached = vec![(chunk("a.rs", "a"), Embedding::new(vec![0.1; 4]))];
+        let to_embed = vec![chunk("b.rs", "b")];
+        let mut empties = HashMap::new();
+        empties.insert(std::path::PathBuf::from("gone.rs"), fp());
+
+        let prepared = PreparedEmbedding {
+            cached,
+            to_embed,
+            texts: vec![String::new()],
+            relationships: RelationshipData::default(),
+            file_fingerprints: HashMap::new(),
+            empty_file_fingerprints: empties,
+        };
+
+        let (embed_tx, embed_rx) = unbounded::<EmbeddedBatch>();
+        let (fail_tx, fail_rx) = unbounded::<ParsedBatch>();
+        let counter = AtomicUsize::new(0);
+        assert!(flush_to_cpu(prepared, &embed_tx, &fail_tx, &counter));
+        drop(embed_tx);
+        drop(fail_tx);
+
+        let cached_batch = embed_rx.recv().expect("cached half sent");
+        let requeued = fail_rx.recv().expect("requeued half sent");
+        assert!(
+            cached_batch.empty_file_fingerprints.is_empty(),
+            "cached half must not carry empty-file entries when a requeued half exists"
+        );
+        assert!(
+            requeued
+                .empty_file_fingerprints
+                .contains_key(&std::path::PathBuf::from("gone.rs")),
+            "requeued half must carry the empty-file prune entry"
+        );
+    }
 }
