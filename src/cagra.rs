@@ -58,6 +58,17 @@ use crate::embedder::Embedding;
 #[cfg(feature = "cuda-index")]
 use crate::index::{DistanceMetric, IndexResult, VectorIndex};
 
+/// True when every component of `query` is finite (no NaN/Inf).
+///
+/// Extracted as a free function so the `CagraIndex::search` finite-query
+/// guard is unit-testable without a GPU — constructing a `CagraIndex`
+/// requires live cuVS resources, but the guard predicate itself is pure
+/// CPU. Mirrors the up-front check on the HNSW search path.
+#[cfg(feature = "cuda-index")]
+fn query_is_finite(query: &Embedding) -> bool {
+    query.as_slice().iter().all(|v| v.is_finite())
+}
+
 /// On-disk magic bytes for the CAGRA sidecar. Changes force a rebuild.
 #[cfg(feature = "cuda-index")]
 const CAGRA_META_MAGIC: &str = "CAGRA01";
@@ -432,6 +443,20 @@ impl CagraIndex {
                 expected_dim = self.dim,
                 actual_dim = query.len(),
                 "Query dimension mismatch"
+            );
+            return Vec::new();
+        }
+
+        // Reject non-finite query vectors before they reach the cuVS kernel.
+        // The HNSW path guards this up front (a NaN distance trips an
+        // `anndists` assert); CAGRA accepted them silently — a backend
+        // asymmetry. Mirror the HNSW empty-result contract: a malformed
+        // query (encoder bug, query-cache corruption, bit rot) returns no
+        // results rather than dispatching a kernel on poisoned input.
+        if !query_is_finite(query) {
+            tracing::warn!(
+                "CAGRA query embedding contains non-finite values (NaN/Inf), \
+                 returning empty results"
             );
             return Vec::new();
         }
@@ -2497,5 +2522,25 @@ mod tests {
             Err(other) => panic!("expected Stale, got: {other:?}"),
             Ok(_) => panic!("conflicting metric must not load"),
         }
+    }
+
+    /// CPU-only guard test: the finite-query predicate that fronts
+    /// `CagraIndex::search` must reject NaN/Inf queries (so the search
+    /// returns empty rather than dispatching a kernel on poisoned input)
+    /// and accept ordinary finite ones. Constructing a `CagraIndex` needs a
+    /// live GPU; the predicate itself is pure, so it's testable without one.
+    #[test]
+    fn query_is_finite_rejects_nonfinite() {
+        let finite = Embedding::new(vec![0.1, 0.2, 0.3, 0.4]);
+        assert!(super::query_is_finite(&finite), "finite query accepted");
+
+        let nan = Embedding::new(vec![0.1, f32::NAN, 0.3, 0.4]);
+        assert!(!super::query_is_finite(&nan), "NaN query rejected");
+
+        let inf = Embedding::new(vec![f32::INFINITY, 0.2, 0.3, 0.4]);
+        assert!(!super::query_is_finite(&inf), "Inf query rejected");
+
+        let neg_inf = Embedding::new(vec![0.1, 0.2, 0.3, f32::NEG_INFINITY]);
+        assert!(!super::query_is_finite(&neg_inf), "-Inf query rejected");
     }
 }
