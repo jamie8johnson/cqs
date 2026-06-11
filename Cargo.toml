@@ -266,6 +266,17 @@ convert = ["dep:fast_html2md", "dep:walkdir"]
 cuda-index = ["cuvs", "ndarray_015"]
 gpu-index = ["cuda-index"]
 
+# Tiered ANN backend (cuVS tiered index) — opt-in, behind a fork pin.
+# `cuvs::tiered_index` exists only on our fork branch (cqs-tiered-26.6, pinned
+# via the workspace `[patch.crates-io]` below). Requires `cuda-index`. NOT
+# enabled by default and NOT implied by `cuda-index`: a plain `cuda-index`
+# build never references the tiered module, so a published crates.io build
+# (where `[patch]` is stripped) compiles against official cuvs 26.6 with no
+# tiered symbols required. Enabling this feature requires the patched cuvs.
+# Retirement: drop this feature + the patch once rapidsai/cuvs#2235 merges and
+# the tiered bindings ship in an official cuvs release (the #1679 playbook).
+tiered-index = ["cuda-index"]
+
 # Issue #956 Phase B/C scaffolding: ExecutionProvider variants for
 # Apple CoreML and AMD ROCm. The features only enable the variant in
 # the enum and the matching probe arm in `detect_provider()`; wiring
@@ -320,3 +331,23 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# ── Tiered-index fork pin (opt-in) ───────────────────────────────────────────
+# The `tiered-index` feature needs `cuvs::tiered_index`, which exists ONLY on
+# our fork branch `cqs-tiered-26.6` (jamie8johnson/cuvs), pinned to crate
+# version 26.6.0 so this `[patch.crates-io]` is version-compatible with the
+# official `cuvs = "=26.6"` it replaces.
+#
+# It is intentionally COMMENTED OUT so that:
+#   * a plain `--features cuda-index` build (and every crates.io consumer, who
+#     never sees `[patch]` anyway) resolves the OFFICIAL cuvs 26.6 — the
+#     tiered module is `#[cfg(feature = "tiered-index")]`-gated and absent, so
+#     no tiered symbols are required (the HARD RAIL).
+#   * `--features tiered-index` builds work once you uncomment the two lines
+#     below (the fork supplies `cuvs::tiered_index`).
+#
+# Fork branch SHA: see CONTRIBUTING.md "Tiered-index fork pin". Retire this
+# block when rapidsai/cuvs#2235 lands in an official release (#1679 playbook).
+#
+# [patch.crates-io]
+# cuvs = { git = "https://github.com/jamie8johnson/cuvs.git", branch = "cqs-tiered-26.6" }
