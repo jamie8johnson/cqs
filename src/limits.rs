@@ -63,6 +63,31 @@ pub(crate) fn parser_max_chunk_bytes() -> usize {
     parse_env_usize("CQS_PARSER_MAX_CHUNK_BYTES", PARSER_MAX_CHUNK_BYTES)
 }
 
+// ============ file-enumeration walk caps ============
+
+/// Default recursion-depth ceiling for `enumerate_files_iter`'s directory
+/// walk. A deeply-nested or symlink-loop-shaped tree (the walk never follows
+/// symlinks, but a pathological real directory layout can still nest
+/// arbitrarily) would otherwise make the walk descend without bound. 64 is a
+/// DoS rail, not a tuning knob — no real source tree nests this deep.
+pub(crate) const WALK_MAX_DEPTH: usize = 64;
+
+/// Default cap on files *yielded* by `enumerate_files_iter` (post-filter). A
+/// repo with millions of matching files would otherwise make every index /
+/// reconcile walk unbounded in time. 500k is generous — large monorepos sit
+/// well under it — and exists only to bound an adversarial/pathological tree.
+pub(crate) const WALK_MAX_FILES: usize = 500_000;
+
+/// Resolve the walk depth ceiling honoring `CQS_WALK_MAX_DEPTH`.
+pub(crate) fn walk_max_depth() -> usize {
+    parse_env_usize("CQS_WALK_MAX_DEPTH", WALK_MAX_DEPTH)
+}
+
+/// Resolve the yielded-file ceiling honoring `CQS_WALK_MAX_FILES`.
+pub(crate) fn walk_max_files() -> usize {
+    parse_env_usize("CQS_WALK_MAX_FILES", WALK_MAX_FILES)
+}
+
 // ============ doc converter caps ============
 
 /// Default ceiling on per-archive page count for CHM, web help, and any

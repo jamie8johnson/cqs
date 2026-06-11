@@ -804,6 +804,15 @@ pub fn enumerate_files_iter(
     // hierarchical (per-directory), and respected by both `cqs index` (here)
     // and `cqs watch` (see `cli/watch.rs::build_gitignore_matcher`).
     // `--no-ignore` disables it alongside .gitignore.
+    // DoS rails: bound the walk's recursion depth and the number of files it
+    // can yield. An adversarial or pathological tree (deep nesting, symlink
+    // farms — symlinks are never followed, but a real directory layout can
+    // still nest arbitrarily — or millions of matching files) would otherwise
+    // make every index / reconcile walk unbounded. These are generous
+    // ceilings, not tuning knobs; no real source tree approaches them.
+    let max_depth = crate::limits::walk_max_depth();
+    let max_files = crate::limits::walk_max_files();
+
     let mut wb = WalkBuilder::new(&root);
     if !no_ignore {
         wb.add_custom_ignore_filename(".cqsignore");
@@ -815,6 +824,7 @@ pub fn enumerate_files_iter(
         .ignore(!no_ignore)
         .hidden(!no_ignore)
         .follow_links(false)
+        .max_depth(Some(max_depth))
         .filter_entry(|entry| {
             // Skip nested git worktrees. A linked worktree's `.git` is a file
             // (not a directory) that contains a `gitdir: ...` pointer. Indexing
@@ -843,17 +853,42 @@ pub fn enumerate_files_iter(
     // work — Arc is the cheapest move-into-closure shape.
     let metadata_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let canonicalize_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // One-shot guards so the depth-cap and file-cap warns fire at most once
+    // per walk rather than per-entry. `yielded` counts post-filter paths so
+    // the file cap bounds what the caller actually receives.
+    let depth_cap_warned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let files_cap_warned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let yielded = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // Owned ext list so the iterator doesn't borrow caller storage.
     let exts_owned: Vec<String> = extensions.iter().map(|s| (*s).to_string()).collect();
     let metadata_failures_for_filter = std::sync::Arc::clone(&metadata_failures);
+    let depth_cap_warned_for_filter = std::sync::Arc::clone(&depth_cap_warned);
+    let root_for_depth = root.clone();
     let exts_for_filter = exts_owned.clone();
     let root_for_filter = root.clone();
+    let root_for_cap = root.clone();
     Ok(walker
         .filter_map(|e| {
             e.map_err(|err| {
                 tracing::debug!(error = %err, "Failed to read directory entry during walk");
             })
             .ok()
+        })
+        .filter(move |e| {
+            // An entry sitting exactly at the depth cap means deeper
+            // descendants were pruned by `max_depth` — surface the truncation
+            // once so an operator staring at a short file list knows the walk
+            // was bounded rather than the tree being small.
+            if e.depth() >= max_depth
+                && !depth_cap_warned_for_filter.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    root = %root_for_depth.display(),
+                    cap = max_depth,
+                    "File walk hit max-depth cap (CQS_WALK_MAX_DEPTH); deeper entries were pruned"
+                );
+            }
+            true
         })
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         .filter(move |e| match e.metadata() {
@@ -957,6 +992,26 @@ pub fn enumerate_files_iter(
                 tracing::warn!(path = %e.path().display(), "Skipping path outside project");
                 None
             }
+        })
+        // File-count DoS rail: stop the walk once `max_files` paths have been
+        // yielded. `scan` returning `None` terminates the iterator, so a tree
+        // with millions of matching files can't make the walk unbounded — we
+        // stop reading the filesystem rather than just dropping later entries.
+        .scan((), move |(), rel| {
+            let prev = yielded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if prev >= max_files {
+                if !files_cap_warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        root = %root_for_cap.display(),
+                        cap = max_files,
+                        "File walk hit max-files cap (CQS_WALK_MAX_FILES); remaining entries were not enumerated"
+                    );
+                }
+                // `scan` yields `Option<Item>`; `None` ends iteration.
+                None
+            } else {
+                Some(rel)
+            }
         }))
 }
 
@@ -968,6 +1023,7 @@ mod tests {
     /// a small synthetic tree. Pins the contract that
     /// `enumerate_files = enumerate_files_iter.collect()`.
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn enumerate_files_iter_matches_eager_for_small_tree() {
         let dir = tempfile::tempdir().expect("tempdir");
         let src = dir.path().join("src");
@@ -999,6 +1055,7 @@ mod tests {
     /// custom allocator, but this proves the iterator surface accepts
     /// partial consumption.
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn enumerate_files_iter_supports_partial_consumption() {
         let dir = tempfile::tempdir().expect("tempdir");
         let src = dir.path().join("src");
@@ -1292,6 +1349,7 @@ mentions = ["store.rs"]
     // ─── enumerate_files tests ────────────────────────────────────
 
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_finds_supported_extensions() {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("src");
@@ -1315,6 +1373,7 @@ mentions = ["store.rs"]
     }
 
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_respects_cqsignore() {
         // .cqsignore should exclude matching paths from indexing, layered on
         // top of .gitignore. Verifies the indexer respects the cqs-specific
@@ -1352,6 +1411,7 @@ mentions = ["store.rs"]
     }
 
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_empty_for_unsupported() {
         let dir = tempfile::TempDir::new().unwrap();
 
@@ -1373,6 +1433,7 @@ mentions = ["store.rs"]
     /// security policy.
     #[test]
     #[cfg(unix)]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_skips_symlinks_to_files() {
         use std::os::unix::fs::symlink;
 
@@ -1405,13 +1466,11 @@ mentions = ["store.rs"]
     /// Files exceeding `CQS_MAX_FILE_SIZE` must be silently filtered. Pins
     /// the size cap behaviour.
     #[test]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_skips_oversized_files() {
-        use std::sync::Mutex;
-        // Cross-test serialisation lock for CQS_MAX_FILE_SIZE — env vars
-        // are process-global so parallel tests would race.
-        static MAX_SIZE_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = MAX_SIZE_LOCK.lock().unwrap();
-
+        // `#[serial(enumerate_files)]` serialises this against every other
+        // `enumerate_files` walk — it mutates the process-global
+        // `CQS_MAX_FILE_SIZE` env var, which would otherwise race.
         let dir = tempfile::TempDir::new().unwrap();
         // Small file should pass.
         std::fs::write(dir.path().join("small.rs"), b"fn s() {}").unwrap();
@@ -1441,12 +1500,81 @@ mentions = ["store.rs"]
         );
     }
 
+    /// The depth cap (`CQS_WALK_MAX_DEPTH`) prunes entries below the ceiling.
+    /// A file nested deeper than the cap must not be enumerated; a file at or
+    /// above the cap depth must. Pins the DoS rail against deep trees.
+    ///
+    /// `#[serial(enumerate_files)]`: this test mutates the process-global
+    /// `CQS_WALK_MAX_*` env vars, so it must never run concurrently with any
+    /// other `enumerate_files` walk (which would observe the cap and fail).
+    #[test]
+    #[serial_test::serial(enumerate_files)]
+    fn test_enumerate_files_depth_cap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Shallow file at depth 1 (directly under root).
+        std::fs::write(dir.path().join("shallow.rs"), b"fn s() {}").unwrap();
+        // Deep file: root/a/b/c/d/deep.rs (depth 5).
+        let deep_dir = dir.path().join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&deep_dir).unwrap();
+        std::fs::write(deep_dir.join("deep.rs"), b"fn d() {}").unwrap();
+
+        let prev = std::env::var("CQS_WALK_MAX_DEPTH").ok();
+        // Depth cap of 2: shallow.rs (depth 1) passes; deep.rs (depth 5) pruned.
+        std::env::set_var("CQS_WALK_MAX_DEPTH", "2");
+        let files = enumerate_files(dir.path(), &["rs"], false).unwrap();
+        match prev {
+            Some(v) => std::env::set_var("CQS_WALK_MAX_DEPTH", v),
+            None => std::env::remove_var("CQS_WALK_MAX_DEPTH"),
+        }
+
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.contains(&"shallow.rs".to_string()),
+            "shallow.rs (depth 1) must be enumerated under depth cap 2, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"deep.rs".to_string()),
+            "deep.rs (depth 5) must be pruned by depth cap 2, got {names:?}"
+        );
+    }
+
+    /// The file-count cap (`CQS_WALK_MAX_FILES`) bounds how many files the walk
+    /// yields. With a cap of 3 and 10 matching files, the walk must stop at 3.
+    /// Pins the DoS rail against repos with millions of files.
+    #[test]
+    #[serial_test::serial(enumerate_files)]
+    fn test_enumerate_files_count_cap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("f{i}.rs")), b"fn f() {}").unwrap();
+        }
+
+        let prev = std::env::var("CQS_WALK_MAX_FILES").ok();
+        std::env::set_var("CQS_WALK_MAX_FILES", "3");
+        let files = enumerate_files(dir.path(), &["rs"], false).unwrap();
+        match prev {
+            Some(v) => std::env::set_var("CQS_WALK_MAX_FILES", v),
+            None => std::env::remove_var("CQS_WALK_MAX_FILES"),
+        }
+
+        assert_eq!(
+            files.len(),
+            3,
+            "file-count cap of 3 must bound the walk to 3 yields, got {}",
+            files.len()
+        );
+    }
+
     /// A file with a non-UTF8 byte sequence in its name on Linux must not
     /// crash `enumerate_files`. The walker may either skip
     /// or include it (both are defensible) but a panic is unacceptable —
     /// a hostile filename should never bring down the indexer.
     #[test]
     #[cfg(unix)]
+    #[serial_test::serial(enumerate_files)]
     fn test_enumerate_files_handles_non_utf8_filename_on_unix() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;

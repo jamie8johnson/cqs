@@ -161,49 +161,127 @@ impl<Mode> Store<Mode> {
     /// but `define_languages! { ... }` and similar invocations live at
     /// file-scope outside any chunk's byte range.
     ///
-    /// For each Rust Macro candidate, runs:
-    ///   `SELECT 1 FROM chunks WHERE content GLOB '*<name>!*' AND id != ?2 LIMIT 1`
-    /// `LIMIT 1` short-circuits at the first match — fast even on large
-    /// indexes. Non-Macro candidates pass through untouched.
+    /// Runs a **single** pass over `chunks.content` inside one read
+    /// transaction, testing every Rust macro candidate's `<name>!`
+    /// invocation token against each chunk in Rust. The previous shape
+    /// ran one GLOB-per-macro query (N+1 full content scans — every dead
+    /// macro re-walked the whole 14k-chunk table). With tens of candidates
+    /// that was tens of full scans; this collapses to one ordered walk,
+    /// paged by rowid so peak heap stays bounded by the batch size rather
+    /// than the corpus content size.
     ///
-    /// Contract details:
+    /// Contract details (behavior identical to the per-macro GLOB form):
     /// - **Rust-only.** The `!` invocation suffix is Rust-specific. Other
     ///   languages with macros (C/C++, Elixir, Erlang, Julia, Verilog)
-    ///   use different invocation syntaxes; running this filter on them
-    ///   would emit a wrong pattern, so their macros pass through to
+    ///   use different invocation syntaxes; their macros pass through to
     ///   dead candidates untouched.
-    /// - **GLOB instead of LIKE.** SQLite's `LIKE` is ASCII case-
-    ///   insensitive by default — `MyMacro!` content would cross-fire
-    ///   against `mymacro!` definitions. `GLOB` is case-sensitive. GLOB
-    ///   also has no `_`/`%` wildcard collision — we still defensively
-    ///   escape `*`/`?`/`[`/`]` for pathological identifier names.
-    /// - **Self-match exclusion.** Recursive `macro_rules!` bodies
-    ///   contain the macro's own name + `!` in expansion examples or
-    ///   recursive invocations. Without `id != ?2`, every recursive
-    ///   macro keeps itself alive even when no external caller exists.
+    /// - **Case-sensitive.** The in-Rust `str::contains` for `<name>!`
+    ///   is byte-exact — `MyMacro!` content does not cross-fire against a
+    ///   `mymacro!` definition. This matches the GLOB (not LIKE) semantics
+    ///   the per-macro form relied on, with no `_`/`%`/`*`/`?` wildcard
+    ///   collision to defend against (substring match has no wildcards).
+    /// - **Self-match exclusion.** Recursive `macro_rules!` bodies contain
+    ///   the macro's own name + `!` in expansion examples or recursive
+    ///   invocations. A candidate is only marked invoked by a chunk whose
+    ///   id differs from its definition id, so a recursive macro with no
+    ///   external caller stays in the dead list.
     async fn filter_invoked_macros(
         &self,
         candidates: Vec<LightChunk>,
     ) -> Result<Vec<LightChunk>, StoreError> {
-        let mut filtered = Vec::with_capacity(candidates.len());
-        for chunk in candidates {
-            if chunk.chunk_type == ChunkType::Macro && chunk.language == Language::Rust {
-                let escaped = glob_escape(&chunk.name);
-                let pattern = format!("*{}!*", escaped);
-                let row: Option<(i64,)> = sqlx::query_as(
-                    "SELECT 1 FROM chunks WHERE content GLOB ?1 AND id != ?2 LIMIT 1",
-                )
-                .bind(&pattern)
-                .bind(&chunk.id)
-                .fetch_optional(&self.pool)
-                .await?;
-                if row.is_some() {
-                    // Invoked somewhere — drop from dead candidates.
-                    continue;
+        // Partition Rust macro candidates (the only ones this filter can
+        // touch) from everything else. Non-macro / non-Rust candidates pass
+        // through without ever consulting content.
+        let mut macro_idx: Vec<usize> = Vec::new();
+        for (i, c) in candidates.iter().enumerate() {
+            if c.chunk_type == ChunkType::Macro && c.language == Language::Rust {
+                macro_idx.push(i);
+            }
+        }
+
+        // No Rust macros among the candidates: skip the content scan entirely.
+        if macro_idx.is_empty() {
+            return Ok(candidates);
+        }
+
+        // Per-macro invocation token (`<name>!`) and the defining chunk id,
+        // so a chunk can never mark a macro live via the macro's own body.
+        let invoked_tokens: Vec<(String, String)> = macro_idx
+            .iter()
+            .map(|&i| (format!("{}!", candidates[i].name), candidates[i].id.clone()))
+            .collect();
+
+        // `invoked[k] == true` once macro `macro_idx[k]` is seen invoked by
+        // some other chunk. A single ordered pass over content fills this in.
+        let mut invoked = vec![false; macro_idx.len()];
+
+        // One read transaction, paged by rowid so peak heap is bounded by the
+        // batch size rather than the total content bytes. We can stop early
+        // once every candidate has been marked invoked.
+        let mut tx = self.pool.begin().await?;
+        const PAGE: i64 = 2048;
+        let mut last_rowid: i64 = 0;
+        let mut remaining = invoked.len();
+        'scan: loop {
+            let rows: Vec<(i64, String, String)> = sqlx::query_as(
+                "SELECT rowid, id, content FROM chunks
+                 WHERE rowid > ?1
+                 ORDER BY rowid
+                 LIMIT ?2",
+            )
+            .bind(last_rowid)
+            .bind(PAGE)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for (rowid, chunk_id, content) in &rows {
+                last_rowid = *rowid;
+                for (k, (token, def_id)) in invoked_tokens.iter().enumerate() {
+                    if invoked[k] || chunk_id == def_id {
+                        continue;
+                    }
+                    if content.contains(token.as_str()) {
+                        invoked[k] = true;
+                        remaining -= 1;
+                        if remaining == 0 {
+                            break 'scan;
+                        }
+                    }
                 }
             }
-            filtered.push(chunk);
         }
+        drop(tx);
+
+        // Map invocation results back onto candidate indices, then rebuild
+        // the surviving candidate list in original order.
+        let mut dropped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (k, &i) in macro_idx.iter().enumerate() {
+            if invoked[k] {
+                dropped.insert(i);
+            }
+        }
+
+        let drop_count = dropped.len();
+        if drop_count > 0 {
+            // Surface the invoked-macro drop count so the false-positive rate
+            // of this Tier-1.5 filter is auditable — a silent `continue`
+            // hid how many candidates the macro heuristic removed.
+            tracing::debug!(
+                dropped = drop_count,
+                rust_macro_candidates = macro_idx.len(),
+                "filter_invoked_macros dropped invoked macros from dead candidates"
+            );
+        }
+
+        let filtered = candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| if dropped.contains(&i) { None } else { Some(c) })
+            .collect();
         Ok(filtered)
     }
 
@@ -370,27 +448,6 @@ impl<Mode> Store<Mode> {
 
         Ok((confident, possibly_dead_pub))
     }
-}
-
-/// Escape SQLite GLOB wildcards in `s`. GLOB recognizes `*`, `?`, `[`, `]`.
-/// Macro identifiers don't contain these in any language we target, but
-/// the escape is defensive against pathological inputs (e.g. parser
-/// quirks producing odd names). Wrapping a literal in a single-char
-/// class — `[*]`, `[?]`, `[[]`, `[]]` — matches it literally in GLOB.
-fn glob_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for c in s.chars() {
-        match c {
-            '*' | '?' | '[' => {
-                out.push('[');
-                out.push(c);
-                out.push(']');
-            }
-            ']' => out.push_str("[]]"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -607,25 +664,6 @@ mod tests {
     }
 
     // ===== filter_invoked_macros tests =====
-
-    /// `glob_escape` wraps GLOB special chars in single-char classes
-    /// so they match literally. Identifier characters (alphanumeric +
-    /// underscore) pass through unchanged.
-    #[test]
-    fn test_glob_escape_identifiers_pass_through() {
-        assert_eq!(glob_escape("foo"), "foo");
-        assert_eq!(glob_escape("define_languages"), "define_languages");
-        assert_eq!(glob_escape("MyMacro2"), "MyMacro2");
-    }
-
-    #[test]
-    fn test_glob_escape_wildcards_wrapped() {
-        assert_eq!(glob_escape("a*b"), "a[*]b");
-        assert_eq!(glob_escape("a?b"), "a[?]b");
-        assert_eq!(glob_escape("a[b"), "a[[]b");
-        assert_eq!(glob_escape("a]b"), "a[]]b");
-        assert_eq!(glob_escape("*?[]"), "[*][?][[][]]");
-    }
 
     /// The macro filter is Rust-only because the `!` invocation suffix
     /// is Rust-specific. Non-Rust macros (here: an Elixir macro chunk)
