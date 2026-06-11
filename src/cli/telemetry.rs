@@ -288,6 +288,50 @@ pub fn log_routed(
     append_telemetry(cqs_dir, &entry, timestamp);
 }
 
+/// Log a kind-fallback fire to the telemetry file.
+///
+/// A graph command (`callers`, `impact`, `deps`, `test-map`, `trace`, …)
+/// queried a name that classified to a kind it can't process (a const has
+/// no callers, a type has no call-graph impact, …) and redirected to the
+/// kind-labeled fallback instead of running its normal flow. This is the
+/// Phase-2 routing-prioritization signal: `cqs telemetry` aggregates these
+/// into a per-command fallback rate so the standing question — do agents
+/// still bounce between commands — has data behind it.
+///
+/// Schema: `{event: "kind_fallback", cmd, kind, name, definitions, ts}`.
+/// `cmd` is the firing command (the fallback's `fallback_from`); `kind` is
+/// the routing label (`const` / `type` / `module` / `ambiguous`); `name`
+/// is redacted by default (it can carry symbol names worth keeping out of
+/// the plaintext journal — same `CQS_TELEMETRY_REDACT_QUERY` opt-out as
+/// search queries). Both surfaces (CLI direct and daemon dispatch) route
+/// through the same command cores, so a single call site here covers both.
+///
+/// Activation rules and write semantics mirror [`log_command`].
+pub fn log_kind_fallback(
+    cqs_dir: &Path,
+    command: &str,
+    kind: &str,
+    name: &str,
+    definitions: usize,
+) {
+    // See `log_command` above for the timestamp rationale.
+    let timestamp = cqs::unix_secs_i64();
+
+    // Redact `name` by default — it can be a symbol the operator would
+    // rather not see in plaintext; reuse the search-query redaction knob.
+    let name_field = redact_query_str(name);
+    let entry = serde_json::json!({
+        "ts": timestamp,
+        "event": "kind_fallback",
+        "cmd": command,
+        "kind": kind,
+        "name": name_field,
+        "definitions": definitions,
+    });
+
+    append_telemetry(cqs_dir, &entry, timestamp);
+}
+
 /// Extract command name and query from CLI args for telemetry.
 ///
 /// Walks past leading flags so global options (`--json`, `--slot <name>`,
@@ -496,6 +540,32 @@ mod tests {
         assert_eq!(r1["ok"], false);
         assert_eq!(r1["duration_ms"], 17);
         assert!(r1["error"].as_str().unwrap().contains("Database error"));
+    }
+
+    #[test]
+    fn log_kind_fallback_writes_event_with_redacted_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+        // Default redaction on: the name must be hashed, not plaintext.
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
+
+        log_kind_fallback(cqs_dir, "callers", "const", "MAX_RETRIES", 1);
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(r["event"], "kind_fallback");
+        assert_eq!(r["cmd"], "callers");
+        assert_eq!(r["kind"], "const");
+        assert_eq!(r["definitions"], 1);
+        // Redacted: the raw symbol name must not appear; the field is an
+        // 8-char blake3 prefix.
+        let name = r["name"].as_str().unwrap();
+        assert_ne!(name, "MAX_RETRIES", "name must be redacted by default");
+        assert_eq!(name.len(), 8, "redacted name is an 8-char hash prefix");
     }
 
     #[test]
