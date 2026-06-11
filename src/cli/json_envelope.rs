@@ -382,18 +382,35 @@ pub(crate) fn sanitize_json_floats(value: &mut serde_json::Value) {
     }
 }
 
-/// Format a pre-built envelope [`serde_json::Value`] as a pretty-printed
-/// string. Tries `serde_json::to_string_pretty` first, falls back to the
-/// sanitize-and-retry pattern on serialization failure (NaN / Infinity in
-/// a leaf field). Used by both [`emit_json`] (CLI handlers) and `cmd_chat`
-/// so the chat REPL inherits the same retry behavior as the batch and CLI
-/// surfaces — no envelope leaks bare stderr text on a non-finite leaf.
+/// Serialize any envelope value (typed or a pre-built
+/// [`serde_json::Value`]) to a pretty-printed string, alphabetizing keys.
+///
+/// Accepts `&impl Serialize` so callers hand the typed `Envelope` (or a
+/// hand-built map) directly rather than each pre-building a
+/// `serde_json::Value` via `to_value` first. The single `to_value` here
+/// is load-bearing, not redundant: the wire contract is alphabetical key
+/// order (consumers diff envelope shapes), and serde_json has no
+/// single-pass key-sorting serializer without the crate-wide
+/// `preserve_order` feature. Routing through a `Value` (BTreeMap-backed,
+/// so sorted) then `to_string_pretty` is the minimal pass count that
+/// yields sorted output — the canonicalization, not waste.
+///
+/// On the steady-state path this serializes once to a `Value` and once to
+/// a `String`. The sanitize-and-retry arm (NaN / Infinity in a leaf field)
+/// reuses the already-built `Value`, so the failure path adds no extra
+/// serialization over the happy path. Used by [`emit_json`] and the
+/// chat / daemon-to-CLI surfaces so all inherit the same retry behavior —
+/// no envelope leaks bare stderr text on a non-finite leaf.
 ///
 /// Returns the final stringified envelope, or an `Err` only if even the
 /// sanitized tree fails to serialize (in practice impossible: after
 /// [`sanitize_json_floats`] no `Value::Number` can hold a non-finite f64).
-pub fn format_envelope_to_string(value: &serde_json::Value) -> Result<String> {
-    match serde_json::to_string_pretty(value) {
+pub fn format_envelope_to_string<T: Serialize>(value: &T) -> Result<String> {
+    // One serialization into a `Value` to canonicalize key order; the
+    // owned tree is then reused by the sanitize-retry arm without a
+    // re-serialize.
+    let mut buf = serde_json::to_value(value)?;
+    match serde_json::to_string_pretty(&buf) {
         Ok(s) => Ok(s),
         Err(first) => {
             // Preserve the original error so the sanitize-retry path can
@@ -407,9 +424,8 @@ pub fn format_envelope_to_string(value: &serde_json::Value) -> Result<String> {
                 error = %first,
                 "to_string_pretty failed; retrying after float-sanitize"
             );
-            let mut sanitized = value.clone();
-            sanitize_json_floats(&mut sanitized);
-            serde_json::to_string_pretty(&sanitized).map_err(|second| {
+            sanitize_json_floats(&mut buf);
+            serde_json::to_string_pretty(&buf).map_err(|second| {
                 anyhow::anyhow!(
                     "JSON serialization failed; \
                      first error: {first}; sanitize-retry error: {second}"
@@ -442,8 +458,7 @@ pub fn emit_json<T: Serialize>(value: &T) -> Result<()> {
         emit_bare_payload_stdout(value)
     } else {
         let env = Envelope::ok(value);
-        let buf = serde_json::to_value(&env)?;
-        let s = format_envelope_to_string(&buf)?;
+        let s = format_envelope_to_string(&env)?;
         println!("{s}");
         Ok(())
     }
@@ -559,15 +574,13 @@ fn daemon_payload_to_cli_text_with(
         Ok(format!("{}\n", serde_json::to_string_pretty(&v)?))
     } else {
         let env = Envelope::ok(payload);
-        let buf = serde_json::to_value(&env)?;
-        Ok(format!("{}\n", format_envelope_to_string(&buf)?))
+        Ok(format!("{}\n", format_envelope_to_string(&env)?))
     }
 }
 
 pub fn emit_json_error(code: &str, message: &str) -> Result<()> {
     let env = Envelope::<serde_json::Value>::err(code, message);
-    let buf = serde_json::to_value(&env)?;
-    let s = format_envelope_to_string(&buf)?;
+    let s = format_envelope_to_string(&env)?;
     println!("{s}");
     Ok(())
 }
