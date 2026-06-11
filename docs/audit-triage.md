@@ -62,7 +62,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 
 | ID | Finding | Location | Status |
 |----|---------|----------|--------|
-| OB-V1.42-3 | Daemon-served searches drop staleness warnings — recommended default path never warns; WSL inotify makes it the path that needs it most | src/cli/batch/handlers/search.rs:67-129 | open |
+| OB-V1.42-3 | Daemon-served searches drop staleness warnings — recommended default path never warns; WSL inotify makes it the path that needs it most | src/cli/batch/handlers/search.rs:67-129 | ✅ PR #1752 |
 | DOC-V1.42-5 | CONTRIBUTING JSON envelope section teaches pre-V2Bare shape as universal; not_found/io_error "reserved" claim false (also json_envelope.rs:155) | CONTRIBUTING.md:63-93 | open |
 | DOC-V1.42-6 | CONTRIBUTING Architecture Overview missing ~14 files; commands/eval lists moved schema.rs | CONTRIBUTING.md:221-432 | open |
 | RB-V1.42-1 | collect_comment_ranges / find_type_identifier_recursive recurse per tree-depth — stack overflow (SIGSEGV) on rayon workers aborts index/watch | src/parser/chunk.rs:126, :756 | open |

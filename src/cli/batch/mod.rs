@@ -322,6 +322,19 @@ fn write_json_line(
     out: &mut impl std::io::Write,
     value: &serde_json::Value,
 ) -> std::io::Result<()> {
+    // Per-response envelope meta: handlers may attach a reserved top-level
+    // `_meta` key to their payload (e.g. `stale_origins` from the search
+    // handler). Lift it out of the payload and onto the envelope — sibling
+    // of `data`, the same wire position `worktree_stale` occupies — so the
+    // CLI client's slim-envelope translation sees one meta channel. Rare
+    // path (handlers attach `_meta` skip-when-empty), so the payload clone
+    // stays off the steady-state line.
+    if let Some(obj) = value.as_object() {
+        if obj.contains_key("_meta") {
+            return write_json_line_lifting_meta(out, value);
+        }
+    }
+
     // Steady-state: build the line in a `Vec<u8>` so the entire envelope
     // is one `writeln!` (avoids interleaved partial writes if `out` is a
     // shared TcpStream / UnixStream). Buffering also amortizes allocator
@@ -380,6 +393,53 @@ fn write_json_line(
                     writeln!(out, "{}", s)
                 }
             }
+        }
+    }
+}
+
+/// Cold path of [`write_json_line`]: the payload carries a reserved
+/// top-level `_meta` key. Remove it from the payload, merge its entries
+/// with the process-level meta (worktree state), and emit
+/// `{"data": <payload-without-_meta>, "_meta": {...merged...}}`.
+///
+/// Sanitizes NaN / Infinity up front — this path already owns a payload
+/// clone, so the streamed `to_writer` + retry dance of the hot path buys
+/// nothing here.
+fn write_json_line_lifting_meta(
+    out: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    let mut payload = value.clone();
+    let per_meta = match payload.as_object_mut().and_then(|o| o.remove("_meta")) {
+        Some(serde_json::Value::Object(m)) => m,
+        // Non-object `_meta` (handler bug) — drop it rather than emit a
+        // malformed meta block.
+        Some(other) => {
+            tracing::warn!(
+                meta = %other,
+                "Payload _meta is not a JSON object; dropping per-response meta"
+            );
+            serde_json::Map::new()
+        }
+        None => serde_json::Map::new(),
+    };
+
+    let mut env = serde_json::Map::with_capacity(2);
+    env.insert("data".to_string(), payload);
+    if let Some(meta) = crate::cli::json_envelope::merged_meta_value(per_meta) {
+        env.insert("_meta".to_string(), meta);
+    }
+    let mut env = serde_json::Value::Object(env);
+    sanitize_json_floats(&mut env);
+    match serde_json::to_string(&env) {
+        Ok(s) => writeln!(out, "{}", s),
+        Err(e) => {
+            tracing::warn!(error = %e, "JSON serialization failed after sanitization");
+            write_envelope_error(
+                out,
+                crate::cli::json_envelope::error_codes::INTERNAL,
+                "JSON serialization failed",
+            )
         }
     }
 }
@@ -977,6 +1037,50 @@ mod tests {
         assert_eq!(parsed["data"], val);
         assert!(parsed.get("error").is_none(), "got: {parsed}");
         assert!(parsed.get("version").is_none(), "got: {parsed}");
+    }
+
+    // Payload-level `_meta` is lifted onto the envelope, sibling of `data` —
+    // the same wire position `worktree_stale` occupies. The payload itself
+    // arrives meta-free so consumers never see `data._meta`.
+    #[test]
+    fn test_write_json_line_lifts_payload_meta_to_envelope() {
+        let val = serde_json::json!({
+            "query": "q",
+            "results": [],
+            "_meta": {"stale_origins": ["src/lib.rs"]},
+        });
+        let mut buf = Vec::new();
+        write_json_line(&mut buf, &val).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
+        assert_eq!(
+            parsed["_meta"]["stale_origins"],
+            serde_json::json!(["src/lib.rs"]),
+            "per-response meta must land on the envelope; got: {parsed}"
+        );
+        assert!(
+            parsed["data"].get("_meta").is_none(),
+            "lifted meta must be removed from the data payload; got: {parsed}"
+        );
+        assert_eq!(parsed["data"]["query"], "q");
+    }
+
+    // Lifted-meta path sanitizes non-finite floats like the hot path does.
+    #[test]
+    fn test_write_json_line_lifts_meta_and_sanitizes_nan() {
+        let val = serde_json::json!({
+            "score": f64::NAN,
+            "_meta": {"stale_origins": ["a.rs"]},
+        });
+        let mut buf = Vec::new();
+        write_json_line(&mut buf, &val).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
+        assert!(parsed["data"]["score"].is_null());
+        assert_eq!(
+            parsed["_meta"]["stale_origins"],
+            serde_json::json!(["a.rs"])
+        );
     }
 
     // D.2: reject_null_tokens helper unit test. Pure function, no fixture

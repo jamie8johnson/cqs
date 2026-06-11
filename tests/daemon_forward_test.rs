@@ -572,6 +572,105 @@ fn test_bare_query_forwards_search_knobs_to_daemon() {
 }
 
 #[test]
+fn test_daemon_stale_origins_meta_prints_cli_warning() {
+    // Staleness parity: when the daemon's search response carries
+    // `_meta.stale_origins`, the CLI client must print the SAME stderr
+    // warning the CLI-direct path emits (`print_stale_warning`, shared by
+    // `warn_stale_results` and the dispatch.rs translation path). Before the
+    // fix, daemon-served searches silently dropped the staleness signal.
+    let (dir, sock_path) = setup_project();
+    let response = serde_json::json!({
+        "status": "ok",
+        "output": {
+            "data": {"query": "find the thing", "results": [], "total": 0},
+            "_meta": {"stale_origins": ["src/lib.rs", "src/other.rs"]},
+        },
+    });
+    let mock = MockDaemon::with_response_line(sock_path.clone(), response.to_string());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    // Bare default surface (no CQS_OUTPUT_FORMAT pin) — the `_meta` splice
+    // assertion below targets the V2Bare shape.
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["find the thing", "--json"]);
+
+    let output = cmd.output().expect("cqs spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "bare query failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "expected exactly one daemon connection; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    // The canonical warning line from `print_stale_warning` — same text the
+    // CLI-direct path produces for two stale files.
+    assert!(
+        stderr.contains("2 result files changed since last index"),
+        "stale warning missing from stderr; stderr=<{stderr}>"
+    );
+    assert!(
+        stderr.contains("src/lib.rs") && stderr.contains("src/other.rs"),
+        "stale file list missing from stderr; stderr=<{stderr}>"
+    );
+    // Machine-readable signal: the daemon's `_meta` is spliced into the bare
+    // JSON payload on stdout (V2Bare default), same as `worktree_stale`.
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+    assert_eq!(
+        parsed["_meta"]["stale_origins"],
+        serde_json::json!(["src/lib.rs", "src/other.rs"]),
+        "stale_origins must reach the JSON consumer; stdout=<{stdout}>"
+    );
+}
+
+#[test]
+fn test_daemon_quiet_suppresses_stale_warning() {
+    // `--quiet` parity: CLI-direct gates the staleness warning on
+    // `!cli.quiet` (`render_query_output`); the daemon-client translation
+    // must do the same. The JSON signal stays — only the human warning goes.
+    let (dir, sock_path) = setup_project();
+    let response = serde_json::json!({
+        "status": "ok",
+        "output": {
+            "data": {"query": "find the thing", "results": [], "total": 0},
+            "_meta": {"stale_origins": ["src/lib.rs"]},
+        },
+    });
+    let mock = MockDaemon::with_response_line(sock_path.clone(), response.to_string());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["--quiet", "find the thing", "--json"]);
+
+    let output = cmd.output().expect("cqs spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "bare query failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(mock.conn_count(), 1);
+    assert!(
+        !stderr.contains("changed since last index"),
+        "--quiet must suppress the stale warning; stderr=<{stderr}>"
+    );
+}
+
+#[test]
 fn test_cqs_slot_env_bypasses_daemon() {
     // `CQS_SLOT` is documented as equivalent to `--slot` and honored by
     // `slot::resolve_slot_name`. The daemon serves whichever slot was active

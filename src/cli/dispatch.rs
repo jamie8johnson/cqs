@@ -524,6 +524,18 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             // printing; anything that isn't a slim envelope prints verbatim.
             other => match cqs::daemon_translate::classify_slim_envelope(other) {
                 Some(cqs::daemon_translate::SlimEnvelope::Data { payload, meta }) => {
+                    // PARITY: the daemon's search handler runs the per-origin
+                    // staleness check (`attach_stale_origins_meta` in
+                    // `batch::handlers::search`) and reports stale files via
+                    // `_meta.stale_origins`. Print the same stderr warning the
+                    // CLI-direct path emits (`warn_stale_results` →
+                    // `print_stale_warning`), gated on `--quiet` exactly like
+                    // `render_query_output`. `--no-stale-check` needs no gate
+                    // here: it forwards to the daemon, which skips the check,
+                    // so the meta is absent.
+                    if !cli.quiet {
+                        crate::cli::staleness::print_stale_warning_from_meta(meta);
+                    }
                     match crate::cli::json_envelope::daemon_payload_to_cli_text(payload, meta) {
                         Ok(s) => s,
                         Err(e) => {
