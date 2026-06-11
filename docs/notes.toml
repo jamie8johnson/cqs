@@ -1891,3 +1891,11 @@ mentions = [
 sentiment = 0.0
 text = "Audit categories exhaust after 13+ cycles: Scaling found 1 finding, Robustness unwrap/panic sweeps came back clean — new findings concentrate in the newest code (v28 canonical_hash parser paths, campaign adapter seams). Future audits could weight scope toward recent diffs over full-codebase sweeps."
 mentions = ["audit"]
+
+[[note]]
+sentiment = -0.5
+text = "Parallel agents sharing CARGO_TARGET_DIR race: same-hash test binaries clobber each other and a test run can silently execute 0 matching tests from a stale binary. Give each parallel agent a private CARGO_TARGET_DIR (e.g. /tmp/cqs-target-<id>) when test results must be trustworthy"
+mentions = [
+    "agents",
+    "cargo",
+]

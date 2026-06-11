@@ -4,7 +4,7 @@ Audit date: 2026-06-10
 Main HEAD: 7284e31e
 Source: `docs/audit-findings.md` (107 findings — batch 1: 59 across 8 categories; batch 2: 48 across the other 8, run after batch-1 triage)
 Calibration: matches `docs/audit-triage-v1.40.0.md` priority matrix.
-Status: **P1 tier COMPLETE (2026-06-11)** — all 28 P1s fixed across 9 cluster PRs (#1738-#1746) plus 4 riders (DS-V1.42-6, EXT-V1.42-1, DOC-V1.42-4, RB-V1.42-4). 125 items remain open (P2/P3/P4/CF tiers).
+Status: **P1 tier COMPLETE (2026-06-11)** — all 28 P1s fixed across 9 cluster PRs (#1738-#1746) plus 4 riders (DS-V1.42-6, EXT-V1.42-1, DOC-V1.42-4, RB-V1.42-4). 123 items remain open (P2/P3/P4/CF tiers; notes-hardening TC-V1.42-1/2 closed in #1748).
 
 Fix-run review notes for the next cycle: combined-short bools (`-qv`) leak on the bare-query daemon path (pre-existing, found in #1746's review); `review`/`ci` are daemon-marked but silently ignore `--stdin` daemon-up (found by the new exhaustiveness test); remaining `clamp(1, 100)` literals on non-search commands fold into CF SHL-V1.40-2.
 
@@ -68,7 +68,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | RB-V1.42-1 | collect_comment_ranges / find_type_identifier_recursive recurse per tree-depth — stack overflow (SIGSEGV) on rayon workers aborts index/watch | src/parser/chunk.rs:126, :756 | open |
 | API-V1.42-3 | callers vs callees output topology asymmetry; module doc's type-discrimination claim false for callees | src/cli/commands/graph/callers.rs:74-90 | open |
 | API-V1.42-8 | Args-layer contract drift in campaign code: borrowed non-Deserialize AuditModeArgs, two no-Args conventions, adapter-only flag in core Args | infra/audit_mode.rs:38 + slot.rs/reference.rs/cache_cmd.rs + index/stale.rs:76-82 | open |
-| TC-V1.42-1 | notes add --mentions can write notes.toml past 10 MiB cap → bricks all notes ops; note.rs:30-33 doc overpromises write-side enforcement | src/cli/commands/io/notes.rs:306-311, src/note.rs:307-320 | open |
+| TC-V1.42-1 | notes add --mentions can write notes.toml past 10 MiB cap → bricks all notes ops; note.rs:30-33 doc overpromises write-side enforcement | src/cli/commands/io/notes.rs:306-311, src/note.rs:307-320 | ✅ PR #1748 |
 | TC-V1.42-8 | CAGRA accepts non-finite queries + zero/NaN build vectors HNSW guards — backend asymmetry (CPU-side prepare_index_data filter is the easy half; GPU-gated verification is P4-grade) | src/cagra.rs:424, src/hnsw/mod.rs:583-602 | open |
 | CQ-V1.42-1 | Config ef_search silently ignored on every direct-CLI search path — wrapper hardcodes None; knob only works via batch/daemon | src/cli/store.rs:397-402 | open |
 | CQ-V1.42-8 | prune_gitignored never cleans function_calls — orphan call-graph rows (ghost callers) until next prune_all; 3 prune fns already diverged | src/store/chunks/staleness.rs:266, :389, :532 | open |
@@ -107,7 +107,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | open |
 | API-V1.42-6 | --expand alias: bool on search, value-taking depth on gather | src/cli/args.rs:189 vs :234 | open |
 | API-V1.42-7 | drift's hand-rolled --limit accepts 0 and defaults unlimited — contradicts LimitArg contract | src/cli/args.rs:581-583 | open |
-| TC-V1.42-2 | Whitespace-only note = cross-note wildcard for update/remove; duplicate-text semantics unpinned | src/cli/commands/io/notes.rs:298-572 | open |
+| TC-V1.42-2 | Whitespace-only note = cross-note wildcard for update/remove; duplicate-text semantics unpinned | src/cli/commands/io/notes.rs:298-572 | ✅ PR #1748 |
 | TC-V1.42-3 | cmd_batch stdin line-cap rejection path (CQS_BATCH_MAX_LINE_LEN) zero tests (daemon analog is pinned) | src/cli/batch/session.rs:155-173 | open |
 | TC-V1.42-5 | parse_nonzero_usize untested while f32 siblings exhaustively pinned in same file | src/cli/definitions.rs:94-100 | open |
 | TC-V1.42-9 | HNSW zero-vector skip / id_map desync — documented past bug class, no regression test | src/hnsw/build.rs:200-222 | open |

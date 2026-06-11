@@ -5,7 +5,10 @@
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
-use cqs::{parse_notes, rewrite_notes_file, NoteEntry, NOTES_HEADER};
+use cqs::{
+    parse_notes, rewrite_notes_file, NoteEntry, MAX_NOTE_MENTIONS, MAX_NOTE_MENTION_BYTES,
+    MAX_NOTE_TEXT_BYTES, NOTES_HEADER,
+};
 
 use crate::cli::definitions::TextJsonArgs;
 use crate::cli::{find_project_root, Cli};
@@ -239,6 +242,62 @@ fn open_rw_store(root: &std::path::Path) -> Result<cqs::Store> {
         .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))
 }
 
+/// Validate a note text payload: trim, reject empty/whitespace-only,
+/// enforce the byte cap. Returns the trimmed text — the trimmed form is
+/// what gets stored, so the exact-match lookups in update/remove (which
+/// also trim both sides) stay symmetric. Rejecting whitespace-only text
+/// here matters beyond hygiene: a stored whitespace-only note would trim
+/// to "" and match ANY whitespace-only query in update/remove — a
+/// cross-note wildcard.
+///
+/// `what` names the offending argument in the error ("Note text",
+/// "--new-text").
+fn validate_note_text<'a>(raw: &'a str, what: &str) -> Result<&'a str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("{what} cannot be empty or whitespace-only");
+    }
+    if trimmed.len() > MAX_NOTE_TEXT_BYTES {
+        bail!(
+            "{what} too long: {} bytes (max {})",
+            trimmed.len(),
+            MAX_NOTE_TEXT_BYTES
+        );
+    }
+    Ok(trimmed)
+}
+
+/// Validate a mentions list: trim entries, drop empties, enforce the count
+/// and per-mention byte caps. Without these caps a single `--mentions`
+/// payload could push docs/notes.toml past the file-size limit in one shot.
+/// (The serialized-output check in `rewrite_notes_file` is the backstop;
+/// this gives a precise error before any file I/O.) `flag` names the
+/// offending argument in the error.
+fn validate_mentions(raw: &[String], flag: &str) -> Result<Vec<String>> {
+    let mentions: Vec<String> = raw
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if mentions.len() > MAX_NOTE_MENTIONS {
+        bail!(
+            "{flag}: {} mentions exceeds the per-note limit of {}",
+            mentions.len(),
+            MAX_NOTE_MENTIONS
+        );
+    }
+    if let Some(long) = mentions.iter().find(|m| m.len() > MAX_NOTE_MENTION_BYTES) {
+        bail!(
+            "{flag}: mention '{}' is {} bytes (max {} per mention)",
+            text_preview(long),
+            long.len(),
+            MAX_NOTE_MENTION_BYTES
+        );
+    }
+    Ok(mentions)
+}
+
 /// Build a text preview (first 100 chars or full text).
 fn text_preview(text: &str) -> String {
     text.char_indices()
@@ -266,7 +325,10 @@ fn ensure_notes_file(root: &std::path::Path) -> Result<PathBuf> {
     Ok(notes_path)
 }
 
-/// Add a note: validate text/sentiment, append to notes.toml, optionally reindex.
+/// Add a note: validate text/sentiment/mentions, append to notes.toml,
+/// optionally reindex. Text is stored trimmed; whitespace-only text,
+/// over-cap text/mentions, and exact (post-trim) duplicates of an existing
+/// note are rejected.
 ///
 /// `output_json` accepts the subcommand-level `--json`; combined with
 /// `cli.json` to honour the top-level flag too. 8 args is on clippy's
@@ -295,20 +357,10 @@ fn cmd_notes_add(
         no_reindex
     )
     .entered();
-    if text.is_empty() {
-        bail!("Note text cannot be empty");
-    }
-    if text.len() > 2000 {
-        bail!("Note text too long: {} bytes (max 2000)", text.len());
-    }
+    let text = validate_note_text(text, "Note text")?;
 
     let sentiment = sentiment.clamp(-1.0, 1.0);
-    let mentions: Vec<String> = mentions
-        .unwrap_or(&[])
-        .iter()
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .collect();
+    let mentions = validate_mentions(mentions.unwrap_or(&[]), "--mentions")?;
     // Normalize kind (trim + lowercase + reject empty). Mirrors the
     // parser's `normalize_kind` semantics so add and parse stay in sync —
     // `--kind ""` is silently absent, not stored as Some("").
@@ -331,7 +383,19 @@ fn cmd_notes_add(
     let root = resolve_root(ctx);
     let notes_path = ensure_notes_file(&root)?;
 
+    // Duplicate check lives inside the rewrite closure so it runs under the
+    // same exclusive lock as the append — no read-then-write race with a
+    // concurrent add. Notes carry search-ranking sentiment, and update/remove
+    // mutate only the first text match, so a duplicate would survive a
+    // "remove" and keep skewing rankings; reject it outright.
     rewrite_notes_file(&notes_path, |entries| {
+        if entries.iter().any(|e| e.text.trim() == text) {
+            return Err(cqs::NoteError::Duplicate(format!(
+                "a note with this text already exists in docs/notes.toml: '{}' \
+                 (use 'cqs notes update' or 'cqs notes remove' instead)",
+                text_preview(text)
+            )));
+        }
         entries.push(note_entry.clone());
         Ok(())
     })
@@ -393,6 +457,11 @@ fn cmd_notes_add(
 
 /// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
 ///
+/// Matching is by exact trimmed text and applies to the FIRST match in file
+/// order. The CLI rejects duplicate adds, but a hand-edited notes.toml can
+/// still contain duplicates — in that case only the first entry is updated;
+/// rerun the command to reach the next one.
+///
 /// 9 args, including `output_json`. Bundling into a struct would be
 /// more shape than the call site warrants — the dispatcher at `cmd_notes`
 /// already destructures the same fields, and a helper struct just round-
@@ -419,8 +488,11 @@ fn cmd_notes_update(
         no_reindex
     )
     .entered();
-    if text.is_empty() {
-        bail!("Note text cannot be empty");
+    // Trimmed-empty rejection (not just `is_empty`): a whitespace-only query
+    // would trim to "" and match any whitespace-only entry a hand-edited
+    // file might contain.
+    if text.trim().is_empty() {
+        bail!("Note text cannot be empty or whitespace-only");
     }
     if new_text.is_none() && new_sentiment.is_none() && new_mentions.is_none() && new_kind.is_none()
     {
@@ -429,14 +501,9 @@ fn cmd_notes_update(
              must be provided"
         );
     }
-    if let Some(t) = new_text {
-        if t.is_empty() {
-            bail!("--new-text cannot be empty");
-        }
-        if t.len() > 2000 {
-            bail!("--new-text too long: {} bytes (max 2000)", t.len());
-        }
-    }
+    let new_text = new_text
+        .map(|t| validate_note_text(t, "--new-text"))
+        .transpose()?;
 
     let root = resolve_root(ctx);
     let notes_path = root.join("docs/notes.toml");
@@ -447,12 +514,9 @@ fn cmd_notes_update(
     let text_trimmed = text.trim();
     let new_text_owned = new_text.map(|s| s.to_string());
     let new_sentiment_clamped = new_sentiment.map(|s| s.clamp(-1.0, 1.0));
-    let new_mentions_owned = new_mentions.map(|m| {
-        m.iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-    });
+    let new_mentions_owned = new_mentions
+        .map(|m| validate_mentions(m, "--new-mentions"))
+        .transpose()?;
     // Apply the same normalization `notes add --kind` uses: trim,
     // lowercase, empty → None. `Some(None)` means "the user passed
     // `--new-kind` with an empty/whitespace value, intending to
@@ -534,6 +598,10 @@ fn cmd_notes_update(
 }
 
 /// Remove a note by matching its text content, optionally reindex after.
+///
+/// Matching is by exact trimmed text and removes the FIRST match in file
+/// order — see `cmd_notes_update` for the duplicate-entry caveat with
+/// hand-edited files.
 fn cmd_notes_remove(
     cli: &Cli,
     ctx: Option<&crate::cli::CommandContext<'_, cqs::store::ReadOnly>>,
@@ -544,8 +612,10 @@ fn cmd_notes_remove(
     // Per-subhandler span — see `cmd_notes_add`.
     let _span =
         tracing::info_span!("cmd_notes_remove", text_len = text.len(), no_reindex).entered();
-    if text.is_empty() {
-        bail!("Note text cannot be empty");
+    // Trimmed-empty rejection — see `cmd_notes_update` for the
+    // whitespace-only wildcard rationale.
+    if text.trim().is_empty() {
+        bail!("Note text cannot be empty or whitespace-only");
     }
 
     let root = resolve_root(ctx);
