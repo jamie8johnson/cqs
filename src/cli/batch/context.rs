@@ -32,21 +32,39 @@ pub(super) struct DataVersionProbe {
     last: i64,
 }
 
+// ─── Cross-project cache entry ───────────────────────────────────────────────
+
+/// A cached cross-project context plus the references-config fingerprint it
+/// was built from. The fingerprint lets a reader detect a config edit
+/// (references added/removed/repointed/reweighted) and rebuild even though the
+/// underlying `index.db` files never changed.
+///
+/// The context is wrapped in `Arc<Mutex<...>>` so a [`BatchView`] can hand the
+/// `&mut CrossProjectContext` the cross cores require to a dispatch handler
+/// without holding any BatchContext lock — and so the lazily-populated
+/// per-store graph cache inside the context survives across requests.
+pub(super) struct CachedCrossProject {
+    pub(super) ctx: Arc<Mutex<cqs::cross_project::CrossProjectContext>>,
+    pub(super) fingerprint: u64,
+}
+
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
 /// One bit per mutable-cache slot, used by the deferred-invalidation mask
 /// (`BatchContext::pending_invalidation`) so a retry clears only the slots
-/// that were actually deferred.
+/// that were actually deferred. `u16` rather than `u8`: the cross-project
+/// cell pushed the slot count past 8.
 mod slot {
-    pub(super) const HNSW: u8 = 1 << 0;
-    pub(super) const BASE_HNSW: u8 = 1 << 1;
-    pub(super) const CALL_GRAPH: u8 = 1 << 2;
-    pub(super) const TEST_CHUNKS: u8 = 1 << 3;
-    pub(super) const FILE_SET: u8 = 1 << 4;
-    pub(super) const NOTES: u8 = 1 << 5;
-    pub(super) const SPLADE: u8 = 1 << 6;
-    pub(super) const REFS: u8 = 1 << 7;
-    pub(super) const ALL: u8 = u8::MAX;
+    pub(super) const HNSW: u16 = 1 << 0;
+    pub(super) const BASE_HNSW: u16 = 1 << 1;
+    pub(super) const CALL_GRAPH: u16 = 1 << 2;
+    pub(super) const TEST_CHUNKS: u16 = 1 << 3;
+    pub(super) const FILE_SET: u16 = 1 << 4;
+    pub(super) const NOTES: u16 = 1 << 5;
+    pub(super) const SPLADE: u16 = 1 << 6;
+    pub(super) const REFS: u16 = 1 << 7;
+    pub(super) const CROSS_PROJECT: u16 = 1 << 8;
+    pub(super) const ALL: u16 = u16::MAX;
 }
 
 /// Shared resources for a batch session.
@@ -162,7 +180,7 @@ pub(crate) struct BatchContext {
     /// discard every in-flight fresh publish and wipe freshly rebuilt slots
     /// on every dispatch while one slot stays contended. Cleared (to 0) only
     /// when every deferred slot actually cleared.
-    pub(super) pending_invalidation: Cell<u8>,
+    pub(super) pending_invalidation: Cell<u16>,
     // LRU caps at 2 — each ReferenceIndex holds Store + HNSW (50-200MB).
     // Values are `Arc` so `get_all_refs` can fan out refs to parallel
     // `--include-refs` searches without cloning the index bytes.
@@ -179,6 +197,38 @@ pub(crate) struct BatchContext {
     /// the inner `Arc<SpladeIndex>`; existing readers that already cloned the
     /// previous Arc keep their snapshot until the next dispatch.
     pub(super) splade_index: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    /// Cached cross-project context (opened reference stores + per-store call
+    /// graphs), shared with every `BatchView` so the daemon's
+    /// `--cross-project` graph dispatchers (callers/callees/impact/test-map/
+    /// trace) stop rebuilding it per request. Without this, each cross-project
+    /// query reopened N reference stores (~64 MB mmap × N) and re-merged every
+    /// project's call graph.
+    ///
+    /// The inner `Arc<Mutex<CrossProjectContext>>` gives the dispatch handlers
+    /// the `&mut` they need (the cross cores lazily populate the per-store
+    /// graph cache), while the outer cell follows the same write-back shape as
+    /// the other mutable caches.
+    ///
+    /// # Staleness contract
+    ///
+    /// Three independent triggers force a rebuild:
+    ///
+    /// 1. **Local reindex** — the merged graph includes the local project's
+    ///    edges, so a primary-`index.db` change must drop it. The
+    ///    `CROSS_PROJECT` slot is in [`slot::ALL`], so `invalidate_mutable_caches`
+    ///    (fired by the identity / data_version staleness check) clears it
+    ///    alongside the other caches.
+    /// 2. **Reference store update** (`cqs ref update <name>`) — rewrites a
+    ///    reference's `index.db` without touching the primary file. The cached
+    ///    context captures each store's `(mtime, size)` at open; the view
+    ///    accessor calls `CrossProjectContext::is_stale()` before serving and
+    ///    rebuilds on a mismatch.
+    /// 3. **References config edit** (`.cqs.toml` / `slot.toml`) — the cell is
+    ///    keyed by a fingerprint of the `references` config; a fingerprint
+    ///    mismatch (config reload picks up the edit after
+    ///    `CONFIG_RELOAD_INTERVAL`) rebuilds. The fingerprint rides alongside
+    ///    the context so a stale cell whose config moved is never served.
+    pub(super) cross_project: Arc<Mutex<Option<CachedCrossProject>>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     pub model_config: cqs::embedder::ModelConfig,
@@ -295,6 +345,7 @@ impl BatchContext {
             pending_invalidation: Cell::new(0),
             splade_encoder: Arc::new(OnceLock::new()),
             splade_index: Arc::new(Mutex::new(None)),
+            cross_project: Arc::new(Mutex::new(None)),
             refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
             root,
             cqs_dir,
@@ -666,8 +717,8 @@ impl BatchContext {
     /// crash the whole batch session for what is just a deferral case.
     /// Busy slots stay populated and are recorded in the sticky
     /// `pending_invalidation` mask for the next retry.
-    fn clear_cache_slots(&self, mask: u8) -> bool {
-        let mut deferred: u8 = 0;
+    fn clear_cache_slots(&self, mask: u16) -> bool {
+        let mut deferred: u16 = 0;
         macro_rules! try_clear_refcell {
             ($field:expr, $bit:expr, $name:literal) => {
                 if mask & $bit != 0 {
@@ -703,6 +754,10 @@ impl BatchContext {
         try_clear_cell!(self.file_set, slot::FILE_SET, "file_set");
         try_clear_cell!(self.notes_cache, slot::NOTES, "notes_cache");
         try_clear_cell!(self.splade_index, slot::SPLADE, "splade_index");
+        // The cross-project cell holds `Option<CachedCrossProject>` (not the
+        // `Option<Arc<T>>` shape the macro's siblings carry), but the clear is
+        // identical: drop the cached context so the next view rebuilds it.
+        try_clear_cell!(self.cross_project, slot::CROSS_PROJECT, "cross_project");
         // refs LRU is `Arc<Mutex<...>>` (shared with BatchView). If a
         // handler thread holds the mutex (e.g. iterating refs in a parallel
         // search), the eviction is deferred to the next retry.
@@ -1426,6 +1481,7 @@ impl BatchContext {
             file_set_cell: Arc::clone(&self.file_set),
             notes_cell: Arc::clone(&self.notes_cache),
             splade_index_cell: Arc::clone(&self.splade_index),
+            cross_project_cell: Arc::clone(&self.cross_project),
             invalidation_epoch: Arc::clone(&self.invalidation_epoch),
             checkout_epoch,
             embedder_slot: Arc::clone(&self.embedder),

@@ -23,6 +23,15 @@ where
     .expect("open_readonly_after_init")
 }
 
+/// Build a `NamedStore` from a fixture store + its backing `TempDir`, passing
+/// the `index.db` path through to `NamedStore::new` so staleness tracking is
+/// seeded. Replaces the old struct-literal construction now that the identity
+/// fields are private.
+fn named_store(name: &str, dir: &TempDir, store: Store<ReadOnly>) -> NamedStore {
+    let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+    NamedStore::new(name.to_string(), store, db_path)
+}
+
 fn insert_chunk_and_call(
     store: &Store<ReadWrite>,
     caller: &str,
@@ -75,14 +84,8 @@ fn test_cross_project_callers_finds_both() {
     });
 
     let mut ctx = CrossProjectContext::new(vec![
-        NamedStore {
-            name: "local".into(),
-            store: store_a,
-        },
-        NamedStore {
-            name: "project_b".into(),
-            store: store_b,
-        },
+        named_store("local", &dir_a, store_a),
+        named_store("project_b", &dir_b, store_b),
     ]);
 
     let callers = ctx.get_callers_cross("target").unwrap();
@@ -108,14 +111,8 @@ fn test_cross_project_callees_finds_both() {
     });
 
     let mut ctx = CrossProjectContext::new(vec![
-        NamedStore {
-            name: "local".into(),
-            store: store_a,
-        },
-        NamedStore {
-            name: "project_b".into(),
-            store: store_b,
-        },
+        named_store("local", &dir_a, store_a),
+        named_store("project_b", &dir_b, store_b),
     ]);
 
     let callees = ctx.get_callees_cross("source").unwrap();
@@ -131,10 +128,7 @@ fn test_cross_project_no_references_local_only() {
     let dir = TempDir::new().unwrap();
     let store = build_readonly_store(&dir, |s| insert_chunk_and_call(s, "foo", "target", "a.rs"));
 
-    let mut ctx = CrossProjectContext::new(vec![NamedStore {
-        name: "local".into(),
-        store,
-    }]);
+    let mut ctx = CrossProjectContext::new(vec![named_store("local", &dir, store)]);
 
     let callers = ctx.get_callers_cross("target").unwrap();
     assert_eq!(callers.len(), 1);
@@ -146,10 +140,7 @@ fn test_cross_project_function_not_found() {
     let dir = TempDir::new().unwrap();
     let store = build_readonly_store(&dir, |_s| Ok(()));
 
-    let mut ctx = CrossProjectContext::new(vec![NamedStore {
-        name: "local".into(),
-        store,
-    }]);
+    let mut ctx = CrossProjectContext::new(vec![named_store("local", &dir, store)]);
 
     let callers = ctx.get_callers_cross("nonexistent").unwrap();
     assert!(callers.is_empty());
@@ -167,14 +158,8 @@ fn test_cross_project_same_name_different_sources() {
     });
 
     let mut ctx = CrossProjectContext::new(vec![
-        NamedStore {
-            name: "local".into(),
-            store: store_a,
-        },
-        NamedStore {
-            name: "project_b".into(),
-            store: store_b,
-        },
+        named_store("local", &dir_a, store_a),
+        named_store("project_b", &dir_b, store_b),
     ]);
 
     let callers = ctx.get_callers_cross("target").unwrap();
