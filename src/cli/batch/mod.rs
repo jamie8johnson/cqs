@@ -474,9 +474,10 @@ mod tests {
             ctx.invalidation_epoch.load(Ordering::SeqCst) > epoch_before,
             "invalidation must bump the epoch"
         );
-        assert!(
-            !ctx.pending_invalidation.get(),
-            "full clear must not leave the pending flag set"
+        assert_eq!(
+            ctx.pending_invalidation.get(),
+            0,
+            "full clear must not leave the pending mask set"
         );
     }
 
@@ -1454,9 +1455,10 @@ mod tests {
             ctx.notes_cache.lock().unwrap().is_none(),
             "unborrowed slots clear immediately"
         );
-        assert!(
+        assert_ne!(
             ctx.pending_invalidation.get(),
-            "deferral must set the sticky pending flag"
+            0,
+            "deferral must set the sticky pending mask"
         );
 
         // Nothing changed on disk since invalidate() (identity refreshed,
@@ -1467,9 +1469,10 @@ mod tests {
             ctx.call_graph.borrow().is_none(),
             "pending retry must clear the deferred slot"
         );
-        assert!(
-            !ctx.pending_invalidation.get(),
-            "flag clears once every slot actually cleared"
+        assert_eq!(
+            ctx.pending_invalidation.get(),
+            0,
+            "mask clears once every deferred slot actually cleared"
         );
     }
 
@@ -1499,5 +1502,110 @@ mod tests {
             ctx.notes_cache.lock().unwrap().is_none(),
             "stale-epoch notes publish must be discarded"
         );
+    }
+
+    /// The read direction of the epoch guard: a view checked out BEFORE an
+    /// invalidation must not serve cell values published AFTER it — those
+    /// belong to the next index generation, and mixing them with the view's
+    /// older store snapshot returns silently wrong rowids. The stale view
+    /// must fall back to building from its own snapshot (whose publish is
+    /// then discarded), leaving the sibling's published values untouched.
+    #[test]
+    fn test_stale_view_does_not_read_post_invalidation_cells() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Checkout with empty snapshots at the pre-invalidation epoch.
+        let view = ctx.build_view(None);
+
+        // Invalidation runs, then a post-invalidation sibling publishes
+        // next-generation values into the shared cells (simulated by
+        // writing the cells directly).
+        ctx.invalidate().unwrap();
+        *ctx.hnsw.lock().unwrap() = Some(std::sync::Arc::new(MockIdx));
+        let sentinel = PathBuf::from("/sentinel/from/next/generation");
+        *ctx.file_set.lock().unwrap() = Some(std::sync::Arc::new(
+            [sentinel.clone()].into_iter().collect::<HashSet<_>>(),
+        ));
+
+        // The stale view must not serve either next-generation value.
+        if let Some(idx) = view.vector_index().unwrap() {
+            assert_ne!(
+                idx.name(),
+                "mock",
+                "stale view must not serve a post-invalidation cell index"
+            );
+        }
+        let fs = view.file_set().unwrap();
+        assert!(
+            !fs.contains(&sentinel),
+            "stale view must enumerate from its own snapshot, not read the newer cell"
+        );
+
+        // And its own (discarded) rebuilds must not overwrite the sibling's
+        // published next-generation values.
+        assert_eq!(
+            ctx.hnsw
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|i| i.name())
+                .unwrap_or("<cleared>"),
+            "mock",
+            "stale view's rebuild must not displace the published index"
+        );
+        assert!(
+            ctx.file_set
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|fs| fs.contains(&sentinel)),
+            "stale view's rebuild must not displace the published file set"
+        );
+    }
+
+    /// The sticky retry is clear-only and masked: it must not re-bump the
+    /// epoch (which would discard every in-flight fresh publish) and must
+    /// not wipe slots that already cleared and were freshly rebuilt —
+    /// otherwise one contended slot reintroduces the rebuild-per-query cost
+    /// for all the others.
+    #[test]
+    fn test_sticky_retry_is_clear_only_and_masked() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
+            cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
+        ));
+        ctx.check_index_staleness(); // baseline discriminators
+
+        // Invalidation fires while a handler holds the call_graph borrow —
+        // that slot defers, everything else clears.
+        let held = ctx.call_graph.borrow();
+        ctx.invalidate().unwrap();
+        drop(held);
+        assert_ne!(ctx.pending_invalidation.get(), 0);
+
+        // A fresh post-invalidation rebuild lands in a non-deferred slot.
+        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        let epoch_after_invalidate = ctx.invalidation_epoch.load(Ordering::SeqCst);
+
+        // The retry clears ONLY the deferred slot.
+        ctx.check_index_staleness();
+        assert_eq!(
+            ctx.invalidation_epoch.load(Ordering::SeqCst),
+            epoch_after_invalidate,
+            "retry must not re-bump the epoch"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_some(),
+            "retry must not wipe freshly rebuilt non-deferred slots"
+        );
+        assert!(
+            ctx.call_graph.borrow().is_none(),
+            "retry must clear the deferred slot"
+        );
+        assert_eq!(ctx.pending_invalidation.get(), 0);
     }
 }

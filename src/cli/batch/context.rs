@@ -34,6 +34,21 @@ pub(super) struct DataVersionProbe {
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
+/// One bit per mutable-cache slot, used by the deferred-invalidation mask
+/// (`BatchContext::pending_invalidation`) so a retry clears only the slots
+/// that were actually deferred.
+mod slot {
+    pub(super) const HNSW: u8 = 1 << 0;
+    pub(super) const BASE_HNSW: u8 = 1 << 1;
+    pub(super) const CALL_GRAPH: u8 = 1 << 2;
+    pub(super) const TEST_CHUNKS: u8 = 1 << 3;
+    pub(super) const FILE_SET: u8 = 1 << 4;
+    pub(super) const NOTES: u8 = 1 << 5;
+    pub(super) const SPLADE: u8 = 1 << 6;
+    pub(super) const REFS: u8 = 1 << 7;
+    pub(super) const ALL: u8 = u8::MAX;
+}
+
 /// Shared resources for a batch session.
 ///
 /// Store is opened once. Embedder and vector index are lazily initialized on
@@ -136,13 +151,18 @@ pub(crate) struct BatchContext {
     /// a value built from a pre-invalidation store snapshot can never land
     /// after (and survive) a fresh invalidation.
     pub(super) invalidation_epoch: Arc<AtomicU64>,
-    /// Sticky flag set when [`Self::invalidate_mutable_caches`] had to defer
-    /// at least one slot (a handler held its borrow/lock mid-invalidation).
-    /// [`Self::check_index_staleness`] honors it regardless of the identity /
-    /// data_version discriminators — those were already consumed when the
-    /// invalidation first fired, so without the flag the deferred slots would
-    /// never be retried. Cleared only when every slot actually cleared.
-    pub(super) pending_invalidation: Cell<bool>,
+    /// Sticky per-slot deferral mask (bits from the `slot` constants below;
+    /// `0` = nothing pending). Set when [`Self::invalidate_mutable_caches`]
+    /// had to defer at least one slot (a handler held its borrow/lock
+    /// mid-invalidation). [`Self::check_index_staleness`] honors it
+    /// regardless of the identity / data_version discriminators — those were
+    /// already consumed when the invalidation first fired, so without the
+    /// mask the deferred slots would never be retried. The retry clears ONLY
+    /// the masked slots and does NOT bump the epoch: re-bumping would
+    /// discard every in-flight fresh publish and wipe freshly rebuilt slots
+    /// on every dispatch while one slot stays contended. Cleared (to 0) only
+    /// when every deferred slot actually cleared.
+    pub(super) pending_invalidation: Cell<u8>,
     // LRU caps at 2 — each ReferenceIndex holds Store + HNSW (50-200MB).
     // Values are `Arc` so `get_all_refs` can fan out refs to parallel
     // `--include-refs` searches without cloning the index bytes.
@@ -272,7 +292,7 @@ impl BatchContext {
             file_set: Arc::new(Mutex::new(None)),
             notes_cache: Arc::new(Mutex::new(None)),
             invalidation_epoch: Arc::new(AtomicU64::new(0)),
-            pending_invalidation: Cell::new(false),
+            pending_invalidation: Cell::new(0),
             splade_encoder: Arc::new(OnceLock::new()),
             splade_index: Arc::new(Mutex::new(None)),
             refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
@@ -421,7 +441,7 @@ impl BatchContext {
         // waiting on them would never retry the deferred slots.
         let pending = self.pending_invalidation.get();
         let now = Instant::now();
-        if !pending {
+        if pending == 0 {
             if let Some(prev) = self.last_staleness_check.get() {
                 if now.duration_since(prev) < STALENESS_CHECK_INTERVAL {
                     return;
@@ -502,12 +522,15 @@ impl BatchContext {
                     tracing::warn!(error = %e, "Failed to re-open Store after index change");
                 }
             }
-        } else if pending {
-            // Retry a deferred invalidation. The Store re-open and probe
-            // rebaseline already happened when the invalidation first fired;
-            // only the slots that were busy still need clearing.
+        } else if pending != 0 {
+            // Retry a deferred invalidation. The Store re-open, probe
+            // rebaseline, and epoch bump already happened when the
+            // invalidation first fired; only the slots that were busy still
+            // need clearing. Clear-only, masked: no epoch re-bump (which
+            // would discard in-flight fresh publishes) and no wipe of slots
+            // that were already cleared and freshly rebuilt since.
             let _span = tracing::info_span!("batch_index_invalidation_retry").entered();
-            self.invalidate_mutable_caches();
+            self.clear_cache_slots(pending);
         }
         self.index_id.set(Some(current_id));
     }
@@ -613,9 +636,10 @@ impl BatchContext {
     /// the freshly persisted `splade.index.bin` (or SQLite fallback).
     /// Returns `true` when every slot actually cleared; `false` when at
     /// least one slot was deferred (a handler held its borrow/lock). On
-    /// deferral the sticky `pending_invalidation` flag is set so
-    /// [`Self::check_index_staleness`] retries the clear even though the
-    /// identity / data_version discriminators were already consumed.
+    /// deferral the sticky `pending_invalidation` mask records the deferred
+    /// slots so [`Self::check_index_staleness`] retries the clear even
+    /// though the identity / data_version discriminators were already
+    /// consumed.
     fn invalidate_mutable_caches(&self) -> bool {
         // Bump the epoch BEFORE clearing any slot: a view that snapshotted
         // the previous epoch at checkout sees the mismatch when it tries to
@@ -623,23 +647,36 @@ impl BatchContext {
         // pre-invalidation store snapshot is discarded instead of being
         // re-published over the cleared cell.
         self.invalidation_epoch.fetch_add(1, Ordering::SeqCst);
+        self.clear_cache_slots(slot::ALL)
+    }
 
-        // Use try_borrow_mut / try_lock: a search handler may still hold a
-        // borrow on a cache slot across an accessor call that triggers a
-        // staleness re-check (for example handlers/search.rs does
-        // `let splade_index_ref = ctx.borrow_splade_index()` then later
-        // calls `ctx.store().search_hybrid(...)`). Panicking on
-        // borrow_mut() would crash the whole batch session for what is
-        // just a deferral case. Slots that are busy stay populated; the
-        // sticky flag set below makes the next staleness check retry.
-        let mut all_clear = true;
+    /// Clear the cache slots named in `mask`. Does NOT bump the epoch — the
+    /// deferred-invalidation retry path depends on that: any value that can
+    /// be published into a slot after the original invalidation was built at
+    /// or after the already-bumped epoch (older builds fail the publish
+    /// guard), so re-bumping here would only discard legitimate fresh
+    /// publishes and re-clear freshly rebuilt slots on every dispatch while
+    /// one slot stays contended.
+    ///
+    /// Uses `try_borrow_mut` / `try_lock`: a search handler may still hold a
+    /// borrow on a cache slot across an accessor call that triggers a
+    /// staleness re-check (for example handlers/search.rs does
+    /// `let splade_index_ref = ctx.borrow_splade_index()` then later calls
+    /// `ctx.store().search_hybrid(...)`). Panicking on borrow_mut() would
+    /// crash the whole batch session for what is just a deferral case.
+    /// Busy slots stay populated and are recorded in the sticky
+    /// `pending_invalidation` mask for the next retry.
+    fn clear_cache_slots(&self, mask: u8) -> bool {
+        let mut deferred: u8 = 0;
         macro_rules! try_clear_refcell {
-            ($field:expr, $name:literal) => {
-                match $field.try_borrow_mut() {
-                    Ok(mut g) => *g = None,
-                    Err(_) => {
-                        all_clear = false;
-                        tracing::debug!(slot = $name, "borrow held; deferring invalidation");
+            ($field:expr, $bit:expr, $name:literal) => {
+                if mask & $bit != 0 {
+                    match $field.try_borrow_mut() {
+                        Ok(mut g) => *g = None,
+                        Err(_) => {
+                            deferred |= $bit;
+                            tracing::debug!(slot = $name, "borrow held; deferring invalidation");
+                        }
                     }
                 }
             };
@@ -647,42 +684,48 @@ impl BatchContext {
         // Shared write-back cells are `Arc<Mutex<...>>`; `try_lock` mirrors
         // the borrow-deferral semantics of the RefCell branches.
         macro_rules! try_clear_cell {
-            ($field:expr, $name:literal) => {
-                match $field.try_lock() {
-                    Ok(mut g) => *g = None,
-                    Err(_) => {
-                        all_clear = false;
-                        tracing::debug!(slot = $name, "lock held; deferring invalidation");
+            ($field:expr, $bit:expr, $name:literal) => {
+                if mask & $bit != 0 {
+                    match $field.try_lock() {
+                        Ok(mut g) => *g = None,
+                        Err(_) => {
+                            deferred |= $bit;
+                            tracing::debug!(slot = $name, "lock held; deferring invalidation");
+                        }
                     }
                 }
             };
         }
-        try_clear_cell!(self.hnsw, "hnsw");
-        try_clear_cell!(self.base_hnsw, "base_hnsw");
-        try_clear_refcell!(self.call_graph, "call_graph");
-        try_clear_refcell!(self.test_chunks, "test_chunks");
-        try_clear_cell!(self.file_set, "file_set");
-        try_clear_cell!(self.notes_cache, "notes_cache");
-        try_clear_cell!(self.splade_index, "splade_index");
+        try_clear_cell!(self.hnsw, slot::HNSW, "hnsw");
+        try_clear_cell!(self.base_hnsw, slot::BASE_HNSW, "base_hnsw");
+        try_clear_refcell!(self.call_graph, slot::CALL_GRAPH, "call_graph");
+        try_clear_refcell!(self.test_chunks, slot::TEST_CHUNKS, "test_chunks");
+        try_clear_cell!(self.file_set, slot::FILE_SET, "file_set");
+        try_clear_cell!(self.notes_cache, slot::NOTES, "notes_cache");
+        try_clear_cell!(self.splade_index, slot::SPLADE, "splade_index");
         // refs LRU is `Arc<Mutex<...>>` (shared with BatchView). If a
         // handler thread holds the mutex (e.g. iterating refs in a parallel
         // search), the eviction is deferred to the next retry.
-        match self.refs.try_lock() {
-            Ok(mut g) => g.clear(),
-            Err(_) => {
-                all_clear = false;
-                tracing::debug!(slot = "refs", "lock held; deferring invalidation");
+        if mask & slot::REFS != 0 {
+            match self.refs.try_lock() {
+                Ok(mut g) => g.clear(),
+                Err(_) => {
+                    deferred |= slot::REFS;
+                    tracing::debug!(slot = "refs", "lock held; deferring invalidation");
+                }
             }
         }
 
-        // Sticky: stays set across checks until a retry clears every slot.
-        self.pending_invalidation.set(!all_clear);
-        if !all_clear {
+        // Sticky: stays set across checks until a retry clears every
+        // deferred slot.
+        self.pending_invalidation.set(deferred);
+        if deferred != 0 {
             tracing::debug!(
-                "partial cache invalidation; pending flag set — next staleness check retries"
+                deferred_mask = deferred,
+                "partial cache invalidation; pending mask set — next staleness check retries"
             );
         }
-        all_clear
+        deferred == 0
     }
 
     /// Manually invalidate all mutable caches and re-open the Store.
