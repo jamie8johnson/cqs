@@ -4,7 +4,9 @@ Audit date: 2026-06-10
 Main HEAD: 7284e31e
 Source: `docs/audit-findings.md` (107 findings — batch 1: 59 across 8 categories; batch 2: 48 across the other 8, run after batch-1 triage)
 Calibration: matches `docs/audit-triage-v1.40.0.md` priority matrix.
-Status: **triage only — fixes deferred to the follow-up session** (user decision). All items open.
+Status: **P1 tier COMPLETE (2026-06-11)** — all 28 P1s fixed across 9 cluster PRs (#1738-#1746) plus 4 riders (DS-V1.42-6, EXT-V1.42-1, DOC-V1.42-4, RB-V1.42-4). 125 items remain open (P2/P3/P4/CF tiers).
+
+Fix-run review notes for the next cycle: combined-short bools (`-qv`) leak on the bare-query daemon path (pre-existing, found in #1746's review); `review`/`ci` are daemon-marked but silently ignore `--stdin` daemon-up (found by the new exhaustiveness test); remaining `clamp(1, 100)` literals on non-search commands fold into CF SHL-V1.40-2.
 
 Nested-lead experiment: 5 of 16 categories ran as lead + 3 read-only sub-scope agents with lead-side verification before append. Funnels — batch 1: Code Quality 20→16, TC-adversarial 18→15; batch 2: Performance 13→11, Data Safety 15→12, TC-happy 21→11. Combined: 87 raw candidates → 65 appended (cross-category dups caught, same-root-cause merges, stale-triage rejects). The other 11 categories ran as single auditors; Security ran on opus per the skill rule.
 
@@ -27,34 +29,34 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 
 | ID | Finding | Location | Status |
 |----|---------|----------|--------|
-| SHL-V1.42-1 | DAEMON_LIMIT_CAP rationale comment false — CLI clamp exists at dispatch.rs:207; parity accidental | src/cli/batch/handlers/search.rs:9-11 | open |
-| OB-V1.42-1 | Corrupt global-cache embedding silently dropped in resolve_reuse (no warn; store-cache sibling warns) | src/cli/pipeline/reuse.rs:127 | open |
-| OB-V1.42-2 | CLI→daemon transport fallback debug-only — wedged daemon = silent ~32s hang | src/cli/dispatch.rs:300-410 | open |
-| DOC-V1.42-1 | README says Rust 1.95+; MSRV is 1.96 | README.md:27 | open |
-| DOC-V1.42-2 | README cuvs-fork [patch.crates-io] install note — fork retired in #1679; false supply-chain claim | README.md:33 | open |
-| DOC-V1.42-3 | README env table: CQS_CAGRA_THRESHOLD default 50000; actual 5000 (10x error, behavior-selecting knob) | README.md:784 | open |
-| DOC-V1.42-7 | SECURITY.md advisory table missing RUSTSEC-2025-0119; bincode rationale contradicts .cargo/audit.toml | SECURITY.md:300-307 | open |
-| EH-V1.42-1 | load_audit_state conflates EACCES/EIO with NotFound — audit mode silently off, zero log | src/audit.rs:92-95 | open |
-| EH-V1.42-2 | CQS_SLOT env doesn't bypass daemon — silent wrong-slot results (--model analog warns) | src/cli/dispatch.rs:213-221 | open |
-| RB-V1.42-2 | extract_return_sql slices original string at to_uppercase() offset — panic on non-ASCII SQL; siblings use to_ascii_* | src/language/languages.rs:6743-6745 | open |
-| API-V1.42-1 | Daemon arg translation remaps -n→--limit globally — `cqs blame foo -n 3` hard-errors daemon-up, works daemon-down (verified live; related: open #1734 class) | src/daemon_translate.rs:51 | open |
-| API-V1.42-9 | Daemon graph-dispatch doc comments enumerate wire fields that don't exist (line/function vs line_start/name) | src/cli/batch/handlers/graph.rs:37-137 | open |
-| TC-V1.42-6 | NaN/Inf embeddings pass HNSW build zero-vector filter (NaN != 0.0) into parallel_insert_data — can panic whole index build | src/hnsw/build.rs:204-226 | open |
-| TC-V1.42-7 | EmbeddingCache::read_batch bytemuck cast panics on truncated blob BEFORE length check; query_cache fixed this exact bug | src/cache/embedding_cache.rs:261 | open |
-| CQ-V1.42-12 | v27 needs_embedding visibility gate lives only in production-dead search_fts; live RRF FTS leg unfiltered — unembedded chunks can surface mid-reindex | src/store/search.rs:120-150 vs src/search/query.rs:358-364 | open |
-| SEC-V1.42-1 | Kind-fallback definitions[] relays full chunk content with no injection_flags/trust_level — SECURITY.md promises both on every chunk-returning output (docs-lying rule) | src/cli/commands/graph/mod.rs:206-253 | open |
-| EXT-V1.42-2 | No exhaustiveness link between batch="daemon" Commands variants and BatchCmd — forgotten variant fails only at runtime, only daemon-up (~15-line test) | src/cli/definitions.rs:337+ vs src/cli/batch/commands.rs:46 | open |
-| EXT-V1.42-3 | CONTRIBUTING "Adding a New CLI Command" documents nonexistent attribute surface (#[cqs(handler=...)]) and omits dispatch_shims + daemon wiring steps (lying recipe) | CONTRIBUTING.md:448 | open |
-| EXT-V1.42-4 | Migration how-to describes removed run_migration() match ladder; no MIGRATIONS-table contiguity test — forgotten row fails only at user upgrade | src/store/migrations.rs:10, :380-398 | open |
-| AC-V1.42-1 | map_hunks_to_functions skips count==0 hunks — pure-deletion changes invisible to impact/review under -U0 diffs | src/impact/diff.rs:77-79 | open |
-| AC-V1.42-2 | Staleness checks use `current > stored` where reconcile pins `!=` — backward-mtime restores never look stale (feeds OB-V1.42-3 plumbing) | src/store/chunks/staleness.rs:742, :948-951 | open |
-| PERF-V1.42-1 | Daemon rebuilds vector index from disk on EVERY search-class query (~360-480ms vs 3-19ms budget, journal-confirmed) — BatchView fallback never writes back; SPLADE cell got the fix, vector/base/file_set/notes didn't | src/cli/batch/view.rs:325-347, context.rs:208 | open |
-| PERF-V1.42-2 | Hybrid-fused search fetches ~1.4 MB of embedding BLOBs per query that are provably never read | src/store/chunks/async_helpers.rs:85-108, src/search/query.rs:932-939 | open |
-| PERF-V1.42-5 | split_into_windows deep-clones the entire HF tokenizer (262k vocab) once per chunk — ~14k clones per reindex | src/embedder/core.rs:601-607 | open |
-| DS-V1.42-1 | Embedding-reuse by-hash lookups lack needs_embedding gate — zero-vec sentinels laundered into permanent "real" embeddings (silent retrieval corruption); 3 one-line WHERE clauses | src/store/chunks/embeddings.rs:34, :111-113, :188 | open |
-| DS-V1.42-3 | HNSW loader deletes a live save's staging dir BEFORE taking the shared lock — concurrent save reports success while destroying the on-disk index | src/hnsw/persist.rs:837-850 vs :414, :684 | open |
-| DS-V1.42-7 | Deferred cache invalidation permanently lost — both staleness discriminators consumed before deferral, promised retry observes no change | src/cli/batch/context.rs:619-624, :529, :468 | open |
-| DS-V1.42-8 | doc_writer::atomic_write falls back to non-atomic truncate-write of USER SOURCE FILES on any rename failure, never fsyncs — only non-rebuildable data cqs writes | src/doc_writer/rewriter.rs:646-702 | open |
+| SHL-V1.42-1 | DAEMON_LIMIT_CAP rationale comment false — CLI clamp exists at dispatch.rs:207; parity accidental | src/cli/batch/handlers/search.rs:9-11 | ✅ PR #1746 |
+| OB-V1.42-1 | Corrupt global-cache embedding silently dropped in resolve_reuse (no warn; store-cache sibling warns) | src/cli/pipeline/reuse.rs:127 | ✅ PR #1743 |
+| OB-V1.42-2 | CLI→daemon transport fallback debug-only — wedged daemon = silent ~32s hang | src/cli/dispatch.rs:300-410 | ✅ PR #1746 |
+| DOC-V1.42-1 | README says Rust 1.95+; MSRV is 1.96 | README.md:27 | ✅ PR #1738 |
+| DOC-V1.42-2 | README cuvs-fork [patch.crates-io] install note — fork retired in #1679; false supply-chain claim | README.md:33 | ✅ PR #1738 |
+| DOC-V1.42-3 | README env table: CQS_CAGRA_THRESHOLD default 50000; actual 5000 (10x error, behavior-selecting knob) | README.md:784 | ✅ PR #1738 |
+| DOC-V1.42-7 | SECURITY.md advisory table missing RUSTSEC-2025-0119; bincode rationale contradicts .cargo/audit.toml | SECURITY.md:300-307 | ✅ PR #1738 |
+| EH-V1.42-1 | load_audit_state conflates EACCES/EIO with NotFound — audit mode silently off, zero log | src/audit.rs:92-95 | ✅ PR #1743 |
+| EH-V1.42-2 | CQS_SLOT env doesn't bypass daemon — silent wrong-slot results (--model analog warns) | src/cli/dispatch.rs:213-221 | ✅ PR #1746 |
+| RB-V1.42-2 | extract_return_sql slices original string at to_uppercase() offset — panic on non-ASCII SQL; siblings use to_ascii_* | src/language/languages.rs:6743-6745 | ✅ PR #1741 |
+| API-V1.42-1 | Daemon arg translation remaps -n→--limit globally — `cqs blame foo -n 3` hard-errors daemon-up, works daemon-down (verified live; related: open #1734 class) | src/daemon_translate.rs:51 | ✅ PR #1746 |
+| API-V1.42-9 | Daemon graph-dispatch doc comments enumerate wire fields that don't exist (line/function vs line_start/name) | src/cli/batch/handlers/graph.rs:37-137 | ✅ PR #1738 |
+| TC-V1.42-6 | NaN/Inf embeddings pass HNSW build zero-vector filter (NaN != 0.0) into parallel_insert_data — can panic whole index build | src/hnsw/build.rs:204-226 | ✅ PR #1741 |
+| TC-V1.42-7 | EmbeddingCache::read_batch bytemuck cast panics on truncated blob BEFORE length check; query_cache fixed this exact bug | src/cache/embedding_cache.rs:261 | ✅ PR #1741 |
+| CQ-V1.42-12 | v27 needs_embedding visibility gate lives only in production-dead search_fts; live RRF FTS leg unfiltered — unembedded chunks can surface mid-reindex | src/store/search.rs:120-150 vs src/search/query.rs:358-364 | ✅ PR #1740 |
+| SEC-V1.42-1 | Kind-fallback definitions[] relays full chunk content with no injection_flags/trust_level — SECURITY.md promises both on every chunk-returning output (docs-lying rule) | src/cli/commands/graph/mod.rs:206-253 | ✅ PR #1742 |
+| EXT-V1.42-2 | No exhaustiveness link between batch="daemon" Commands variants and BatchCmd — forgotten variant fails only at runtime, only daemon-up (~15-line test) | src/cli/definitions.rs:337+ vs src/cli/batch/commands.rs:46 | ✅ PR #1746 |
+| EXT-V1.42-3 | CONTRIBUTING "Adding a New CLI Command" documents nonexistent attribute surface (#[cqs(handler=...)]) and omits dispatch_shims + daemon wiring steps (lying recipe) | CONTRIBUTING.md:448 | ✅ PR #1738 |
+| EXT-V1.42-4 | Migration how-to describes removed run_migration() match ladder; no MIGRATIONS-table contiguity test — forgotten row fails only at user upgrade | src/store/migrations.rs:10, :380-398 | ✅ PR #1738 |
+| AC-V1.42-1 | map_hunks_to_functions skips count==0 hunks — pure-deletion changes invisible to impact/review under -U0 diffs | src/impact/diff.rs:77-79 | ✅ PR #1744 |
+| AC-V1.42-2 | Staleness checks use `current > stored` where reconcile pins `!=` — backward-mtime restores never look stale (feeds OB-V1.42-3 plumbing) | src/store/chunks/staleness.rs:742, :948-951 | ✅ PR #1744 |
+| PERF-V1.42-1 | Daemon rebuilds vector index from disk on EVERY search-class query (~360-480ms vs 3-19ms budget, journal-confirmed) — BatchView fallback never writes back; SPLADE cell got the fix, vector/base/file_set/notes didn't | src/cli/batch/view.rs:325-347, context.rs:208 | ✅ PR #1739 |
+| PERF-V1.42-2 | Hybrid-fused search fetches ~1.4 MB of embedding BLOBs per query that are provably never read | src/store/chunks/async_helpers.rs:85-108, src/search/query.rs:932-939 | ✅ PR #1743 |
+| PERF-V1.42-5 | split_into_windows deep-clones the entire HF tokenizer (262k vocab) once per chunk — ~14k clones per reindex | src/embedder/core.rs:601-607 | ✅ PR #1743 |
+| DS-V1.42-1 | Embedding-reuse by-hash lookups lack needs_embedding gate — zero-vec sentinels laundered into permanent "real" embeddings (silent retrieval corruption); 3 one-line WHERE clauses | src/store/chunks/embeddings.rs:34, :111-113, :188 | ✅ PR #1740 |
+| DS-V1.42-3 | HNSW loader deletes a live save's staging dir BEFORE taking the shared lock — concurrent save reports success while destroying the on-disk index | src/hnsw/persist.rs:837-850 vs :414, :684 | ✅ PR #1745 |
+| DS-V1.42-7 | Deferred cache invalidation permanently lost — both staleness discriminators consumed before deferral, promised retry observes no change | src/cli/batch/context.rs:619-624, :529, :468 | ✅ PR #1739 |
+| DS-V1.42-8 | doc_writer::atomic_write falls back to non-atomic truncate-write of USER SOURCE FILES on any rename failure, never fsyncs — only non-rebuildable data cqs writes | src/doc_writer/rewriter.rs:646-702 | ✅ PR #1745 |
 
 ## P2 — medium effort + high impact
 
@@ -73,7 +75,7 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | CQ-V1.42-11 | Cross-project branches escaped command-core extraction on both surfaces — duplicated, no parity tests, no deferred-ledger entry | src/cli/batch/handlers/graph.rs vs src/cli/commands/graph/* | open |
 | SEC-V1.42-2 | cqs serve relays content_preview/signature/doc with no trust_level/injection_flags — wire them in OR scope SECURITY.md's universal claim to exempt serve (decision needed) | src/serve/data.rs:92-114, :508-645 | open |
 | PB-V1.42-1 | v23 reconcile fingerprint columns stamped only by watch path — CLI `cqs index` leaves them NULL/stale → spurious reindex churn wave after every branch-switch index under a live daemon | src/cli/pipeline/upsert.rs:174-178, async_helpers.rs:329 | open |
-| EXT-V1.42-1 | daemon_translate hand-mirrors 5 of ~25 clap flags — `-v`/`--rrf` break daemon-up (verified live); derive strip/remap sets from Cli::command() like telemetry.rs does; structural cause of API-V1.42-1 | src/daemon_translate.rs:47-52 | open |
+| EXT-V1.42-1 | daemon_translate hand-mirrors 5 of ~25 clap flags — `-v`/`--rrf` break daemon-up (verified live); derive strip/remap sets from Cli::command() like telemetry.rs does; structural cause of API-V1.42-1 | src/daemon_translate.rs:47-52 | ✅ PR #1746 |
 | AC-V1.42-3 | find_test_matches keeps the empty-string predecessor sentinel AC-V1.40-3 fixed in bfs_shortest_path, and is the only BFS without a node cap | src/impact/test_map.rs:40-78 | open |
 | AC-V1.42-4 | Python UntilColon signature truncates at first annotation colon — annotated defs lose params + return type (retrieval quality; needs PARSER_VERSION bump) | src/parser/chunk.rs:293 | open |
 | PERF-V1.42-3 | Dense-index path discards HNSW/CAGRA scores then re-fetches embeddings to recompute identical cosine (verify CAGRA score-scale parity first) | src/search/query.rs:785-794, :941-947 | open |
@@ -88,18 +90,18 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | DS-V1.42-2 | HNSW dirty-flag self-heal trusts self-referential checksum manifest — crash between chunk commit and HNSW save silently serves stale index (generation stamp; shares mechanism with DS-V1.42-5) | src/hnsw/mod.rs:712-719, persist.rs:229 | open |
 | DS-V1.42-4 | HNSW stale-.bak guard: post-success debris locks out all future saves; guard runs outside the exclusive lock (TOCTOU); shutdown detaches rebuild thread mid-save | src/hnsw/persist.rs:366-394, watch/mod.rs:1891-1937 | open |
 | DS-V1.42-5 | Background HNSW rebuild saves sidecars outside index.lock — lost update vs concurrent `cqs index`, dirty flag cleared over the gap (generation stamp closes it) | src/cli/watch/rebuild.rs:260-357 | open |
-| DS-V1.42-6 | ensure_splade_index publishes a stale-snapshot index into the shared cell after invalidation already ran — served indefinitely on a quiet repo | src/cli/batch/view.rs:397-463 | open |
+| DS-V1.42-6 | ensure_splade_index publishes a stale-snapshot index into the shared cell after invalidation already ran — served indefinitely on a quiet repo | src/cli/batch/view.rs:397-463 | ✅ PR #1739 |
 | DS-V1.42-10 | Migration backup has no cross-process write exclusion — torn snapshot under live daemon; restore discards daemon commits (use VACUUM INTO) | src/store/backup.rs:110-178 | open |
 
 ## P3 — easy + low impact
 
 | ID | Finding | Location | Status |
 |----|---------|----------|--------|
-| DOC-V1.42-4 | README HNSW tuning table presents mid-tier values as fixed; defaults are corpus-tiered | README.md:696-710 | open |
+| DOC-V1.42-4 | README HNSW tuning table presents mid-tier values as fixed; defaults are corpus-tiered | README.md:696-710 | ✅ PR #1738 |
 | EH-V1.42-3 | Batch dispatch swallows response-write failures via `let _ =` (7 sites) — daemon side built tracked writes for exactly this | src/cli/batch/context.rs:684-797 | open |
 | EH-V1.42-4 | chunk_count().ok() blanks slot-list chunks column silently; adjacent model-name read got the warn ladder | src/cli/commands/infra/slot.rs:253 | open |
 | RB-V1.42-3 | extract_signature UntilAs loop bound makes end-of-string guard unreachable — trailing "AS" never matched | src/parser/chunk.rs:302-306 | open |
-| RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | open |
+| RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | ✅ PR #1738 |
 | API-V1.42-2 | Core Args reuse clap struct names — two contradictory alias conventions (CallersCoreArgs vs CoreCalleesArgs) | src/cli/commands/graph/callers.rs:34 et al. | open |
 | API-V1.42-4 | --cross-project flips callees topology object→flat array, different entry schema (fold into API-V1.42-3) | src/cli/batch/handlers/graph.rs:154-161 | open |
 | API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | open |
