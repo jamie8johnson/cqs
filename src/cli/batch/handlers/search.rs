@@ -1,10 +1,13 @@
 //! Search dispatch handler.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
-use crate::cli::commands::search::query::{query_core, QueryArgs};
+use crate::cli::commands::search::query::{
+    merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped, Prepared,
+    QueryArgs,
+};
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
 // agree on the bound — CLI==daemon parity is the requirement, not a
@@ -104,18 +107,34 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
     }
 }
 
+/// [`QueryArgs`] for the daemon's `--ref` / `--include-refs` fan-out.
+///
+/// Same as [`daemon_query_args`] but forces `name_only = false`: the daemon's
+/// reference path has always done an embedding search (it predates and never
+/// gained an FTS-by-name branch — `--ref --name-only` routes here and was
+/// treated as an embedding query on the reference). Forcing it off keeps that
+/// behavior and guarantees `prepare_query` returns a dense query (no project
+/// FTS short-circuit the ref fan-out couldn't consume).
+fn daemon_ref_query_args(args: &SearchArgs) -> QueryArgs {
+    QueryArgs {
+        name_only: false,
+        ..daemon_query_args(args)
+    }
+}
+
 /// Dispatches a search query and returns results as JSON.
 ///
-/// Phase 2b: a thin adapter over the shared [`query_core`]. The plain and
-/// `--name-only` paths build [`QueryArgs`] from the wire [`SearchArgs`], run the
-/// core through the [`BatchView`] `SearchCtx` impl, and serialize via the same
+/// A thin adapter over the shared search prelude. The plain and `--name-only`
+/// paths build [`QueryArgs`] from the wire [`SearchArgs`], run [`query_core`]
+/// through the [`BatchView`] `SearchCtx` impl, and serialize via the same
 /// `display::build_unified_results_value` the CLI uses — so the daemon and CLI
 /// now emit one schema (see CHANGELOG: the daemon dropped the `ChunkOutput`
-/// shape). The `--ref` and `--include-refs` paths keep their reference-index
-/// retrieval here (the core doesn't model the multi-store tagged path yet,
-/// Phase 2b ref-path note) but serialize through the shared
-/// `display::build_tagged_results_value`, so reference results carry the same
-/// per-result shape as project results.
+/// shape). The `--ref` and `--include-refs` paths now share that same
+/// [`prepare_query`] prelude (classification, embedding, filter / SPLADE /
+/// index resolution); only the reference fan-out is ref-specific
+/// ([`retrieve_ref_scoped`] / [`merge_references`]). They serialize through the
+/// shared `display::build_tagged_results_value`, so reference results carry the
+/// same per-result shape as project results.
 ///
 /// # Errors
 /// Returns an error if the embedder cannot be initialized, query embedding
@@ -242,95 +261,38 @@ fn attach_stale_origins_meta(
 
 /// Reference-scoped (`--ref`) and reference-merged (`--include-refs`) search.
 ///
-/// Split out of `dispatch_search` so the core path stays a clean adapter. The
-/// retrieval here is unchanged from the pre-2b daemon path; only the
-/// serialization converged onto the shared `SearchResultOutput` schema (via
-/// `build_tagged_results_value`).
+/// Routes through the same `prepare_query` prelude the plain path uses, so the
+/// daemon ref path no longer reimplements classification, centroid α-floor,
+/// filter construction, SPLADE resolution, or base-index selection. Only the
+/// retrieval fan-out is ref-specific: `retrieve_ref_scoped` for `--ref`,
+/// `retrieve_project` + `merge_references` for `--include-refs`. Serialization
+/// converges on the shared `SearchResultOutput` schema via
+/// `build_tagged_results_value`.
 fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde_json::Value> {
     // Textual filter validation runs BEFORE embedder load (shared with the
     // plain path) — invalid `--lang` / `--include-type` / `--exclude-type` are
-    // user typos that must fast-fail with the offending flag's name.
-    let (languages, include_types, exclude_types) = validate_filter_args(args)?;
+    // user typos that must fast-fail with the offending flag's name. The core
+    // re-parses these inside `prepare_query`; this pre-pass keeps the
+    // flag-specific error and the no-embedder-load guarantee.
+    validate_filter_args(args)?;
 
-    let limit = args.limit_arg.limit.clamp(1, SEARCH_LIMIT_CAP);
-    let threshold = args.threshold;
-
-    let query_embedding = ctx
-        .embedder()?
-        .embed_query(&args.query)
-        .context("Failed to embed query")?;
-
-    // Classify for per-category routing (SPLADE alpha). The router always runs
-    // on the daemon surface (matches the plain path's `always_route`).
-    let classification = cqs::search::router::classify_query(&args.query);
-    let pre_centroid_cat = classification.category;
-    let classification =
-        cqs::search::router::reclassify_with_centroid(classification, query_embedding.as_slice());
-    let centroid_applied = classification.category != pre_centroid_cat;
-    let (use_splade, mut splade_alpha) = match args.splade_alpha {
-        Some(alpha) => (true, alpha),
-        None => (
-            true,
-            cqs::search::router::resolve_splade_alpha(&classification.category),
-        ),
-    };
-    if centroid_applied {
-        splade_alpha = splade_alpha.max(0.7);
-    }
-    let _ = args.splade;
-
-    let filter = {
-        let mut f = cqs::SearchFilter::default();
-        f.languages = languages;
-        f.include_types = include_types;
-        f.exclude_types = exclude_types;
-        f.path_pattern = args.path.clone();
-        f.name_boost = args.name_boost;
-        f.query_text = args.query.clone();
-        f.enable_rrf = args.rrf;
-        f.enable_demotion = !args.no_demote;
-        f.enable_splade = use_splade;
-        f.splade_alpha = splade_alpha;
-        f.type_boost_types = classification.type_hints.clone();
-        f
-    };
-    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
-
-    let rerank_pool = if args.rerank_active() {
-        crate::cli::limits::rerank_pool_size(limit)
-    } else {
-        limit
+    // The daemon's always-route / no-FTS-first / name-only-off / limit-clamp
+    // semantics fold into the same `QueryArgs` the plain path builds; the
+    // multi-store fan-out then consumes the prepared query.
+    let qargs = daemon_ref_query_args(args);
+    let prepared = match prepare_query(ctx, &qargs)? {
+        // `name_only = false` + `fts_first = false` on the daemon ref path → the
+        // project FTS short-circuit never fires, so it always prepares a dense
+        // query.
+        Prepared::ShortCircuit(_) => {
+            unreachable!("daemon ref path sets name_only = false and fts_first = false")
+        }
+        Prepared::Dense(p) => p,
     };
 
     // --ref scoped search: search only the named reference.
     if let Some(ref ref_name) = args.ref_name {
-        let ref_idx = crate::cli::commands::resolve::find_reference(&ctx.root, ref_name)?;
-        let mut results = cqs::reference::search_reference(
-            &ref_idx,
-            &query_embedding,
-            &filter,
-            rerank_pool,
-            threshold,
-            false,
-        )?;
-        if args.rerank_active() && results.len() > 1 {
-            ctx.reranker()?
-                .rerank(&args.query, &mut results, limit)
-                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
-        }
-
-        // Every chunk came from a single named reference → tag each with its
-        // source; `build_tagged_results_value` emits trust_level
-        // "reference-code" + reference_name per result and the envelope-level
-        // `source`.
-        let tagged: Vec<cqs::reference::TaggedResult> = results
-            .into_iter()
-            .map(|r| cqs::reference::TaggedResult {
-                result: cqs::store::UnifiedResult::Code(r),
-                source: Some(ref_name.clone()),
-            })
-            .collect();
-
+        let tagged = retrieve_ref_scoped(ctx, &qargs, &prepared, ref_name)?;
         let (tagged, token_info) = pack_tagged(ctx, args, tagged)?;
         let mut value = crate::cli::display::build_tagged_results_value(
             &tagged,
@@ -345,125 +307,18 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
         return Ok(value);
     }
 
-    // --include-refs: project search + merged reference results.
-    let use_base = matches!(
-        classification.strategy,
-        cqs::search::router::SearchStrategy::DenseBase
-    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
-
-    let splade_query = if use_splade {
-        ctx.splade_encoder()
-            .and_then(|enc| match enc.encode(&args.query) {
-                Ok(sv) => Some(sv),
-                Err(e) => {
-                    tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
-                    None
-                }
-            })
-    } else {
-        None
-    };
-    if use_splade {
-        ctx.ensure_splade_index();
-    }
-    let audit_mode = ctx.audit_state();
-
-    let index = if use_base {
-        match ctx.base_vector_index()? {
-            Some(base_idx) => Some(base_idx),
-            None => ctx.vector_index()?,
-        }
-    } else {
-        ctx.vector_index()?
-    };
-    let index = index.as_deref();
-
-    let splade_index_ref = ctx.borrow_splade_index();
-    let splade_arg = splade_query
-        .as_ref()
-        .and_then(|sq| splade_index_ref.as_ref().map(|si| (si.as_ref(), sq)));
-
-    let effective_limit = rerank_pool;
-    let results = if audit_mode.is_active() || splade_arg.is_some() {
-        let code_results = ctx.store().search_hybrid(
-            &query_embedding,
-            &filter,
-            effective_limit,
-            threshold,
-            index,
-            splade_arg,
-        )?;
-        code_results
-            .into_iter()
-            .map(cqs::store::UnifiedResult::Code)
-            .collect()
-    } else {
-        ctx.store().search_code_results(
-            &query_embedding,
-            &filter,
-            effective_limit,
-            threshold,
-            index,
-        )?
-    };
-
-    let results = if args.rerank_active() && results.len() > 1 {
-        let mut code_results: Vec<cqs::store::SearchResult> = results
-            .into_iter()
-            .map(|r| match r {
-                cqs::store::UnifiedResult::Code(sr) => sr,
-            })
-            .collect();
-        ctx.reranker()?
-            .rerank(&args.query, &mut code_results, limit)
-            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
-        code_results
-            .into_iter()
-            .map(cqs::store::UnifiedResult::Code)
-            .collect()
-    } else {
-        results
-    };
+    // --include-refs: project search + merged reference results. The project
+    // half (`retrieve_project`) is byte-identical to the plain path.
+    let project_results = retrieve_project(ctx, &qargs, &prepared)?;
 
     // Project-result origins for the staleness meta, captured before the
-    // reference merge consumes `results`. Reference origins are not project
-    // files — parity with the CLI multi-index path, which checks project
-    // results only.
-    let project_origins = result_origins(&results);
+    // reference merge consumes the project results. Reference origins are not
+    // project files — parity with the CLI multi-index path, which checks
+    // project results only.
+    let project_origins = result_origins(&project_results);
 
     let references = ctx.get_all_refs()?;
-    let tagged: Vec<cqs::reference::TaggedResult> = if references.is_empty() {
-        results
-            .into_iter()
-            .map(|result| cqs::reference::TaggedResult {
-                result,
-                source: None,
-            })
-            .collect()
-    } else {
-        use rayon::prelude::*;
-        let ref_results: Vec<_> = references
-            .par_iter()
-            .filter_map(|ref_idx| {
-                match cqs::reference::search_reference(
-                    ref_idx,
-                    &query_embedding,
-                    &filter,
-                    limit,
-                    threshold,
-                    true,
-                ) {
-                    Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
-                    Err(e) => {
-                        tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
-                        None
-                    }
-                    _ => None,
-                }
-            })
-            .collect();
-        cqs::reference::merge_results(results, ref_results, limit)
-    };
+    let tagged = merge_references(&qargs, &prepared, project_results, &references);
 
     let (tagged, token_info) = pack_tagged(ctx, args, tagged)?;
     let mut value = crate::cli::display::build_tagged_results_value(

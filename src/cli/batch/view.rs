@@ -934,4 +934,14 @@ impl crate::cli::commands::search::search_ctx::SearchCtx for BatchView {
     fn audit_state(&self) -> cqs::audit::AuditMode {
         BatchView::audit_state(self)
     }
+
+    fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+        // The daemon hands back its LRU-cached `Arc<ReferenceIndex>` snapshots
+        // directly — no per-call config load.
+        self.get_all_refs()
+    }
+
+    fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>> {
+        crate::cli::commands::resolve::find_reference(&self.root, name).map(Arc::new)
+    }
 }
