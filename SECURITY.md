@@ -301,7 +301,8 @@ Known advisories and mitigations:
 
 | Crate | Advisory | Status |
 |-------|----------|--------|
-| `bincode` | RUSTSEC-2025-0141 | Mitigated: checksums validate data before deserialization |
+| `bincode` | RUSTSEC-2025-0141 | Mitigated: transitive via `hnsw_rs` 0.3.4 with no upgrade path; blake3 checksums validate data before deserialization |
+| `number_prefix` | RUSTSEC-2025-0119 | Accepted: unmaintained, transitive via `hf-hub` → `indicatif` 0.17, progress bars only |
 | `paste` | RUSTSEC-2024-0436 | Accepted: proc-macro, no runtime impact, transitive via tokenizers |
 
 Run `cargo audit` to check current status.

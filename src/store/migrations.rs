@@ -6,8 +6,10 @@
 //! ## Adding a new migration
 //!
 //! 1. Increment `CURRENT_SCHEMA_VERSION` in `helpers/mod.rs`
-//! 2. Add a new migration function: `async fn migrate_vN_to_vM(pool: &SqlitePool) -> Result<()>`
-//! 3. Add the case to `run_migration()`: `(N, M) => migrate_vN_to_vM(pool).await`
+//! 2. Add a new migration function:
+//!    `async fn migrate_vN_to_vM(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError>`
+//! 3. Append a row to the `MIGRATIONS` table:
+//!    `(N, M, |c| Box::pin(migrate_vN_to_vM(c)))`
 //! 4. Update `schema.sql` with the new schema
 //!
 //! ## Migration guidelines
@@ -1087,6 +1089,22 @@ mod tests {
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
         assert_eq!(CURRENT_SCHEMA_VERSION, 28);
+    }
+
+    #[test]
+    fn test_migrations_table_contiguous() {
+        // Every step from the oldest migratable version (v10) up to
+        // CURRENT_SCHEMA_VERSION must have a (v, v+1) row in MIGRATIONS.
+        // A forgotten row fails here instead of at a user's upgrade.
+        for v in 10..CURRENT_SCHEMA_VERSION {
+            assert!(
+                MIGRATIONS.iter().any(|(f, t, _)| *f == v && *t == v + 1),
+                "MIGRATIONS is missing the (v{}, v{}) step — append a row \
+                 when bumping CURRENT_SCHEMA_VERSION",
+                v,
+                v + 1
+            );
+        }
     }
 
     #[test]

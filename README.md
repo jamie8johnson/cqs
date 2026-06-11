@@ -24,13 +24,13 @@ Code intelligence and RAG for AI agents. Semantic search, call graph analysis, i
 
 ## Install
 
-**Requires Rust 1.95+**
+**Requires Rust 1.96+**
 
 ```bash
 cargo install cqs
 ```
 
-> **Note:** `cargo install` clones a patched `cuvs` fork from [github.com/jamie8johnson/cuvs-patched](https://github.com/jamie8johnson/cuvs-patched) even for CPU builds, because it is wired in via `[patch.crates-io]`. The patch exposes `search_with_filter` for GPU-native bitset filtering and will be dropped once upstream [rapidsai/cuvs#2019](https://github.com/rapidsai/cuvs/pull/2019) merges.
+> **Note:** GPU builds (`--features cuda-index`) depend on the official `cuvs` crate from crates.io, pinned to `=26.6` to match the installed conda `libcuvs` version. CPU-only builds (the default) don't pull in cuvs at all.
 
 **Upgrading?** A reindex is recommended after major version bumps:
 ```bash
@@ -693,21 +693,27 @@ Local-first ML, GPU-accelerated. Optional LLM enrichment via Claude API.
 
 ## HNSW Index Tuning
 
-The HNSW (Hierarchical Navigable Small World) index provides fast approximate nearest neighbor search. Current parameters:
+The HNSW (Hierarchical Navigable Small World) index provides fast approximate nearest neighbor search. Defaults are corpus-size-tiered — small projects pay less build cost, large monorepos get more recall headroom:
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| M (connections) | 24 | Max edges per node. Higher = better recall, more memory |
-| ef_construction | 200 | Search width during build. Higher = better index, slower build |
-| max_layers | 16 | Graph layers. ~log(N) is typical |
-| ef_search | 100 (adaptive) | Baseline search width; actual value scales with k and index size |
+| Corpus size | M (connections) | ef_construction | ef_search |
+|-------------|-----------------|-----------------|-----------|
+| < 5k chunks | 16 | 100 | 50 |
+| 5k–100k chunks | 24 | 200 | 100 |
+| ≥ 100k chunks | 32 | 400 | 200 |
+
+- **M** — max edges per node. Higher = better recall, more memory
+- **ef_construction** — search width during build. Higher = better index, slower build
+- **ef_search** — baseline search width at query time; the effective value also adapts with k and index size
+- **max_layers** is fixed at 16 (~log(N) is typical)
+
+The `CQS_HNSW_M`, `CQS_HNSW_EF_CONSTRUCTION`, and `CQS_HNSW_EF_SEARCH` env vars override the tier defaults — a set value is taken verbatim, regardless of corpus size.
 
 **Trade-offs:**
-- **Recall vs speed**: Higher ef_search baseline improves recall but slows queries. ef_search adapts automatically based on k and index size
-- **Index size**: ~4KB per vector with current settings
+- **Recall vs speed**: Higher ef_search improves recall but slows queries
+- **Index size**: ~4KB per vector with mid-tier settings
 - **Build time**: O(N * M * ef_construction) complexity
 
-For most codebases (<100k chunks), defaults work well. Large repos may benefit from tuning ef_search higher (200+) if recall matters more than latency.
+The tiered defaults work well for most codebases; reach for the env overrides only when measured recall or latency says otherwise.
 
 ## Retrieval Quality
 
@@ -781,7 +787,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_CAGRA_MAX_BYTES` | (auto) | Max GPU memory for CAGRA index |
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
 | `CQS_CAGRA_STREAM_BATCH_SIZE` | `10000` | Embedding rows streamed per batch during CAGRA index construction. At dim=1024 this is ~40 MB/batch; raise/lower to fit a per-batch byte budget for non-default-dim models. (P3-15 / SHL-V1.33-9) |
-| `CQS_CAGRA_THRESHOLD` | `50000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_CAGRA_THRESHOLD` | `5000` | Min chunks to trigger CAGRA over HNSW |
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
 | `CQS_CAGRA_MAX_GPU_BYTES` | (unset) | Hard cap (bytes) on GPU memory the CAGRA index is allowed to allocate. When set, exceeding the cap aborts the build with a clear error rather than OOM-ing the GPU. P2.42. |
@@ -817,11 +823,11 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_FORCE_BASE_INDEX` | (none) | Set to `1` to force search via the base (non-enriched) HNSW index |
 | `CQS_FTS_NORMALIZE_MAX` | `16384` | Max bytes of `normalize_for_fts` output per chunk. Truncation is emitted at warn level; bump if FTS recall on long chunks (large generated tables, monolithic functions) is degraded. |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
-| `CQS_HNSW_EF_CONSTRUCTION` | `200` | HNSW construction-time search width |
+| `CQS_HNSW_EF_CONSTRUCTION` | corpus-tiered: `100`/`200`/`400` | HNSW construction-time search width (see HNSW Index Tuning) |
 | `CQS_DISTANCE_METRIC` | `cosine` | Distance metric at index build (`cosine`, `dot`). Stored in the index; a conflicting value at load is a typed error |
-| `CQS_HNSW_EF_SEARCH` | `100` | HNSW query-time search width |
+| `CQS_HNSW_EF_SEARCH` | corpus-tiered: `50`/`100`/`200` | HNSW query-time search width (see HNSW Index Tuning) |
 | `CQS_HNSW_BATCH_SIZE` | `10000` | Vectors per HNSW build batch |
-| `CQS_HNSW_M` | `24` | HNSW connections per node |
+| `CQS_HNSW_M` | corpus-tiered: `16`/`24`/`32` | HNSW connections per node (see HNSW Index Tuning) |
 | `CQS_HNSW_MAX_DATA_BYTES` | `1073741824` (1 GB) | Max HNSW data file size |
 | `CQS_HNSW_MAX_GRAPH_BYTES` | `524288000` (500 MB) | Max HNSW graph file size |
 | `CQS_HNSW_MAX_ID_MAP_BYTES` | `524288000` (500 MB) | Max HNSW ID map file size |

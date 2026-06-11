@@ -446,14 +446,16 @@ Checklist for every new command:
 1. **Implementation** — `src/cli/commands/<category>/<name>.rs` with the core logic (pick category: search/, graph/, review/, index/, io/, infra/, train/). Follow the surface-agnostic core pattern established by the command-core unification (#1688–#1698): a typed `<Name>Args` (input, derives `Deserialize`), a typed `<Name>Output` (the single JSON schema, derives `Serialize`), and a `<name>_core(ctx, args) -> Result<<Name>Output>` holding all logic and never printing or reading env posture. The CLI `cmd_<name>` and, where one exists, the daemon `dispatch_<name>` are thin adapters that build `Args`, call the core, and render. Logic lives in the core, not the adapters.
 2. **Category mod.rs** — add `mod <name>;` + `pub(crate) use <name>::*;` in `src/cli/commands/<category>/mod.rs`
 3. **CLI definition** — `Commands` enum variant in `src/cli/definitions.rs` with clap args
-4. **Derive surfaces** — `Commands` enum variants pick up dispatch + `variant_name()` + `batch_support()` from `#[derive(cqs_macros::CqsCommands)]` automatically (PR #1495 / #1500). Per-variant attribute knobs: `#[cqs(handler = "cmd_foo")]` for the dispatch fn, `#[cqs(batch_support = "yes")]` to opt into batch mode. See existing variants in `src/cli/definitions.rs` and the macro in `cqs-macros/`. A missing handler is a compile error from the derive expansion.
-5. **`--json` support** — serde serialization for programmatic output
-6. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
-7. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
-8. **Tests** — happy path + empty input + error path + edge cases
-9. **CLAUDE.md** — add to the command reference section
-10. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
-11. **CHANGELOG** — entry in the next release section
+4. **Derive surfaces** — `Commands` enum variants pick up `variant_name()`, `batch_support()`, and dispatch routing from `#[derive(cqs_macros::CqsCommands)]` automatically (PR #1495 / #1500). Every variant needs a `#[cqs_cmd(...)]` attribute with two required keys: `group = "a"` (no-store / lifecycle / mutation) or `group = "b"` (store-using), and `batch = "cli"` (in-process only), `"daemon"` (answerable by the daemon), or `"runtime"` (defers to a `<variant_snake>_batch_support` helper — used when support depends on the inner subcommand). An optional `name = "..."` overrides the telemetry label when the kebab-case default doesn't match. See existing variants in `src/cli/definitions.rs` and the macro in `cqs-macros/src/lib.rs`.
+5. **Dispatch shim** — handlers bind by naming convention, not attribute: the derive calls `cmd_<variant_snake>_dispatch`, which you write by hand in `src/cli/commands/dispatch_shims.rs` (standardized signature; destructure the variant with `must_be!` and call your `cmd_<name>`). A missing or mis-shaped shim is a single compile error from the derive's const existence guard.
+6. **Daemon wiring** (only for `batch = "daemon"`) — three more edit sites: a `BatchCmd` variant in `src/cli/batch/commands.rs` (reuse the shared `*Args` struct so CLI and batch share one source of flags), a `dispatch_<name>` adapter in the matching `src/cli/batch/handlers/` module (thin: parse wire args into the core's `*Args`, call the core, serialize the typed output), and a CLI==daemon parity test following the `src/cli/batch/handlers/dispatch_tests.rs` pattern (dispatch one line, assert the envelope shape).
+7. **`--json` support** — serde serialization for programmatic output
+8. **Tracing** — `tracing::info_span!` at entry, `tracing::warn!` on error fallback
+9. **Error handling** — `Result` propagation, no bare `.unwrap_or_default()` in production
+10. **Tests** — happy path + empty input + error path + edge cases
+11. **CLAUDE.md** — add to the command reference section
+12. **Skills** — add to `.claude/skills/cqs/SKILL.md` and `.claude/skills/cqs-bootstrap/SKILL.md`
+13. **CHANGELOG** — entry in the next release section
 
 Pattern to follow: look at `src/cli/commands/io/blame.rs` or `src/cli/commands/review/dead.rs` for a minimal example.
 
