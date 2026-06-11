@@ -175,6 +175,18 @@ pub(crate) fn task_core<Mode>(
     let _span =
         tracing::info_span!("task_core", description_len = description.len(), limit).entered();
 
+    // Compute test-reachability once and share it across the scout and impact
+    // phases. Both `compute_hints_batch` (via scout) and `compute_risk_and_tests`
+    // need the same forward-BFS map over byte-identical inputs (same graph, same
+    // test chunks, same depth), so computing it twice doubles the largest cost
+    // in the command.
+    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+    let reachability = crate::impact::test_reachability(
+        graph,
+        &test_names,
+        crate::impact::DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    );
+
     // 2. Scout phase
     let scout = scout_core(&ScoutResources {
         store,
@@ -185,6 +197,7 @@ pub(crate) fn task_core<Mode>(
         opts: &ScoutOptions::default(),
         graph,
         test_chunks,
+        reachability: Some(&reachability),
     })?;
     tracing::debug!(
         file_groups = scout.file_groups.len(),
@@ -226,7 +239,8 @@ pub(crate) fn task_core<Mode>(
         (Vec::new(), Vec::new())
     } else {
         let target_refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-        let (scores, raw_tests) = compute_risk_and_tests(&target_refs, graph, test_chunks);
+        let (scores, raw_tests) =
+            compute_risk_and_tests(&target_refs, graph, test_chunks, Some(&reachability));
         let risk = target_refs
             .iter()
             .zip(scores)

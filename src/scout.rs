@@ -159,6 +159,7 @@ pub fn scout_with_options<Mode>(
         opts,
         graph: &graph,
         test_chunks: &test_chunks,
+        reachability: None,
     })
 }
 
@@ -172,6 +173,10 @@ pub(crate) struct ScoutResources<'a, Mode> {
     pub opts: &'a ScoutOptions,
     pub graph: &'a crate::store::CallGraph,
     pub test_chunks: &'a [ChunkSummary],
+    /// Precomputed test-reachability map, shared by callers that already ran
+    /// the forward BFS (e.g. `cqs task`). `None` means `scout_core` computes it
+    /// on demand inside `compute_hints_batch`.
+    pub reachability: Option<&'a std::collections::HashMap<std::sync::Arc<str>, usize>>,
 }
 
 /// Core scout implementation accepting pre-loaded resources.
@@ -189,6 +194,7 @@ pub(crate) fn scout_core<Mode>(
     let opts = res.opts;
     let graph = res.graph;
     let test_chunks = res.test_chunks;
+    let reachability = res.reachability;
     let _span = tracing::info_span!("scout_core", %task, limit).entered();
 
     // 1. Search
@@ -263,8 +269,13 @@ pub(crate) fn scout_core<Mode>(
 
     // 7. Batch-compute hints for all result chunks (single forward BFS)
     let all_chunk_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
-    let hints_batch =
-        crate::impact::compute_hints_batch(graph, test_chunks, &all_chunk_names, &caller_counts);
+    let hints_batch = crate::impact::compute_hints_batch(
+        graph,
+        test_chunks,
+        &all_chunk_names,
+        &caller_counts,
+        reachability,
+    );
     let hints_map: std::collections::HashMap<&str, &crate::impact::FunctionHints> = all_chunk_names
         .iter()
         .zip(hints_batch.iter())
@@ -719,6 +730,7 @@ mod tests {
             opts: &opts,
             graph: &graph,
             test_chunks: &test_chunks,
+            reachability: None,
         })
         .unwrap();
 
@@ -796,6 +808,7 @@ mod tests {
             opts: &opts,
             graph: &graph,
             test_chunks: &test_chunks,
+            reachability: None,
         })
         .unwrap();
 

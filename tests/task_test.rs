@@ -254,8 +254,12 @@ fn test_compute_risk_and_tests_integration() {
         vendored: false,
     }];
 
-    let (scores, tests) =
-        compute_risk_and_tests(&["search_filtered", "validate_query"], &graph, &test_chunks);
+    let (scores, tests) = compute_risk_and_tests(
+        &["search_filtered", "validate_query"],
+        &graph,
+        &test_chunks,
+        None,
+    );
 
     assert_eq!(scores.len(), 2);
     // search_filtered: 2 callers, test_search reachable → has test coverage

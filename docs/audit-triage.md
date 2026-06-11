@@ -125,9 +125,9 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | CQ-V1.42-16 | Crate root accretes utilities that have dedicated homes (serde/path/fs helpers in lib.rs) | src/lib.rs:410-645 | open |
 | SEC-V1.42-3 | Cleartext-http API-key guard split across two layers with contradictory localhost policy — local.rs re-check unreachable; under ALLOW_INSECURE=1 silently drops opted-into header | src/llm/mod.rs:357-372, local.rs:146-171 | ✅ PR #1765 |
 | PB-V1.42-2 | linux_fs_resolution magic table omits V9FS_MAGIC (0x01021997) — manually mounted DrvFS gets fine-grained mtime treatment, re-opening dropped-second-save bug | src/config.rs:270-289 | ✅ PR #1764 |
-| RM-V1.42-1 | CAGRA interrupted-save tmp orphans never swept on load — HNSW/SPLADE both sweep theirs; multi-hundred-MB accumulation under crash-looping daemon | src/cagra.rs:1186, :1426, :1556 | open |
-| PERF-V1.42-7 | `cqs task` computes the full test-reachability BFS twice with identical inputs | src/task.rs:144, :194 | open |
-| PERF-V1.42-8 | test_reachability allocates 2-3 Strings per BFS visit — siblings in same file use Arc<str> interning (runs on every scout/task/health/review) | src/impact/bfs.rs:354-386 | open |
+| RM-V1.42-1 | CAGRA interrupted-save tmp orphans never swept on load — HNSW/SPLADE both sweep theirs; multi-hundred-MB accumulation under crash-looping daemon | src/cagra.rs:1186, :1426, :1556 | ✅ PR #1767 |
+| PERF-V1.42-7 | `cqs task` computes the full test-reachability BFS twice with identical inputs | src/task.rs:144, :194 | ✅ PR #1767 |
+| PERF-V1.42-8 | test_reachability allocates 2-3 Strings per BFS visit — siblings in same file use Arc<str> interning (runs on every scout/task/health/review) | src/impact/bfs.rs:354-386 | ✅ PR #1767 |
 | PERF-V1.42-10 | build_chunk_detail tests-that-cover query is an unindexed full-table content LIKE scan per dashboard click — use chunks_fts | src/serve/data.rs:619-629 | open |
 | PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | ✅ PR #1766 |
 | TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
