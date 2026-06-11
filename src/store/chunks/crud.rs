@@ -1705,7 +1705,11 @@ mod tests {
         let (store, _dir) = setup_store();
         let c = make_chunk("alpha", "src/a.rs");
         store
-            .upsert_chunks_unembedded_batch(std::slice::from_ref(&c), Some(100))
+            .upsert_embedded_batch(
+                &[],
+                std::slice::from_ref(&c),
+                &std::collections::HashMap::new(),
+            )
             .unwrap();
 
         let before = store.splade_generation().unwrap();
