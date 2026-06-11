@@ -1006,6 +1006,66 @@ pub(super) use super::commands::{
     CacheCommand, HookCommand, ModelCommand, NotesCommand, ProjectCommand, RefCommand, SlotCommand,
 };
 
+impl Commands {
+    /// The effective output format this invocation requests, for the
+    /// daemon-forward text-vs-JSON gate.
+    ///
+    /// Returns `Some(format)` for every variant carrying an `output`
+    /// (`OutputArgs` / `TextJsonArgs`) flag group, resolving `--json` over
+    /// `--format`. Returns `None` for variants with no output-format flag
+    /// (lifecycle / mutation / subcommand-dispatch variants), which are all
+    /// CLI-only and never reach the daemon-forward gate.
+    ///
+    /// The daemon wire shape is structured JSON; the CLI surface renders
+    /// prose for text mode through each command's own renderer. The gate
+    /// uses this to keep text-mode invocations on the CLI path so output is
+    /// surface-independent — a daemon never serves the JSON payload where the
+    /// CLI would have rendered text.
+    ///
+    /// Every daemon-dispatchable variant is pinned to return `Some` by
+    /// `daemon_dispatchable_variants_report_an_output_format` in the dispatch
+    /// tests, so a new daemon command without an arm here fails at test time
+    /// rather than leaking a JSON payload daemon-up.
+    pub(crate) fn effective_output_format(&self) -> Option<OutputFormat> {
+        match self {
+            Commands::Stats { output }
+            | Commands::Health { output }
+            | Commands::Refresh { output } => Some(output.effective_format()),
+            Commands::Blame { output, .. }
+            | Commands::Deps { output, .. }
+            | Commands::Callers { output, .. }
+            | Commands::Callees { output, .. }
+            | Commands::Onboard { output, .. }
+            | Commands::Explain { output, .. }
+            | Commands::Similar { output, .. }
+            | Commands::ImpactDiff { output, .. }
+            | Commands::Review { output, .. }
+            | Commands::Ci { output, .. }
+            | Commands::TestMap { output, .. }
+            | Commands::Context { output, .. }
+            | Commands::Dead { output, .. }
+            | Commands::Gather { output, .. }
+            | Commands::Stale { output, .. }
+            | Commands::Suggest { output, .. }
+            | Commands::Read { output, .. }
+            | Commands::Related { output, .. }
+            | Commands::Where { output, .. }
+            | Commands::Scout { output, .. }
+            | Commands::Plan { output, .. }
+            | Commands::Task { output, .. } => Some(output.effective_format()),
+            Commands::Impact { output, .. } | Commands::Trace { output, .. } => {
+                Some(output.effective_format())
+            }
+            // `notes` carries its `--json` on the inner subcommand. Only
+            // `notes list` is daemon-dispatchable; delegating keeps its
+            // text-mode invocation on the CLI path (the JSON payload would
+            // otherwise leak) while `notes list --json` forwards.
+            Commands::Notes { subcmd } => Some(subcmd.effective_output_format()),
+            _ => None,
+        }
+    }
+}
+
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
 /// be forwarded to the batch daemon.
 ///

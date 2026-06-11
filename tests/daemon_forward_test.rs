@@ -523,7 +523,11 @@ fn test_blame_dash_n_forwards_as_commits_flag() {
     // remapped every `-n` to `--limit`, so `cqs blame foo -n 3` returned a
     // parse_error envelope daemon-up while working daemon-down. The frame
     // must carry `-n 3` verbatim for the batch BlameArgs parser.
-    let req = forwarded_request(&["blame", "foo", "-n", "3"]);
+    //
+    // Top-level `--json` puts the invocation in JSON mode so it forwards
+    // (text mode stays on the CLI path); the flag itself is process-local and
+    // stripped from the wire frame, so the args array is unchanged.
+    let req = forwarded_request(&["--json", "blame", "foo", "-n", "3"]);
     assert_eq!(req["command"], "blame");
     assert_eq!(
         req["args"],
@@ -537,7 +541,11 @@ fn test_top_level_verbose_flag_is_stripped_on_forward() {
     // `cqs -v callers foo`: `-v` is a top-level Cli flag the old
     // hand-mirrored strip list didn't know, so it leaked into the batch
     // `callers` parser and hard-errored daemon-up.
-    let req = forwarded_request(&["-v", "callers", "foo"]);
+    //
+    // Top-level `--json` selects JSON mode so the command forwards (text mode
+    // bypasses the daemon); both `-v` and `--json` are process-local and
+    // stripped, leaving just the positional in the wire frame.
+    let req = forwarded_request(&["--json", "-v", "callers", "foo"]);
     assert_eq!(req["command"], "callers");
     assert_eq!(
         req["args"],
@@ -548,8 +556,10 @@ fn test_top_level_verbose_flag_is_stripped_on_forward() {
 
 #[test]
 fn test_top_level_rrf_flag_is_stripped_on_forward() {
-    // `cqs --rrf callers foo`: same drift class as `-v`.
-    let req = forwarded_request(&["--rrf", "callers", "foo"]);
+    // `cqs --rrf callers foo`: same drift class as `-v`. Top-level `--json`
+    // selects JSON mode so it forwards; `--rrf` is a search knob but, on a
+    // non-search subcommand, it lives in the stripped top-level region.
+    let req = forwarded_request(&["--json", "--rrf", "callers", "foo"]);
     assert_eq!(req["command"], "callers");
     assert_eq!(
         req["args"],
@@ -1378,5 +1388,240 @@ fn test_slim_error_envelope_exits_nonzero() {
     assert!(
         stderr.contains("not_found") && stderr.contains("no such note"),
         "error code+message surfaced; stderr=<{stderr}>"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Text-mode daemon-forward gate.
+//
+// Text-mode invocations (no `--json` / `--format json`) of daemon-dispatchable
+// commands stay on the CLI path: the daemon wire shape is structured JSON, and
+// the CLI renders prose for text mode through each command's own renderer. If
+// the gate ever regresses and forwards a text-mode query, the daemon's JSON
+// payload prints where the rendered text should — the mock here would see a
+// connection and the JSON shape would leak to stdout.
+//
+// `--json` mode must still forward (the fast path), so each command pins both
+// halves: text bypasses, JSON round-trips.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Initialize an empty legacy `.cqs/index.db` so `CommandContext::open_readonly`
+/// succeeds on the CLI fallback. `read` (non-focused) reads the file and
+/// `docs/notes.toml` straight from disk — it never queries the store or loads
+/// an embedder — so an empty store is enough to render text-mode output.
+fn init_empty_index(project_dir: &Path) {
+    let db_path = project_dir.join(".cqs").join(::cqs::INDEX_DB_FILENAME);
+    let store = ::cqs::Store::open(&db_path).expect("open seed store");
+    store
+        .init(&::cqs::store::ModelInfo::default())
+        .expect("init seed store");
+}
+
+#[test]
+fn test_read_text_mode_bypasses_daemon_and_renders_file() {
+    // `cqs read <file>` (no --json) must NOT forward to the daemon — it would
+    // print the `{"content": ...}` JSON payload instead of the rendered file.
+    // The gate keeps it on the CLI path, which prints the file verbatim. The
+    // /cqs-verify check-3 shape holds: the first line of `read` output is the
+    // file's first line.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+    init_empty_index(dir.path());
+
+    // A file with a recognizable first line under the project root.
+    std::fs::write(
+        dir.path().join("hello.txt"),
+        "FIRST_LINE_SENTINEL\nsecond line\nthird line\n",
+    )
+    .expect("write test file");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["read", "hello.txt"]);
+
+    let output = cmd.output().expect("cqs read spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs read` text mode failed; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "text-mode read reached the daemon socket (text-mode gate regressed); \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    // The rendered file, not the JSON payload: first stdout line is the file's
+    // first line, and there is no `{"content"` envelope key.
+    let first_line = stdout.lines().next().unwrap_or("");
+    assert_eq!(
+        first_line, "FIRST_LINE_SENTINEL",
+        "first line of read output must be the file's first line; stdout=<{stdout}>"
+    );
+    assert!(
+        !stdout.contains("\"content\""),
+        "JSON payload leaked into text-mode read output; stdout=<{stdout}>"
+    );
+}
+
+#[test]
+fn test_read_json_mode_still_forwards_to_daemon() {
+    // The `--json` half: text-mode bypass must not break the daemon fast path
+    // for JSON. `cqs read <file> --json` forwards, and the slim `{"data": ...}`
+    // envelope is unwrapped to the bare payload on the V2Bare surface.
+    let (dir, sock_path) = setup_project();
+    let response = serde_json::json!({
+        "status": "ok",
+        "output": {"data": {"path": "hello.txt", "content": "DAEMON_RENDERED_CONTENT"}},
+    });
+    let mock = MockDaemon::with_response_line(sock_path.clone(), response.to_string());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["read", "hello.txt", "--json"]);
+
+    let output = cmd.output().expect("cqs read --json spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs read --json` failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "JSON-mode read must still forward to the daemon; mock saw {} connection(s). \
+         stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+    assert!(
+        v.get("data").is_none(),
+        "bare surface must not carry the batch envelope; got <{stdout}>"
+    );
+    assert_eq!(
+        v["content"], "DAEMON_RENDERED_CONTENT",
+        "daemon payload must reach the JSON consumer; stdout=<{stdout}>"
+    );
+}
+
+#[test]
+fn test_bare_query_text_mode_bypasses_daemon() {
+    // The bare-query search path (`cqs "query"`, no subcommand) defaults to
+    // text and must bypass the daemon too — otherwise the search results JSON
+    // payload prints where the prose result list should.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["find the thing"]);
+
+    // The CLI fallback may fail (no real index / no embedder) — the pin is
+    // purely that the daemon socket was never touched and the mock's reply
+    // never reached stdout. A text-mode bare query must not forward.
+    let output = cmd.output().expect("cqs bare query spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "text-mode bare query reached the daemon socket (gate regressed); \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    assert!(
+        !stdout.contains("DAEMON_SHOULD_NOT_RESPOND"),
+        "mock response leaked into text-mode bare query stdout: {stdout}"
+    );
+}
+
+#[test]
+fn test_impact_format_json_forwards_to_daemon() {
+    // `impact` carries `OutputArgs` (`--format json` as well as `--json`).
+    // Pin that the `--format json` spelling is recognized by the text-mode
+    // gate as JSON and still forwards to the daemon — the gate resolves the
+    // effective format, not just the `--json` boolean.
+    let (dir, sock_path) = setup_project();
+    let response = serde_json::json!({
+        "status": "ok",
+        "output": {"data": {"function_name": "foo", "callers": []}},
+    });
+    let mock = MockDaemon::with_response_line(sock_path.clone(), response.to_string());
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["impact", "foo", "--format", "json"]);
+
+    let output = cmd.output().expect("cqs impact spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`cqs impact foo --format json` failed daemon-up; stdout=<{stdout}> stderr=<{stderr}>"
+    );
+    assert_eq!(
+        mock.conn_count(),
+        1,
+        "`--format json` must be recognized as JSON and forward to the daemon; \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+    assert_eq!(v["function_name"], "foo", "daemon payload reached stdout");
+}
+
+#[test]
+fn test_impact_text_mode_bypasses_daemon() {
+    // The text half for an `OutputArgs` command: `cqs impact foo` (default
+    // text) must bypass the daemon. Before the fix it printed the impact JSON
+    // payload daemon-up instead of the rendered impact report.
+    let (dir, sock_path) = setup_project();
+    let mock = MockDaemon::new(sock_path.clone(), "DAEMON_SHOULD_NOT_RESPOND");
+
+    let canonical_dir =
+        dunce::canonicalize(dir.path()).expect("canonicalize temp dir for CWD override");
+    let mut cmd = cqs_bare();
+    clean_cqs_env(&mut cmd);
+    cmd.env("XDG_RUNTIME_DIR", dir.path())
+        .current_dir(&canonical_dir)
+        .args(["impact", "foo"]);
+
+    let output = cmd.output().expect("cqs impact spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        mock.conn_count(),
+        0,
+        "text-mode impact reached the daemon socket (gate regressed); \
+         mock saw {} connection(s). stdout=<{stdout}> stderr=<{stderr}>",
+        mock.conn_count()
+    );
+    assert!(
+        !stdout.contains("DAEMON_SHOULD_NOT_RESPOND"),
+        "mock response leaked into text-mode impact stdout: {stdout}"
     );
 }
