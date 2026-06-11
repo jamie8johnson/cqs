@@ -13,12 +13,21 @@
 //! the result (text or JSON via the [`crate::cli::display`] typed structs) and
 //! owns the `NoResults` exit code.
 //!
-//! The `--ref`-scoped and `--include-refs` paths stay in the adapter: their
-//! reference-index resolution needs config load + multi-store fan-out, which a
-//! single-store `SearchCtx` doesn't model, so core-extraction is not
-//! applicable (Phase 2b ref-path decision). They still serialize through the
-//! shared [`display`] schema, so reference results carry the same per-result
-//! shape as project results.
+//! ## One query-preparation path, one multi-store seam
+//!
+//! The query-preparation prelude — classification, the NameOnly-FTS-first
+//! short-circuit, embedding, centroid reclassification + α-floor, filter /
+//! SPLADE / base-index resolution — lives once in [`prepare_query`]. All three
+//! search paths consume it: the plain single-store path ([`query_core`]) and
+//! the multi-store `--ref` / `--include-refs` paths. Only the retrieval fan-out
+//! that consumes the [`PreparedQuery`] is path-specific: [`retrieve_project`]
+//! for the single store, [`retrieve_ref_scoped`] and [`merge_references`] for
+//! the reference stores [`search_ctx::SearchCtx::references`] /
+//! `reference_by_name` supply (the multi-store seam). Token-budget packing,
+//! parent context, staleness, and serialization stay surface-specific (the CLI
+//! renders text/JSON, the daemon builds a JSON value), so those layer on top of
+//! the shared retrieval in each adapter, and reference results carry the same
+//! per-result [`display`] shape as project results.
 
 use std::collections::HashMap;
 
@@ -29,6 +38,7 @@ use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, Embedding, Pattern, SearchFilter, Store};
 
 use crate::cli::commands::search::search_ctx;
+use crate::cli::commands::search::search_ctx::SearchCtx;
 use crate::cli::{display, signal, staleness, Cli};
 
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
@@ -178,6 +188,21 @@ impl QueryArgs {
             fts_first: true,
         }
     }
+
+    /// Build `QueryArgs` for the multi-store paths (`--ref` / `--include-refs`).
+    ///
+    /// Identical to [`from_cli`](Self::from_cli) except for `fts_first`: the
+    /// NameOnly-FTS-first short-circuit runs against the *project* store, so the
+    /// `--ref`-scoped path (which searches a reference store, not the project)
+    /// disables it. `--include-refs` keeps it (its project half is the real
+    /// project store), matching the pre-refactor behavior where a name-only hit
+    /// short-circuited to project-only results.
+    fn from_cli_ref(cli: &Cli) -> Self {
+        QueryArgs {
+            fts_first: cli.ref_name.is_none(),
+            ..Self::from_cli(cli)
+        }
+    }
 }
 
 // ─── Output (the typed result the adapters render) ─────────────────────────
@@ -227,6 +252,53 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 
 // ─── Core ───────────────────────────────────────────────────────────────────
 
+/// The result of [`prepare_query`]: either a short-circuit retrieval that
+/// bypassed embedding (name-only, or a NameOnly-FTS-first hit), or a fully
+/// prepared dense query ready for the retrieval fan-out.
+///
+/// The two-variant shape is what lets the prelude be shared while the fan-out
+/// stays path-specific: the single-store and multi-store consumers both call
+/// [`prepare_query`], match on this, and only branch on the [`Prepared::Dense`]
+/// fan-out.
+pub(crate) enum Prepared<'a> {
+    /// FTS-by-name produced results without an embedding (name-only flag, or a
+    /// NameOnly-classified query whose FTS lookup hit). Already a ranked
+    /// `Vec<UnifiedResult>` — the consumer assembles/serializes directly.
+    ShortCircuit(Vec<UnifiedResult>),
+    /// A prepared dense query. Everything between classification and the
+    /// retrieval call is resolved; the consumer runs the single-store or
+    /// multi-store fan-out against it. Boxed because `PreparedQuery` is far
+    /// larger than the `ShortCircuit` variant (embedding + filter + index).
+    Dense(Box<PreparedQuery<'a>>),
+}
+
+/// Everything the retrieval fan-out needs, resolved once by [`prepare_query`]
+/// and consumed identically by the single-store project path and the
+/// multi-store `--ref` / `--include-refs` paths.
+///
+/// Holds the borrowed SPLADE handle (`SpladeIndexRef` derefs to `&SpladeIndex`),
+/// so it is tied to the `SearchCtx` lifetime — the consumer keeps it alive
+/// across the search call. The dense index is an owned `Arc`, so it composes
+/// the same on both surfaces.
+pub(crate) struct PreparedQuery<'a> {
+    /// Dense query embedding (also reused by reference fan-out).
+    query_embedding: Embedding,
+    /// The fully-built, validated `SearchFilter`.
+    filter: SearchFilter,
+    /// SPLADE sparse query vector, `None` when SPLADE is off / encoding failed.
+    splade_query: Option<cqs::splade::SparseVector>,
+    /// Primed SPLADE inverted index handle, `None` when SPLADE is off.
+    splade_index: Option<search_ctx::SpladeIndexRef<'a>>,
+    /// Resolved project vector index (base or enriched, with fallback applied).
+    index: Option<std::sync::Arc<dyn cqs::index::VectorIndex>>,
+    /// Audit-mode state — forces the hybrid path when active.
+    audit_mode: cqs::audit::AuditMode,
+    /// Over-fetch limit for the project search (pattern × 3, rerank pool).
+    search_limit: usize,
+    /// Reranker handle when `--rerank` is active.
+    reranker: Option<std::sync::Arc<dyn cqs::Reranker>>,
+}
+
 /// Surface-agnostic core for the plain (non-`--ref`, non-`--include-refs`)
 /// search path and the non-ref name-only path.
 ///
@@ -236,10 +308,41 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 /// than printing or exiting — the adapter maps empty to the `NoResults` exit
 /// code. Reads no env: the base-index override arrives via
 /// [`QueryArgs::force_base_index`].
+///
+/// The query-preparation prelude (classification, NameOnly-FTS-first,
+/// embedding, filter/SPLADE/index resolution) lives in [`prepare_query`], which
+/// the `--ref` / `--include-refs` fan-out shares. `query_core` is the
+/// single-store consumer: prepare → [`retrieve_project`] → [`assemble_output`].
 pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> Result<QueryOutput> {
     let query = args.query.as_str();
     let _span = tracing::info_span!("query_core", query_len = query.len()).entered();
 
+    let prepared = match prepare_query(ctx, args)? {
+        Prepared::ShortCircuit(results) => return assemble_output(ctx, args, results),
+        Prepared::Dense(p) => p,
+    };
+
+    let results = retrieve_project(ctx, args, &prepared)?;
+    assemble_output(ctx, args, results)
+}
+
+/// The shared query-preparation prelude: classification, the NameOnly-FTS-first
+/// short-circuit, embedding, centroid reclassification + α-floor, filter
+/// parsing, SPLADE α resolution + sparse encoding, and base-index selection.
+///
+/// This is the single place all three search surfaces build a query — the plain
+/// single-store path ([`query_core`]) and both multi-store paths (`--ref`,
+/// `--include-refs`). Only the retrieval fan-out that consumes the
+/// [`PreparedQuery`] is path-specific.
+///
+/// Returns [`Prepared::ShortCircuit`] when FTS-by-name produced results without
+/// an embedding (the name-only flag, or a NameOnly-classified query whose FTS
+/// lookup hit), and [`Prepared::Dense`] otherwise.
+pub(crate) fn prepare_query<'a>(
+    ctx: &'a dyn search_ctx::SearchCtx,
+    args: &QueryArgs,
+) -> Result<Prepared<'a>> {
+    let query = args.query.as_str();
     let store = ctx.store();
     let cqs_dir = ctx.cqs_dir();
 
@@ -249,13 +352,13 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
             .search_by_name(query, args.limit)
             .context("Failed to search by name")?;
         let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
-        return assemble_output(ctx, args, unified);
+        return Ok(Prepared::ShortCircuit(unified));
     }
 
     // Adaptive routing: classify query BEFORE embedding to potentially skip it.
     // --splade is NOT a routing override (it only controls SPLADE fusion);
-    // --rrf/--rerank override the search strategy. (--ref never reaches the
-    // core.)
+    // --rrf/--rerank override the search strategy. (--ref reaches here too: it
+    // drives the same prepared query, fanning out over a reference store.)
     //
     // `always_route` (daemon) keeps the router live even with explicit flags —
     // `cqs search` always classifies — while the CLI suppresses classification
@@ -295,7 +398,7 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
                 );
                 let unified: Vec<UnifiedResult> =
                     results.into_iter().map(UnifiedResult::Code).collect();
-                return assemble_output(ctx, args, unified);
+                return Ok(Prepared::ShortCircuit(unified));
             }
             tracing::info!("NameOnly returned 0 results, falling back to dense");
             crate::cli::telemetry::log_routed(
@@ -466,33 +569,35 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
     } else {
         effective_limit
     };
-    // `SpladeIndexRef` derefs to `&SpladeIndex`; `as_deref` collapses the
-    // Owned/Borrowed handle into the `&SpladeIndex` the primitive wants while
-    // the handle stays alive in `splade_index` for the search call's lifetime.
-    let splade_arg = splade_index.as_deref().zip(splade_query.as_ref());
 
-    // Audit mode and SPLADE both require the hybrid path (search_unified
-    // doesn't support SPLADE yet); only the plain dense path uses
-    // search_code_results.
-    let results = if audit_mode.is_active() || splade_arg.is_some() {
-        let code_results = store.search_hybrid(
-            &query_embedding,
-            &filter,
-            search_limit,
-            args.threshold,
-            index.as_deref(),
-            splade_arg,
-        )?;
-        code_results.into_iter().map(UnifiedResult::Code).collect()
-    } else {
-        store.search_code_results(
-            &query_embedding,
-            &filter,
-            search_limit,
-            args.threshold,
-            index.as_deref(),
-        )?
-    };
+    Ok(Prepared::Dense(Box::new(PreparedQuery {
+        query_embedding,
+        filter,
+        splade_query,
+        splade_index,
+        index,
+        audit_mode,
+        search_limit,
+        reranker,
+    })))
+}
+
+/// Single-store project retrieval over a [`PreparedQuery`]: the dense/hybrid
+/// fan-out, pattern filter, and cross-encoder rerank. Returns a ranked
+/// `Vec<UnifiedResult>` ready for [`assemble_output`].
+///
+/// Shared between [`query_core`] (plain path) and the `--include-refs` path,
+/// whose project-half retrieval is byte-identical — the reference fan-out
+/// merges on top of this output.
+pub(crate) fn retrieve_project(
+    ctx: &dyn search_ctx::SearchCtx,
+    args: &QueryArgs,
+    prepared: &PreparedQuery<'_>,
+) -> Result<Vec<UnifiedResult>> {
+    let query = args.query.as_str();
+    let store = ctx.store();
+
+    let results = run_project_search(store, args, prepared)?;
 
     // Pattern filter.
     let pattern: Option<Pattern> = args
@@ -517,13 +622,165 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
     };
 
     // Cross-encoder re-ranking.
-    let results = if let Some(reranker) = reranker.as_deref() {
+    let results = if let Some(reranker) = prepared.reranker.as_deref() {
         rerank_unified(reranker, query, results, args.limit)?
     } else {
         results
     };
 
-    assemble_output(ctx, args, results)
+    Ok(results)
+}
+
+/// The project-store dense/hybrid retrieval call itself, with no post-filtering.
+///
+/// Audit mode and SPLADE both require the hybrid path (`search_unified` doesn't
+/// support SPLADE yet); only the plain dense path uses `search_code_results`.
+/// This is the single collapsed form of what `cmd_query_project` and the daemon
+/// ref path each carried as a divergent nested condition (one had two
+/// byte-identical `search_hybrid` call sites).
+fn run_project_search<Mode>(
+    store: &Store<Mode>,
+    args: &QueryArgs,
+    prepared: &PreparedQuery<'_>,
+) -> Result<Vec<UnifiedResult>> {
+    // `SpladeIndexRef` derefs to `&SpladeIndex`; `as_deref` collapses the
+    // Owned/Borrowed handle into the `&SpladeIndex` the primitive wants while
+    // the handle stays alive in `prepared.splade_index` for the call's lifetime.
+    let splade_arg = prepared
+        .splade_index
+        .as_deref()
+        .zip(prepared.splade_query.as_ref());
+
+    if prepared.audit_mode.is_active() || splade_arg.is_some() {
+        let code_results = store.search_hybrid(
+            &prepared.query_embedding,
+            &prepared.filter,
+            prepared.search_limit,
+            args.threshold,
+            prepared.index.as_deref(),
+            splade_arg,
+        )?;
+        Ok(code_results.into_iter().map(UnifiedResult::Code).collect())
+    } else {
+        Ok(store.search_code_results(
+            &prepared.query_embedding,
+            &prepared.filter,
+            prepared.search_limit,
+            args.threshold,
+            prepared.index.as_deref(),
+        )?)
+    }
+}
+
+// ─── Multi-store fan-out (the seam) ─────────────────────────────────────────
+//
+// The same prepared query that drives the single-store project path also drives
+// the `--ref` (one reference store) and `--include-refs` (project + all
+// references) paths. The two helpers below are the multi-store consumers of a
+// `PreparedQuery`: they fan out over the reference stores `SearchCtx::references`
+// / `reference_by_name` supplies, merge, and return a ranked `Vec<TaggedResult>`.
+// Token-budget packing, parent context, staleness, and serialization stay
+// surface-specific (the CLI renders text/JSON, the daemon builds a JSON value),
+// so those layer on top of the shared tagged results in each adapter.
+
+/// `--include-refs` merge step: fan out over the reference stores and merge
+/// them with already-retrieved project results into a ranked `Vec<TaggedResult>`.
+///
+/// The project half is retrieved by [`retrieve_project`] (byte-identical to the
+/// plain path) and passed in, so the caller can run staleness / parent-context
+/// over the project results before the merge consumes them. The reference
+/// stores come from [`search_ctx::SearchCtx::references`] (the multi-store
+/// seam); each is searched with `apply_weight = true` so its scores rank below
+/// equally-similar project results, then [`reference::merge_results`] dedups by
+/// content hash and truncates to `limit`.
+pub(crate) fn merge_references(
+    args: &QueryArgs,
+    prepared: &PreparedQuery<'_>,
+    project_results: Vec<UnifiedResult>,
+    references: &[std::sync::Arc<cqs::reference::ReferenceIndex>],
+) -> Vec<reference::TaggedResult> {
+    if references.is_empty() {
+        return project_results
+            .into_iter()
+            .map(|result| reference::TaggedResult {
+                result,
+                source: None,
+            })
+            .collect();
+    }
+
+    use rayon::prelude::*;
+    let ref_results: Vec<_> = references
+        .par_iter()
+        .filter_map(|ref_idx| {
+            match reference::search_reference(
+                ref_idx,
+                &prepared.query_embedding,
+                &prepared.filter,
+                args.limit,
+                args.threshold,
+                true,
+            ) {
+                Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
+                Err(e) => {
+                    tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
+                    None
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    reference::merge_results(project_results, ref_results, args.limit)
+}
+
+/// `--ref`-scoped retrieval: search exactly the one named reference store, no
+/// project fan-out. Uses `apply_weight = false` (raw reference scores), reranks
+/// when `--rerank` is set, and tags every result with the reference name.
+///
+/// The prepared query supplies the embedding, filter, and rerank handle — the
+/// `--ref` path shares the entire query-preparation prelude with the plain path,
+/// differing only in *which store* it retrieves from.
+pub(crate) fn retrieve_ref_scoped(
+    ctx: &dyn search_ctx::SearchCtx,
+    args: &QueryArgs,
+    prepared: &PreparedQuery<'_>,
+    ref_name: &str,
+) -> Result<Vec<reference::TaggedResult>> {
+    let ref_idx = ctx.reference_by_name(ref_name)?;
+
+    // Shared pool sizing: over-fetch when reranking so the cross-encoder sees
+    // more candidates, then trim to `limit` in the rerank step.
+    let ref_limit = if prepared.reranker.is_some() {
+        crate::cli::limits::rerank_pool_size(args.limit)
+    } else {
+        args.limit
+    };
+
+    let mut results = reference::search_reference(
+        &ref_idx,
+        &prepared.query_embedding,
+        &prepared.filter,
+        ref_limit,
+        args.threshold,
+        false, // no weight for --ref scoped search
+    )?;
+
+    if let Some(reranker) = prepared.reranker.as_deref() {
+        if results.len() > 1 {
+            reranker
+                .rerank(args.query.as_str(), &mut results, args.limit)
+                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+        }
+    }
+
+    Ok(results
+        .into_iter()
+        .map(|r| reference::TaggedResult {
+            result: UnifiedResult::Code(r),
+            source: Some(ref_name.to_string()),
+        })
+        .collect())
 }
 
 /// Final assembly shared by the core's name-only, NameOnly-FTS, and dense
@@ -640,7 +897,6 @@ pub(crate) fn cmd_query(
     let cli = ctx.cli;
     let store = &ctx.store;
     let root = &ctx.root;
-    let cqs_dir = &ctx.cqs_dir;
 
     // Name-only mode: search by function/struct name, skip embedding entirely.
     if cli.name_only {
@@ -663,421 +919,61 @@ pub(crate) fn cmd_query(
     }
 
     // Plain (non-ref, non-multi-index) search routes through the shared core.
-    // The `--ref`-scoped and `--include-refs` paths keep the adapter-local
-    // multi-store retrieval below (reference resolution doesn't fit the
-    // single-store core, Phase 2b ref-path decision); they serialize through
-    // the shared tagged-result schema.
     if cli.ref_name.is_none() && !cli.include_refs {
         let args = QueryArgs::from_cli(cli);
         let output = query_core(ctx, &args)?;
         return render_query_output(cli, root, store, output);
     }
 
-    // Adaptive routing: classify query BEFORE embedding to potentially skip it
-    // --splade intentionally NOT here: it only controls SPLADE fusion,
-    // not adaptive routing. --rrf/--rerank/--ref override the search strategy.
-    let has_explicit_flags = cli.rrf || cli.rerank_active() || cli.ref_name.is_some();
-    let classification = if !has_explicit_flags {
-        let c = cqs::search::router::classify_query(query);
-        tracing::info!(
-            category = %c.category,
-            confidence = %c.confidence,
-            strategy = %c.strategy,
-            "Query classified"
-        );
-        Some(c)
-    } else {
-        tracing::debug!("Explicit flags set, skipping adaptive routing");
-        None
-    };
-
-    // NameOnly strategy: try FTS5 first, fall back to dense on 0 results
-    if let Some(ref c) = classification {
-        if c.strategy == cqs::search::router::SearchStrategy::NameOnly {
-            let results = store.search_by_name(query, cli.limit)?;
-            if !results.is_empty() {
-                tracing::info!(results = results.len(), "NameOnly search succeeded");
-                crate::cli::telemetry::log_routed(
-                    cqs_dir,
-                    query,
-                    &c.category.to_string(),
-                    &c.confidence.to_string(),
-                    &c.strategy.to_string(),
-                    false,
-                    Some(results.len()),
-                );
-                return cmd_query_name_only(cli, store, query, root);
-            }
-            tracing::info!("NameOnly returned 0 results, falling back to dense");
-            crate::cli::telemetry::log_routed(
-                cqs_dir,
-                query,
-                &c.category.to_string(),
-                &c.confidence.to_string(),
-                &c.strategy.to_string(),
-                true, // fallback triggered
-                None,
-            );
+    // `--ref` / `--include-refs`: the multi-store paths. They share the entire
+    // query-preparation prelude with the plain path (`prepare_query`) and differ
+    // only in the retrieval fan-out — `--ref` searches one named reference,
+    // `--include-refs` merges all references with the project results. The
+    // fan-out consumes the same `PreparedQuery` the plain path's
+    // `retrieve_project` does.
+    let args = QueryArgs::from_cli_ref(cli);
+    let prepared = match prepare_query(ctx, &args)? {
+        // NameOnly-FTS-first hit (only possible on `--include-refs`; the `--ref`
+        // path disables `fts_first` since its retrieval is the reference store,
+        // not the project). Matches prior behavior: a name-only short-circuit on
+        // `--include-refs` rendered project results only, no reference merge.
+        Prepared::ShortCircuit(results) => {
+            let output = assemble_output(ctx, &args, results)?;
+            return render_query_output(cli, root, store, output);
         }
-    }
-
-    // Over-retrieve when reranking to give the cross-encoder more candidates.
-    // Pool sizing lives in `cli/limits.rs::rerank_pool_size`, honoring
-    // CQS_RERANK_OVER_RETRIEVAL / CQS_RERANK_POOL_MAX.
-    let effective_limit = if cli.rerank_active() {
-        crate::cli::limits::rerank_pool_size(cli.limit)
-    } else {
-        cli.limit
+        Prepared::Dense(p) => p,
     };
 
-    let embedder = ctx.embedder()?;
-    let query_embedding = embedder.embed_query(query)?;
-
-    // Centroid reclassification: if embedding-space centroid matching is
-    // confident, upgrade the rule-based category. Track whether category
-    // changed so we can apply the alpha floor downstream.
-    let pre_centroid_cat = classification.as_ref().map(|c| c.category);
-    let classification = classification
-        .map(|c| cqs::search::router::reclassify_with_centroid(c, query_embedding.as_slice()));
-    let centroid_applied = classification.as_ref().map(|c| c.category) != pre_centroid_cat;
-
-    let languages = match &cli.lang {
-        Some(l) => Some(vec![l.parse().context(format!(
-            "Invalid language. Valid: {}",
-            cqs::parser::Language::valid_names_display()
-        ))?]),
-        None => None,
-    };
-
-    let include_types = match &cli.include_type {
-        Some(types) => {
-            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
-            Some(parsed.with_context(|| {
-                format!(
-                    "Invalid chunk type. Valid: {}",
-                    ChunkType::valid_names().join(", ")
-                )
-            })?)
-        }
-        None if cli.include_docs => None, // --include-docs: search everything
-        None => {
-            // Default: search code only (callable types + type definitions).
-            // Excludes Section (markdown), Module (file-level).
-            Some(ChunkType::code_types())
-        }
-    };
-
-    let exclude_types = match &cli.exclude_type {
-        Some(types) => {
-            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
-            Some(parsed.with_context(|| {
-                format!(
-                    "Invalid chunk type for --exclude-type. Valid: {}",
-                    ChunkType::valid_names().join(", ")
-                )
-            })?)
-        }
-        None => None,
-    };
-
-    // Type boost from adaptive routing (boost, not filter — won't exclude results)
-    let type_boost_types = classification.as_ref().and_then(|c| c.type_hints.clone());
-
-    // Resolve SPLADE alpha:
-    //   --splade-alpha X  : explicit constant α for all queries (sweeps, debug)
-    //   otherwise         : per-category router when classification succeeds
-    //   --splade          : force SPLADE on even for Unknown category
-    //
-    // IMPORTANT: SPLADE is always enabled when a category is classified, even at
-    // α=1.0 — the α knob controls scoring weight (α=1.0 = pure dense) but SPLADE
-    // still contributes to the *candidate pool*. Skipping SPLADE at α=1.0 loses
-    // ~10pp R@1 on categories where sparse surfaces candidates dense misses
-    // (multi_step, negation, cross_language).
-    //
-    // Semantics fix: prior to this, `--splade` bypassed the router and used
-    // `cli.splade_alpha`'s clap default (0.7) for every query. That was a
-    // regression introduced when routing landed — the flag predates routing.
-    // The router runs whenever classification succeeds, regardless of
-    // `--splade`. Explicit `--splade-alpha` still overrides.
-    //
-    // `resolve_splade_alpha` emits the structured "SPLADE routing" log
-    // internally — no call-site log needed here.
-    let (use_splade, mut splade_alpha) = match (cli.splade_alpha, classification.as_ref()) {
-        // Explicit α override wins in all cases.
-        (Some(alpha), _) => (true, alpha),
-        // Classified query → per-category router.
-        (None, Some(c)) => (true, cqs::search::router::resolve_splade_alpha(&c.category)),
-        // Unknown category + --splade → force on at α=0.7.
-        (None, None) if cli.splade => (true, 0.7),
-        // Unknown category, no flags → SPLADE off (dense-only).
-        (None, None) => (false, 1.0),
-    };
-    // Centroid alpha floor: when centroid reclassified the query, clamp α
-    // so misclassifications can't catastrophically zero SPLADE (Behavioral α=0.0).
-    if centroid_applied {
-        splade_alpha = splade_alpha.max(0.7);
-    }
-
-    // SearchFilter is `#[non_exhaustive]`, so external-crate construction
-    // goes through `Default` + field assignment instead of a struct expression.
-    // Adding a new field stays one-line on the struct definition; this site
-    // doesn't need to know.
-    let filter = {
-        let mut f = SearchFilter::default();
-        f.languages = languages;
-        f.include_types = include_types;
-        f.exclude_types = exclude_types;
-        f.path_pattern = cli.path.clone();
-        f.name_boost = cli.name_boost;
-        f.query_text = query.to_string();
-        f.enable_rrf = cli.rrf;
-        f.enable_demotion = !cli.no_demote;
-        f.enable_splade = use_splade;
-        f.splade_alpha = splade_alpha;
-        f.type_boost_types = type_boost_types;
-        f
-    };
-    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
-
-    // Lazily obtain reranker from CommandContext (shared across ref + project paths)
-    let reranker = if cli.rerank_active() {
-        Some(ctx.reranker()?)
-    } else {
-        None
-    };
-
-    // --ref scoped search: skip project index, search only the named reference
+    // `--ref` scoped: search exactly the one named reference. No project
+    // results, so no staleness/parent context (the project store isn't
+    // searched) — matches prior behavior.
     if let Some(ref ref_name) = cli.ref_name {
-        return cmd_query_ref_only(
-            &RefQueryContext {
-                cli,
-                query,
-                query_embedding: &query_embedding,
-                filter: &filter,
-                root,
-                embedder,
-                reranker: reranker.as_deref(),
-            },
-            ref_name,
-        );
-    }
-
-    // SPLADE sparse encoding (if enabled by --splade flag OR per-category routing)
-    let splade_query = if use_splade {
-        ctx.splade_encoder().and_then(|enc| {
-            match enc.encode(query) {
-                Ok(sv) => Some(sv),
-                Err(e) => {
-                    tracing::warn!(error = %e, "SPLADE query encoding failed, falling back to cosine-only");
-                    None
-                }
-            }
-        })
-    } else {
-        None
-    };
-    let splade_index = if use_splade { ctx.splade_index() } else { None };
-
-    cmd_query_project(&QueryContext {
-        cli,
-        query,
-        query_embedding: &query_embedding,
-        filter: &filter,
-        store,
-        cqs_dir,
-        root,
-        embedder,
-        effective_limit,
-        reranker: reranker.as_deref(),
-        splade_query,
-        splade_index,
-        routed_strategy: classification.as_ref().map(|c| c.strategy),
-    })
-}
-
-/// Infrastructure context for project queries.
-struct QueryContext<'a> {
-    cli: &'a Cli,
-    query: &'a str,
-    query_embedding: &'a Embedding,
-    filter: &'a SearchFilter,
-    store: &'a Store<cqs::store::ReadOnly>,
-    cqs_dir: &'a std::path::Path,
-    root: &'a std::path::Path,
-    embedder: &'a Embedder,
-    effective_limit: usize,
-    reranker: Option<&'a dyn cqs::Reranker>,
-    splade_query: Option<cqs::splade::SparseVector>,
-    splade_index: Option<&'a cqs::splade::index::SpladeIndex>,
-    /// Phase 5: strategy picked by the classifier (if adaptive routing ran).
-    /// Drives whether we load the enriched or base HNSW.
-    routed_strategy: Option<cqs::search::router::SearchStrategy>,
-}
-
-/// Project search: search project index, optionally include references (--include-refs).
-fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
-    let cli = ctx.cli;
-    let query = ctx.query;
-    let query_embedding = ctx.query_embedding;
-    let filter = ctx.filter;
-    let store = ctx.store;
-    let cqs_dir = ctx.cqs_dir;
-    let root = ctx.root;
-    let embedder = ctx.embedder;
-    let effective_limit = ctx.effective_limit;
-
-    // Phase 5: when the classifier picked DenseBase, try loading the
-    // base (non-enriched) HNSW. If it's absent or corrupt, silently fall
-    // back to the enriched index so the query still works.
-    let use_base = matches!(
-        ctx.routed_strategy,
-        Some(cqs::search::router::SearchStrategy::DenseBase)
-    ) || std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1");
-    let mut base_fallback = false;
-    let index = if use_base {
-        match crate::cli::build_base_vector_index(store, cqs_dir)? {
-            Some(base_idx) => {
-                tracing::info!(
-                    basename = "index_base",
-                    "Router selected base HNSW for non-enriched query"
-                );
-                Some(base_idx)
-            }
-            None => {
-                tracing::info!(
-                    "Base HNSW unavailable — falling back to enriched index for DenseBase query"
-                );
-                base_fallback = true;
-                crate::cli::build_vector_index(store, cqs_dir)?
-            }
+        let tagged = retrieve_ref_scoped(ctx, &args, &prepared, ref_name)?;
+        let (tagged, token_info) = pack_tagged_cli(ctx, &args, tagged)?;
+        if tagged.is_empty() {
+            emit_empty_results(query, cli.json, Some(ref_name.as_str()));
         }
-    } else {
-        crate::cli::build_vector_index(store, cqs_dir)?
-    };
-
-    // Phase 5 telemetry: record DenseBase routing outcome (including fallback).
-    // Other strategies are logged elsewhere; this fires only for DenseBase to
-    // avoid double-counting.
-    if use_base {
-        crate::cli::telemetry::log_routed(
-            cqs_dir,
-            query,
-            "routed_to_base",
-            "medium",
-            if base_fallback {
-                "dense_base_fallback_to_enriched"
-            } else {
-                "dense_base"
-            },
-            base_fallback,
-            None,
-        );
-    }
-
-    let audit_mode = cqs::audit::load_audit_state(cqs_dir);
-
-    let search_limit = if cli.pattern.is_some() {
-        effective_limit * 3
-    } else {
-        effective_limit
-    };
-    // Build SPLADE argument for search_hybrid
-    let splade_arg = ctx.splade_index.zip(ctx.splade_query.as_ref());
-
-    let results = if audit_mode.is_active() {
-        let code_results = store.search_hybrid(
-            query_embedding,
-            filter,
-            search_limit,
-            cli.threshold,
-            index.as_deref(),
-            splade_arg,
-        )?;
-        code_results.into_iter().map(UnifiedResult::Code).collect()
-    } else {
-        // search_unified doesn't support SPLADE yet — use hybrid for code, unified for rest
-        if splade_arg.is_some() {
-            let code_results = store.search_hybrid(
-                query_embedding,
-                filter,
-                search_limit,
-                cli.threshold,
-                index.as_deref(),
-                splade_arg,
-            )?;
-            code_results.into_iter().map(UnifiedResult::Code).collect()
+        if cli.json {
+            display::display_tagged_results_json(&tagged, query, None, token_info)?;
         } else {
-            store.search_code_results(
-                query_embedding,
-                filter,
-                search_limit,
-                cli.threshold,
-                index.as_deref(),
-            )?
+            display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
         }
-    };
+        return Ok(());
+    }
 
-    // Pattern filter
-    let pattern: Option<Pattern> = cli
-        .pattern
-        .as_ref()
-        .map(|p| p.parse())
-        .transpose()
-        .context("Invalid pattern")?;
+    // `--include-refs`: project results merged with all references. The
+    // project half (`retrieve_project`) drives the staleness warning and
+    // parent-context resolution exactly as the plain path does; the reference
+    // merge then layers on top.
+    if cli.rerank_active() {
+        tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
+    }
+    let project_results = retrieve_project(ctx, &args, &prepared)?;
 
-    let results = if let Some(ref pat) = pattern {
-        let mut filtered: Vec<UnifiedResult> = results
-            .into_iter()
-            .filter(|r| match r {
-                UnifiedResult::Code(sr) => {
-                    pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
-                }
-            })
-            .collect();
-        filtered.truncate(cli.limit);
-        filtered
-    } else {
-        results
-    };
-
-    // Cross-encoder re-ranking
-    let results = if let Some(reranker) = ctx.reranker {
-        rerank_unified(reranker, query, results, cli.limit)?
-    } else {
-        results
-    };
-
-    // Token-budget packing
-    let json_overhead = json_overhead_for(cli);
-    let (results, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_results(
-            results,
-            budget,
-            json_overhead,
-            embedder,
-            unified_text,
-            unified_score,
-            "query",
-        )
-    } else {
-        (results, None)
-    };
-
-    // Parent context
-    let parents = if cli.expand_parent {
-        resolve_parent_context(&results, store, root)
-    } else {
-        HashMap::new()
-    };
-    let parents_ref = if cli.expand_parent {
-        Some(&parents)
-    } else {
-        None
-    };
-
-    // Staleness warning
+    // Staleness warning over the project results (reference origins aren't
+    // project files; the multi-index path checks project results only).
     if !cli.quiet && !cli.no_stale_check {
-        let origins: Vec<&str> = results
+        let origins: Vec<&str> = project_results
             .iter()
             .map(|r| {
                 let UnifiedResult::Code(sr) = r;
@@ -1091,86 +987,58 @@ fn cmd_query_project(ctx: &QueryContext<'_>) -> Result<()> {
         }
     }
 
-    // Load references only when --include-refs is set (default: project only)
-    let references = if cli.include_refs {
-        let config = cqs::config::Config::load(root);
-        reference::load_references(&config.references)
+    let parents = if cli.expand_parent {
+        resolve_parent_context(&project_results, store, root)
     } else {
-        Vec::new()
+        HashMap::new()
+    };
+    let parents_ref = if cli.expand_parent {
+        Some(&parents)
+    } else {
+        None
     };
 
-    if references.is_empty() {
-        if results.is_empty() {
-            emit_empty_results(query, cli.json, None);
-        }
-        if cli.json {
-            display::display_unified_results_json(&results, query, parents_ref, token_info)?;
-        } else {
-            display::display_unified_results(
-                &results,
-                root,
-                cli.no_content,
-                cli.context,
-                parents_ref,
-            )?;
-        }
-        return Ok(());
-    }
+    let references = ctx.references()?;
+    let tagged = merge_references(&args, &prepared, project_results, &references);
 
-    if cli.rerank_active() {
-        tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
-    }
-
-    // Multi-index search
-    use rayon::prelude::*;
-    let ref_results: Vec<_> = references
-        .par_iter()
-        .filter_map(|ref_idx| {
-            match reference::search_reference(
-                ref_idx,
-                query_embedding,
-                filter,
-                cli.limit,
-                cli.threshold,
-                true,
-            ) {
-                Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
-                Err(e) => {
-                    tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
-                    None
-                }
-                _ => None,
-            }
-        })
-        .collect();
-
-    let tagged = reference::merge_results(results, ref_results, cli.limit);
-
-    let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_results(
-            tagged,
-            budget,
-            json_overhead,
-            embedder,
-            |r| unified_text(&r.result),
-            |r| unified_score(&r.result),
-            "tagged",
-        )
-    } else {
-        (tagged, token_info)
-    };
+    let (tagged, token_info) = pack_tagged_cli(ctx, &args, tagged)?;
 
     if tagged.is_empty() {
         emit_empty_results(query, cli.json, None);
     }
-
     if cli.json {
         display::display_tagged_results_json(&tagged, query, parents_ref, token_info)?;
     } else {
         display::display_tagged_results(&tagged, root, cli.no_content, cli.context, parents_ref)?;
     }
-
     Ok(())
+}
+
+/// CLI token-budget packing for a tagged result set. Reuses the context's
+/// cached embedder (already initialized by `prepare_query` on every path that
+/// reaches here) — same pattern as `assemble_output`. Mirrors the daemon's
+/// `pack_tagged`.
+type TaggedPack = (Vec<reference::TaggedResult>, Option<(usize, usize)>);
+
+fn pack_tagged_cli(
+    ctx: &dyn search_ctx::SearchCtx,
+    args: &QueryArgs,
+    tagged: Vec<reference::TaggedResult>,
+) -> Result<TaggedPack> {
+    if let Some(budget) = args.tokens {
+        let embedder = ctx.embedder()?;
+        Ok(token_pack_results(
+            tagged,
+            budget,
+            args.json_overhead,
+            embedder,
+            |r| unified_text(&r.result),
+            |r| unified_score(&r.result),
+            "tagged",
+        ))
+    } else {
+        Ok((tagged, None))
+    }
 }
 
 // token_pack_results lives in crate::cli::commands
@@ -1211,147 +1079,6 @@ fn rerank_unified(
     }
 
     Ok(code_results.into_iter().map(UnifiedResult::Code).collect())
-}
-
-/// Name-only search: find by function/struct name, no embedding needed
-fn cmd_query_name_only<Mode>(
-    cli: &Cli,
-    store: &Store<Mode>,
-    query: &str,
-    root: &std::path::Path,
-) -> Result<()> {
-    let _span = tracing::info_span!("cmd_query_name_only", query).entered();
-    let results = store
-        .search_by_name(query, cli.limit)
-        .context("Failed to search by name")?;
-
-    if results.is_empty() {
-        emit_empty_results(query, cli.json, None);
-    }
-
-    // Convert to UnifiedResult for display
-    let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
-
-    // Token-budget packing (lazy embedder — only created when --tokens is set)
-    let json_overhead = json_overhead_for(cli);
-    let (unified, token_info) = if let Some(budget) = cli.tokens {
-        let embedder = Embedder::new(cli.try_model_config()?.clone())?;
-        token_pack_results(
-            unified,
-            budget,
-            json_overhead,
-            &embedder,
-            unified_text,
-            unified_score,
-            "name-only",
-        )
-    } else {
-        (unified, None)
-    };
-
-    // Resolve parent context if --expand requested
-    let parents = if cli.expand_parent {
-        resolve_parent_context(&unified, store, root)
-    } else {
-        HashMap::new()
-    };
-    let parents_ref = if cli.expand_parent {
-        Some(&parents)
-    } else {
-        None
-    };
-
-    if cli.json {
-        display::display_unified_results_json(&unified, query, parents_ref, token_info)?;
-    } else {
-        display::display_unified_results(&unified, root, cli.no_content, cli.context, parents_ref)?;
-    }
-
-    Ok(())
-}
-
-/// Context for ref-scoped search queries.
-struct RefQueryContext<'a> {
-    cli: &'a Cli,
-    query: &'a str,
-    query_embedding: &'a Embedding,
-    filter: &'a SearchFilter,
-    root: &'a std::path::Path,
-    embedder: &'a Embedder,
-    reranker: Option<&'a dyn cqs::Reranker>,
-}
-
-/// Ref-scoped semantic search: search only the named reference, no project index
-fn cmd_query_ref_only(ctx: &RefQueryContext<'_>, ref_name: &str) -> Result<()> {
-    let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
-
-    let ref_idx = crate::cli::commands::resolve::find_reference(ctx.root, ref_name)?;
-
-    // Shared pool sizing.
-    let ref_limit = if ctx.cli.rerank_active() {
-        crate::cli::limits::rerank_pool_size(ctx.cli.limit)
-    } else {
-        ctx.cli.limit
-    };
-    let mut results = reference::search_reference(
-        &ref_idx,
-        ctx.query_embedding,
-        ctx.filter,
-        ref_limit,
-        ctx.cli.threshold,
-        false, // no weight for --ref scoped search
-    )?;
-
-    // Cross-encoder re-ranking for ref-only path
-    if let Some(reranker) = ctx.reranker {
-        if results.len() > 1 {
-            reranker
-                .rerank(ctx.query, &mut results, ctx.cli.limit)
-                .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
-        }
-    }
-
-    let tagged: Vec<reference::TaggedResult> = results
-        .into_iter()
-        .map(|r| reference::TaggedResult {
-            result: UnifiedResult::Code(r),
-            source: Some(ref_name.to_string()),
-        })
-        .collect();
-
-    // Token-budget packing
-    let json_overhead = json_overhead_for(ctx.cli);
-    let (tagged, token_info) = if let Some(budget) = ctx.cli.tokens {
-        token_pack_results(
-            tagged,
-            budget,
-            json_overhead,
-            ctx.embedder,
-            |r| unified_text(&r.result),
-            |r| unified_score(&r.result),
-            "ref-only",
-        )
-    } else {
-        (tagged, None)
-    };
-
-    if tagged.is_empty() {
-        emit_empty_results(ctx.query, ctx.cli.json, Some(ref_name));
-    }
-
-    if ctx.cli.json {
-        display::display_tagged_results_json(&tagged, ctx.query, None, token_info)?;
-    } else {
-        display::display_tagged_results(
-            &tagged,
-            ctx.root,
-            ctx.cli.no_content,
-            ctx.cli.context,
-            None,
-        )?;
-    }
-
-    Ok(())
 }
 
 /// Ref-scoped name-only search: search only the named reference by name
@@ -1616,6 +1343,44 @@ mod tests {
             from_clap, expected,
             "clap defaults drifted from QueryArgs::default — update both together"
         );
+    }
+
+    /// `--ref` scoped: the multi-store args disable the NameOnly-FTS-first
+    /// short-circuit, because that lookup runs against the *project* store and
+    /// the `--ref` path never searches the project. Without this, a
+    /// NameOnly-classified `--ref` query could short-circuit to project-store
+    /// FTS results instead of fanning out to the reference. Everything else
+    /// matches `from_cli`.
+    #[test]
+    fn from_cli_ref_disables_fts_first_for_ref_scoped() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(["cqs", "q", "--ref", "stdlib"]).unwrap();
+        let ref_args = QueryArgs::from_cli_ref(&cli);
+        assert!(
+            !ref_args.fts_first,
+            "--ref scoped must disable project-store FTS-first"
+        );
+        // The only intended divergence from from_cli is fts_first.
+        let expected = QueryArgs {
+            fts_first: false,
+            ..QueryArgs::from_cli(&cli)
+        };
+        assert_eq!(ref_args, expected);
+    }
+
+    /// `--include-refs` (no `--ref`): the project half is the real project
+    /// store, so FTS-first stays on — matching the pre-refactor behavior where
+    /// a name-only hit short-circuited to project-only results.
+    #[test]
+    fn from_cli_ref_keeps_fts_first_for_include_refs() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(["cqs", "q", "--include-refs"]).unwrap();
+        let ref_args = QueryArgs::from_cli_ref(&cli);
+        assert!(
+            ref_args.fts_first,
+            "--include-refs keeps project FTS-first (its project half is the real store)"
+        );
+        assert_eq!(ref_args, QueryArgs::from_cli(&cli));
     }
 
     /// The `QueryOutput` envelope is a plain data carrier: an empty result set

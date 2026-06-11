@@ -17,6 +17,20 @@
 //! pattern (which has no long-lived `&self` borrow to lend) composes the same
 //! way the CLI's `&Store` does. The core keeps the returned `Arc`s alive in
 //! locals and `as_deref()`s them into the retrieval primitives.
+//!
+//! ## The multi-store seam
+//!
+//! The project store is the single store the plain path searches, but the same
+//! prepared query (one classification + embedding + filter + SPLADE resolution,
+//! built once by [`super::query::prepare_query`]) also drives the `--ref` and
+//! `--include-refs` paths. Those fan out over additional read-only stores
+//! (loaded references). [`SearchCtx::references`] is the seam: it hands the
+//! prepared-query consumer the reference stores to fan out over, returning
+//! `Arc<ReferenceIndex>` on both surfaces (the daemon caches them in an LRU; the
+//! CLI loads-then-wraps per call). The fan-out itself stays in
+//! [`super::query`], consuming the prepared query — so there is exactly one
+//! query-preparation path and a single seam where the multi-store retrieval
+//! slots in.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,6 +38,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use cqs::index::VectorIndex;
+use cqs::reference::ReferenceIndex;
 use cqs::splade::index::SpladeIndex;
 use cqs::splade::SparseVector;
 use cqs::store::{ReadOnly, Store};
@@ -103,6 +118,23 @@ pub(crate) trait SearchCtx {
 
     /// Current audit-mode state (forces the hybrid retrieval path when active).
     fn audit_state(&self) -> cqs::audit::AuditMode;
+
+    /// The loaded reference stores the `--include-refs` fan-out searches
+    /// alongside the project store. Empty when no references are configured.
+    ///
+    /// Returns `Arc<ReferenceIndex>` so the daemon's LRU-cached references and
+    /// the CLI's per-call loads share one seam signature. The CLI wraps its
+    /// freshly-loaded owned `ReferenceIndex` values into `Arc`; the daemon hands
+    /// back its cached `Arc`s directly. Only the multi-store path calls this —
+    /// the plain single-store path never loads references.
+    fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>>;
+
+    /// Resolve a single named reference (the `--ref`-scoped path). Separate
+    /// from [`references`](Self::references) because `--ref` searches exactly
+    /// one named store with no project fan-out, and each surface resolves the
+    /// name through its own path (the CLI re-reads config, the daemon hits its
+    /// LRU).
+    fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>>;
 }
 
 // ─── CLI adapter ────────────────────────────────────────────────────────────
@@ -154,5 +186,20 @@ impl SearchCtx for crate::cli::CommandContext<'_, ReadOnly> {
 
     fn audit_state(&self) -> cqs::audit::AuditMode {
         cqs::audit::load_audit_state(&self.cqs_dir)
+    }
+
+    fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+        // The CLI loads references fresh from config per call (no long-lived
+        // cache on this surface); wrap each owned `ReferenceIndex` into an `Arc`
+        // so the seam signature matches the daemon's LRU `Arc`s.
+        let config = cqs::config::Config::load(&self.root);
+        Ok(cqs::reference::load_references(&config.references)
+            .into_iter()
+            .map(Arc::new)
+            .collect())
+    }
+
+    fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>> {
+        crate::cli::commands::resolve::find_reference(&self.root, name).map(Arc::new)
     }
 }

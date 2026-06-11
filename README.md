@@ -791,6 +791,9 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
 | `CQS_CAGRA_STREAM_BATCH_SIZE` | `10000` | Embedding rows streamed per batch during CAGRA index construction. At dim=1024 this is ~40 MB/batch; raise/lower to fit a per-batch byte budget for non-default-dim models. (P3-15 / SHL-V1.33-9) |
 | `CQS_CAGRA_THRESHOLD` | `5000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_TIERED_INDEX` | `0` | Opt into the cuVS tiered index backend (requires the `tiered-index` build feature). When `1` and eligible, it shadows CAGRA and retires the periodic HNSW rebuild. Unset/`0` → CAGRA/HNSW as before. |
+| `CQS_TIERED_THRESHOLD` | `5000` | Min chunks to trigger the tiered backend over HNSW (falls back to `CQS_CAGRA_THRESHOLD` then the policy table). |
+| `CQS_TIERED_MIN_ANN_ROWS` | `5000` | Rows the tiered brute-force tier accumulates before cuVS builds the CAGRA ANN tier. Below it, search is pure brute-force. |
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
 | `CQS_CAGRA_MAX_GPU_BYTES` | (unset) | Hard cap (bytes) on GPU memory the CAGRA index is allowed to allocate. When set, exceeding the cap aborts the build with a clear error rather than OOM-ing the GPU. P2.42. |
@@ -1070,18 +1073,29 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search, with native bitset filtering for type/language queries. Requires the `cuda-index` feature flag (the legacy `gpu-index` name is preserved as an alias) and matching libcuvs from conda:
 
 ```bash
-conda install -c rapidsai libcuvs=26.04 libcuvs-headers=26.04
+conda install -c rapidsai libcuvs=26.06 libcuvs-headers=26.06
 cargo install cqs --features cuda-index
 ```
 
-`cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.4`).
+`cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.6`). The `cuda-index` feature depends on the **official** `cuvs` crate from crates.io; no fork or `[patch]` is involved.
 
 Building from source:
 ```bash
 cargo build --release --features cuda-index
 ```
 
-> **Note:** cqs uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
+> **Tiered index (opt-in, build-from-source only):** an experimental
+> `--features tiered-index` builds the cuVS *tiered index* backend, which
+> retires the watch loop's periodic HNSW rebuild — incremental adds flow into a
+> brute-force tier and stay searchable immediately, while the CAGRA ANN tier
+> compacts inside cuVS. Its Rust bindings are not in an official cuvs release
+> yet (upstream PR [rapidsai/cuvs#2235](https://github.com/rapidsai/cuvs/pull/2235)),
+> so this feature requires uncommenting a `[patch.crates-io]` block in the
+> root `Cargo.toml` that points at our fork branch. **That patch is commented
+> out by default and only affects `--features tiered-index` builds from this
+> repo** — it never touches a `cuda-index` build or anything installed from
+> crates.io (where `[patch]` is stripped). Enable the backend at runtime with
+> `CQS_TIERED_INDEX=1`. See CONTRIBUTING.md "Tiered-index fork pin" for details.
 
 ### WSL2
 

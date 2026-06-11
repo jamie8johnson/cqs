@@ -382,6 +382,7 @@ src/
   slot/         - Named slots — side-by-side full indexes under `.cqs/slots/<name>/` (#1105)
     mod.rs      - slot_dir(), resolve_slot_name() (CQS_SLOT > .cqs/active_slot > "default"), one-shot legacy migration
   cagra.rs      - GPU-accelerated CAGRA index (optional), save/load via cuvsCagraSerialize
+  tiered.rs     - cuVS tiered index backend (optional, `tiered-index` feature + fork pin). Brute-force tier absorbs incremental `extend`s; CAGRA ANN tier compacts internally — no periodic rebuild. No persistence (no cuVS serialize); rebuilt from store on daemon restart. Opt-in via `CQS_TIERED_INDEX=1`. See "Tiered-index fork pin" below.
   nl/           - NL description generation, JSDoc parsing
     mod.rs      - Core NL generation, type-aware embeddings, call context
     fts.rs      - FTS5 normalization, tokenization
@@ -476,6 +477,51 @@ src/
 - Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries
 - Schema migrations allow upgrading indexes without full rebuild
 - Skills in `.claude/skills/*/SKILL.md` are auto-discovered by Claude Code
+
+## Tiered-index fork pin
+
+The optional `tiered-index` feature builds the cuVS **tiered index** backend
+(`src/tiered.rs`): a brute-force tier that absorbs incremental `extend`s coupled
+with a CAGRA ANN tier that cuVS compacts internally. It exists to retire the
+watch loop's periodic full HNSW rebuild — incremental adds flow into the
+brute-force tier and stay searchable immediately, and there is no separate
+"rebuild every N inserts" pass.
+
+**Why a fork.** The Rust `cuvs::tiered_index` bindings are not in an official
+cuVS release yet — they live on our upstream PR branch (rapidsai/cuvs#2235).
+cqs consumes them through a Cargo `[patch.crates-io]` pointing at the fork
+branch:
+
+- Fork: `jamie8johnson/cuvs`, branch `cqs-tiered-26.6`
+  (commit `5081e4eb592a57b665c01f2e0af3230ccf07dd87`).
+- That branch is the PR branch (`rust-tiered-index`) plus a one-commit
+  version-pin: the cuvs workspace version is set `26.8.0 → 26.6.0` so the
+  patched crate matches cqs's `cuvs = "=26.6"` (strict coupling with conda
+  libcuvs 26.06, which already exports the tiered C API). The PR branch itself
+  is never moved.
+
+**How the gate keeps `cuda-index` honest.** The `[patch.crates-io]` block in the
+root `Cargo.toml` is **commented out by default**. A plain `--features
+cuda-index` build (and every crates.io consumer, who never sees `[patch]`) thus
+resolves the *official* cuvs 26.6 and never references the tiered module
+(`src/tiered.rs` is `#[cfg(feature = "tiered-index")]`-gated, so no tiered
+symbols are required). To build the tiered backend, uncomment the two patch
+lines and build `--features tiered-index`.
+
+**Using it.** Even with `tiered-index` compiled in, the backend is **opt-in at
+runtime** via `CQS_TIERED_INDEX=1`; unset, selection falls through to CAGRA then
+HNSW exactly as before. When opted in and the corpus clears the CAGRA threshold
+on a GPU, the tiered backend (priority 150) shadows CAGRA (100). The tiered
+index has **no persistence** (the cuVS C API offers no serialize/deserialize),
+so the daemon rebuilds it from the store on restart — this still removes the
+*periodic* rebuild; only the one-time cold-start build remains (same cost as the
+CAGRA build it replaces).
+
+**Retirement.** When rapidsai/cuvs#2235 merges and the tiered bindings ship in
+an official cuvs release, drop the `tiered-index` feature's fork dependency:
+delete the `[patch.crates-io]` block, bump `cuvs` to the release that carries
+the bindings, and the module compiles unchanged against the official crate.
+This is the same playbook used to retire the previous cuvs fork (#1679).
 
 ## Adding a New CLI Command
 
