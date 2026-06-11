@@ -19,7 +19,7 @@ use super::Parser;
 /// store-side UPSERT clause must include
 /// `OR chunks.parser_version != excluded.parser_version` so the bump
 /// triggers a refresh.
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 
 /// Collapse every run of ASCII/Unicode whitespace in `s` to a single space,
 /// then trim. Pure string normalization — no tree required.
@@ -120,32 +120,40 @@ pub(crate) fn canonical_hash(node: tree_sitter::Node, content: &str) -> String {
         .to_string()
 }
 
-/// Recursively collect chunk-local byte ranges of every node whose kind name
-/// contains `"comment"`. Ranges are rebased by subtracting `base`
-/// (the chunk's `node.start_byte()`) and clamped to `content_len`.
+/// Collect chunk-local byte ranges of every node whose kind name contains
+/// `"comment"`. Ranges are rebased by subtracting `base` (the chunk's
+/// `node.start_byte()`) and clamped to `content_len`.
+///
+/// Iterative (explicit work stack) rather than recursive: tree depth is bounded
+/// only by `CQS_MAX_FILE_SIZE` (env-raisable), so a pathological deeply-nested
+/// parse tree (minified output, nested parens) could otherwise recurse deep
+/// enough to overflow a rayon worker stack and SIGSEGV the whole index/watch
+/// process. A heap-backed stack grows instead.
 fn collect_comment_ranges<'a>(
-    node: tree_sitter::Node<'a>,
+    root: tree_sitter::Node<'a>,
     base: usize,
     content_len: usize,
     out: &mut Vec<(usize, usize)>,
 ) {
-    if node.kind().contains("comment") {
-        let r = node.byte_range();
-        // Rebase absolute byte offsets onto the chunk-local content slice.
-        let start = r.start.saturating_sub(base);
-        let end = r.end.saturating_sub(base).min(content_len);
-        if start < end {
-            out.push((start, end));
+    let mut stack: Vec<tree_sitter::Node<'a>> = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind().contains("comment") {
+            let r = node.byte_range();
+            // Rebase absolute byte offsets onto the chunk-local content slice.
+            let start = r.start.saturating_sub(base);
+            let end = r.end.saturating_sub(base).min(content_len);
+            if start < end {
+                out.push((start, end));
+            }
+            // A comment node has no comment descendants worth descending into.
+            continue;
         }
-        // A comment node has no comment descendants worth recursing into.
-        return;
-    }
-    // Each call owns its cursor (lifetime-tied to `node`), so the recursive
-    // call below doesn't fight cursor invariance.
-    let mut cursor = node.walk();
-    let children: Vec<tree_sitter::Node<'a>> = node.children(&mut cursor).collect();
-    for child in children {
-        collect_comment_ranges(child, base, content_len, out);
+        // Push children. Sibling visit order doesn't matter — the caller sorts
+        // and merges the collected ranges before splicing.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
     }
 }
 
@@ -274,6 +282,51 @@ impl Parser {
     }
 }
 
+/// Find the byte offset of the header-terminating `:` for a `UntilColon`
+/// signature (Python `def`/`class`), scanning at bracket depth 0 only.
+///
+/// A naive `content.find(':')` truncates on the first annotation colon —
+/// `def f(x: int, y: str) -> bool:` yields `def f(x`, discarding the parameter
+/// list, defaults, and the `-> bool` return annotation (which in turn kills
+/// `extract_return_python`'s `rfind("->")`). The header `:` is always the first
+/// colon at depth 0: parameter annotations, dict/set defaults, and slices all
+/// sit inside `()`, `[]`, or `{}`.
+///
+/// String-literal defaults are tracked so a quoted colon (`def f(x="a:b"):`)
+/// inside brackets is ignored — though such colons are already at depth > 0.
+/// A bare quoted colon at depth 0 cannot occur in a well-formed `def`/`class`
+/// header before the terminating `:`; tracking strings makes the scan robust
+/// to malformed input rather than relying on that invariant.
+///
+/// Returns `None` if no depth-0 colon exists (falls back to `content.len()`).
+fn find_def_colon(content: &str) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut depth: i32 = 0;
+    // When inside a string literal, holds the opening quote byte (b'\'' or b'"').
+    let mut string_quote: Option<u8> = None;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if let Some(q) = string_quote {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                string_quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => string_quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Extracts a function or method signature from source code content based on the language's signature style.
 /// # Arguments
 /// * `content` - The source code content to extract the signature from
@@ -281,7 +334,7 @@ impl Parser {
 /// # Returns
 /// A `String` containing the extracted signature. The signature is determined by the language's signature style:
 /// - `UntilBrace`: text up to the first `{`
-/// - `UntilColon`: text up to the first `:`
+/// - `UntilColon`: text up to the first `:` at bracket depth 0 (Python headers)
 /// - `FirstLine`: text up to the first newline
 /// - `UntilAs`: text up to a word boundary followed by the keyword "as" (case-insensitive)
 /// - `Bread`: returns the full content (for markdown, typically unused)
@@ -290,7 +343,7 @@ impl Parser {
 pub(crate) fn extract_signature(content: &str, language: Language) -> String {
     let sig_end = match language.def().signature_style {
         SignatureStyle::UntilBrace => content.find('{').unwrap_or(content.len()),
-        SignatureStyle::UntilColon => content.find(':').unwrap_or(content.len()),
+        SignatureStyle::UntilColon => find_def_colon(content).unwrap_or(content.len()),
         SignatureStyle::FirstLine => content.find('\n').unwrap_or(content.len()),
         SignatureStyle::UntilAs => {
             // ASCII case-insensitive search preserves byte offsets
@@ -298,7 +351,11 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
             let bytes = content.as_bytes();
             let is_boundary = |b: u8| b == b' ' || b == b'\n' || b == b'\t' || b == b'\r';
             let mut pos = None;
-            for i in 0..bytes.len().saturating_sub(2) {
+            // Bound is `len - 1` so the last valid two-byte "AS" window
+            // (i = len-2, i+1 = len-1) is reached. With `len - 2` the
+            // `i + 2 >= len` end-of-string guard below was unreachable, so a
+            // chunk ending exactly in " AS" kept its full text as the signature.
+            for i in 0..bytes.len().saturating_sub(1) {
                 if bytes[i].eq_ignore_ascii_case(&b'A') && bytes[i + 1].eq_ignore_ascii_case(&b'S')
                 {
                     let left_ok = i == 0 || is_boundary(bytes[i - 1]);
@@ -751,16 +808,24 @@ fn extract_method_receiver_type(
     find_type_identifier_recursive(first_param, source)
 }
 
-/// Recursively find a type_identifier node and return its text.
-/// Used for Go where the type may be wrapped in pointer_type.
+/// Find the first `type_identifier` node (pre-order) and return its text.
+/// Used for Go where the type may be wrapped in `pointer_type`.
+///
+/// Iterative (explicit work stack) rather than recursive for the same
+/// stack-safety reason as [`collect_comment_ranges`]: a deeply-nested parse
+/// tree must not overflow a rayon worker stack. Children are pushed in reverse
+/// so the first child is popped first, preserving the original pre-order
+/// (depth-first, leftmost) search that returns the shallowest-leftmost match.
 fn find_type_identifier_recursive(node: tree_sitter::Node, source: &str) -> Option<String> {
-    if node.kind() == "type_identifier" {
-        return Some(source[node.byte_range()].to_string());
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(name) = find_type_identifier_recursive(child, source) {
-            return Some(name);
+    let mut stack: Vec<tree_sitter::Node> = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "type_identifier" {
+            return Some(source[n.byte_range()].to_string());
+        }
+        let mut cursor = n.walk();
+        let children: Vec<tree_sitter::Node> = n.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
     None
@@ -934,6 +999,47 @@ mod tests {
         }
 
         #[test]
+        fn test_python_signature_annotated_full() {
+            // The first annotation colon (`x: int`) must NOT truncate the
+            // signature — depth-0 scan keeps the whole header including the
+            // return annotation.
+            let content = "def f(x: int, y: str) -> bool:\n    return True";
+            let sig = extract_signature(content, Language::Python);
+            assert_eq!(sig, "def f(x: int, y: str) -> bool");
+            // And the return-type NL extraction can now see the `->` that the
+            // old first-colon truncation would have removed.
+            let nl = (Language::Python.def().extract_return_nl)(&sig);
+            assert_eq!(nl.as_deref(), Some("Returns bool"));
+        }
+
+        #[test]
+        fn test_python_signature_dict_default_with_colon() {
+            // A dict default contains a colon inside braces (depth > 0); the
+            // header colon is the one after the closing paren.
+            let content = "def g(opts={\"a\": 1, \"b\": 2}) -> int:\n    return 0";
+            let sig = extract_signature(content, Language::Python);
+            assert_eq!(sig, "def g(opts={\"a\": 1, \"b\": 2}) -> int");
+        }
+
+        #[test]
+        fn test_python_signature_lambda_default() {
+            // A lambda default has a colon inside the parameter parens (depth 1).
+            let content = "def h(key=lambda x: x) -> None:\n    pass";
+            let sig = extract_signature(content, Language::Python);
+            assert_eq!(sig, "def h(key=lambda x: x) -> None");
+        }
+
+        #[test]
+        fn test_python_signature_string_default_with_colon() {
+            // A colon inside a string default must be ignored even though the
+            // depth tracking already places it inside parens — this exercises
+            // the string-literal skip directly.
+            let content = "def j(sep=\"a:b\") -> str:\n    return sep";
+            let sig = extract_signature(content, Language::Python);
+            assert_eq!(sig, "def j(sep=\"a:b\") -> str");
+        }
+
+        #[test]
         fn test_go_signature_stops_at_brace() {
             let content = "func (s *Server) Handle(r Request) error {\n\treturn nil\n}";
             let sig = extract_signature(content, Language::Go);
@@ -973,6 +1079,17 @@ mod tests {
             let content = "CREATE VIEW stra\u{00DF}e AS SELECT 1";
             let sig = extract_signature(content, Language::Sql);
             assert!(sig.contains("stra\u{00DF}e"));
+            assert!(!sig.contains("AS"));
+        }
+
+        #[test]
+        fn extract_signature_until_as_trailing_as() {
+            // A chunk ending exactly in " AS" must stop before the keyword.
+            // The old loop bound (`len - 2`) made the `i + 2 >= len` end guard
+            // unreachable, so the trailing " AS" was kept as part of the signature.
+            let content = "CREATE VIEW v AS";
+            let sig = extract_signature(content, Language::Sql);
+            assert_eq!(sig, "CREATE VIEW v");
             assert!(!sig.contains("AS"));
         }
     }
@@ -2107,6 +2224,85 @@ CREATE TABLE five_line (
                 "bounded walk-back must still find immediate leading comment, got: {:?}",
                 last.doc
             );
+        }
+    }
+
+    /// Stack-safety: the tree walkers must be iterative so a pathologically
+    /// deep parse tree (minified code, thousands of nested parens) doesn't
+    /// overflow a (2 MiB) rayon worker stack and SIGSEGV the indexer.
+    mod deep_tree_stack_safety {
+        use super::*;
+
+        /// Parse `source` with `lang`'s grammar and return its tree, keeping
+        /// the source alive alongside so the caller can borrow node text.
+        fn parse_raw(source: &str, lang: Language) -> tree_sitter::Tree {
+            let grammar = lang.try_grammar().expect("grammar available");
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&grammar).expect("set language");
+            parser.parse(source, None).expect("parse succeeds")
+        }
+
+        #[test]
+        fn collect_comment_ranges_no_overflow_on_deep_tree() {
+            // 50k nested parens around a literal, plus a trailing comment so the
+            // walker has at least one range to collect. Well within the 1 MiB
+            // default size cap; generation is a cheap string build.
+            let depth = 50_000;
+            let mut src = String::with_capacity(depth * 2 + 64);
+            src.push_str("x = ");
+            for _ in 0..depth {
+                src.push('(');
+            }
+            src.push('1');
+            for _ in 0..depth {
+                src.push(')');
+            }
+            src.push_str("  # trailing comment\n");
+
+            let tree = parse_raw(&src, Language::Python);
+            let root = tree.root_node();
+            let mut ranges: Vec<(usize, usize)> = Vec::new();
+            // Must not stack-overflow. A recursive walk at this depth would.
+            collect_comment_ranges(root, root.start_byte(), src.len(), &mut ranges);
+            assert!(
+                !ranges.is_empty(),
+                "the trailing comment range should be collected"
+            );
+        }
+
+        #[test]
+        fn find_type_identifier_no_overflow_on_deep_tree() {
+            // Same deep-paren tree, no type_identifier present: the walker must
+            // exhaust the whole tree iteratively and return None without
+            // overflowing.
+            let depth = 50_000;
+            let mut src = String::with_capacity(depth * 2 + 16);
+            src.push_str("x = ");
+            for _ in 0..depth {
+                src.push('(');
+            }
+            src.push('1');
+            for _ in 0..depth {
+                src.push(')');
+            }
+            src.push('\n');
+
+            let tree = parse_raw(&src, Language::Python);
+            let root = tree.root_node();
+            // No type_identifier in a Python expression tree → exhaustive walk.
+            let found = find_type_identifier_recursive(root, &src);
+            assert!(found.is_none());
+        }
+
+        #[test]
+        fn find_type_identifier_returns_shallowest_leftmost() {
+            // Pre-order semantics preserved after the iterative rewrite: a Go
+            // pointer receiver `(r *Server)` yields the inner type_identifier.
+            let src = "package p\nfunc (r *Server) Handle() {}\n";
+            let tree = parse_raw(src, Language::Go);
+            // Walk down to the receiver parameter type and confirm extraction.
+            let name = find_type_identifier_recursive(tree.root_node(), src);
+            assert_eq!(name.as_deref(), Some("Server"));
         }
     }
 }

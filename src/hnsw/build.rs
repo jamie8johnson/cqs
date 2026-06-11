@@ -557,6 +557,80 @@ mod tests {
         assert_eq!(hits.first().map(|r| r.id.as_str()), Some("chunk_b"));
     }
 
+    /// A zero vector interleaved between valid vectors must be skipped via the
+    /// zero-vector branch (distinct from the non-finite branch), the build must
+    /// succeed, and the surviving ids must stay aligned with their insertion
+    /// indices. Companion to `test_build_batched_skips_non_finite_embedding`,
+    /// pinning the *zero-vector* arm of the id_map desync class specifically.
+    #[test]
+    fn test_build_batched_skips_interleaved_zero_vector() {
+        // One-hot vectors: cosine-orthogonal, so each query's exact match is
+        // unambiguous even at k=1.
+        fn one_hot(idx: usize) -> Embedding {
+            let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+            v[idx] = 1.0;
+            Embedding::new(v)
+        }
+
+        // All-zero vector: caught by the zero-vector check (every element 0.0).
+        let zero_vec = vec![0.0f32; crate::EMBEDDING_DIM];
+
+        let batch = vec![
+            ("chunk_a".to_string(), one_hot(0)),
+            ("chunk_zero".to_string(), Embedding::new(zero_vec)),
+            ("chunk_b".to_string(), one_hot(2)),
+        ];
+        let batches: Vec<Result<Vec<(String, Embedding)>, std::convert::Infallible>> =
+            vec![Ok(batch)];
+
+        let index = HnswIndex::build_batched_with_dim(batches.into_iter(), 3, crate::EMBEDDING_DIM)
+            .expect("build must succeed with a zero vector in the stream");
+        assert_eq!(index.len(), 2, "zero vector must be skipped, not inserted");
+
+        // Exact-embedding searches must return the correct ids — proves the
+        // interleaved zero-vector skip kept the id_map aligned with insertion
+        // indices (a desync would attribute chunk_a's vector to chunk_b's id).
+        let hits = index.search(&one_hot(0), 1);
+        assert_eq!(hits.first().map(|r| r.id.as_str()), Some("chunk_a"));
+        let hits = index.search(&one_hot(2), 1);
+        assert_eq!(hits.first().map(|r| r.id.as_str()), Some("chunk_b"));
+    }
+
+    /// HNSW search with `k` far larger than the index size must clamp to the
+    /// index and return only the real vectors — no phantom or duplicate ids.
+    /// Mirrors CAGRA's `test_search_k_greater_than_len_drops_phantoms`; the
+    /// HNSW guard is the `ef_search.max(k*2).min(index_size)` clamp.
+    #[test]
+    fn test_search_k_greater_than_index_size() {
+        let embeddings = vec![
+            ("chunk_0".to_string(), make_embedding(0)),
+            ("chunk_1".to_string(), make_embedding(1)),
+            ("chunk_2".to_string(), make_embedding(2)),
+        ];
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        assert_eq!(index.len(), 3);
+
+        let results = index.search(&make_embedding(1), 100);
+
+        // Only three real vectors exist; the over-large k must not invent more.
+        assert!(
+            results.len() <= 3,
+            "expected at most 3 results, got {}",
+            results.len()
+        );
+        // Every id is a real chunk and the set is unique (no slot returned
+        // twice from the clamped search).
+        let mut seen = std::collections::HashSet::new();
+        for r in &results {
+            assert!(
+                matches!(r.id.as_str(), "chunk_0" | "chunk_1" | "chunk_2"),
+                "unexpected id in oversized-k search: {}",
+                r.id
+            );
+            assert!(seen.insert(r.id.clone()), "duplicate id returned: {}", r.id);
+        }
+    }
+
     // ===== HnswIndex::search_filtered predicate tests =====
 
     #[test]

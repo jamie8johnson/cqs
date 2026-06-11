@@ -394,11 +394,30 @@ impl<'a, Mode> CommandContext<'a, Mode> {
 /// CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
 /// Only worth it when search time savings exceed rebuild cost.
 /// Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW).
+///
+/// Direct-CLI convenience wrapper: passes `None` as the explicit override,
+/// which `build_vector_index_with_config` resolves to the project config's
+/// `ef_search`. The documented knob now takes effect on this path, not only
+/// via batch/daemon.
 pub(crate) fn build_vector_index<Mode: ClearHnswDirty>(
     store: &cqs::Store<Mode>,
     cqs_dir: &Path,
 ) -> Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     build_vector_index_with_config(store, cqs_dir, None)
+}
+
+/// Resolve the effective HNSW `ef_search` for an index build.
+///
+/// An explicit caller override (`arg`) wins; the batch/daemon path threads
+/// `config.ef_search` through here as that override. When the direct-CLI
+/// wrapper passes `None`, fall back to the project config's top-level
+/// `ef_search`. `None` from both means the loader applies its own default,
+/// which still honors the `CQS_HNSW_EF_SEARCH` env knob.
+///
+/// Keeping the rule in one pure function lets the direct-CLI and batch paths
+/// resolve the same effective value from the same config field.
+fn resolve_ef_search(arg: Option<usize>, config_ef: Option<usize>) -> Option<usize> {
+    arg.or(config_ef)
 }
 
 /// Builds a vector index for the store with the specified configuration.
@@ -443,6 +462,13 @@ pub(crate) fn build_vector_index_with_config<Mode: ClearHnswDirty>(
         .index
         .as_ref()
         .and_then(|ic| ic.policy.as_ref());
+
+    // An explicit caller override (batch/daemon pass `config.ef_search`)
+    // wins; when the direct-CLI wrapper passes `None`, fall back to the
+    // project config's top-level `ef_search`. Without this fallback the
+    // documented `ef_search` knob took effect only on the batch/daemon path
+    // and silently no-op'd under direct invocation (CQS_NO_DAEMON=1).
+    let ef_search = resolve_ef_search(ef_search, project_config.ef_search);
 
     let ctx = cqs::index::BackendContext {
         cqs_dir,
@@ -522,9 +548,18 @@ pub(crate) fn build_base_vector_index<Mode: ClearHnswDirty>(
             }
         }
     }
+    // Resolve `ef_search` from the project config so the base (router) index
+    // honors the same documented knob as the enriched path. The base index
+    // never takes an explicit caller override, so `arg` is always `None`
+    // here — config alone decides, and `None` lets the loader apply its env-
+    // aware default.
+    let project_root = crate::cli::find_project_root();
+    let project_config = cqs::config::Config::load(&project_root);
+    let ef_search = resolve_ef_search(None, project_config.ef_search);
+
     Ok(cqs::HnswIndex::try_load_base_with_ef(
         cqs_dir,
-        None,
+        ef_search,
         store.dim(),
     ))
 }
@@ -550,6 +585,39 @@ mod base_index_tests {
             }
         }
         cqs::embedder::Embedding::new(v)
+    }
+
+    /// Resolution-seam parity: with a config `ef_search` set, the direct-CLI
+    /// path (explicit override `None`) and the batch/daemon path (explicit
+    /// override `config.ef_search`) resolve to the same effective `ef_search`.
+    /// This pins the wiring fix that made the documented knob reach the
+    /// direct-CLI index build instead of no-op'ing under CQS_NO_DAEMON=1.
+    #[test]
+    fn ef_search_resolution_parity_cli_vs_batch() {
+        let config_ef = Some(321usize);
+
+        // Direct-CLI wrapper: passes `None`, must fall back to config.
+        let cli_resolved = resolve_ef_search(None, config_ef);
+        // Batch/daemon: threads `config.ef_search` as the explicit override.
+        let batch_resolved = resolve_ef_search(config_ef, config_ef);
+
+        assert_eq!(
+            cli_resolved, batch_resolved,
+            "CLI-direct and batch paths must resolve identical effective ef_search"
+        );
+        assert_eq!(
+            cli_resolved, config_ef,
+            "config ef_search must reach the direct-CLI index build"
+        );
+    }
+
+    /// An explicit caller override wins over the config value, and absent both
+    /// the resolver yields `None` so the loader applies its env-aware default.
+    #[test]
+    fn ef_search_resolution_precedence() {
+        assert_eq!(resolve_ef_search(Some(50), Some(200)), Some(50));
+        assert_eq!(resolve_ef_search(None, Some(200)), Some(200));
+        assert_eq!(resolve_ef_search(None, None), None);
     }
 
     /// Phase 5 invariant: `CQS_DISABLE_BASE_INDEX=1` short-circuits

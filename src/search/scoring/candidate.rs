@@ -380,7 +380,7 @@ impl ChunkMeta<'_> {
 ///
 /// One struct + one slice entry — no edits to either search path:
 ///
-/// ```ignore
+/// ```text
 /// struct RecencyBoost;
 /// impl ScoreSignal for RecencyBoost {
 ///     fn enabled(&self, ctx: &ScoringContext<'_>) -> bool {

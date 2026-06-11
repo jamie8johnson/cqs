@@ -52,7 +52,7 @@ Functions that accept pre-loaded resources use a `_with_<resource>` suffix:
 |--------|---------|---------|
 | `_with_graph` | Pre-loaded call graph | `gather_with_graph()` |
 | `_with_options` | Config struct parameter | `scout_with_options()` |
-| `_with_embedding` | Pre-computed embedding | `suggest_placement_with_embedding()` |
+| `_with_embedding` | Pre-computed embedding | `get_chunk_with_embedding()` |
 | `_with_resources` | Pre-loaded embedder + graph | `task_with_resources()` |
 
 Rules:
@@ -62,35 +62,50 @@ Rules:
 
 ### JSON Output Envelope
 
-Every JSON-emitting command (CLI `--json`, batch line, daemon socket response) wraps its payload in a uniform envelope so agents parse one shape across all commands.
+JSON output has **two wire shapes**, selected by surface (and, on the CLI direct path, by `CQS_OUTPUT_FORMAT`). The shape is intentionally lean: the default drops redundant keys. Agents still parse a small, predictable set of shapes — but it is not one universal `{data, error, version}` wrapper. See `src/output_format.rs` (`OutputFormat`) and `src/cli/json_envelope.rs`.
 
-**Success:**
+**Default lean shapes:**
+
+- **CLI direct (`--json`), success** — `OutputFormat::V2Bare` (the default). The handler emits the **bare payload** to stdout, no envelope wrap:
+  ```json
+  { "name": "search_filtered", "callers": [ ... ] }
+  ```
+  When the worktree is stale (`EnvelopeMeta::current()` non-default), an object payload gets a `_meta` field spliced in; array/scalar payloads can't carry it and the signal degrades to a `tracing::warn!` on stderr.
+
+- **Batch / daemon line, success** — the slim JSONL shape from `write_json_line` (via `wrap_value`). It carries `data` and drops `error: null` and `version`:
+  ```json
+  {"data": { ... }, "_meta": {"worktree_stale": true, "stale_origins": ["src/a.rs"]}}
+  ```
+  `_meta` is emitted **skip-when-empty** — absent when it has no non-default fields. It carries `worktree_stale` / `worktree_name` (process-level) and per-response entries like `stale_origins` from search handlers (merged via `merged_meta_value`).
+
+- **Batch / daemon line, error** — slim error shape from `wrap_error`. Carries `error` and drops `data: null` and `version`:
+  ```json
+  {"error": {"code": "not_found", "message": "no reference named 'foo'"}}
+  ```
+  CLI direct error paths emit via `emit_json_error` (see `reference.rs`, which surfaces `not_found` as a structured envelope error in JSON mode).
+
+**`CQS_OUTPUT_FORMAT=v1` opt-in (legacy full envelope):** on the CLI direct success path, set `CQS_OUTPUT_FORMAT=v1` (`OutputFormat::V1Envelope`) to restore the wrapped shape:
 ```json
-{ "data": <payload>, "error": null, "version": 1 }
+{ "data": <payload>, "error": null, "version": 1, "_meta": { ... } }
 ```
+The eval harness pins itself to `v1` via env. The batch / daemon JSONL path is **not** affected by this knob — it always uses the slim shape, because self-describing JSONL lines need to stand alone regardless.
 
-**Failure (batch / daemon):**
-```json
-{ "data": null, "error": { "code": "...", "message": "..." }, "version": 1 }
-```
+**Error codes** (additive taxonomy — `ErrorCode` / `error_codes` in `src/cli/json_envelope.rs`):
+- `not_found` — function/file/symbol/reference absent. **Emitted** by production handlers (e.g. `src/cli/commands/infra/reference.rs`).
+- `invalid_input` — bad user-supplied argument.
+- `parse_error` — failed to parse a query/expression/diff.
+- `io_error` — filesystem/network/socket failure. **Emitted** by `redact_error`'s `std::io::Error` downcast on the daemon batch path.
+- `internal` — catch-all; carries a redacted summary or a correlation chain-id (`err-<hex>`), with the full anyhow chain logged via `tracing::warn!`.
+- `timeout` — operation exceeded its time budget (e.g. `cqs status --wait`).
 
-CLI command failures still propagate via `anyhow → stderr` for now; the envelope error path is reserved for batch and future CLI migration.
+All six codes can reach a client. The redaction boundary (`redact_error`) downcasts the root cause: sqlx errors → `internal` (query text never leaks), IO errors → `io_error`, unknown → `internal` with a chain-id.
 
-**Error codes** (small, additive — see `src/cli/json_envelope.rs::error_codes`):
-- `not_found` — function/file/symbol absent
-- `invalid_input` — bad user-supplied argument
-- `parse_error` — failed to parse a query/expression/diff
-- `io_error` — filesystem/network failure
-- `internal` — anything else (carries the full anyhow chain in `message`)
+**`version`** (v1 envelope only) is the wire-format version — bump `JSON_OUTPUT_VERSION` on any breaking change to inner `data` payload shapes. The slim default shapes omit it entirely.
 
-Today only `internal`, `invalid_input`, and `parse_error` are emitted by production handlers; `not_found` and `io_error` are reserved for future use and currently collapse into `internal`.
-
-**`version`** is the wire-format version. Bump on any breaking change to inner `data` payload shapes; the envelope itself stays stable across versions.
-
-**How to emit:**
-- CLI handlers call `crate::cli::json_envelope::emit_json(&output)?` instead of `println!("{}", serde_json::to_string_pretty(&output)?)`.
-- Batch handlers return raw `serde_json::Value` from `dispatch()` — the chokepoint at `src/cli/batch/mod.rs::write_json_line` wraps every line.
-- The daemon socket `{ "status", "output" }` framing is transport-level and orthogonal — its `output` field carries this envelope as a string.
+**How to emit when adding `--json` to a new command:**
+- **CLI direct:** call `crate::cli::json_envelope::emit_json(&output)?` (success) / `emit_json_error(code, message)?` (error) instead of `println!`. `emit_json` resolves `OutputFormat` and picks bare-vs-v1 for you, and sanitizes NaN/Infinity to `null`.
+- **Batch / daemon:** return a raw `serde_json::Value` from your `dispatch_*` handler — the chokepoint `src/cli/batch/mod.rs::write_json_line` wraps it in the slim shape and splices `_meta`. For per-response meta (like `stale_origins`), build it through `merged_meta_value`.
+- **Daemon socket transport:** the outer `{ "status", "output" }` framing in `watch.rs` is transport-level and orthogonal — its `output` field carries the JSONL line as a string.
 
 ### JSON Output Field Naming Conventions
 
@@ -229,13 +244,14 @@ src/
     commands/   - Command implementations (organized by category)
       mod.rs      - Top-level re-exports
       resolve.rs  - Target resolution (function name → chunk)
+      dispatch_shims.rs - Hand-written `cmd_<variant>_dispatch` shims the `CqsCommands` derive binds by naming convention; each destructures one `Commands` variant via `must_be!` and calls its `cmd_<name>`
       search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors; search_ctx.rs (SearchCtx trait — the surface-agnostic search context implemented by both CommandContext and the daemon's BatchView, so query_core runs unchanged on either)
       graph/      - callers, deps, explain, impact, impact_diff, test_map, trace; notes_text.rs (shared kind-fallback/redirect note + text consts referenced by both CLI and daemon surfaces)
       review/     - diff_review, ci, dead, health, suggest, affected
       index/      - build, gc, stale, stats, umap
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
       infra/      - audit_mode, cache_cmd, convert, doctor, hook, init, model, ping, project, reference, slot, status, telemetry_cmd
-      eval/       - eval fixture runner: mod.rs (cmd_eval, require_fresh_gate), schema.rs (EvalReport, EvalEntry)
+      eval/       - `cqs eval` A/B harness: mod.rs (cmd_eval, require_fresh_gate), runner.rs (load query set, run search, score against gold — reuses production search path), baseline.rs (diff R@K against a saved EvalReport, regression gate). Shared on-disk types live in `src/eval/` (not here).
       serve.rs   - cmd_serve (auth-gated read-only HTTP UI launcher)
       train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
@@ -253,8 +269,11 @@ src/
     display.rs  - Output formatting, result display
     enrichment.rs - Enrichment pass (extracted from pipeline.rs)
     files.rs    - File enumeration, lock files, path utilities
+    json_envelope.rs - JSON output emission helpers: emit_json/emit_json_error (CLI direct, bare-vs-v1 via OutputFormat), wrap_value/wrap_error (slim batch/daemon JSONL), ErrorCode taxonomy + error_codes consts, redact_error (daemon error redaction), EnvelopeMeta (_meta worktree-stale + per-response stale_origins merge), NaN/Infinity sanitization
+    limits.rs   - Shared clamp ceilings + env-overridable size limits for the CLI and batch/daemon dispatchers (keeps the two paths from drifting on `--limit`). Library-layer counterpart is `src/limits.rs`.
     pipeline/   - Multi-threaded indexing pipeline
       mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
+      reuse.rs    - Shared embedding-reuse resolver: global cache → per-slot store cache → split chunks into reuse-cached vs embed-fresh; used by both the bulk pipeline and the watch/daemon incremental path
     signal.rs   - Signal handling (Ctrl+C)
     staleness.rs - Proactive staleness warnings for search results
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
@@ -275,7 +294,9 @@ src/
   watch_status.rs - WatchSnapshot state machine + ops-stats block (`cqs status --watch`) + Arc<RwLock<...>> shared between watch writer and daemon reader (#1182, #1208, #1715)
   daemon_translate.rs - Daemon RPC client + wait_for_fresh helper + DaemonRpcError typed enum (#1211)
   fs.rs        - atomic_replace and other FS helpers
-  limits.rs    - Tunable env-var-backed limits and defaults
+  limits.rs    - Library-side env-overridable size limits (counterpart to `src/cli/limits.rs`; readable from parser/, store/, convert/, nl/fts.rs)
+  serde_helpers.rs - Tiny serde predicates for `#[serde(skip_serializing_if = ...)]` (e.g. `is_false`), centralized so envelope-shaped structs don't redeclare them
+  ort_helpers.rs - Shared ORT error mapping (`ort_err`) wrapping `ort::Error` into the embedder/reranker/SPLADE `*Error` variants
   aux_model.rs - Auxiliary (small) model paths used by the LLM-summary pipeline
   kind.rs      - Polymorphic-routing Kind enum (Function | Type | Const | Module | Other | Ambiguous | Multiple | NotFound) + classify_chunk_type + classify_hits + detect_kind_for_store (#1610). Every function-or-type-specialized command consults this before its happy-path query.
   output_format.rs - Wire-format selector: OutputFormat (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
@@ -297,6 +318,8 @@ src/
     calls/      - Call graph storage and queries
       mod.rs, crud.rs, cross_project.rs, dead_code.rs, query.rs, related.rs, test_map.rs
     types.rs    - Type edge storage and queries
+    backup.rs   - Filesystem snapshots of `index.db` taken before schema migrations run (covers commit-time I/O failures the migration transaction's rollback can't)
+    summary_queue.rs - Write-coalescing queue for streamed LLM-summary inserts (routes through WRITE_LOCK instead of bypassing it with a raw INSERT OR IGNORE)
     helpers/    - Types, embedding conversion, scoring, SQL utilities
       mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
     migrations.rs - Schema migration framework (v10-v28, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries, v28 chunks.canonical_hash for comment-canonical embedding reuse)
@@ -322,11 +345,16 @@ src/
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
       mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
+      knob.rs   - Shared resolver for f32 scoring knobs (SCORING_KNOBS table: name, env var, default, range, cache contract — one row per knob)
+    mmr.rs      - Maximum Marginal Relevance re-ranking: diversifies the top-K pool to break near-duplicate crowding (same-file/same-name) surfaced by the R@5 audit
     query.rs    - Query parsing, filter extraction
     router.rs   - Query classifier (QueryCategory + SearchStrategy), adaptive routing for
                   identifier/structural/behavioral/conceptual/multi_step/negation/type_filtered/cross_language/unknown;
                   resolve_splade_alpha() for per-category SPLADE fusion weights (env override precedence)
     synonyms.rs - Query synonym expansion
+  eval/         - Evaluation surface: shared on-disk types for the `cqs eval` runner and the integration tests in `tests/`
+    mod.rs      - Query-set / gold-chunk / report-row types (single source of truth for the eval JSON shape)
+    schema.rs   - Deserialization types for the v3 eval query format (`evals/queries/v3_*.json`)
   splade/       - SPLADE sparse encoder + persisted inverted index
     mod.rs      - SpladeEncoder, SparseVector type, encode()/encode_batch(), resolve_splade_model_dir()
     index.rs    - SpladeIndex with persist/load (splade.index.bin + metadata.splade_generation)
@@ -393,6 +421,9 @@ src/
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
     mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, MockBatchProvider for tests), summary.rs (find_contrastive_neighbors)
+    local.rs    - Local / OpenAI-compat batch provider (`/v1/chat/completions`: llama.cpp, vLLM, Ollama, LMStudio) — fans out a worker pool for synchronous per-item inference behind the async batch interface
+    redirect.rs - Redirect policy for bearer-bearing HTTP clients (`same_origin_redirect_policy`): refuses cross-origin redirects with a loud fail-fast so the `Authorization: Bearer` header can't leak to a redirect target, and caps same-origin hops
+    validation.rs - Validates LLM summary output before caching (indirect-prompt-injection defence; modes via `CQS_SUMMARY_VALIDATION`)
   doc_writer/   - Doc comment generation and source file rewriting (SQ-8, optional "llm-summaries" feature)
     mod.rs      - DocCommentResult, module exports
     formats.rs  - Per-language doc comment formatting (prefix, position, wrapping)
@@ -405,9 +436,14 @@ src/
     git.rs      - Git history traversal (log, show, diff-tree)
     query.rs    - Query normalization for training pairs
   serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
-    mod.rs      - run_server, build_router, route handlers (search, graph, hierarchy, cluster, chunk detail)
+    mod.rs      - run_server, build_router, server wiring
+    handlers.rs - axum route handlers (search, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
+    data.rs     - Wire-format types for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention)
+    error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses
+    assets.rs   - Static assets baked into the binary via `include_str!` (index.html + app.css + app.js; no request-time filesystem reads)
     auth.rs     - Per-launch auth token: 256-bit URL-safe base64, constant-time compare, Bearer/cookie/?token= surfaces (#1118 / SEC-7)
     tests.rs    - Router + auth integration tests (test_router_with_auth helper, host allowlist, gzip)
+  main.rs       - Binary entry point: clap parse, tracing-subscriber init, dispatch into `cli`
   lib.rs        - Public API
 .claude/
   skills/       - Claude Code skills (auto-discovered)
@@ -465,7 +501,7 @@ Files like HTML contain embedded languages (`<script>` → JS, `<style>` → CSS
 
 **To add injection rules for a new host language:**
 
-1. Define `InjectionRule` entries in the language's `LanguageDef` (`src/language/<lang>.rs`):
+1. Define `InjectionRule` entries in the language's `LanguageDef` (in `src/language/languages.rs`, where all `LanguageDef` statics live):
    ```rust
    injections: &[
        InjectionRule {

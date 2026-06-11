@@ -134,7 +134,6 @@ pub(super) fn store_stage(
         deferred_chunk_calls.extend(batch.relationships.chunk_calls);
 
         let batch_count = batch.chunk_embeddings.len();
-        let no_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
 
         // Upsert chunks WITHOUT calls (calls are deferred). Also accumulate
         // per-file live IDs for the post-loop prune pass.
@@ -143,40 +142,38 @@ pub(super) fn store_stage(
         // `cached_count` carry zero-vec sentinels (skip-first-pass path
         // under `--llm-summaries`). Cached chunks still carry real
         // embeddings (from the global cache). Slice the batch and route
-        // each half to the correct upsert path so cached chunks land at
+        // each half to the correct insert mode so cached chunks land at
         // `needs_embedding=0` while sentinel chunks land at
         // `needs_embedding=1`.
+        //
+        // The whole batch — real chunks, sentinel chunks, and the per-file
+        // fingerprint stamps — writes in ONE transaction
+        // (`upsert_embedded_batch`), not one transaction per file: per-file
+        // granularity existed only because the old upsert API took a single
+        // source_mtime, and it cost a BEGIN/COMMIT + content-hash snapshot
+        // SELECT per file. Chunk-level atomicity is preserved: a crash may
+        // lose whole uncommitted batches, but chunks and their FTS rows
+        // always commit together. (The watch path keeps its own per-file
+        // fused tx — see `upsert_chunks_calls_and_prune` — because a daemon
+        // tick must commit chunks + calls + function_calls + prune per file
+        // as one unit.)
         let cached_slice_end = batch.cached_count.min(batch.chunk_embeddings.len());
-        let mut by_file_real: HashMap<PathBuf, Vec<(Chunk, Embedding)>> = HashMap::new();
-        let mut by_file_sentinel: HashMap<PathBuf, Vec<Chunk>> = HashMap::new();
+        let mut real_pairs: Vec<(Chunk, Embedding)> = Vec::new();
+        let mut sentinel_chunks: Vec<Chunk> = Vec::new();
         for (i, (chunk, embedding)) in batch.chunk_embeddings.into_iter().enumerate() {
             live_ids_per_file
                 .entry(chunk.file.clone())
                 .or_default()
                 .insert(chunk.id.clone());
             if i < cached_slice_end || !batch.uncached_need_embedding {
-                by_file_real
-                    .entry(chunk.file.clone())
-                    .or_default()
-                    .push((chunk, embedding));
+                real_pairs.push((chunk, embedding));
             } else {
                 // Past cached_count and skip-first-pass mode is on — chunk
-                // carries a zero-vec sentinel; route to the unembedded upsert.
-                by_file_sentinel
-                    .entry(chunk.file.clone())
-                    .or_default()
-                    .push(chunk);
+                // carries a zero-vec sentinel; route to the unembedded mode.
+                sentinel_chunks.push(chunk);
             }
         }
-
-        for (file, pairs) in &by_file_real {
-            let mtime = batch.file_mtimes.get(file.as_path()).copied();
-            store.upsert_chunks_and_calls(pairs, mtime, &no_calls)?;
-        }
-        for (file, chunks) in &by_file_sentinel {
-            let mtime = batch.file_mtimes.get(file.as_path()).copied();
-            store.upsert_chunks_unembedded_batch(chunks, mtime)?;
-        }
+        store.upsert_embedded_batch(&real_pairs, &sentinel_chunks, &batch.file_fingerprints)?;
 
         // Store function calls extracted during parsing (for the
         // `function_calls` table). Defer-and-batch like type edges: a
@@ -243,27 +240,34 @@ pub(super) fn store_stage(
     // `cqs index --force` after a chunker bump doesn't accumulate orphans.
     // Runs before the deferred call/edge flushes so any FK-cascading delete
     // from `chunks` happens before fresh calls reference the new IDs.
-    let mut total_orphans_pruned: u32 = 0;
-    for (file, live_ids) in &live_ids_per_file {
-        let live_ids_vec: Vec<&str> = live_ids.iter().map(|s| s.as_str()).collect();
-        match store.delete_phantom_chunks(file.as_path(), &live_ids_vec) {
-            Ok(deleted) => {
-                total_orphans_pruned += deleted;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    file = %file.display(),
-                    error = %e,
-                    "delete_phantom_chunks failed; orphan rows from prior chunker versions may persist for this file"
-                );
-            }
+    //
+    // One transaction for the whole sweep — the per-file variant opened a
+    // BEGIN/COMMIT per origin, thousands of round-trips of pure overhead
+    // on a full reindex.
+    let prune_entries: Vec<(&std::path::Path, Vec<&str>)> = live_ids_per_file
+        .iter()
+        .map(|(file, live_ids)| {
+            (
+                file.as_path(),
+                live_ids.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+            )
+        })
+        .collect();
+    match store.delete_phantom_chunks_batch(&prune_entries) {
+        Ok(deleted) if deleted > 0 => {
+            tracing::info!(
+                count = deleted,
+                "Pruned phantom chunks from prior chunker versions"
+            );
         }
-    }
-    if total_orphans_pruned > 0 {
-        tracing::info!(
-            count = total_orphans_pruned,
-            "Pruned phantom chunks from prior chunker versions (#1283)"
-        );
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                files = prune_entries.len(),
+                error = %e,
+                "Batched phantom prune failed; orphan rows from prior chunker versions may persist"
+            );
+        }
     }
 
     // Final flush: insert any remaining deferred items now that all chunks
