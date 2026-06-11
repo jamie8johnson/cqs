@@ -25,7 +25,7 @@ pub(crate) use trace::{
     cmd_trace, trace_core, trace_cross_core, trace_max_nodes, TraceArgs as TraceCoreArgs,
 };
 
-use cqs::kind::{detect_kind_for_store, Kind};
+use cqs::kind::{detect_kind_for_store, KindResolution};
 use cqs::store::{ChunkSummary, ReadOnly, Store};
 use notes_text::FallbackKind;
 
@@ -36,7 +36,7 @@ use notes_text::FallbackKind;
 /// through the command's normal flow.
 ///
 /// This is the single classification site the six cores share, replacing
-/// the inlined `lookup_by_name` + `KindHit::from` + `classify_hits`
+/// the inlined `get_chunks_by_name` + `KindHit::from` + `classify_hits`
 /// incantation each command (and the daemon's `try_kind_fallback`) used to
 /// carry independently.
 ///
@@ -47,20 +47,21 @@ use notes_text::FallbackKind;
 /// normal path on both: warn, return `(empty, None)`, and let the normal
 /// flow run its own queries and report its own errors.
 ///
-/// Classification goes through [`detect_kind_for_store`] — the lib's
-/// routing classifier, which reads only `chunk_type` per hit (no
-/// `ChunkSummary` clones). The fallback rendering still needs the full
-/// summaries (`content`, `signature`, `line_end`, …) that
-/// [`cqs::kind::KindHit`] drops, so when (and only when) a fallback
-/// fires, this re-fetches them via `lookup_by_name`; the two reads hit
-/// the same indexed `WHERE name = ?` row set.
+/// Classification goes through [`detect_kind_for_store`], which now returns
+/// the full [`ChunkSummary`] rows it read for the classification (not the
+/// lossy `KindHit` projection). When a fallback fires, those same rows feed
+/// the fallback's `definitions[]` directly — a single `WHERE name = ?` read
+/// serves both the routing decision and the rendering. The
+/// old code issued a second `get_chunks_by_name` here, which could observe a
+/// different row set than the one classification ran on if a reindex landed
+/// between the two reads; the single-read path removes that drift window.
 pub(crate) fn detect_fallback(
     store: &Store<ReadOnly>,
     name: &str,
 ) -> (Vec<ChunkSummary>, Option<FallbackKind>) {
     let _span = tracing::info_span!("detect_fallback", name).entered();
-    let kind = match detect_kind_for_store(store, name) {
-        Ok((kind, _hits)) => kind,
+    let (resolution, chunks) = match detect_kind_for_store(store, name) {
+        Ok(pair) => pair,
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -70,20 +71,11 @@ pub(crate) fn detect_fallback(
             return (Vec::new(), None);
         }
     };
-    let Some(fk) = fallback_kind(kind) else {
-        // Normal flow — skip the summary re-fetch entirely.
-        return (Vec::new(), None);
-    };
-    match store.lookup_by_name(name) {
-        Ok(chunks) => (chunks, Some(fk)),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                name,
-                "fallback definition lookup failed; falling through to the normal command path"
-            );
-            (Vec::new(), None)
-        }
+    match fallback_kind(resolution) {
+        // Fallback fires: hand back the rows the classification already read.
+        Some(fk) => (chunks, Some(fk)),
+        // Normal flow — drop the summaries; the command runs its own queries.
+        None => (Vec::new(), None),
     }
 }
 
@@ -127,25 +119,29 @@ pub(crate) fn record_kind_fallback(
     crate::cli::telemetry::log_kind_fallback(&cqs_dir, fallback_from, kind, name, definitions);
 }
 
-/// Map a routing-level [`Kind`] to the [`FallbackKind`] that drives a
-/// graph command's kind-mismatch fallback. Returns `None` for the kinds
+/// Map a [`KindResolution`] to the [`FallbackKind`] that drives a graph
+/// command's kind-mismatch fallback. Returns `None` for the resolutions
 /// that route through the command's normal flow (Function / Multiple /
 /// Other / NotFound) and never produce a fallback.
 ///
 /// Centralizing the mapping keeps every command's core agreeing on which
-/// kinds fall back; the per-command core decides what to do with the
+/// resolutions fall back; the per-command core decides what to do with the
 /// `Some`/`None` (deps, for instance, also runs the normal flow for
 /// `Type`).
-pub(crate) fn fallback_kind(kind: Kind) -> Option<FallbackKind> {
-    match kind {
-        Kind::Const => Some(FallbackKind::Const),
-        Kind::Type => Some(FallbackKind::Type),
-        Kind::Module => Some(FallbackKind::Module),
-        Kind::Ambiguous => Some(FallbackKind::Ambiguous),
+pub(crate) fn fallback_kind(resolution: KindResolution) -> Option<FallbackKind> {
+    use cqs::kind::Kind;
+    match resolution {
+        KindResolution::Resolved(Kind::Const) => Some(FallbackKind::Const),
+        KindResolution::Resolved(Kind::Type) => Some(FallbackKind::Type),
+        KindResolution::Resolved(Kind::Module) => Some(FallbackKind::Module),
+        KindResolution::Ambiguous => Some(FallbackKind::Ambiguous),
         // Function: the happy path. Multiple: resolves deterministically.
         // Other: freeform chunk types the routing matrix doesn't rule on.
         // NotFound: surfaces an empty / not-found result downstream.
-        Kind::Function | Kind::Multiple | Kind::Other | Kind::NotFound => None,
+        KindResolution::Resolved(Kind::Function)
+        | KindResolution::Resolved(Kind::Other)
+        | KindResolution::Multiple
+        | KindResolution::NotFound => None,
     }
 }
 

@@ -15,12 +15,12 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
-/// Row cap for [`Store::lookup_by_name`]. Matches the kind-mismatch
+/// Row cap for [`Store::get_chunks_by_name`]. Matches the kind-mismatch
 /// fallback's `definitions[]` render cap downstream (the CLI/daemon
 /// graph fallbacks cap definitions at 100 entries), so the lookup never
 /// fetches summaries the fallback would discard, while still feeding the
 /// kind classifier enough evidence to route a hot name.
-pub const LOOKUP_BY_NAME_LIMIT: usize = 100;
+pub const GET_CHUNKS_BY_NAME_LIMIT: usize = 100;
 
 /// Hard ceiling on the page size [`Store::chunks_paged`] accepts. The
 /// enrichment / doc-comment loops pass an operator-tunable page size
@@ -31,7 +31,7 @@ pub const LOOKUP_BY_NAME_LIMIT: usize = 100;
 const CHUNKS_PAGED_MAX_LIMIT: usize = 10_000;
 
 /// SQL `CASE chunk_type ... END` expression ranking rows by routing
-/// priority for [`Store::lookup_by_name`]'s ORDER BY. Generated from
+/// priority for [`Store::get_chunks_by_name`]'s ORDER BY. Generated from
 /// `ChunkType::ALL` through `classify_chunk_type` + `routing_priority`,
 /// so the priority groups can never drift from the kind classifier: a
 /// new `ChunkType` variant is ranked automatically by its `Kind`.
@@ -292,7 +292,7 @@ impl<Mode> Store<Mode> {
     /// ordered by routing priority (callables, then types, then consts,
     /// then modules — see [`crate::kind::routing_priority`]) with
     /// `(chunk_type, origin, line_start)` as deterministic tiebreakers,
-    /// capped at [`LOOKUP_BY_NAME_LIMIT`] rows. Polymorphic-routing
+    /// capped at [`GET_CHUNKS_BY_NAME_LIMIT`] rows. Polymorphic-routing
     /// building block — the `cqs::kind::classify_hits` reducer consumes
     /// the result to decide which command to dispatch (or whether to fall
     /// through to a freeform search). See `docs/polymorphic-routing.md`.
@@ -313,13 +313,13 @@ impl<Mode> Store<Mode> {
     /// optimized for many names at once). For the single-name kind-
     /// detection case, this method is the right primitive: one SQL
     /// query, no FTS overhead, no batching ceremony.
-    pub fn lookup_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+    pub fn get_chunks_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
         // Record only the length, not the name. The full user-supplied name
         // lands in journald under RUST_LOG=debug — unbounded size plus a
         // potential secret/identifier leak. The content is recoverable from
         // the SQL plan if ever needed; matches the socket layer's args_len
         // redaction pattern.
-        let _span = tracing::debug_span!("lookup_by_name", name_len = name.len()).entered();
+        let _span = tracing::debug_span!("get_chunks_by_name", name_len = name.len()).entered();
         if name.is_empty() {
             return Ok(Vec::new());
         }
@@ -330,7 +330,7 @@ impl<Mode> Store<Mode> {
                  LIMIT {limit}",
                 cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
                 priority = chunk_type_priority_case(),
-                limit = LOOKUP_BY_NAME_LIMIT,
+                limit = GET_CHUNKS_BY_NAME_LIMIT,
             );
             let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(name)
@@ -927,40 +927,40 @@ mod tests {
         assert_eq!(cursor2, cursor1);
     }
 
-    // ===== lookup_by_name (polymorphic-routing Phase 1 plumbing) =====
+    // ===== get_chunks_by_name (polymorphic-routing Phase 1 plumbing) =====
 
     #[test]
-    fn test_lookup_by_name_returns_empty_for_missing() {
+    fn test_get_chunks_by_name_returns_empty_for_missing() {
         let (store, _dir) = setup_store();
-        let hits = store.lookup_by_name("nonexistent_name").unwrap();
+        let hits = store.get_chunks_by_name("nonexistent_name").unwrap();
         assert!(hits.is_empty());
     }
 
     #[test]
-    fn test_lookup_by_name_returns_empty_for_empty_string() {
+    fn test_get_chunks_by_name_returns_empty_for_empty_string() {
         let (store, _dir) = setup_store();
         // Empty name short-circuits without an SQL roundtrip — pin the
         // contract so the kind classifier doesn't have to special-case it.
-        let hits = store.lookup_by_name("").unwrap();
+        let hits = store.get_chunks_by_name("").unwrap();
         assert!(hits.is_empty());
     }
 
     #[test]
-    fn test_lookup_by_name_returns_single_function_match() {
+    fn test_get_chunks_by_name_returns_single_function_match() {
         let (store, _dir) = setup_store();
         let chunk = make_chunk("foo", "src/lib.rs");
         store
             .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
             .unwrap();
 
-        let hits = store.lookup_by_name("foo").unwrap();
+        let hits = store.get_chunks_by_name("foo").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "foo");
         assert_eq!(hits[0].chunk_type, crate::parser::ChunkType::Function);
     }
 
     #[test]
-    fn test_lookup_by_name_returns_multiple_same_name_different_files() {
+    fn test_get_chunks_by_name_returns_multiple_same_name_different_files() {
         let (store, _dir) = setup_store();
         let mut c1 = make_chunk("foo", "src/a.rs");
         c1.line_start = 10;
@@ -976,7 +976,7 @@ mod tests {
             )
             .unwrap();
 
-        let hits = store.lookup_by_name("foo").unwrap();
+        let hits = store.get_chunks_by_name("foo").unwrap();
         assert_eq!(hits.len(), 2, "two different chunks with same name");
         // ORDER BY chunk_type, origin, line_start: same chunk_type
         // (Function), so origin (file path) is the tiebreaker. a.rs
@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_by_name_orders_by_routing_priority_not_alphabetical() {
+    fn test_get_chunks_by_name_orders_by_routing_priority_not_alphabetical() {
         // A name colliding across kinds must come back callables-first.
         // Alphabetically, 'constant' < 'function' < 'struct'; routing
         // priority is function < struct (type) < constant. Seed the
@@ -1017,7 +1017,7 @@ mod tests {
             )
             .unwrap();
 
-        let hits = store.lookup_by_name("collide").unwrap();
+        let hits = store.get_chunks_by_name("collide").unwrap();
         let order: Vec<_> = hits.iter().map(|h| h.chunk_type).collect();
         assert_eq!(
             order,
@@ -1026,18 +1026,18 @@ mod tests {
                 crate::parser::ChunkType::Struct,
                 crate::parser::ChunkType::Constant,
             ],
-            "lookup_by_name must rank callable > type > const"
+            "get_chunks_by_name must rank callable > type > const"
         );
     }
 
     #[test]
-    fn test_lookup_by_name_caps_result_rows() {
+    fn test_get_chunks_by_name_caps_result_rows() {
         // Hot names must not deserialize unbounded row sets — the lookup
         // is a routing primitive, and its consumers (kind classifier +
         // fallback definitions) never need more than the cap.
         let (store, _dir) = setup_store();
         let emb = mock_embedding(1.0);
-        let pairs: Vec<_> = (0..(super::LOOKUP_BY_NAME_LIMIT + 25))
+        let pairs: Vec<_> = (0..(super::GET_CHUNKS_BY_NAME_LIMIT + 25))
             .map(|i| {
                 let mut c = make_chunk("hot_name", &format!("src/f{i:04}.rs"));
                 c.id = format!("src/f{i:04}.rs:1:{}", &c.content_hash[..8]);
@@ -1046,19 +1046,19 @@ mod tests {
             .collect();
         store.upsert_chunks_batch(&pairs, Some(1000)).unwrap();
 
-        let hits = store.lookup_by_name("hot_name").unwrap();
-        assert_eq!(hits.len(), super::LOOKUP_BY_NAME_LIMIT);
+        let hits = store.get_chunks_by_name("hot_name").unwrap();
+        assert_eq!(hits.len(), super::GET_CHUNKS_BY_NAME_LIMIT);
     }
 
     #[test]
-    fn test_lookup_by_name_priority_keeps_callable_evidence_under_cap() {
+    fn test_get_chunks_by_name_priority_keeps_callable_evidence_under_cap() {
         // One function buried among LIMIT consts whose chunk_type sorts
         // alphabetically earlier: the priority ORDER BY must surface the
         // callable inside the capped window (first, in fact), so the kind
         // classifier still sees the Function evidence on hot names.
         let (store, _dir) = setup_store();
         let emb = mock_embedding(1.0);
-        let mut pairs: Vec<_> = (0..super::LOOKUP_BY_NAME_LIMIT)
+        let mut pairs: Vec<_> = (0..super::GET_CHUNKS_BY_NAME_LIMIT)
             .map(|i| {
                 let mut c = make_chunk("busy", &format!("src/c{i:04}.rs"));
                 c.chunk_type = crate::parser::ChunkType::Constant;
@@ -1071,8 +1071,8 @@ mod tests {
         pairs.push((f, emb.clone()));
         store.upsert_chunks_batch(&pairs, Some(1000)).unwrap();
 
-        let hits = store.lookup_by_name("busy").unwrap();
-        assert_eq!(hits.len(), super::LOOKUP_BY_NAME_LIMIT);
+        let hits = store.get_chunks_by_name("busy").unwrap();
+        assert_eq!(hits.len(), super::GET_CHUNKS_BY_NAME_LIMIT);
         assert_eq!(
             hits[0].chunk_type,
             crate::parser::ChunkType::Function,
@@ -1081,8 +1081,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_by_name_adversarial_inputs_no_panic() {
-        // `lookup_by_name` is the kind-detection entry point, fed names that
+    fn test_get_chunks_by_name_adversarial_inputs_no_panic() {
+        // `get_chunks_by_name` is the kind-detection entry point, fed names that
         // ultimately originate from CLI args / wire requests. The name is
         // bound as a SQL parameter (?1), so injection is structurally
         // impossible — but the method must still degrade gracefully on
@@ -1106,7 +1106,7 @@ mod tests {
         ];
         for probe in injection_shaped {
             let hits = store
-                .lookup_by_name(probe)
+                .get_chunks_by_name(probe)
                 .expect("injection-shaped name must not error");
             assert!(
                 hits.is_empty(),
@@ -1116,7 +1116,7 @@ mod tests {
         }
         // The benign row survived every injection-shaped lookup.
         assert_eq!(
-            store.lookup_by_name("normal_fn").unwrap().len(),
+            store.get_chunks_by_name("normal_fn").unwrap().len(),
             1,
             "DROP/DELETE-shaped probes must not have touched real rows"
         );
@@ -1125,7 +1125,7 @@ mod tests {
         // only themselves, not arbitrary names. Pin that they don't wildcard.
         for wildcard in ["%", "_", "%%", "normal\\_fn", "norm%", "n_rmal_fn"] {
             let hits = store
-                .lookup_by_name(wildcard)
+                .get_chunks_by_name(wildcard)
                 .expect("wildcard-shaped name must not error");
             assert!(
                 hits.is_empty(),
@@ -1136,7 +1136,7 @@ mod tests {
         // Very long name (1 MiB): no panic, no error, empty result.
         let long_name = "x".repeat(1024 * 1024);
         let hits = store
-            .lookup_by_name(&long_name)
+            .get_chunks_by_name(&long_name)
             .expect("very long name must not error");
         assert!(hits.is_empty(), "1 MiB name should match nothing");
 
@@ -1149,9 +1149,9 @@ mod tests {
             "newline\nname",
         ] {
             let hits = store
-                .lookup_by_name(weird)
+                .get_chunks_by_name(weird)
                 .expect("unusual-char name must not error");
-            assert!(hits.len() <= super::LOOKUP_BY_NAME_LIMIT);
+            assert!(hits.len() <= super::GET_CHUNKS_BY_NAME_LIMIT);
         }
     }
 
@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_by_name_does_not_match_substring() {
+    fn test_get_chunks_by_name_does_not_match_substring() {
         // Pin exact-equality semantics — "foo" must NOT match "foo_bar".
         // The kind classifier depends on this for Multiple vs Ambiguous
         // disambiguation.
@@ -1181,13 +1181,13 @@ mod tests {
             .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
             .unwrap();
 
-        let hits = store.lookup_by_name("foo").unwrap();
+        let hits = store.get_chunks_by_name("foo").unwrap();
         assert!(
             hits.is_empty(),
-            "lookup_by_name should not return prefix-substring matches"
+            "get_chunks_by_name should not return prefix-substring matches"
         );
 
-        let exact_hits = store.lookup_by_name("foo_bar").unwrap();
+        let exact_hits = store.get_chunks_by_name("foo_bar").unwrap();
         assert_eq!(exact_hits.len(), 1);
     }
 }
