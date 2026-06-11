@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use regex::Regex;
 use sqlx::Row;
 
 use super::{
@@ -66,6 +67,18 @@ impl<Mode> Store<Mode> {
             // under-reporting to over-reporting — comments referencing a
             // name signal intentional retention.
             candidates = self.filter_invoked_macros(candidates).await?;
+
+            // Phase 1.6: serde string-callback references. Functions named
+            // in attribute strings — `#[serde(default = "default_ref_weight")]`,
+            // `#[serde(skip_serializing_if = "is_zero_u32")]`,
+            // `#[serde(with = "...")]` — are reached by the derive-generated
+            // (de)serializer, not by a syntactic `foo()` call. The call-graph
+            // extractor walks call/macro nodes, so a string reference inside an
+            // attribute produces no edge and the callback shows as "uncalled".
+            // Drop any Rust function candidate whose name appears as the
+            // terminal segment of a serde-shaped attribute string anywhere in
+            // the corpus. Bounded content scan, same shape as the macro filter.
+            candidates = self.filter_serde_callbacks(candidates).await?;
 
             // Phase 2: Batch-fetch content and score confidence
             let active_files = self.fetch_active_files().await?;
@@ -274,6 +287,131 @@ impl<Mode> Store<Mode> {
                 dropped = drop_count,
                 rust_macro_candidates = macro_idx.len(),
                 "filter_invoked_macros dropped invoked macros from dead candidates"
+            );
+        }
+
+        let filtered = candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| if dropped.contains(&i) { None } else { Some(c) })
+            .collect();
+        Ok(filtered)
+    }
+
+    /// Phase 1.6: drop Rust functions that are referenced only as serde
+    /// string callbacks. serde's derive macros accept function paths as
+    /// attribute string literals:
+    ///
+    /// ```ignore
+    /// #[serde(default = "default_ref_weight")]
+    /// #[serde(skip_serializing_if = "is_zero_u32")]
+    /// #[serde(serialize_with = "crate::serialize_path_normalized")]
+    /// #[serde(with = "some::module")]
+    /// ```
+    ///
+    /// The derived (de)serializer calls these at runtime, but the reference
+    /// lives in an attribute string the call-graph walker never resolves into
+    /// an edge. So the callbacks look uncalled. This pass scans every chunk's
+    /// content for serde-shaped attribute strings, extracts the terminal path
+    /// segment of each (`crate::a::b::f` → `f`), and drops any Rust function
+    /// candidate whose name matches.
+    ///
+    /// Contract details (mirrors `filter_invoked_macros`):
+    /// - **Functions only.** serde callbacks are free functions / associated
+    ///   functions, never trait methods reached through dispatch. Method and
+    ///   macro candidates pass through untouched.
+    /// - **Terminal-segment match.** `serialize_with = "crate::foo::bar"`
+    ///   keeps a candidate named `bar` alive regardless of the module path,
+    ///   matching how a candidate chunk is keyed by bare name.
+    /// - **Self-reference is fine.** Unlike the macro filter, a callback
+    ///   referenced inside its own defining chunk is still genuinely used by
+    ///   the deriver — the attribute is on *another* type's field, not in the
+    ///   function body. We do not need (or want) a self-exclusion guard here;
+    ///   the attribute and the `fn` definition are different chunks anyway.
+    /// - **False-negative-friendly.** Matching is by substring presence of a
+    ///   serde-shaped attribute naming the candidate; a stale attribute string
+    ///   keeps the function live. Dead-code analysis prefers under-reporting.
+    async fn filter_serde_callbacks(
+        &self,
+        candidates: Vec<LightChunk>,
+    ) -> Result<Vec<LightChunk>, StoreError> {
+        // serde string callbacks resolve to free/associated functions. Build a
+        // bare-name → candidate-index map over Rust Function/Method candidates
+        // (associated fns are tagged Method when they live in an impl block, so
+        // we accept both rather than miss `Type::default_x`).
+        let mut by_name: std::collections::HashMap<&str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, c) in candidates.iter().enumerate() {
+            if c.language != Language::Rust {
+                continue;
+            }
+            if matches!(c.chunk_type, ChunkType::Function | ChunkType::Method) {
+                by_name.entry(c.name.as_str()).or_default().push(i);
+            }
+        }
+
+        // No Rust function candidates: skip the content scan entirely.
+        if by_name.is_empty() {
+            return Ok(candidates);
+        }
+
+        // Matches serde-shaped callback attributes and captures the quoted
+        // path: `default = "..."`, `with = "..."`, `serialize_with = "..."`,
+        // `deserialize_with = "..."`, `skip_serializing_if = "..."`,
+        // `bound = "..."` is excluded (it names types/where-clauses, not fns).
+        static SERDE_CALLBACK_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(
+                r#"(?:default|with|serialize_with|deserialize_with|skip_serializing_if|skip_serializing|skip_deserializing|getter)\s*=\s*"([^"]+)""#,
+            )
+            .expect("hardcoded serde-callback regex")
+        });
+
+        let mut dropped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        // One read transaction, paged by rowid so peak heap is bounded by the
+        // batch size. We only scan chunks whose content contains "serde" to
+        // skip the bulk of the corpus; the regex runs only on the rest.
+        let mut tx = self.pool.begin().await?;
+        const PAGE: i64 = 2048;
+        let mut last_rowid: i64 = 0;
+        loop {
+            let rows: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT rowid, content FROM chunks
+                 WHERE rowid > ?1 AND content LIKE '%serde%'
+                 ORDER BY rowid
+                 LIMIT ?2",
+            )
+            .bind(last_rowid)
+            .bind(PAGE)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for (rowid, content) in &rows {
+                last_rowid = *rowid;
+                for cap in SERDE_CALLBACK_RE.captures_iter(content) {
+                    let path = &cap[1];
+                    // Terminal path segment: `crate::a::b::f` → `f`.
+                    let terminal = path.rsplit("::").next().unwrap_or(path);
+                    if let Some(indices) = by_name.get(terminal) {
+                        for &i in indices {
+                            dropped.insert(i);
+                        }
+                    }
+                }
+            }
+        }
+        drop(tx);
+
+        let drop_count = dropped.len();
+        if drop_count > 0 {
+            tracing::debug!(
+                dropped = drop_count,
+                rust_fn_candidates = by_name.values().map(|v| v.len()).sum::<usize>(),
+                "filter_serde_callbacks dropped serde string callbacks from dead candidates"
             );
         }
 
@@ -964,6 +1102,219 @@ mod tests {
             names.contains(&"info_span"),
             "Macro `info_span` must not be falsely kept alive by `infoXspan!` content — \
              `_` was a LIKE wildcard pre-fix (EH-V1.40-1)"
+        );
+    }
+
+    // ===== filter_serde_callbacks tests =====
+
+    /// Helper: build a minimal Rust function chunk for the serde tests.
+    fn rust_fn_chunk(id: &str, file: &str, name: &str, content: &str) -> crate::parser::Chunk {
+        crate::parser::Chunk {
+            id: id.to_string(),
+            file: std::path::PathBuf::from(file),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 3,
+            content_hash: format!("{id}_hash"),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    /// A function referenced only via `#[serde(default = "name")]` is reached
+    /// by the derive-generated deserializer, not a syntactic call. It must be
+    /// dropped from dead candidates when another chunk's content names it in a
+    /// serde attribute.
+    #[test]
+    fn test_serde_default_callback_dropped_from_dead() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // The callback function — never called with `()`.
+        let cb = rust_fn_chunk(
+            "src/config.rs:1",
+            "src/config.rs",
+            "default_ref_weight",
+            "fn default_ref_weight() -> f32 { 1.0 }",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+
+        // A struct chunk whose field references it via serde attribute.
+        let user = rust_fn_chunk(
+            "src/config.rs:10",
+            "src/config.rs",
+            "RefConfig",
+            "#[derive(serde::Deserialize)] struct RefConfig { \
+             #[serde(default = \"default_ref_weight\")] weight: f32 }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"default_ref_weight"),
+            "serde default callback must be filtered from dead candidates: {names:?}"
+        );
+    }
+
+    /// `skip_serializing_if = "is_zero_u32"` is a predicate callback. Same
+    /// contract as `default`.
+    #[test]
+    fn test_serde_skip_serializing_if_callback_dropped() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/helpers.rs:1",
+            "src/helpers.rs",
+            "is_zero_u32",
+            "fn is_zero_u32(v: &u32) -> bool { *v == 0 }",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+
+        let user = rust_fn_chunk(
+            "src/model.rs:5",
+            "src/model.rs",
+            "Model",
+            "#[derive(serde::Serialize)] struct Model { \
+             #[serde(skip_serializing_if = \"is_zero_u32\")] count: u32 }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"is_zero_u32"),
+            "serde skip_serializing_if callback must be filtered: {names:?}"
+        );
+    }
+
+    /// Path-qualified callbacks (`serialize_with = "crate::a::b::f"`) resolve
+    /// to a function keyed by its bare terminal segment. The filter must match
+    /// on `f`, not the full path.
+    #[test]
+    fn test_serde_path_qualified_callback_matches_terminal_segment() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/lib.rs:1",
+            "src/lib.rs",
+            "serialize_path_normalized",
+            "pub fn serialize_path_normalized() {}",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+
+        let user = rust_fn_chunk(
+            "src/ref.rs:5",
+            "src/ref.rs",
+            "RefSpec",
+            "#[derive(serde::Serialize)] struct RefSpec { \
+             #[serde(serialize_with = \"crate::serialize_path_normalized\")] path: PathBuf }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"serialize_path_normalized"),
+            "path-qualified serde callback must match by terminal segment: {names:?}"
+        );
+    }
+
+    /// The filter is Rust-only and serde-shaped. A function never named in any
+    /// serde attribute must stay in the dead list — the filter is not a blanket
+    /// content-substring drop.
+    #[test]
+    fn test_serde_filter_does_not_drop_unreferenced_fn() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let orphan = rust_fn_chunk(
+            "src/orphan.rs:1",
+            "src/orphan.rs",
+            "genuinely_dead_helper",
+            "fn genuinely_dead_helper() {}",
+        );
+        store.upsert_chunk(&orphan, &emb, Some(1)).unwrap();
+
+        // A serde-using struct that references a *different* function. The
+        // orphan's name appears nowhere in a serde attribute.
+        let user = rust_fn_chunk(
+            "src/model.rs:5",
+            "src/model.rs",
+            "Model",
+            "#[derive(serde::Serialize)] struct Model { \
+             #[serde(skip_serializing_if = \"Option::is_none\")] x: Option<u32> }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"genuinely_dead_helper"),
+            "fn not named in any serde attribute must remain dead: {names:?}"
+        );
+    }
+
+    /// A bare function name appearing in ordinary content (not a serde-shaped
+    /// `key = \"...\"` attribute) must NOT keep the function alive. Guards
+    /// against the filter degenerating into a plain substring scan.
+    #[test]
+    fn test_serde_filter_requires_attribute_shape() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/x.rs:1",
+            "src/x.rs",
+            "default_true",
+            "fn default_true() -> bool { true }",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+
+        // Mentions the name and the word serde, but NOT in `key = "name"` form.
+        let user = rust_fn_chunk(
+            "src/note.rs:5",
+            "src/note.rs",
+            "note_fn",
+            "fn note_fn() { /* serde: default_true is the fallback */ }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"default_true"),
+            "serde filter must require `key = \\\"name\\\"` shape, not bare mention: {names:?}"
         );
     }
 }

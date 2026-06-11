@@ -2551,6 +2551,132 @@ mod tests {
         }
     }
 
+    /// GPU adversarial pin: the non-finite-query guard at the *actual*
+    /// `CagraIndex::search` entry returns empty results on a live index
+    /// rather than dispatching a kernel on poisoned input. The pure
+    /// predicate is covered CPU-side by `query_is_finite_rejects_nonfinite`;
+    /// this exercises the end-to-end path against real cuVS resources so a
+    /// future refactor that moves or drops the guard is caught.
+    #[test]
+    fn test_search_nonfinite_query_returns_empty_gpu() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+
+        // A NaN somewhere in the query must short-circuit to empty.
+        let mut nan_vec = make_embedding(3).as_slice().to_vec();
+        nan_vec[0] = f32::NAN;
+        let nan_query = Embedding::new(nan_vec);
+        assert!(
+            index.search(&nan_query, 5).is_empty(),
+            "NaN query must return empty from the live search path"
+        );
+
+        // +Inf as well — the guard rejects any non-finite component.
+        let mut inf_vec = make_embedding(3).as_slice().to_vec();
+        inf_vec[1] = f32::INFINITY;
+        let inf_query = Embedding::new(inf_vec);
+        assert!(
+            index.search(&inf_query, 5).is_empty(),
+            "Inf query must return empty from the live search path"
+        );
+
+        // Sanity: the same index still answers a finite query, so the empty
+        // results above are the guard firing, not a broken index.
+        assert!(
+            !index.search(&make_embedding(3), 5).is_empty(),
+            "finite query must still return results on the same index"
+        );
+    }
+
+    /// GPU adversarial pin: a finite query against an index that *contains*
+    /// edge-case vectors (a zero vector, which is degenerate under cosine —
+    /// the L2-normalisation in `build` cannot normalise it) must still
+    /// return only finite-scored results. Documents the open uncertainty in
+    /// the `INVALID_DISTANCE` design note: whatever cuVS does internally with
+    /// a degenerate stored vector, the post-hoc `!dist.is_finite()` filter
+    /// keeps any NaN/Inf distance it might emit out of the result set.
+    #[test]
+    fn test_search_finite_query_degenerate_index_vector() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        // Mix ordinary vectors with a zero vector (degenerate direction).
+        let mut embeddings: Vec<(String, Embedding)> = (0..8)
+            .map(|i| (format!("chunk_{i}"), make_embedding(i)))
+            .collect();
+        embeddings.push((
+            "zero_vec".to_string(),
+            Embedding::new(vec![0.0f32; EMBEDDING_DIM]),
+        ));
+
+        let index = CagraIndex::build(embeddings, EMBEDDING_DIM)
+            .expect("build with a degenerate vector should still succeed");
+
+        let results = index.search(&make_embedding(2), 9);
+        // Every score that survives must be finite — the sentinel filter
+        // (and the score conversion) must never surface NaN/Inf to callers.
+        for r in &results {
+            assert!(
+                r.score.is_finite(),
+                "result {:?} has non-finite score {} — sentinel/score filter leaked",
+                r.id,
+                r.score
+            );
+        }
+        // The query's own self-match must still be retrievable.
+        assert!(
+            results.iter().any(|r| r.id == "chunk_2"),
+            "self-match lost when index contains a degenerate vector: {:?}",
+            results.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// GPU adversarial pin: confirm the post-hoc `!dist.is_finite()` sentinel
+    /// filter actually fires in practice. Request `k` far larger than the
+    /// corpus so cuVS cannot fill every neighbour slot; the unfilled slots
+    /// retain the `INVALID_DISTANCE` (`+∞`) seed. The filter must drop them,
+    /// so the returned count is bounded by the corpus size and never exposes
+    /// a sentinel-scored garbage neighbour.
+    #[test]
+    fn test_search_oversized_k_sentinel_filter_fires() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let n: usize = 6;
+        let index = build_test_index(n as u32);
+
+        // k > corpus size: cuVS leaves trailing slots at INVALID_DISTANCE.
+        let k = n + 20;
+        let results = index.search(&make_embedding(1), k);
+
+        // The sentinel filter must keep the result count within the corpus.
+        assert!(
+            results.len() <= n,
+            "sentinel filter did not fire: got {} results for a {}-vector corpus",
+            results.len(),
+            n
+        );
+        // No surviving result may carry the sentinel — all scores finite.
+        for r in &results {
+            assert!(
+                r.score.is_finite(),
+                "sentinel slot leaked into results: {:?} score {}",
+                r.id,
+                r.score
+            );
+        }
+        // And we still got the real neighbours, not an empty drop-everything.
+        assert!(
+            !results.is_empty(),
+            "oversized-k search dropped all real neighbours"
+        );
+    }
+
     /// CPU-only guard test: the finite-query predicate that fronts
     /// `CagraIndex::search` must reject NaN/Inf queries (so the search
     /// returns empty rather than dispatching a kernel on poisoned input)
