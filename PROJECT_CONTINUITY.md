@@ -2,6 +2,16 @@
 
 ## Right Now
 
+**v1.42.0 FULL audit (16 categories) + triage DONE, fixes deferred (2026-06-10 night).** Both batches ran (batch 1, then batch-1 triage, then batch 2 by user direction). **107 new findings** in `docs/audit-findings.md` (batch 1: 59, batch 2: 48); triage in `docs/audit-triage.md`: **28 P1 / 30 P2 / 40 P3 / 9 P4 + 50 carried-forward v1.40 items (10 CF-P2 / 40 CF-P3) = 157 open total**, single source of truth. Fix clustering section in the triage (14 clusters: daemon-parity, daemon cache-lifecycle, HNSW persistence-lifecycle, indexing-crash, search-correctness, atomic-write sweep, trust-signal relay, docs sweep, test backfill, …). Previous audit archived as `audit-{findings,triage}-v1.40.0.md`. Audit mode off. **PR with all audit/skill/notes/tears artifacts: pending (this session). NO fixes implemented yet** — one-shot session cron `be07852d` fires 23:48 CDT (rate-limit reset) to begin P1 implementation if idle.
+
+Headline P1s: **daemon rebuilds the vector index from disk on every search (~360-480ms vs 3-19ms budget, journal-confirmed — BatchView never writes cache cells back, PERF-V1.42-1)**; zero-vec sentinel laundering via reuse resolver corrupts retrieval permanently (DS-V1.42-1, three WHERE clauses); HNSW loader can destroy a live save's staging dir pre-lock (DS-V1.42-3); doc_writer can truncate USER SOURCE files non-atomically (DS-V1.42-8); blame `-n`/`-v`/`--rrf` hard-error daemon-up (API-V1.42-1 + EXT-V1.42-1, verified live); NaN embeddings panic HNSW build (TC-V1.42-6); bytemuck panic on truncated cache blob (TC-V1.42-7); live RRF FTS leg missing needs_embedding gate (CQ-V1.42-12); kind-fallback relays content without promised injection_flags/trust_level (SEC-V1.42-1).
+
+**Nested sub-agent experiment (Claude Code 2.1.172) — validated across 5 categories:** lead + 3 read-only explorer sub-agents + lead-side verification. Combined funnel 87 candidates → 65 appended (cross-category dups caught, same-root-cause merges, stale rejects). Nested categories produced the largest verified hauls (CQ 16, TC-adv 15, DS 12, PERF 11, TC-hap 11) vs mined-out solo categories (Scaling 1, RM 1, PB 2, SEC 3). Audit skill amended accordingly (+ -q flag bug, batch heading fix, heredoc-append codified, CF carry-forward step, honest 20-40% prompt-review rate).
+
+**Next:** (1) PR this session's artifacts (in flight), (2) at 23:48 CDT cron: implement P1 clusters from `docs/audit-triage.md`, one branch+PR per cluster, flip Status cells as they land.
+
+---
+
 **Implementation campaign CLOSED (2026-06-10 evening) — 14 PRs merged, queue drained.** User queued 4 roadmap items, expanded to "knock out other open issues", then stash cleanup + docs. Everything landed:
 
 - **Watch mode:** #1718 (data_version cache invalidation, →#1714), #1720 (status --watch ops block, →#1715), #1724 (adaptive debounce + latent flush-starvation fix, →#1716), #1727 (slot-parallel reindex via delta propagation, →#1717 — new src/cli/watch/siblings.rs, 4 knobs, slot-aware reconcile).

@@ -1,465 +1,238 @@
-# Audit Triage (post-v1.40.0)
+# Audit Triage (v1.42.0)
 
-Audit date: 2026-05-08
-Main HEAD: e2f64baa (currency fixes after #1624)
-Source: `docs/audit-findings.md` (150 raw findings across 16 categories)
-Calibration: matches `docs/audit-triage-v1.38.0-final.md` priority matrix.
+Audit date: 2026-06-10
+Main HEAD: 7284e31e
+Source: `docs/audit-findings.md` (107 findings — batch 1: 59 across 8 categories; batch 2: 48 across the other 8, run after batch-1 triage)
+Calibration: matches `docs/audit-triage-v1.40.0.md` priority matrix.
+Status: **triage only — fixes deferred to the follow-up session** (user decision). All items open.
 
-After consolidation: **150 raw → 78 triage entries.** Heavy overlap: the v1.40.0 surface (polymorphic-routing Phase 1, SNR Phase 4 default flip, Tier 2b macro filter, daemon path duplication) hits multiple auditor lenses for the same root cause.
+Nested-lead experiment: 5 of 16 categories ran as lead + 3 read-only sub-scope agents with lead-side verification before append. Funnels — batch 1: Code Quality 20→16, TC-adversarial 18→15; batch 2: Performance 13→11, Data Safety 15→12, TC-happy 21→11. Combined: 87 raw candidates → 65 appended (cross-category dups caught, same-root-cause merges, stale-triage rejects). The other 11 categories ran as single auditors; Security ran on opus per the skill rule.
+
+GitHub cross-check (open issues): API-V1.42-1 is the same surface-dependence class as open #1734 (daemon-forward text-mode output) but a distinct bug — note both in whichever PR touches `daemon_translate.rs`. No other overlap with open issues; auditors deduped against `audit-triage-v1.40.0.md` (which feeds #1459/#1463 umbrellas) before filing.
 
 ## Summary by Priority
 
-| Priority | Count | Disposition |
-|----------|-------|-------------|
-| P1 | 23 | fix this PR — easy + high impact, lying docs, correctness bugs, data corruption, security holes |
-| P2 | 20 | fix this batch — medium effort + high impact, regression-test backfill, hot-path perf |
-| P3 | 27 | fix if time — easy + low impact (style, doc tweaks, single-test additions, observability nits) |
-| P4 | 8 | defer — hard / low-impact / tracked under #1463/#1459/#1512 umbrella issues |
-| **Total** | **78** | (from 150 raw) |
+| Priority | Count | Definition |
+|----------|-------|------------|
+| P1 | 28 | Easy + high impact (or lying docs) — fix first |
+| P2 | 30 | Medium effort + high impact — fix in batch |
+| P3 | 40 | Easy + low impact — fix if time |
+| P4 | 9 | Hard or low impact — issues / inline trivials |
+| CF-P2 | 10 | Carried forward from v1.40 triage, P2-grade, still open |
+| CF-P3 | 40 | Carried forward from v1.40 triage, P3-grade, still open |
+
+New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Carry-overs from prior triages still open: 50. Grand total open: 157.
+
+## P1 — easy + high impact
+
+| ID | Finding | Location | Status |
+|----|---------|----------|--------|
+| SHL-V1.42-1 | DAEMON_LIMIT_CAP rationale comment false — CLI clamp exists at dispatch.rs:207; parity accidental | src/cli/batch/handlers/search.rs:9-11 | open |
+| OB-V1.42-1 | Corrupt global-cache embedding silently dropped in resolve_reuse (no warn; store-cache sibling warns) | src/cli/pipeline/reuse.rs:127 | open |
+| OB-V1.42-2 | CLI→daemon transport fallback debug-only — wedged daemon = silent ~32s hang | src/cli/dispatch.rs:300-410 | open |
+| DOC-V1.42-1 | README says Rust 1.95+; MSRV is 1.96 | README.md:27 | open |
+| DOC-V1.42-2 | README cuvs-fork [patch.crates-io] install note — fork retired in #1679; false supply-chain claim | README.md:33 | open |
+| DOC-V1.42-3 | README env table: CQS_CAGRA_THRESHOLD default 50000; actual 5000 (10x error, behavior-selecting knob) | README.md:784 | open |
+| DOC-V1.42-7 | SECURITY.md advisory table missing RUSTSEC-2025-0119; bincode rationale contradicts .cargo/audit.toml | SECURITY.md:300-307 | open |
+| EH-V1.42-1 | load_audit_state conflates EACCES/EIO with NotFound — audit mode silently off, zero log | src/audit.rs:92-95 | open |
+| EH-V1.42-2 | CQS_SLOT env doesn't bypass daemon — silent wrong-slot results (--model analog warns) | src/cli/dispatch.rs:213-221 | open |
+| RB-V1.42-2 | extract_return_sql slices original string at to_uppercase() offset — panic on non-ASCII SQL; siblings use to_ascii_* | src/language/languages.rs:6743-6745 | open |
+| API-V1.42-1 | Daemon arg translation remaps -n→--limit globally — `cqs blame foo -n 3` hard-errors daemon-up, works daemon-down (verified live; related: open #1734 class) | src/daemon_translate.rs:51 | open |
+| API-V1.42-9 | Daemon graph-dispatch doc comments enumerate wire fields that don't exist (line/function vs line_start/name) | src/cli/batch/handlers/graph.rs:37-137 | open |
+| TC-V1.42-6 | NaN/Inf embeddings pass HNSW build zero-vector filter (NaN != 0.0) into parallel_insert_data — can panic whole index build | src/hnsw/build.rs:204-226 | open |
+| TC-V1.42-7 | EmbeddingCache::read_batch bytemuck cast panics on truncated blob BEFORE length check; query_cache fixed this exact bug | src/cache/embedding_cache.rs:261 | open |
+| CQ-V1.42-12 | v27 needs_embedding visibility gate lives only in production-dead search_fts; live RRF FTS leg unfiltered — unembedded chunks can surface mid-reindex | src/store/search.rs:120-150 vs src/search/query.rs:358-364 | open |
+| SEC-V1.42-1 | Kind-fallback definitions[] relays full chunk content with no injection_flags/trust_level — SECURITY.md promises both on every chunk-returning output (docs-lying rule) | src/cli/commands/graph/mod.rs:206-253 | open |
+| EXT-V1.42-2 | No exhaustiveness link between batch="daemon" Commands variants and BatchCmd — forgotten variant fails only at runtime, only daemon-up (~15-line test) | src/cli/definitions.rs:337+ vs src/cli/batch/commands.rs:46 | open |
+| EXT-V1.42-3 | CONTRIBUTING "Adding a New CLI Command" documents nonexistent attribute surface (#[cqs(handler=...)]) and omits dispatch_shims + daemon wiring steps (lying recipe) | CONTRIBUTING.md:448 | open |
+| EXT-V1.42-4 | Migration how-to describes removed run_migration() match ladder; no MIGRATIONS-table contiguity test — forgotten row fails only at user upgrade | src/store/migrations.rs:10, :380-398 | open |
+| AC-V1.42-1 | map_hunks_to_functions skips count==0 hunks — pure-deletion changes invisible to impact/review under -U0 diffs | src/impact/diff.rs:77-79 | open |
+| AC-V1.42-2 | Staleness checks use `current > stored` where reconcile pins `!=` — backward-mtime restores never look stale (feeds OB-V1.42-3 plumbing) | src/store/chunks/staleness.rs:742, :948-951 | open |
+| PERF-V1.42-1 | Daemon rebuilds vector index from disk on EVERY search-class query (~360-480ms vs 3-19ms budget, journal-confirmed) — BatchView fallback never writes back; SPLADE cell got the fix, vector/base/file_set/notes didn't | src/cli/batch/view.rs:325-347, context.rs:208 | open |
+| PERF-V1.42-2 | Hybrid-fused search fetches ~1.4 MB of embedding BLOBs per query that are provably never read | src/store/chunks/async_helpers.rs:85-108, src/search/query.rs:932-939 | open |
+| PERF-V1.42-5 | split_into_windows deep-clones the entire HF tokenizer (262k vocab) once per chunk — ~14k clones per reindex | src/embedder/core.rs:601-607 | open |
+| DS-V1.42-1 | Embedding-reuse by-hash lookups lack needs_embedding gate — zero-vec sentinels laundered into permanent "real" embeddings (silent retrieval corruption); 3 one-line WHERE clauses | src/store/chunks/embeddings.rs:34, :111-113, :188 | open |
+| DS-V1.42-3 | HNSW loader deletes a live save's staging dir BEFORE taking the shared lock — concurrent save reports success while destroying the on-disk index | src/hnsw/persist.rs:837-850 vs :414, :684 | open |
+| DS-V1.42-7 | Deferred cache invalidation permanently lost — both staleness discriminators consumed before deferral, promised retry observes no change | src/cli/batch/context.rs:619-624, :529, :468 | open |
+| DS-V1.42-8 | doc_writer::atomic_write falls back to non-atomic truncate-write of USER SOURCE FILES on any rename failure, never fsyncs — only non-rebuildable data cqs writes | src/doc_writer/rewriter.rs:646-702 | open |
+
+## P2 — medium effort + high impact
+
+| ID | Finding | Location | Status |
+|----|---------|----------|--------|
+| OB-V1.42-3 | Daemon-served searches drop staleness warnings — recommended default path never warns; WSL inotify makes it the path that needs it most | src/cli/batch/handlers/search.rs:67-129 | open |
+| DOC-V1.42-5 | CONTRIBUTING JSON envelope section teaches pre-V2Bare shape as universal; not_found/io_error "reserved" claim false (also json_envelope.rs:155) | CONTRIBUTING.md:63-93 | open |
+| DOC-V1.42-6 | CONTRIBUTING Architecture Overview missing ~14 files; commands/eval lists moved schema.rs | CONTRIBUTING.md:221-432 | open |
+| RB-V1.42-1 | collect_comment_ranges / find_type_identifier_recursive recurse per tree-depth — stack overflow (SIGSEGV) on rayon workers aborts index/watch | src/parser/chunk.rs:126, :756 | open |
+| API-V1.42-3 | callers vs callees output topology asymmetry; module doc's type-discrimination claim false for callees | src/cli/commands/graph/callers.rs:74-90 | open |
+| API-V1.42-8 | Args-layer contract drift in campaign code: borrowed non-Deserialize AuditModeArgs, two no-Args conventions, adapter-only flag in core Args | infra/audit_mode.rs:38 + slot.rs/reference.rs/cache_cmd.rs + index/stale.rs:76-82 | open |
+| TC-V1.42-1 | notes add --mentions can write notes.toml past 10 MiB cap → bricks all notes ops; note.rs:30-33 doc overpromises write-side enforcement | src/cli/commands/io/notes.rs:306-311, src/note.rs:307-320 | open |
+| TC-V1.42-8 | CAGRA accepts non-finite queries + zero/NaN build vectors HNSW guards — backend asymmetry (CPU-side prepare_index_data filter is the easy half; GPU-gated verification is P4-grade) | src/cagra.rs:424, src/hnsw/mod.rs:583-602 | open |
+| CQ-V1.42-1 | Config ef_search silently ignored on every direct-CLI search path — wrapper hardcodes None; knob only works via batch/daemon | src/cli/store.rs:397-402 | open |
+| CQ-V1.42-8 | prune_gitignored never cleans function_calls — orphan call-graph rows (ghost callers) until next prune_all; 3 prune fns already diverged | src/store/chunks/staleness.rs:266, :389, :532 | open |
+| CQ-V1.42-11 | Cross-project branches escaped command-core extraction on both surfaces — duplicated, no parity tests, no deferred-ledger entry | src/cli/batch/handlers/graph.rs vs src/cli/commands/graph/* | open |
+| SEC-V1.42-2 | cqs serve relays content_preview/signature/doc with no trust_level/injection_flags — wire them in OR scope SECURITY.md's universal claim to exempt serve (decision needed) | src/serve/data.rs:92-114, :508-645 | open |
+| PB-V1.42-1 | v23 reconcile fingerprint columns stamped only by watch path — CLI `cqs index` leaves them NULL/stale → spurious reindex churn wave after every branch-switch index under a live daemon | src/cli/pipeline/upsert.rs:174-178, async_helpers.rs:329 | open |
+| EXT-V1.42-1 | daemon_translate hand-mirrors 5 of ~25 clap flags — `-v`/`--rrf` break daemon-up (verified live); derive strip/remap sets from Cli::command() like telemetry.rs does; structural cause of API-V1.42-1 | src/daemon_translate.rs:47-52 | open |
+| AC-V1.42-3 | find_test_matches keeps the empty-string predecessor sentinel AC-V1.40-3 fixed in bfs_shortest_path, and is the only BFS without a node cap | src/impact/test_map.rs:40-78 | open |
+| AC-V1.42-4 | Python UntilColon signature truncates at first annotation colon — annotated defs lose params + return type (retrieval quality; needs PARSER_VERSION bump) | src/parser/chunk.rs:293 | open |
+| PERF-V1.42-3 | Dense-index path discards HNSW/CAGRA scores then re-fetches embeddings to recompute identical cosine (verify CAGRA score-scale parity first) | src/search/query.rs:785-794, :941-947 | open |
+| PERF-V1.42-4 | Incremental `cqs index` fully parses every file before the staleness filter + per-file N+1 mtime SELECT — O(corpus) instead of O(changed) | src/cli/pipeline/parsing.rs:62-209 | open |
+| PERF-V1.42-6 | store_stage defeats row batching with per-file transactions ×2 passes (~30k tx at ceiling); function-calls write in same fn already fixed this class | src/cli/pipeline/upsert.rs:172-179, :247-261 | open |
+| TC-HAP-V1.42-1 | scout pipeline untested at every layer (lib core, CLI core, compute_hints_batch, binary) — CLAUDE.md-mandated per-session command | src/scout.rs:124-181, src/impact/hints.rs:96 | open |
+| TC-HAP-V1.42-2 | search_hybrid — the production search path — referenced by exactly one test, inside an #[ignore]d eval; #1584's bug lived exactly here | src/search/query.rs:493 | open |
+| TC-HAP-V1.42-3 | Flagship `cqs "<query>"` has zero binary-spawn coverage in any format; only default-format search payload test is shape-only | tests/cli_chat_format_test.rs:129-141 | open |
+| TC-HAP-V1.42-6 | No test drives review_core/ci_core/affected_core through a populated diff — existing tests accept the empty branch (lands with AC-V1.42-1's -U0 test) | tests/cli_review_test.rs:245-275, review/affected.rs:54 | open |
+| TC-HAP-V1.42-10 | Every-session agent command set (impact, test-map, deps, callers/callees happy, trace, context, read, where, related, health, stats) has no happy-path binary spawn | tests/cli_surface_test.rs (pattern exists at :130) | open |
+| TC-HAP-V1.42-11 | v1-envelope pin monoculture — 34 test files route through cqs_v1(); shipped default (V2Bare) tested for only ~5 command payloads | tests/common/mod.rs:53 | open |
+| DS-V1.42-2 | HNSW dirty-flag self-heal trusts self-referential checksum manifest — crash between chunk commit and HNSW save silently serves stale index (generation stamp; shares mechanism with DS-V1.42-5) | src/hnsw/mod.rs:712-719, persist.rs:229 | open |
+| DS-V1.42-4 | HNSW stale-.bak guard: post-success debris locks out all future saves; guard runs outside the exclusive lock (TOCTOU); shutdown detaches rebuild thread mid-save | src/hnsw/persist.rs:366-394, watch/mod.rs:1891-1937 | open |
+| DS-V1.42-5 | Background HNSW rebuild saves sidecars outside index.lock — lost update vs concurrent `cqs index`, dirty flag cleared over the gap (generation stamp closes it) | src/cli/watch/rebuild.rs:260-357 | open |
+| DS-V1.42-6 | ensure_splade_index publishes a stale-snapshot index into the shared cell after invalidation already ran — served indefinitely on a quiet repo | src/cli/batch/view.rs:397-463 | open |
+| DS-V1.42-10 | Migration backup has no cross-process write exclusion — torn snapshot under live daemon; restore discards daemon commits (use VACUUM INTO) | src/store/backup.rs:110-178 | open |
+
+## P3 — easy + low impact
+
+| ID | Finding | Location | Status |
+|----|---------|----------|--------|
+| DOC-V1.42-4 | README HNSW tuning table presents mid-tier values as fixed; defaults are corpus-tiered | README.md:696-710 | open |
+| EH-V1.42-3 | Batch dispatch swallows response-write failures via `let _ =` (7 sites) — daemon side built tracked writes for exactly this | src/cli/batch/context.rs:684-797 | open |
+| EH-V1.42-4 | chunk_count().ok() blanks slot-list chunks column silently; adjacent model-name read got the warn ladder | src/cli/commands/infra/slot.rs:253 | open |
+| RB-V1.42-3 | extract_signature UntilAs loop bound makes end-of-string guard unreachable — trailing "AS" never matched | src/parser/chunk.rs:302-306 | open |
+| RB-V1.42-4 | injection.rs u32-cast safety comment cites nonexistent "MAX_FILE_SIZE (50MB)"; real cap 1 MiB + unbounded env override | src/parser/injection.rs:221 | open |
+| API-V1.42-2 | Core Args reuse clap struct names — two contradictory alias conventions (CallersCoreArgs vs CoreCalleesArgs) | src/cli/commands/graph/callers.rs:34 et al. | open |
+| API-V1.42-4 | --cross-project flips callees topology object→flat array, different entry schema (fold into API-V1.42-3) | src/cli/batch/handlers/graph.rs:154-161 | open |
+| API-V1.42-5 | serde(default) coverage inconsistent — graph cores reject minimal wire payloads io/search cores accept | src/cli/commands/graph/callers.rs:33-39 | open |
+| API-V1.42-6 | --expand alias: bool on search, value-taking depth on gather | src/cli/args.rs:189 vs :234 | open |
+| API-V1.42-7 | drift's hand-rolled --limit accepts 0 and defaults unlimited — contradicts LimitArg contract | src/cli/args.rs:581-583 | open |
+| TC-V1.42-2 | Whitespace-only note = cross-note wildcard for update/remove; duplicate-text semantics unpinned | src/cli/commands/io/notes.rs:298-572 | open |
+| TC-V1.42-3 | cmd_batch stdin line-cap rejection path (CQS_BATCH_MAX_LINE_LEN) zero tests (daemon analog is pinned) | src/cli/batch/session.rs:155-173 | open |
+| TC-V1.42-5 | parse_nonzero_usize untested while f32 siblings exhaustively pinned in same file | src/cli/definitions.rs:94-100 | open |
+| TC-V1.42-9 | HNSW zero-vector skip / id_map desync — documented past bug class, no regression test | src/hnsw/build.rs:200-222 | open |
+| TC-V1.42-10 | HNSW search k > index size unpinned (CAGRA analog test exists) | src/hnsw/search.rs:105-117 | open |
+| TC-V1.42-11 | Store::open on garbage/truncated index.db untested | src/store/mod.rs:906 | open |
+| TC-V1.42-12 | Non-integer schema_version → Corruption arm untested | src/store/migrations.rs:230-236 | open |
+| TC-V1.42-14 | parser_stage TOCTOU (file deleted mid-pipeline): parse_errors arm + mtime=0 sentinel untested | src/cli/pipeline/parsing.rs:127-176 | open |
+| CQ-V1.42-2 | gather_cross_index production-dead wrapper skews test coverage to brute-force path | src/gather.rs:561 | open |
+| CQ-V1.42-3 | CAGRA in-memory constructors test-only API masquerading as production surface | src/cagra.rs:801, :370-376 | open |
+| CQ-V1.42-4 | CagraIndex::save ~75-line test-only twin of save_with_store hardcoding splade_generation: 0 | src/cagra.rs:1013-1086 | open |
+| CQ-V1.42-5 | CommandContext.project_cqs_dir/slot_name written never read, masked by #[allow(dead_code)] | src/cli/store.rs:162-168 | open |
+| CQ-V1.42-6 | ScoutOptions knobs unreachable from any surface | src/scout.rs:101, :135 | open |
+| CQ-V1.42-10 | Env-knob parsing re-implemented across six sites; cli/limits.rs private copy; divergent silent-swallow semantics | hnsw/persist.rs, cli/limits.rs, onboard.rs, note.rs, diff.rs, task.rs | open |
+| CQ-V1.42-15 | Library llm modules eprintln! user-facing hints directly | src/llm/summary.rs:101, doc_comments.rs:281, batch.rs:638 | open |
+| CQ-V1.42-16 | Crate root accretes utilities that have dedicated homes (serde/path/fs helpers in lib.rs) | src/lib.rs:410-645 | open |
+| SEC-V1.42-3 | Cleartext-http API-key guard split across two layers with contradictory localhost policy — local.rs re-check unreachable; under ALLOW_INSECURE=1 silently drops opted-into header | src/llm/mod.rs:357-372, local.rs:146-171 | open |
+| PB-V1.42-2 | linux_fs_resolution magic table omits V9FS_MAGIC (0x01021997) — manually mounted DrvFS gets fine-grained mtime treatment, re-opening dropped-second-save bug | src/config.rs:270-289 | open |
+| RM-V1.42-1 | CAGRA interrupted-save tmp orphans never swept on load — HNSW/SPLADE both sweep theirs; multi-hundred-MB accumulation under crash-looping daemon | src/cagra.rs:1186, :1426, :1556 | open |
+| PERF-V1.42-7 | `cqs task` computes the full test-reachability BFS twice with identical inputs | src/task.rs:144, :194 | open |
+| PERF-V1.42-8 | test_reachability allocates 2-3 Strings per BFS visit — siblings in same file use Arc<str> interning (runs on every scout/task/health/review) | src/impact/bfs.rs:354-386 | open |
+| PERF-V1.42-10 | build_chunk_detail tests-that-cover query is an unindexed full-table content LIKE scan per dashboard click — use chunks_fts | src/serve/data.rs:619-629 | open |
+| PERF-V1.42-11 | Daemon success response written unbuffered — one write() syscall per JSON fragment (fold into CF dispatch_value refactor, RM-V1.40-9 cluster) | src/cli/watch/socket.rs:298 | open |
+| TC-HAP-V1.42-5 | Gather direction filtering (Callers/Callees) tested only by is_ok() — deliberate fixture wasted | tests/gather_test.rs:185, :231 | open |
+| TC-HAP-V1.42-7 | Command-core parity tests are parity-by-construction — no parity test pins a single output value; add one fixture-grounded assert each | src/cli/batch/handlers/graph.rs:862-1080 | open |
+| TC-HAP-V1.42-8 | cache_compact_core zero coverage; cache_stats_core per-model branch never executed | src/cli/commands/infra/cache_cmd.rs:222, :117-130 | open |
+| TC-HAP-V1.42-9 | telemetry_core populated path and all:true flag have zero assertions — telemetry feeds real decisions | src/cli/commands/infra/telemetry_cmd.rs:395 | open |
+| DS-V1.42-9 | checkpoint_legacy_index opens via URL parsing — special-char paths silently skip the WAL drain the slot migration depends on | src/slot/mod.rs:1053 | open |
+| DS-V1.42-11 | slot create --model killed between dir creation and slot.toml write loses the model pin; retry guidance steers toward wrong-model indexing | src/cli/commands/infra/slot.rs:313-325 | open |
+| DS-V1.42-12 | `cqs convert --overwrite` writes via bare fs::write — truncated doc ingested as valid content on next index | src/convert/mod.rs:523-526 | open |
+
+## P4 — hard or low impact
+
+| ID | Finding | Location | Status |
+|----|---------|----------|--------|
+| TC-V1.42-4 | read_stdin oversize-cap + invalid-UTF-8 untested (review --stdin, impact --diff, ci --stdin) | src/cli/commands/mod.rs:566-580 | open |
+| TC-V1.42-13 | No SQLITE_BUSY / concurrent-writer test anywhere; busy_timeout env fallback unpinned | src/store/helpers/sql.rs:14 | open |
+| TC-V1.42-15 | Read-only .cqs/ — no permission-denied test for index creation/open | src/cli/commands/index/build.rs:135-190 | open |
+| CQ-V1.42-7 | Fused-tx phantom-chunk pruning verbatim inline copy of delete_phantom_chunks | src/store/chunks/crud.rs:1059-1144 | open |
+| CQ-V1.42-9 | Ref-path query preparation duplicated, wider than deferred ledger entry; cmd_query_project double-search_hybrid is the easy first slice | src/cli/commands/search/query.rs:918-1174 vs :239-527 | open |
+| CQ-V1.42-13 | serve/data.rs writes raw SQL via pub(crate) pool access — schema knowledge in two modules | src/serve/data.rs:224-1124 | open |
+| CQ-V1.42-14 | store ↔ search bidirectional coupling — Store's search API implemented in search module on private fields (root cause of CQ-V1.42-12's gate-in-dead-code) | src/search/query.rs:67, src/store/search.rs:8 | open |
+| PERF-V1.42-9 | build_cluster streams the entire function_calls table per /api/embed/2d request, aggregating degree counts Rust-side — push GROUP BY into SQL like build_graph | src/serve/data.rs:1011-1026 | open |
+| TC-HAP-V1.42-4 | task e2e tests #[ignore]d AND vacuous (assertions satisfiable by any outcome); --tokens waterfall branch never executed | tests/task_test.rs:285-327, train/task.rs:609-641 | open |
+
+## Suggested fix clustering (for the next implementation session)
+
+- **Daemon-surface parity cluster (P1/P2):** API-V1.42-1, EXT-V1.42-1 (structural cause — derive flag sets from clap), EXT-V1.42-2 (exhaustiveness test), EH-V1.42-2, OB-V1.42-2, OB-V1.42-3 + AC-V1.42-2 (staleness predicate feeds the envelope plumbing), SHL-V1.42-1 — all "same query, different behavior depending on daemon" class; pairs with open #1734.
+- **Daemon cache-lifecycle cluster (P1/P2):** PERF-V1.42-1 (vector-index write-back — the headline), DS-V1.42-6 (stale SPLADE publish), DS-V1.42-7 (lost deferred invalidation) — all BatchContext/BatchView shared-cell lifecycle; one PR restores the daemon's latency contract AND closes the stale-serve races.
+- **HNSW persistence-lifecycle cluster (P2):** DS-V1.42-2/3/4/5 — one generation-stamp mechanism + lock-ordering fixes closes all four; RM-V1.42-1 (CAGRA tmp sweep) rides along.
+- **Indexing-crash cluster (P1/P2):** TC-V1.42-6, TC-V1.42-7, RB-V1.42-1, RB-V1.42-2, TC-V1.42-8 — panic/abort paths reachable during index/watch.
+- **Search-correctness:** CQ-V1.42-12 (+ CQ-V1.42-14 as the structural root cause, separate PR), CQ-V1.42-8, DS-V1.42-1 (sentinel laundering — three WHERE clauses).
+- **Search hot-path perf:** PERF-V1.42-2/3 (shared hydration-helper fix surface).
+- **Indexing pipeline perf:** PERF-V1.42-4/5/6 + PB-V1.42-1 (fingerprint stamp belongs in the same shared-upsert surgery).
+- **Atomic-write sweep (easy P1/P3):** DS-V1.42-8 (user source files — highest stakes), DS-V1.42-9/11/12.
+- **Trust-signal relay (P1/P2):** SEC-V1.42-1 (one shared transform fixes 6 commands × 2 surfaces), SEC-V1.42-2 (decision: wire serve or scope the SECURITY.md claim).
+- **Docs sweep (P1+P2 docs in one PR):** DOC-V1.42-1/2/3/7, then DOC-V1.42-5/6, API-V1.42-9, RB-V1.42-4, SHL-V1.42-1's comment half, EXT-V1.42-3/4 (recipes), SEC-V1.42-3 (one trust model).
+- **Notes hardening:** TC-V1.42-1, TC-V1.42-2.
+- **Command-core hygiene:** API-V1.42-2/3/4/5/8, CQ-V1.42-11 — one campaign-style cleanup pass; TC-HAP-V1.42-7's value asserts land here.
+- **Test backfill (P2 batch):** TC-HAP-V1.42-1/2/3/6/10/11 — production-search and mandated-command coverage first; AC-V1.42-1's -U0 test lands with TC-HAP-V1.42-6.
+- **Impact/diff correctness:** AC-V1.42-1/3/4.
 
 ---
 
-## Verification 2026-06-09 (audit-mode, direct code examination)
+# Carried forward from prior triages (still open)
 
-All findings still marked open after the v1.41.0 cycle were re-verified against main (post-#1677, schema v28). Verdicts below supersede the per-row Status cells; this section is the work queue for the standing fix loop.
+Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09" section supersedes that file's per-row Status cells — reconciled against what the 2026-06-10 campaigns actually closed (PROJECT_CONTINUITY records), with spot-greps against main today (2026-06-10) for the ambiguous items.
 
-### Closed by verification (no work needed)
+**Closed since the 2026-06-09 verification (NOT carried):** queue item 1 cap-parity (command-core campaign), queue items 2/3/7 (#1725 — EH-V1.40-8+PB-V1.40-7, SHL-V1.40-1+AC-V1.40-9, kind-fallback test backfill), queue item 5 / DS-V1.40-1 (#1718 data_version probe), Cluster C core (CQ-V1.40-1/2/3/4/5/6/9, API-V1.40-1/4, EXT-V1.40-1/2, RM-V1.40-1, TC-HAP-V1.40-4/7/10 — campaign), Cluster F V2Bare binary-boundary tests (#1703). Verification-invalidated: SEC-V1.40-7, DS-V1.40-9, RB-V1.40-2's index sub-claim, TC-HAP-V1.40-7's no-tests sub-claim.
 
-- **SEC-V1.40-7** — FIXED/never-matched: daemon uses `String::with_capacity(8192)` + `.take(cap)` read-limit (socket.rs:101-110); the "5 MB preallocation" never existed.
-- **DS-V1.40-9** — INVALID: v26→v27 sets `needs_embedding=1` only `WHERE embedding_base IS NULL` (migrations.rs:994-996); the half-state can't be created.
-- **RB-V1.40-2 sub-claim "no chunks.name index → full scan"** — INVALID: `idx_chunks_name` is in base schema.sql:99. Only the `format!`-per-call sub-claim survives (cleanup tier).
-- **TC-HAP-V1.40-7 sub-claim "no tests"** — FIXED: kind.rs:303-340 has round-trip tests.
-- **Posture truth-table + env-read-caching sub-claims** (TC-*-V1.40-1 part, CQ-V1.40-5 part) — FIXED by #1629 (OnceLock + 12 unit tests).
+**Still deferred by standing decision (not in tables below):** DS-V1.40-7 / EXT-V1.40-4 (sentiment CHECK constraint / Sentiment enum — schema-migration cost > benefit, single user). P4 umbrella items remain tracked on #1463 (4 truly-remaining design items), #1459 (1 of 8: project/ref verb consolidation), #1512 (Windows daemon), #1573 (dead-code tiers 3a/3b/4: EXT-V1.40-3/7, PERF-V1.40-10), SHL-V1.40-3 (next perf cycle), SHL-V1.40-6 (#1453 successor) — no need to re-list here.
 
-### Verified-open queue (priority order for the fix loop)
+## CF-P2 — carried forward, P2-grade
 
-1. **Cap parity for CLI graph fallbacks** (CQ-V1.40-3 remainder + EXT-V1.40-2): #1632's 100-def/2KB cap covers only impact + daemon; callers/callees/deps/test_map/trace CLI paths emit unbounded JSON on hot names. Extend `chunk_to_definition_value` to all four files — closes the DoS gap AND the duplication. Easy/medium.
-2. **EH-V1.40-8 + PB-V1.40-7**: ✅ FIXED (PR pending) — the command-core campaign had already replaced `try_kind_fallback` with the shared `detect_fallback` (cli/commands/graph/mod.rs), which still propagated store errors as fatal on BOTH surfaces. Now infallible: warn + `(empty, None)` on store error, so every graph command degrades to its normal path. Daemon test pins store-error → normal-path result (chunks-table rename seam; the callers query reads only function_calls).
-3. **SHL-V1.40-1 + AC-V1.40-9**: ✅ FIXED (PR pending) — `lookup_by_name` now orders by a routing-priority CASE (callables > types > consts > modules > other), generated from `ChunkType::ALL` through `classify_chunk_type` + `routing_priority` so the SQL can't drift from the classifier, and caps at `LOOKUP_BY_NAME_LIMIT` (100, matching the fallback definitions render cap). Tests pin the priority order, the cap, callable-evidence survival under the cap, and classification stability for cross-kind collisions. Bonus: the happy path skips the duplicate summary re-fetch entirely.
-4. **Cluster C architecture refactor** (CQ-V1.40-1/2/4/9, API-V1.40-1/2/4, RM-V1.40-1, EXT-V1.40-1): adopt `detect_kind_for_store` at its 8 inlined call sites; unify the 6 dispatcher signatures (`&OutputFormat` vs `json: bool`); split Kind vs KindResolution; replace `_ => {}` fallthroughs with exhaustive matches; delete `cmd_impact_const_fallback` (hand-rolled duplicate); single source of truth for the ~24 redirect-note strings. One refactor PR. Medium.
-5. **DS-V1.40-1**: ✅ FIXED (PR pending, #1714) — `PRAGMA data_version` on a long-lived probe connection added as second discriminator in `check_index_staleness` (batch/context.rs); probe rebaselined on rename-over; identity-only fallback with warn on probe failure. Two new tests pin WAL-commit-no-checkpoint invalidation and post-rename rebaseline.
-6. **DS-V1.40-8/10**: kind-detect + real query share no read snapshot. Medium; consider folding into 4.
-7. **Test backfill** (TC-ADV-V1.40-4, TC-HAP-V1.40-3, TC-ADV-V1.40-9, TC-ADV-V1.40-1 remainder): ✅ FIXED (PR pending) for the kind-fallback halves — daemon dispatch tests now cover every fallback kind (Const/Type/Module/Ambiguous, spread across callers/callees/test-map/impact handlers) plus the store-error degrade path; a CLI integration test spawns the binary and pins the `{kind, fallback_from, name, definitions, note}` shape for a const name under the bare default format. *(ULTRASECURITY removed in #1703 — the compose-contract half is moot; V2Bare binary-boundary tests landed in the same PR.)*
-8. **Observability bundle** (OB-V1.40-1/2/5/6): fallback-fired tracing events, telemetry category (Phase 2 prioritization signal), kind.rs entry spans, Tier 2b drop counter. Easy.
-9. **Perf bundle**: Cluster A2 N+1 GLOB scans in `filter_invoked_macros` (dead_code.rs:189-199, correctness fixed by #1627 but still per-macro full scans); daemon `dispatch_value` refactor (TODO P2 #62, socket.rs:270) + `emit_json` double-serialization; PERF-V1.40-7 build_test_map inversion (modest — loop body is O(1)). Medium.
-10. **Cleanup tier**: PERF-V1.40-8 fragment caching — NOTE the proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale fields); cache only the static part. CQ-V1.40-5/6 `_with_posture` plumbing — ✅ resolved (command-core campaign phase 4 deleted the dead plumbing; OnceLock-cached shim is the design, wiring would add indirection for byte-identical output). AC-V1.40-6/7, EH-V1.40-3 (trace macro/Multiple/target-validation). SEC-V1.40-8 walk caps. PB-V1.40-9 WAL-on-9P detection. RM-V1.40-4 SQL string const. RM-V1.40-6/7 cross-project graph caching. Easy-medium each.
-
-### Taste-debt issues (filed 2026-06-10, distilled from whole-codebase review)
-
-Ordered for the fix loop, all positioned relative to the command-core campaign:
-
-1. **#1692** — unify the duplicated embedding-reuse chains (pipeline vs watch/reindex). Standalone, any time.
-2. **#1693** — HNSW/GPU test concurrency policy + `test_loaded_index_lifecycle` containment (promote to immediate on next flake; `safety.rs` location means root-cause before trusting the flake explanation).
-3. **#1690** — posture/output-format matrix consolidation (after campaign phase 4 — same surface; subsumes the CQ-V1.40-5/6 and TC-ADV-V1.40-1 queue entries above).
-4. **#1691** — split big-with-logic monoliths with fixture-refresh discipline (after campaign phases 2-3 to avoid diff churn).
-
-### Upstream hnsw_rs issue — FILED (2026-06-10, user-authorized)
-
-#1693's root-cause produced a reproducible upstream finding: hnsw_rs `parallel_insert_data` yields self-unreachable nodes on ~1-2% of builds under CPU saturation (52/3000 parallel vs 0/3000 sequential inserts; 0/100k searching a fixed index — construction-side, entry-point write race at `check_entry_point` hnsw.rs:529 + OS-seeded layer RNG `StdRng::from_os_rng()` hnsw.rs:328, refs verified against the 0.3.4 crate source). Filed as **jean-pierreBoth/hnswlib-rs#32** with three suggested fixes (deterministic-seed option, layer-height-guarded entry-point CAS, or documenting the recall characteristic) and an offer of the stress harness / a PR. Our side is already hardened (#1702 containment + bounded retry), so nothing blocks on the maintainer's response.
-
-### Still deferred (unchanged decision)
-
-- **DS-V1.40-7**: partially mitigated (CLI clamps to [-1,1], rejects NaN/Inf) but `--sentiment 0.7` still accepted — no discrete-value CHECK. Stays deferred per the v1.41.0 rationale.
-
----
-
-## Cross-cutting clusters
-
-These clusters drive the recommended PR order. A single PR per cluster collapses 3-7 findings into one fix-pattern review.
-
-### Cluster A — Tier 2b macro filter `filter_invoked_macros` (correctness + perf + tests)
-PR #1623 shipped Tier 2b but landed with a SQL-injection-shaped LIKE wildcard bug, no tests, N+1 SQL, language-specific `!` suffix, and case-insensitive match. **5 findings → one PR** (escape + ESCAPE clause + case-sensitive + Rust-only gate + tests).
-- EH-V1.40-1 / AC-V1.40-8 (LIKE wildcard escape — `_`/`%`/`\\` not escaped)
-- AC-V1.40-1 (Rust `!` suffix misclassifies C/C++/Elixir/Julia macros)
-- AC-V1.40-2 (self-match — recursive `macro_rules!` keeps itself alive)
-- PB-V1.40-1 (LIKE is case-insensitive — case-distinct names cross-fire)
-- TC-ADV-V1.40-5 / TC-HAP-V1.40-2 (zero tests — happy path or adversarial)
-- CQ-V1.40-10 / RB-V1.40-4 / EH-V1.40-10 / DS-V1.40-6 / PERF-V1.40-1 (N+1 SQL — separate Cluster A2 fix, may follow same PR)
-
-### Cluster B — Posture/OutputFormat env-var hygiene (security + perf + observability + DS + tests)
-Six auditor angles on one root cause: `Posture::current()` and `OutputFormat::current()` re-read env per call, silently swallow malformed values, no log, no caching → data race + perf + opaque ops. **One PR**: `OnceLock<Posture>`, `OnceLock<OutputFormat>`, accept truthy/falsy aliases, log first read, plumb into `write_json_line`/`emit_json` once per request.
-- EH-V1.40-2 / API-V1.40-8 / OB-V1.40-3 / PB-V1.40-3 / SEC-V1.40-6 / DS-V1.40-5 (silent swallow + per-emit re-read, TOCTOU, no log)
-- CQ-V1.40-7 / RM-V1.40-8 / PERF-V1.40-3 / PERF-V1.40-4 (env-thrash sibling — `resolve_splade_alpha`, `cap_k_to_backend`, `meta_json_fragment_for_posture`)
-- CQ-V1.40-5 / CQ-V1.40-6 (Phase 1 `_with_posture` plumbing dead in production — every CLI caller still hits the env-reading shim; `emit_json_with_posture` and `emit_json_error_with_posture` are `#[allow(dead_code)]`)
-- TC-ADV-V1.40-7 / TC-HAP-V1.40-9 (env-var edge case + compose contract tests)
-
-### Cluster C — Polymorphic-routing duplication (CQ + API + EXT + RM)
-Phase 1 landed shape across 6 commands × 2 surfaces with hand-rolled per-cell duplication: `chunks_to_definitions` 7×, `KindNotes` 5× on daemon side, redirect notes 24+ string pairs, divergent dispatcher signatures (`format: &OutputFormat` vs `json: bool`), `KindHit` allocs wasted on Function happy path. **One refactor PR**: `kind_fallback` module with `chunks_to_definitions` + per-(command × kind) note table + standardized signature.
-- CQ-V1.40-1 / CQ-V1.40-2 / API-V1.40-4 / RM-V1.40-1 / TC-HAP-V1.40-7 (`detect_kind_for_store` dead in production — every caller inlines the 3-line incantation; `KindHit` clones wasted)
-- CQ-V1.40-3 / EXT-V1.40-2 / EXT-V1.40-10 / TC-HAP-V1.40-10 (per-command fallback + note duplication 7-24×; `chunks_to_definitions` only tested for one ChunkType)
-- CQ-V1.40-4 (CLI vs daemon redirect-note drift)
-- CQ-V1.40-9 (`cmd_impact_const_fallback` is hand-written duplicate of `cmd_impact_kind_fallback`)
-- API-V1.40-1 (divergent `*_kind_fallback` dispatcher signatures)
-- API-V1.40-2 (Kind enum mixes 5 routing kinds with 3 resolution outcomes)
-- EXT-V1.40-1 (`_ => {}` fallthrough — no compile-time push for new Kind variants)
-
-### Cluster D — Polymorphic-routing data safety (DS + RB + PERF)
-Every Phase 1 dispatcher adds a `lookup_by_name` SQL roundtrip BEFORE the existing-flow query. No `chunks.name` index → full table scan; no shared transaction → snapshot drift; `ORDER BY chunk_type` is alphabetical not routing-priority. **One PR**: schema migration (v28) adding `idx_chunks_name`, single read tx in dispatch handlers, CASE-priority ORDER BY, `lookup_by_name` LIMIT.
-- RB-V1.40-2 / PERF-V1.40-2 / RM-V1.40-4 (missing `chunks.name` index; full table scan per dispatch; `format!`-built SQL string per call)
-- DS-V1.40-1 (daemon `BatchContext` Store cache never invalidates from watch-loop WAL writes — WAL-mode masks main-DB identity) — ✅ FIXED (PR pending, #1714): `PRAGMA data_version` probe shipped standalone, ahead of the rest of Cluster D
-- DS-V1.40-8 / DS-V1.40-10 (kind-detect + real-query share no read transaction)
-- AC-V1.40-9 (`lookup_by_name` ORDER BY alphabetical chunk_type) — ✅ FIXED (PR pending): routing-priority CASE ORDER BY, generated from the kind classifier
-- SHL-V1.40-1 (no result cap — hot names deserialize thousands of chunks for kind classification) — ✅ FIXED (PR pending): `LOOKUP_BY_NAME_LIMIT` (100) row cap
-
-### Cluster E — Lying docs sweep (P1 by team rule)
-Per CLAUDE.md memory: docs that promise behavior the code doesn't deliver are correctness bugs.
-- DOC-V1.40-1 (ROADMAP polymorphic-routing item shows `[ ]` "ready"; Phase 1 complete)
-- DOC-V1.40-2 (`docs/polymorphic-routing.md` Status: ready to execute; Phase 1 shipped)
-- DOC-V1.40-3 (`docs/json-snr-restoration.md` Status: ready to execute; Phases 1-4 shipped)
-- DOC-V1.40-4 (CHANGELOG `[Unreleased]` empty after 7 substantive PRs since v1.40.0 cut — same recurring pattern as v1.33/v1.38)
-- DOC-V1.40-5 (SECURITY.md describes `_meta.handling_advice` + `injection_flags` as always-on; opt-in since v1.40.0)
-- DOC-V1.40-6 (CONTRIBUTING.md Architecture Overview missing `kind.rs` + `posture.rs`)
-- DOC-V1.40-7 (Cargo.toml + README headline cite stale 46.3/74.8/86.2; current 52.7/77.5/89.4 post-#1607 fixture refresh)
-- OB-V1.40-4 (`classify_chunk_type` doc promises tracing::warn that code never emits)
-
-### Cluster F — V2Bare default test gap (TC-ADV + TC-HAP)
-SNR Phase 4 (this commit) flipped CLI direct default to bare payload. 38 integration tests pin `CQS_OUTPUT_FORMAT=v1`; nothing exercises the new default path end-to-end.
-- TC-ADV-V1.40-1 / TC-HAP-V1.40-1 / TC-HAP-V1.40-8 / TC-HAP-V1.40-9 (V2Bare default emission untested; `emit_json` itself untested at binary boundary; compose contract `CQS_ULTRASECURITY` × `CQS_OUTPUT_FORMAT` unverified — compose half moot since #1703 removed ULTRASECURITY)
-- SEC-V1.40-1 (V2Bare drops `_meta.worktree_stale` — silent operational degradation)
-
-### Cluster G — Phase 1 dispatch observability (OB + TC)
-Without tracing/telemetry on kind-fallback dispatches, the v1.40.0 hypothesis ("agents misroute against types/consts") is unmeasurable on production traffic.
-- OB-V1.40-1 (kind-fallback dispatchers emit no `tracing::info!`)
-- OB-V1.40-2 (`cqs telemetry` has no kind-fallback category)
-- OB-V1.40-5 (`detect_kind_for_store` and `classify_hits` lack entry spans)
-- OB-V1.40-6 (Tier 2b filter drops candidates silently — operator can't audit FP rate)
-- OB-V1.40-7 (`write_json_line` posture decision unattributable)
-- OB-V1.40-8 / OB-V1.40-9 / OB-V1.40-10 (daemon accept successes, max_clients, redact_query_str all silent)
-- TC-ADV-V1.40-4 / TC-ADV-V1.40-9 / TC-HAP-V1.40-3 / TC-HAP-V1.40-4 (daemon-path kind-fallback tests + CLI integration tests + happy-path baseline)
-
-### Cluster H — Resource caps + DoS (SEC + RM + SHL + RB)
-Daemon hot path has no per-response size cap; `try_kind_fallback` echoes full chunk content for hot names like `Result`/`Error`/`new`; `read_line` allocates 5 MB pre-allocation per connection.
-- EH-V1.40-9 / SEC-V1.40-4 (kind-fallback echoes full chunk content with no per-chunk size cap)
-- SEC-V1.40-7 (daemon `read_line` pre-allocates `take_cap` bytes per connection)
-- SHL-V1.40-1 (`lookup_by_name` no LIMIT)
-- RB-V1.40-1 (`build_test_map` `chain_limit = max_depth + 1` panics on `usize::MAX`)
-- SHL-V1.40-10 (`chunks_paged` accepts unbounded limit)
-- SEC-V1.40-8 (`enumerate_files` no depth/file-count cap on adversarial repos)
-
----
-
-## P1 — fix this PR (23 entries)
-
-### Correctness (load-bearing bugs)
-
-| ID(s) | Title | Effort | Status |
+| ID(s) | Finding | Effort | Status |
 |---|---|---|---|
-| EH-V1.40-1 + AC-V1.40-8 | `filter_invoked_macros` LIKE pattern doesn't escape `_`/`%`/`\\` (Tier 2b correctness — macros with underscore cross-fire) | easy | ✅ Cluster A PR |
-| AC-V1.40-1 | `filter_invoked_macros` `!` suffix is Rust-only — every C/C++/Elixir/Julia macro misclassified as dead | medium | ✅ Cluster A PR |
-| AC-V1.40-2 | `filter_invoked_macros` self-match — recursive `macro_rules!` keeps itself alive (no `id != ?2` filter) | easy | ✅ Cluster A PR |
-| PB-V1.40-1 | `filter_invoked_macros` LIKE is case-insensitive (no `PRAGMA case_sensitive_like` or GLOB) | easy | ✅ Cluster A PR |
-| AC-V1.40-3 | `bfs_shortest_path` predecessor sentinel `String::new()` collides with anonymous-chunk callers — path reconstruction terminates early | medium | ✅ AC sweep PR |
-| AC-V1.40-4 | Rust Tier 2a `field_initializer` query captures every argument identifier — non-callable variables pollute `function_calls` | medium | ✅ AC sweep PR |
-| AC-V1.40-5 | `bfs_expand` depth update is score-gated — lower-score shorter paths leave depth at longer-path value | medium | ✅ AC sweep PR |
-| RB-V1.40-1 | `build_test_map` `chain_limit = max_depth + 1` panics on `usize::MAX` (no clap range bound) | easy | ✅ misc P1 PR |
-| RB-V1.40-3 | `classify_hits` uses `.expect()` — violates "no unwrap outside tests" rule (replace with `unwrap_or(Kind::Other)`) | easy | ✅ misc P1 PR |
+| DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | open |
+| CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | open |
+| RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | open |
+| PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | open |
+| RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | open |
+| AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | open |
+| SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos (Cluster H leftover) | medium | open |
+| PB-V1.40-9 | WAL mode unconditional on store open — unsupported on /mnt/c 9P bridge; detect and switch to DELETE | medium | open |
+| PERF-V1.40-8 | `meta_json_fragment` triple-work per JSONL emit — CAUTION: proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale); cache only the static part | easy | open |
+| RM-V1.40-4 | `lookup_by_name` builds SQL via `format!` per call (surviving sub-claim of RB-V1.40-2) | easy | open |
 
-### Lying docs (Cluster E)
+## CF-P3 — carried forward, P3-grade
 
-| ID(s) | Title | Effort | Status |
+| ID(s) | Finding | Effort | Status |
 |---|---|---|---|
-| DOC-V1.40-1 + DOC-V1.40-2 + DOC-V1.40-3 | ROADMAP + polymorphic-routing.md + json-snr-restoration.md status headers say "ready to execute" — Phase 1 complete, Phases 1-4 of SNR shipped | easy | ✅ Cluster E PR |
-| DOC-V1.40-4 | CHANGELOG `[Unreleased]` empty after 7 PRs since v1.40.0 cut (DOC-V1.38-5 sibling, recurrence) | easy | ✅ Cluster E PR |
-| DOC-V1.40-5 | SECURITY.md describes `_meta.handling_advice` + `injection_flags` as always-on; both opt-in since v1.40.0 — operators deploy under wrong assumption | easy | ✅ Cluster E PR |
-| DOC-V1.40-6 | CONTRIBUTING.md Architecture Overview missing `kind.rs` + `posture.rs` | easy | ✅ Cluster E PR |
-| DOC-V1.40-7 | Cargo.toml + README headline cite stale 46.3/74.8/86.2; verified current is 52.7/77.5/89.4 post-#1607 | easy | ✅ Cluster E PR |
-
-### Data safety / security
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| EH-V1.40-2 + API-V1.40-8 + OB-V1.40-3 + PB-V1.40-3 + SEC-V1.40-6 + DS-V1.40-5 | `Posture::current` / `OutputFormat::current` silent swallow + per-emit re-read + no log + TOCTOU + cross-platform case sensitivity (Cluster B) | easy-medium | ✅ Cluster B PR |
-| DS-V1.40-1 | Daemon `BatchContext` Store caches never invalidate from watch-loop WAL writes (WAL masks main-DB identity); use `PRAGMA data_version` | medium | ✅ FIXED (PR pending, #1714) — data_version probe as second staleness discriminator |
-| DS-V1.40-2 | `cmd_telemetry_reset` non-atomic — kill between `fs::copy` and `fs::write` corrupts archive or current | easy | ✅ misc P1 PR |
-| DS-V1.40-3 | `restore_from_backup` `copy_triplet` non-atomic across (main, -wal, -shm) — kill mid-restore replays failed-migration WAL frames against pre-migrate main | medium | ✅ DS-V1.40-3 PR |
-| DS-V1.40-4 | `evals/regenerate_v3_test.py` writes fixture via `Path.write_text` non-atomically — Ctrl+C corrupts eval ground truth | easy | ✅ misc P1 PR |
-| DS-V1.40-7 | Sentiment column accepts arbitrary f32 — schema lets `cqs notes add --sentiment 0.7` corrupt ranking-boost contract; add `CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0))` | easy | DEFERRED — schema-migration cost > benefit for single-user discrete-value compliance |
-| SEC-V1.40-1 | V2Bare default drops `_meta.worktree_stale` warning — silent operational degradation under default Friendly posture (#1254 leakage guard regression) | medium | ✅ SEC-V1.40-1 PR |
-| SEC-V1.40-2 | `redact_userinfo` mishandles URLs with `@` in path — produces malformed redacted form (find authority boundary first via `/`) | easy | ✅ misc P1 PR |
-| EH-V1.40-9 + SEC-V1.40-4 | Kind-fallback `definitions[]` echoes full chunk content with no size cap — DoS amplifier via `Result`/`Error`/`new` hot names | medium | ✅ Cluster H PR |
-
----
-
-## P2 — fix this batch (20 entries)
-
-### Polymorphic-routing refactor (Cluster C)
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| CQ-V1.40-1 + CQ-V1.40-2 + API-V1.40-4 + RM-V1.40-1 + TC-HAP-V1.40-7 | `detect_kind_for_store` dead in production; every caller inlines 3-line incantation; `KindHit` allocations wasted; needs tests | easy | TODO (Cluster C) |
-| CQ-V1.40-3 + EXT-V1.40-2 + EXT-V1.40-10 + TC-HAP-V1.40-10 | `chunks_to_definitions` duplicated 7× across CLI + daemon path; per-command notes 5× on daemon side; `KindNotes` per-dispatcher; one ChunkType tested | medium | TODO (Cluster C) |
-| CQ-V1.40-4 | CLI vs daemon redirect-note drift (12+ near-duplicate string pairs) | easy | TODO (Cluster C) |
-| CQ-V1.40-9 | `cmd_impact_const_fallback` is hand-written duplicate of `cmd_impact_kind_fallback` | easy | TODO (Cluster C) |
-| API-V1.40-1 | 6 `*_kind_fallback` dispatchers diverge on `format: &OutputFormat` vs `json: bool` | medium | TODO (Cluster C) |
-| API-V1.40-2 | Kind enum mixes 5 routing kinds + 3 resolution outcomes — split into `Kind` + `KindResolution` | medium | TODO (Cluster C) |
-| EXT-V1.40-1 | Per-command kind dispatchers use `_ => {}` fallthrough — no compile-time push for new Kind variant | medium | TODO (Cluster C) |
-| TC-HAP-V1.40-4 | Graph-command kind-fallback tests reconstruct JSON manually — never call dispatcher functions; refactor + retest | easy | TODO (Cluster C) |
-
-### Daemon-path data safety + perf (Cluster D)
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| RB-V1.40-2 + PERF-V1.40-2 + RM-V1.40-4 | Missing `chunks.name` index — every polymorphic-routing call is full table scan; `lookup_by_name` allocates fresh SQL string via `format!` per call | medium | TODO (Cluster D, schema migration v28) |
-| DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real-query share no read transaction — snapshot drift between dispatcher and existing-flow | medium | TODO (Cluster D) |
-| AC-V1.40-9 | `lookup_by_name` ORDER BY alphabetical (Class before Function for same-name siblings) — should be routing-priority | easy | TODO (Cluster D) |
-| SHL-V1.40-1 | `lookup_by_name` no LIMIT — hot names deserialize thousands of chunks for kind classification | medium | TODO (Cluster D) |
-
-### Test backfill for shipped fixes (Cluster F + new)
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| TC-ADV-V1.40-1 + TC-HAP-V1.40-1 + TC-HAP-V1.40-8 + TC-HAP-V1.40-9 | V2Bare default emission untested at binary boundary; `emit_json` untested; compose contract `CQS_ULTRASECURITY × CQS_OUTPUT_FORMAT` unverified (Cluster F; compose half moot since #1703 removed ULTRASECURITY) | easy-medium | TODO |
-| TC-ADV-V1.40-4 + TC-HAP-V1.40-3 | Daemon-path `try_kind_fallback` zero tests for any kind; daemon `dispatch_test_map/trace/deps/impact` zero kind-fallback tests | medium | TODO |
-| TC-ADV-V1.40-5 + TC-HAP-V1.40-2 | `filter_invoked_macros` zero tests (happy path + adversarial — pin EH-V1.40-1 fix) | easy | ✅ Cluster A PR (tests added) |
-| TC-ADV-V1.40-9 | CLI graph commands' Const/Type/Module/Ambiguous have unit-shape tests but zero CLI integration tests | medium | TODO |
-
-### Hot-path perf (Cluster B sibling)
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| CQ-V1.40-7 + RM-V1.40-8 + PERF-V1.40-3 + PERF-V1.40-4 | Posture/OutputFormat/SPLADE-α/CAGRA-cap env reads per emit/encode/search — `OnceLock`/`LazyLock` cache (Cluster B sibling) | easy | ✅ Cluster B PR |
-| CQ-V1.40-5 + CQ-V1.40-6 | SNR Phase 1 `_with_posture` plumbing dead — every CLI caller still hits env-reading shim; `emit_json_with_posture` `#[allow(dead_code)]` | easy-medium | ✅ campaign phase 4 — dead plumbing deleted (OnceLock-cached shim is the design; wiring would add indirection for byte-identical output) |
-| RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation (Vec → Value → String); `emit_json` double serialization (`to_value` then `to_string_pretty`) — land `dispatch_value` refactor; refactor `format_envelope_to_string` to `&impl Serialize` | medium | TODO |
-| PERF-V1.40-1 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + CQ-V1.40-10 | `filter_invoked_macros` N+1 SQL with leading-`%` LIKE (full table scan × N macros) + no transaction — batch into single scan inside read tx (lands with Cluster A correctness fix) | medium | TODO (Cluster A2) |
-
-### Other P2
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| AC-V1.40-6 | `cqs trace <macro> <target>` falls through to BFS — `Kind::Other` Macros silently return empty path | easy | TODO |
-| AC-V1.40-7 | `classify_hits` Method+Function with same name → `Multiple` masks API ambiguity — should surface `definitions[]` alongside BFS result | medium | TODO |
-| EH-V1.40-3 | Trace `target` kind not validated (asymmetric with `source`) | medium | TODO |
-| EH-V1.40-8 + PB-V1.40-7 | `try_kind_fallback` propagates `lookup_by_name` SQL errors as fatal — should fall through; Windows `ERROR_SHARING_VIOLATION` makes this worse | medium | TODO |
-| SEC-V1.40-7 | Daemon `read_line` pre-allocates `take_cap` (5 MB) per connection — incremental growth via `read_until` | medium | TODO (Cluster H) |
-| SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos | medium | TODO (Cluster H) |
-| DS-V1.40-9 | v26→v27 migration sets `needs_embedding=1` but doesn't zero-vec the `embedding` column — half-state contradicts v27 invariant | medium | TODO |
-| PB-V1.40-9 | WAL mode unconditional on every store open; SQLite WAL unsupported on `/mnt/c/` 9P bridge — detect at open and switch to DELETE | medium | TODO |
-| PERF-V1.40-7 | `build_test_map` iterates all 4270 test chunks per call — invert to iterate ancestors | easy | TODO |
-| PERF-V1.40-8 | `meta_json_fragment_for_posture` triple-work per JSONL emit — `LazyLock<HashMap<Posture, String>>` (lands with Cluster B) | easy | TODO |
-| RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs); use `open_readonly_small`; cache in `BatchContext` | medium | TODO |
-
----
-
-## P3 — fix if time (27 entries)
-
-### Observability
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| OB-V1.40-1 | Kind-fallback dispatchers emit no `tracing::info!` — Phase 2 prioritization signal lost | easy | TODO |
-| OB-V1.40-2 | `cqs telemetry` has no kind-fallback category | medium | TODO |
-| OB-V1.40-4 | `classify_chunk_type` doc promises `tracing::warn` — code never emits (Cluster E sibling — fix doc OR add warn) | easy | ✅ Cluster E PR |
-| OB-V1.40-5 | `detect_kind_for_store` and `classify_hits` no entry span (lands with Cluster C) | easy | TODO |
-| OB-V1.40-6 | Tier 2b filter drops candidates silently — operator can't audit FP rate | easy | TODO |
-| OB-V1.40-7 | `write_json_line` posture decision unattributable (lands with Cluster B) | easy | TODO |
-| OB-V1.40-8 | Daemon `accept()` successes have no log — handle leaks unattributable | easy | TODO |
-| OB-V1.40-9 | `max_concurrent_daemon_clients` env override no log | easy | TODO |
-| OB-V1.40-10 + SEC-V1.40-3 + TC-ADV-V1.40-6 | `redact_query_str` silent on activation; strict-equality `v != "0"` lacks audit trail; zero tests | easy | TODO |
-
-### Style / code quality nits
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| EH-V1.40-4 | `dispatch_deps` Type-forward semantics misroute Function names without warning | easy | TODO |
-| EH-V1.40-5 | `meta_json_fragment_for_posture` `.expect()` panic on hot path — defensive inconsistency | easy | TODO |
-| EH-V1.40-6 | `redact_error` chain_id `DefaultHasher` is non-deterministic across processes — doc claims otherwise (fix doc) | easy | ✅ Cluster E PR |
-| EH-V1.40-7 | `lookup_by_name` empty-string short-circuit — document or warn | easy | TODO |
-| API-V1.40-3 | `Store::lookup_by_name` breaks `get_chunks_by_X` naming convention — rename to `get_chunks_by_name` | easy | TODO (Cluster C) |
-| API-V1.40-5 | `OutputFormat` type-name collision (posture vs cli::definitions) — rename `posture::OutputFormat` → `EnvelopeShape` | medium | TODO (Cluster B follow-up) |
-| API-V1.40-6 | `emit_json_error_with_data_and_posture` ignores posture when shaping envelope — contradicts `wrap_error_with_posture` | easy | TODO |
-| API-V1.40-9 | `CQS_DEFERRED_FLUSH_INTERVAL` is a count not a duration — rename to `_BATCHES` | easy | TODO |
-| API-V1.40-10 | `--format` and `--json` flags shadow each other — drop `--json` from `OutputArgs` | easy | TODO |
-| CQ-V1.40-8 | `meta_value_for_envelope` + `meta_json_fragment_for_posture` duplicate fallback Map construction | easy | TODO |
-| RB-V1.40-5 + SEC-V1.40-5 | `lookup_by_name` debug-span records full user-supplied name — privacy risk; truncate or use `name_len` | easy | TODO |
-
-### Hardcoded limits / scaling
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| SHL-V1.40-2 | `clamp(1, 100)` and `clamp(1, 10)` literals duplicated 13+ times — `cli::limits` exists for this; add named constants | easy | TODO |
-| SHL-V1.40-4 | `STALENESS_CHECK_INTERVAL = 100ms` hardcoded — add `CQS_BATCH_STALENESS_CHECK_MS` | easy | TODO |
-| SHL-V1.40-5 | `AUDIT_STATE_RELOAD_INTERVAL = 30s` and `CONFIG_RELOAD_INTERVAL = 5min` hardcoded — add env knobs | easy | TODO |
-| SHL-V1.40-7 | `KEEP_BACKUPS = 3` hardcoded — add `CQS_MIGRATE_KEEP_BACKUPS` | easy | TODO |
-| SHL-V1.40-8 | `LOAD_SPARSE_CHUNK_ID_BATCH = 1000` hardcoded — add env override | easy | TODO |
-| SHL-V1.40-10 | `chunks_paged(after_rowid, limit)` accepts unbounded limit — add module ceiling | easy | TODO |
-
-### Tests / Platform
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| TC-ADV-V1.40-2 + EXT-V1.40-5 | `classify_chunk_type` test pin incomplete for 11/24 ChunkType variants — iterate `ChunkType::ALL` | easy | TODO |
-| TC-ADV-V1.40-3 | `lookup_by_name` SQL wildcard / SQL injection / very-long-name inputs untested | easy | TODO |
-| TC-ADV-V1.40-7 | `Posture::current` / `OutputFormat::current` whitespace + control-char untested (lands with Cluster B) | easy | ✅ Cluster B PR (lib unit tests) |
-| TC-ADV-V1.40-8 | `emit_json_error` adversarial input (NUL/long/special chars) untested | easy | TODO |
-| TC-ADV-V1.40-10 | `current_worktree_name` Unicode / shell-special / very-long inputs untested | easy | TODO |
-| TC-HAP-V1.40-5 | `_meta.worktree_name` and `_meta.worktree_stale` envelope fields zero emission tests | easy | TODO |
-| TC-HAP-V1.40-6 | `v3_test.v2.json` schema-coverage test missing (only `v3_dev.v2.json` covered) | easy | TODO |
-| PB-V1.40-2 | `is_under_wsl_automount` and `is_wsl_drvfs_path` apply different shape validation around shared root | easy | TODO |
-| PB-V1.40-4 | `worktree_name` doesn't trim trailing slash — picks up `worktrees` instead of `feature-x` | easy | TODO |
-| PB-V1.40-6 | `is_wsl_drvfs_path` UNC arm unguarded for non-WSL hosts (`#[cfg(windows)]` gate) | easy | TODO |
-| PB-V1.40-10 | `worktree_name` doesn't `dunce::canonicalize` before `file_name()` — Windows `\\?\` verbatim prefix in JSON | easy | TODO |
-
-### Hot-path nits
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| RM-V1.40-2 | `dispatch_via_view` reconstructs `tokens: Vec<String>` from already-parsed args — second full clone per dispatch | easy | TODO |
-| RM-V1.40-3 | `current_worktree_name` clones cached String per envelope emit — `Box<str>` + leak | easy | TODO |
-| RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request — `Vec<&ChunkSummary>` | easy | TODO |
-| PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec — refactor `batch_insert_chunks` to take slices | easy | TODO |
-| PERF-V1.40-9 | Telemetry write does ~5 syscalls per CLI command — daemon-path file-handle caching | medium | TODO |
-
----
-
-## P4 — defer / track on umbrella issue (8 entries)
-
-| ID(s) | Title | Effort | Status |
-|---|---|---|---|
-| API-V1.40-7 | BatchProvider trait method names use 6 different verbs — consolidate around `verb_noun` | medium | track on existing #1459 |
-| EXT-V1.40-3 | `LanguageDef` no `macro_invocation_suffix` field — Tier 2b extension to non-Rust requires hardcoded language branches | easy | track on #1573 |
-| EXT-V1.40-4 + DS-V1.40-7 sibling | Sentiment values `f32` schema accepts arbitrary; CLAUDE.md mandates 5 discrete values — `Sentiment` enum (DS angle filed P1; this is the EXT design refactor) | medium | track on #1463 |
-| EXT-V1.40-6 | `ScoringConfig::current` 3-place hand-resolves 9 knobs by string name — macro-derive | medium | track on #1463 |
-| EXT-V1.40-7 | Tree-sitter call-query patterns hand-edited per-language — no cross-language pattern library | hard | track on #1573 / new arch issue |
-| EXT-V1.40-8 + EXT-V1.40-9 | `cqs notes add --kind` free-string; `is_test_chunk` cross-language detection in lib.rs — promote to `LanguageDef` | medium | track on #1463 |
-| PB-V1.40-5 | `daemon_socket_path` no `dunce::canonicalize` — case-skew Windows produces different sockets | medium | track on #1512 |
-| PB-V1.40-8 | `daemon_socket_path` `libc::getuid()` Windows-port cliff — doc-only or factor helper | easy | track on #1512 |
-| PERF-V1.40-10 | Tier 2a `field_initializer` query inflates `function_calls` table — filter at extraction time | medium | track on #1573 |
-| SHL-V1.40-3 | `candidate_count_for` 500 floor corpus-blind — log-scaled formula | medium | track for next perf cycle |
-| SHL-V1.40-6 | BM25 column weights hardcoded — promote to `[search.bm25]` slot config | medium | track on #1453 successor |
-| SHL-V1.40-9 | `MAX_CHUNKS_SANITY = 1 << 28` hardcoded — env override (low priority defensive) | easy | track on #1463 |
-
----
-
-## Consolidation map (raw → triaged)
-
-| Triage entry | Raw findings consolidated |
-|--------------|---------------------------|
-| `filter_invoked_macros` LIKE escape (Cluster A) | EH-V1.40-1, AC-V1.40-8 |
-| `filter_invoked_macros` Rust-only `!` (Cluster A) | AC-V1.40-1 |
-| `filter_invoked_macros` self-match (Cluster A) | AC-V1.40-2 |
-| `filter_invoked_macros` case-insensitive (Cluster A) | PB-V1.40-1 |
-| `filter_invoked_macros` N+1 SQL + no transaction (Cluster A2) | CQ-V1.40-10, RB-V1.40-4, EH-V1.40-10, DS-V1.40-6, PERF-V1.40-1 |
-| `filter_invoked_macros` zero tests (Cluster A) | TC-ADV-V1.40-5, TC-HAP-V1.40-2 |
-| Posture/OutputFormat env-var hygiene (Cluster B) | EH-V1.40-2, API-V1.40-8, OB-V1.40-3, PB-V1.40-3, SEC-V1.40-6, DS-V1.40-5 |
-| Posture/SPLADE/CAGRA env-thrash perf (Cluster B sibling) | CQ-V1.40-7, RM-V1.40-8, PERF-V1.40-3, PERF-V1.40-4 |
-| Posture-aware plumbing dead (Cluster B follow-up) | CQ-V1.40-5, CQ-V1.40-6 |
-| Posture/OutputFormat env-var tests (Cluster B) | TC-ADV-V1.40-7, TC-HAP-V1.40-9 (compose contract) |
-| `meta_json_fragment_for_posture` triple-work (Cluster B) | PERF-V1.40-8 |
-| `detect_kind_for_store` dead in production (Cluster C) | CQ-V1.40-1, CQ-V1.40-2, API-V1.40-4, RM-V1.40-1, TC-HAP-V1.40-7 |
-| `chunks_to_definitions` + per-(command × kind) note duplication (Cluster C) | CQ-V1.40-3, EXT-V1.40-2, EXT-V1.40-10, TC-HAP-V1.40-10 |
-| CLI vs daemon redirect-note drift (Cluster C) | CQ-V1.40-4 |
-| `cmd_impact_const_fallback` duplicate (Cluster C) | CQ-V1.40-9 |
-| `*_kind_fallback` divergent signatures (Cluster C) | API-V1.40-1 |
-| Kind enum mixes routing + resolution (Cluster C) | API-V1.40-2 |
-| `_ => {}` fallthrough (Cluster C) | EXT-V1.40-1 |
-| Graph kind-fallback test refactor (Cluster C) | TC-HAP-V1.40-4 |
-| Missing `chunks.name` index + N+1 SQL string alloc (Cluster D) | RB-V1.40-2, PERF-V1.40-2, RM-V1.40-4 |
-| Daemon `BatchContext` cache invalidation (Cluster D) | DS-V1.40-1 |
-| Kind-detect + real-query no shared tx (Cluster D) | DS-V1.40-8, DS-V1.40-10 |
-| `lookup_by_name` ORDER BY alphabetical (Cluster D) | AC-V1.40-9 |
-| `lookup_by_name` no LIMIT (Cluster D) | SHL-V1.40-1 |
-| Lying docs sweep (Cluster E) | DOC-V1.40-1, DOC-V1.40-2, DOC-V1.40-3, DOC-V1.40-4, DOC-V1.40-5, DOC-V1.40-6, DOC-V1.40-7, OB-V1.40-4 |
-| `redact_error` cross-process determinism doc claim (Cluster E) | EH-V1.40-6 |
-| V2Bare default + emit_json + compose contract test gap (Cluster F) | TC-ADV-V1.40-1, TC-HAP-V1.40-1, TC-HAP-V1.40-8, TC-HAP-V1.40-9 |
-| V2Bare drops worktree_stale (Cluster F/H) | SEC-V1.40-1 |
-| Phase 1 dispatch tracing (Cluster G) | OB-V1.40-1 |
-| Phase 1 telemetry category (Cluster G) | OB-V1.40-2 |
-| Daemon-path test parity (Cluster G) | TC-ADV-V1.40-4, TC-HAP-V1.40-3 |
-| CLI integration tests for kind-fallback (Cluster G) | TC-ADV-V1.40-9 |
-| `redact_query_str` privacy (Cluster G sibling) | OB-V1.40-10, SEC-V1.40-3, TC-ADV-V1.40-6 |
-| Kind-fallback content-cap DoS (Cluster H) | EH-V1.40-9, SEC-V1.40-4 |
-| Daemon `read_line` pre-allocation (Cluster H) | SEC-V1.40-7 |
-| `enumerate_files` no caps (Cluster H) | SEC-V1.40-8 |
-| `build_test_map` panic on usize::MAX (Cluster H) | RB-V1.40-1 |
-| `chunks_paged` unbounded (Cluster H) | SHL-V1.40-10 |
-| `try_kind_fallback` SQL error fatal + Windows sharing-violation | EH-V1.40-8, PB-V1.40-7 |
-| `lookup_by_name` debug-span privacy | RB-V1.40-5, SEC-V1.40-5 |
-| `bfs_shortest_path` `String::new()` sentinel | AC-V1.40-3 |
-| Tier 2a `field_initializer` over-capture | AC-V1.40-4 |
-| `bfs_expand` depth update score-gated | AC-V1.40-5 |
-| `Kind::Other` Macro/Impl/Service falls through dispatchers | AC-V1.40-6 |
-| `classify_hits` Multiple masks ambiguity | AC-V1.40-7 |
-| `cap_k_to_backend` Some(0) boundary | AC-V1.40-10 |
-| Trace `target` kind not validated | EH-V1.40-3 |
-| `dispatch_deps` Type-forward misroute | EH-V1.40-4 |
-| `meta_json_fragment_for_posture` defensive inconsistency | EH-V1.40-5 |
-| `lookup_by_name` empty-string shortcut | EH-V1.40-7 |
-| `Store::lookup_by_name` naming convention | API-V1.40-3 |
-| `OutputFormat` type-name collision | API-V1.40-5 |
-| `emit_json_error_with_data_and_posture` ignores posture | API-V1.40-6 |
-| `CQS_DEFERRED_FLUSH_INTERVAL` units | API-V1.40-9 |
-| `--format` vs `--json` flag shadow | API-V1.40-10 |
-| `meta_value_for_envelope` duplicate fallback | CQ-V1.40-8 |
-| `classify_hits` `.expect()` | RB-V1.40-3 |
-| `cmd_telemetry_reset` non-atomic | DS-V1.40-2 |
-| `restore_from_backup` non-atomic triplet | DS-V1.40-3 |
-| `regenerate_v3_test.py` non-atomic write | DS-V1.40-4 |
-| Sentiment column accepts arbitrary f32 (DS angle) | DS-V1.40-7 |
-| v26→v27 migration zero-vec gap | DS-V1.40-9 |
-| `redact_userinfo` over-redacts URL with `@` in path | SEC-V1.40-2 |
-| WSL DrvFS WAL mode | PB-V1.40-9 |
-| `is_under_wsl_automount` shape mismatch | PB-V1.40-2 |
-| `worktree_name` trailing slash | PB-V1.40-4 |
-| `is_wsl_drvfs_path` UNC arm unguarded | PB-V1.40-6 |
-| `worktree_name` Windows verbatim prefix | PB-V1.40-10 |
-| `daemon_socket_path` case-skew (Windows) | PB-V1.40-5 (defer to #1512) |
-| `daemon_socket_path` `getuid` Windows cliff | PB-V1.40-8 (defer to #1512) |
-| `clamp(1, 100)` literals duplicated 13× | SHL-V1.40-2 |
-| Daemon staleness/audit/config reload knobs | SHL-V1.40-4, SHL-V1.40-5 |
-| Migration backup retention | SHL-V1.40-7 |
-| SPLADE load batch | SHL-V1.40-8 |
-| CAGRA chunk count sanity | SHL-V1.40-9 |
-| Candidate floor corpus-blind | SHL-V1.40-3 |
-| BM25 column weights hardcoded | SHL-V1.40-6 |
-| `LanguageDef::macro_invocation_suffix` (EXT) | EXT-V1.40-3 |
-| `Sentiment` enum (EXT angle) | EXT-V1.40-4 |
-| `classify_chunk_type` test iteration | TC-ADV-V1.40-2, EXT-V1.40-5 |
-| `ScoringConfig` macro-derive | EXT-V1.40-6 |
-| Tree-sitter pattern library | EXT-V1.40-7 |
-| `--kind` enum (EXT) + `is_test_chunk` (EXT) | EXT-V1.40-8, EXT-V1.40-9 |
-| `lookup_by_name` adversarial input untested | TC-ADV-V1.40-3 |
-| `emit_json_error` adversarial input untested | TC-ADV-V1.40-8 |
-| `current_worktree_name` adversarial input untested | TC-ADV-V1.40-10 |
-| Worktree envelope fields untested | TC-HAP-V1.40-5 |
-| `v3_test.v2.json` schema test gap | TC-HAP-V1.40-6 |
-| `dispatch_via_view` token clone | RM-V1.40-2 |
-| `current_worktree_name` per-emit clone | RM-V1.40-3 |
-| `dispatch_test_map` cross-project clones | RM-V1.40-5 |
-| `CrossProjectContext` rebuild + reopen | RM-V1.40-6, RM-V1.40-7 |
-| Daemon socket triple alloc | RM-V1.40-9 |
-| `format_envelope_to_string` double serialization | PERF-V1.40-5, RM-V1.40-10 |
-| `upsert_chunks_unembedded_batch` clones | PERF-V1.40-6 |
-| `build_test_map` iteration order | PERF-V1.40-7 |
-| Telemetry syscall count | PERF-V1.40-9 |
-| Tier 2a `field_initializer` table inflation | PERF-V1.40-10 |
-| Daemon accept/cap observability | OB-V1.40-1, OB-V1.40-2, OB-V1.40-5, OB-V1.40-6, OB-V1.40-7, OB-V1.40-8, OB-V1.40-9 |
-| BatchProvider trait method names | API-V1.40-7 |
-
----
-
-## Recommended fix order (top-10 PR list)
-
-Cluster-driven, single PR per cluster. Numbers in `[N items]` indicate raw-finding count covered.
-
-1. **PR-A: Tier 2b macro-filter correctness sweep** [11 items: EH-V1.40-1, AC-V1.40-8, AC-V1.40-1, AC-V1.40-2, PB-V1.40-1, TC-ADV-V1.40-5, TC-HAP-V1.40-2, plus N+1 fix CQ-V1.40-10/RB-V1.40-4/EH-V1.40-10/DS-V1.40-6/PERF-V1.40-1] — escape LIKE wildcards, add `ESCAPE '\\'`, branch on language for `!` suffix vs `(`, `id != ?2` for self-match, `PRAGMA case_sensitive_like = 1` (or GLOB), batch into single scan in single read tx. **+ 4 regression tests.** This unblocks the rest of cqs-dead correctness.
-2. **PR-B: Posture/OutputFormat env-var hygiene + plumbing** [12 items: EH-V1.40-2, API-V1.40-8, OB-V1.40-3, PB-V1.40-3, SEC-V1.40-6, DS-V1.40-5, CQ-V1.40-7, RM-V1.40-8, PERF-V1.40-3, PERF-V1.40-4, PERF-V1.40-8, TC-ADV-V1.40-7, TC-HAP-V1.40-9] — `OnceLock<Posture>`, accept aliases, log first read, plumb once per request to leaf serializers, retire `_with_posture` `#[allow(dead_code)]`. Tests pin compose contract.
-3. **PR-C: Polymorphic-routing dedup + helper module** [11 items: CQ-V1.40-1, CQ-V1.40-2, CQ-V1.40-3, CQ-V1.40-4, CQ-V1.40-9, API-V1.40-1, API-V1.40-2, API-V1.40-3, EXT-V1.40-1, EXT-V1.40-2, EXT-V1.40-10, RM-V1.40-1, TC-HAP-V1.40-4, TC-HAP-V1.40-7, TC-HAP-V1.40-10] — `kind_fallback` module with `chunks_to_definitions`, per-command notes table, single dispatcher signature; rename `lookup_by_name` → `get_chunks_by_name`; split `Kind` + `KindResolution`; exhaustive matches.
-4. **PR-D: Polymorphic-routing data safety + perf (schema migration v28)** [7 items: RB-V1.40-2, PERF-V1.40-2, RM-V1.40-4, DS-V1.40-1, DS-V1.40-8, DS-V1.40-10, AC-V1.40-9, SHL-V1.40-1] — `CREATE INDEX idx_chunks_name`, single read tx in dispatchers, `PRAGMA data_version` for daemon cache invalidation, routing-priority ORDER BY, `lookup_by_name` LIMIT.
-5. **PR-E: Lying docs sweep** [8 items: DOC-V1.40-1, DOC-V1.40-2, DOC-V1.40-3, DOC-V1.40-4, DOC-V1.40-5, DOC-V1.40-6, DOC-V1.40-7, OB-V1.40-4, EH-V1.40-6] — mostly mechanical edits to ROADMAP/CONTRIBUTING/SECURITY/Cargo.toml/README/CHANGELOG. Adopt the pre-commit-hook proposal from DOC-V1.38-5 to prevent recurrence.
-6. **PR-F: Correctness P1 sweep (BFS sentinel + Tier 2a over-capture + bfs_expand depth + RB-V1.40-1 + RB-V1.40-3)** [5 items: AC-V1.40-3, AC-V1.40-4, AC-V1.40-5, RB-V1.40-1 , RB-V1.40-3] — graph correctness, panic surface, `.expect()` removal, depth field accuracy in JSON output.
-7. **PR-G: Resource caps + DoS hardening** [6 items: EH-V1.40-9, SEC-V1.40-4, SEC-V1.40-1, SEC-V1.40-7, SEC-V1.40-8, SHL-V1.40-10] — kind-fallback content cap; resurrect `_meta.worktree_stale` under V2Bare default; daemon `read_line` incremental growth; `enumerate_files` depth/file-count cap; `chunks_paged` ceiling.
-8. **PR-H: Atomic write + data safety bug sweep** [5 items: DS-V1.40-2, DS-V1.40-3, DS-V1.40-4, DS-V1.40-7, DS-V1.40-9, SEC-V1.40-2] — telemetry reset atomic, backup restore atomic across triplet, regen-fixture atomic, sentiment CHECK constraint, v27 migration zero-vec, `redact_userinfo` path-aware.
-9. **PR-I: V2Bare end-to-end test backfill** [5 items: TC-ADV-V1.40-1, TC-HAP-V1.40-1, TC-HAP-V1.40-8, TC-ADV-V1.40-4, TC-ADV-V1.40-9, TC-HAP-V1.40-3] — end-to-end binary tests for V2Bare default, daemon-path kind-fallback parity tests, CLI integration tests for Const/Type/Module/Ambiguous.
-10. **PR-J: P3 grab-bag (style, knobs, observability nits)** — single PR per category for the P3 batch above; SHL-V1.40-2/-4/-5/-7/-8/-10 (named constants + env knobs), OB-V1.40-1/-2/-5/-6/-7/-8/-9/-10 (tracing spans + telemetry buckets), small style fixes.
-
-After these 10 PRs: P4 tracking issues filed against #1463 / #1459 / #1512 / #1573 for the deferred umbrella items.
-
----
-
-## Notes
-
-- **No findings already shipped in #1601-#1625 appeared in this audit cycle.** Auditors correctly skipped already-triaged v1.38.0 carry-overs (per the explicit skip notes in OB and TC-ADV sections).
-- **Cross-check vs open issues:** P4 carry-overs map cleanly to existing umbrellas — `EXT-V1.40-3/4/6/7/8/9` → #1463 (P4 umbrella) / #1573 (Tier 3 dead-code follow-up), `API-V1.40-7` → #1459 (API design umbrella), `PB-V1.40-5/8` → #1512 (Windows daemon).
-- **No external users (per CLAUDE.md):** rename and breaking-shape changes (e.g., `lookup_by_name` → `get_chunks_by_name`, `posture::OutputFormat` → `EnvelopeShape`, `Kind` split, `Sentiment` enum) are free. No deprecation cycle, no migration shim.
-- **Phase 1 polymorphic-routing concentration:** 50+ findings touch the same surface — Cluster C (refactor) + Cluster D (data safety) + Cluster G (observability) + Cluster F (test parity) all attack the same 6-command × 2-surface × 5-kind matrix. Land them in order C → D → G → F to avoid merge churn.
-- **Recurrence pattern:** DOC-V1.40-4 (CHANGELOG `[Unreleased]` empty) is the third audit cycle finding this — hook the pre-commit fix proposed in DOC-V1.38-5 alongside Cluster E.
+| OB-V1.40-1 | Kind-fallback dispatchers emit no fallback-fired tracing (verified today: graph/mod.rs warns only on store error) | easy | open |
+| OB-V1.40-2 | `cqs telemetry` has no kind-fallback category — Phase 2 routing decision blocked on this signal | medium | open |
+| OB-V1.40-5 | `detect_fallback` / `classify_hits` no entry spans | easy | open |
+| OB-V1.40-6 | Tier 2b macro filter drops candidates silently — FP rate unauditable | easy | open |
+| OB-V1.40-7 | `write_json_line` format decision unattributable | easy | open |
+| OB-V1.40-8 | Daemon `accept()` successes unlogged — handle leaks unattributable | easy | open |
+| OB-V1.40-9 | `max_concurrent_daemon_clients` env override unlogged | easy | open |
+| OB-V1.40-10 + SEC-V1.40-3 + TC-ADV-V1.40-6 | `redact_query_str` silent on activation, strict `v != "0"`, zero tests | easy | open |
+| EH-V1.40-4 | `dispatch_deps` Type-forward misroutes Function names without warning | easy | open |
+| EH-V1.40-5 | `meta_json_fragment` `.expect()` on hot path | easy | open |
+| EH-V1.40-7 | `lookup_by_name` empty-string short-circuit undocumented | easy | open |
+| API-V1.40-2 | Kind enum mixes 5 routing kinds + 3 resolution outcomes (verified today: no KindResolution split exists) | medium | open |
+| API-V1.40-3 | `Store::lookup_by_name` breaks `get_chunks_by_X` convention (verified today: unrenamed) | easy | open |
+| API-V1.40-5 | Two `pub enum OutputFormat` (output_format.rs vs cli/definitions.rs — verified today both exist; posture.rs rename in #1711 didn't resolve the type collision) | medium | open |
+| API-V1.40-6 | `emit_json_error_with_data` shape inconsistency vs wrap_error path | easy | open |
+| API-V1.40-9 | `CQS_DEFERRED_FLUSH_INTERVAL` is a count, not a duration — rename `_BATCHES` | easy | open |
+| API-V1.40-10 | `--format` and `--json` flags shadow each other | easy | open |
+| CQ-V1.40-8 | `meta_value_for_envelope` duplicate fallback Map construction (partially reduced by #1711's delegation) | easy | open |
+| RB-V1.40-5 + SEC-V1.40-5 | `lookup_by_name` debug-span records full user-supplied name | easy | open |
+| SHL-V1.40-2 | `clamp(1, 100)` literals duplicated 13+× — named constants in cli::limits (new SHL-V1.42-1 is the false-rationale sibling; fix together) | easy | open |
+| SHL-V1.40-4 | `STALENESS_CHECK_INTERVAL = 100ms` hardcoded (verified today) | easy | open |
+| SHL-V1.40-5 | `AUDIT_STATE_RELOAD_INTERVAL = 30s` / `CONFIG_RELOAD_INTERVAL = 5min` hardcoded (verified today) | easy | open |
+| SHL-V1.40-7 | `KEEP_BACKUPS = 3` hardcoded | easy | open |
+| SHL-V1.40-8 | `LOAD_SPARSE_CHUNK_ID_BATCH = 1000` hardcoded | easy | open |
+| SHL-V1.40-10 | `chunks_paged` accepts unbounded limit | easy | open |
+| TC-ADV-V1.40-2 + EXT-V1.40-5 | `classify_chunk_type` pin incomplete for 11/24 ChunkType variants | easy | open |
+| TC-ADV-V1.40-3 | `lookup_by_name` wildcard/injection/long-name inputs untested | easy | open |
+| TC-ADV-V1.40-8 | `emit_json_error` adversarial input untested | easy | open |
+| TC-ADV-V1.40-10 | `current_worktree_name` Unicode/shell-special/long inputs untested | easy | open |
+| TC-HAP-V1.40-5 | `_meta.worktree_name`/`_meta.worktree_stale` zero emission tests | easy | open |
+| TC-HAP-V1.40-6 | `v3_test.v2.json` schema-coverage test missing (dev-only covered) | easy | open |
+| PB-V1.40-2 | `is_under_wsl_automount` vs `is_wsl_drvfs_path` divergent shape validation | easy | open |
+| PB-V1.40-4 | `worktree_name` doesn't trim trailing slash | easy | open |
+| PB-V1.40-6 | `is_wsl_drvfs_path` UNC arm unguarded for non-WSL hosts | easy | open |
+| PB-V1.40-10 | `worktree_name` no dunce::canonicalize — Windows verbatim prefix leaks into JSON | easy | open |
+| RM-V1.40-2 | `dispatch_via_view` reconstructs token Vec — second full clone per dispatch | easy | open |
+| RM-V1.40-3 | `current_worktree_name` clones cached String per envelope emit | easy | open |
+| RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request | easy | open |
+| PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec | easy | open |
+| PERF-V1.40-9 | Telemetry write ~5 syscalls per CLI command — daemon-path handle caching | medium | open |
