@@ -645,7 +645,7 @@ mod tests {
             .find_subcommand("search")
             .expect("batch parser must have a `search` subcommand");
         let accepted: std::collections::BTreeSet<String> =
-            search.get_arguments().flat_map(|a| spellings(a)).collect();
+            search.get_arguments().flat_map(spellings).collect();
 
         for arg in cli_app.get_arguments() {
             let id = arg.get_id().as_str();
