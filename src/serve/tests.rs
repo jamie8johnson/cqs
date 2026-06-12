@@ -182,7 +182,6 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
         // Populate a ring of call edges so build_graph + build_cluster
         // exercise their edge-fetch paths. Every func_i calls func_(i+1).
         store
-            .rt
             .block_on(async {
                 for i in 0..n_chunks {
                     let file = format!("src/fake_{}.rs", i % 8);
@@ -196,7 +195,7 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
                     .bind(&file)
                     .bind(&caller)
                     .bind(&callee)
-                    .execute(&store.pool)
+                    .execute(store.pool())
                     .await?;
                 }
 
@@ -208,7 +207,7 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
                         "UPDATE chunks \
                          SET umap_x = (rowid * 0.1), umap_y = (rowid * 0.2)",
                     )
-                    .execute(&store.pool)
+                    .execute(store.pool())
                     .await?;
                 }
 
@@ -291,11 +290,10 @@ fn single_chunk_fixture(content: &str, vendored: bool) -> (Fixture, String) {
             // prefixes — the column drives the trust_level derivation.
             let id_for_update = id.clone();
             store
-                .rt
                 .block_on(async {
                     sqlx::query("UPDATE chunks SET vendored = 1 WHERE id = ?")
                         .bind(&id_for_update)
-                        .execute(&store.pool)
+                        .execute(store.pool())
                         .await
                 })
                 .expect("set vendored bit");
@@ -1243,11 +1241,11 @@ fn chunk_id_for_name(state: &AppState, name: &str) -> String {
     let store = state.store.clone();
     let name = name.to_string();
     std::thread::spawn(move || {
-        store.rt.block_on(async {
+        store.block_on(async {
             use sqlx::Row;
             let row = sqlx::query("SELECT id FROM chunks WHERE name = ? ORDER BY id LIMIT 1")
                 .bind(&name)
-                .fetch_one(&store.pool)
+                .fetch_one(store.pool())
                 .await
                 .expect("chunk row for name");
             row.get::<String, _>("id")

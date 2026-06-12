@@ -6,8 +6,6 @@
 
 use std::collections::HashSet;
 
-use sqlx::Row;
-
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
 use crate::limits::candidate_count_for;
@@ -100,6 +98,23 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Get the cached note-boost index, building from
+    /// [`Store::cached_notes_summaries`] on first access or after invalidation.
+    ///
+    /// The boost cache itself lives on the store as an opaque
+    /// [`crate::search::scoring::NoteBoostCache`] cell; this accessor is the
+    /// search-side bridge that supplies the notes (store-owned data) and
+    /// drives the build (search-owned scoring). The owned index is computed
+    /// once per notes-table revision and shared via `Arc` across all search
+    /// paths, avoiding an O(notes × mentions) rebuild on every search.
+    pub(crate) fn cached_note_boost_index(
+        &self,
+    ) -> Result<std::sync::Arc<super::scoring::OwnedNoteBoostIndex>, StoreError> {
+        let _span = tracing::debug_span!("cached_note_boost_index").entered();
+        let notes = self.cached_notes_summaries()?;
+        Ok(self.note_boost_cache.get_or_build(&notes))
+    }
+
     /// Searches for embeddings matching a query with optional filtering and ranking.
     ///
     /// # Arguments
@@ -162,7 +177,7 @@ impl<Mode> Store<Mode> {
         // `search_index_guided` span first. A duplicate span here would double
         // the per-query span allocation on the hottest daemon path and make
         // flame graphs look like recursion.
-        self.rt.block_on(async {
+        self.block_on(async {
             let fsql = build_filter_sql(filter);
             // Saturating mul matches sibling paths; overflow on pathological
             // `limit` would panic in debug.
@@ -254,39 +269,32 @@ impl<Mode> Store<Mode> {
             let sql = format!("SELECT {} FROM chunks{}", fsql.columns, batch_where);
 
             loop {
-                let batch: Vec<_> = {
-                    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-                    for val in &fsql.bind_values {
-                        q = q.bind(val);
-                    }
-                    q = q.bind(last_rowid);
-                    q = q.bind(brute_force_batch_size);
-                    q.fetch_all(&self.pool).await?
-                };
+                let batch = self
+                    .fetch_brute_force_batch(
+                        sql.as_str(),
+                        &fsql.bind_values,
+                        last_rowid,
+                        brute_force_batch_size,
+                        need_name,
+                    )
+                    .await?;
 
                 if batch.is_empty() {
                     break;
                 }
-                last_rowid = batch
-                    .last()
-                    .expect("batch non-empty checked above")
-                    .get::<i64, _>("rowid");
+                last_rowid = batch.last().expect("batch non-empty checked above").rowid;
 
                 for row in &batch {
-                    let id: String = row.get("id");
-                    let embedding_bytes: Vec<u8> = row.get("embedding");
-                    let name: Option<String> = if need_name { row.get("name") } else { None };
-
-                    let embedding = match embedding_slice(&embedding_bytes, self.dim) {
+                    let embedding = match embedding_slice(&row.embedding_bytes, self.dim) {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
-                    let file_part = extract_file_from_chunk_id(&id);
+                    let file_part = extract_file_from_chunk_id(&row.id);
 
                     if let Some(score) =
-                        score_candidate(embedding, name.as_deref(), file_part, &scoring_ctx)
+                        score_candidate(embedding, row.name.as_deref(), file_part, &scoring_ctx)
                     {
-                        score_heap.push(id, score);
+                        score_heap.push(row.id.clone(), score);
                     }
                 }
             }
@@ -883,7 +891,7 @@ impl<Mode> Store<Mode> {
         let use_hybrid = flags.use_hybrid;
         let use_rrf = flags.use_rrf;
 
-        self.rt.block_on(async {
+        self.block_on(async {
             // Phase 1: Lightweight candidate fetch — only scoring fields.
             // Excludes heavy content/doc/signature columns. The embedding
             // BLOB is fetched only when there are no pre-fused scores:
@@ -1878,5 +1886,172 @@ mod tests {
         std::env::remove_var("CQS_TYPE_BOOST");
         assert!((first - 1.3).abs() < 1e-6);
         assert!((second - 1.7).abs() < 1e-6);
+    }
+
+    // ===== note-boost scoring relocation pins =====
+    //
+    // These pin the note-boost scoring path end-to-end so the cache
+    // relocation (boost cache moving out of `store/` into `search/`) stays
+    // bit-identical. They assert exact post-boost scores for boosted,
+    // demoted, and neutral mentions, and pin the cache-invalidation contract
+    // (a note change refreshes the boost data on the next search).
+
+    /// Seed a notes file and upsert one note with the given sentiment +
+    /// mention, returning nothing — the store now carries the note.
+    #[cfg(test)]
+    fn seed_note(
+        store: &crate::store::Store,
+        dir: &std::path::Path,
+        sentiment: f32,
+        mention: &str,
+    ) {
+        let source = dir.join("notes.toml");
+        std::fs::write(&source, "# pin").unwrap();
+        let note = crate::note::Note {
+            id: "note:0".to_string(),
+            text: "pin note".to_string(),
+            sentiment,
+            mentions: vec![mention.to_string()],
+            kind: None,
+        };
+        store.replace_notes_for_file(&[note], &source, 1).unwrap();
+    }
+
+    /// Bit-identical note-boost scoring through `search_filtered`.
+    ///
+    /// A name-mention note with positive sentiment must multiply the matched
+    /// chunk's cosine by exactly `1.0 + sentiment * note_boost_factor`; a
+    /// negative-sentiment note must demote by the same formula; an unrelated
+    /// (neutral) chunk must be left at its raw cosine. The base cosine here is
+    /// 1.0 (query == chunk embedding via `mock_embedding(1.0)`), so the boosted
+    /// score equals the multiplier exactly.
+    #[test]
+    fn pin_note_boost_scoring_boosted_demoted_neutral() {
+        use crate::search::scoring::ScoringConfig;
+        let factor = ScoringConfig::current().note_boost_factor;
+
+        // --- boosted: positive sentiment on a name mention ---
+        let (store, dir) = setup_store();
+        let boosted = make_chunk(
+            "boostedFn",
+            "src/boosted.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let neutral = make_chunk(
+            "neutralFn",
+            "src/neutral.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[
+                    (boosted.clone(), emb.clone()),
+                    (neutral.clone(), emb.clone()),
+                ],
+                Some(1),
+            )
+            .unwrap();
+        seed_note(&store, dir.path(), 0.5, "boostedFn");
+
+        let filter = SearchFilter::default();
+        let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        let boosted_score = results
+            .iter()
+            .find(|r| r.chunk.name == "boostedFn")
+            .expect("boosted chunk present")
+            .score;
+        let neutral_score = results
+            .iter()
+            .find(|r| r.chunk.name == "neutralFn")
+            .expect("neutral chunk present")
+            .score;
+        // Base cosine is 1.0; boost multiplies it.
+        let expected_boost = 1.0 + 0.5 * factor;
+        assert!(
+            (boosted_score - expected_boost).abs() < 1e-6,
+            "boosted score {boosted_score} must equal 1.0 * (1.0 + 0.5*{factor}) = {expected_boost}"
+        );
+        assert!(
+            (neutral_score - 1.0).abs() < 1e-6,
+            "neutral (unmentioned) chunk must keep raw cosine 1.0, got {neutral_score}"
+        );
+
+        // --- demoted: negative sentiment on a name mention ---
+        let (store, dir) = setup_store();
+        let demoted = make_chunk(
+            "demotedFn",
+            "src/demoted.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        store
+            .upsert_chunks_batch(&[(demoted.clone(), emb.clone())], Some(1))
+            .unwrap();
+        seed_note(&store, dir.path(), -1.0, "demotedFn");
+        let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        let demoted_score = results
+            .iter()
+            .find(|r| r.chunk.name == "demotedFn")
+            .expect("demoted chunk present")
+            .score;
+        let expected_demote = 1.0 - factor;
+        assert!(
+            (demoted_score - expected_demote).abs() < 1e-6,
+            "demoted score {demoted_score} must equal 1.0 * (1.0 - 1.0*{factor}) = {expected_demote}"
+        );
+    }
+
+    /// Cache-invalidation contract: a note change must be reflected by the
+    /// next `search_filtered` call. Seed a positive note, observe the boost,
+    /// replace it with a stronger negative note, and confirm the score flips
+    /// to the new multiplier — proving the boost cache refreshed alongside the
+    /// notes cache rather than serving stale boost data.
+    #[test]
+    fn pin_note_boost_cache_refreshes_on_note_change() {
+        use crate::search::scoring::ScoringConfig;
+        let factor = ScoringConfig::current().note_boost_factor;
+
+        let (store, dir) = setup_store();
+        let chunk = make_chunk(
+            "targetFn",
+            "src/target.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), emb.clone())], Some(1))
+            .unwrap();
+        let filter = SearchFilter::default();
+
+        // First note: positive boost. Populates the boost cache.
+        seed_note(&store, dir.path(), 0.5, "targetFn");
+        let first = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        let first_score = first
+            .iter()
+            .find(|r| r.chunk.name == "targetFn")
+            .expect("target present")
+            .score;
+        assert!(
+            (first_score - (1.0 + 0.5 * factor)).abs() < 1e-6,
+            "first search must apply +0.5 boost, got {first_score}"
+        );
+
+        // Replace with a negative note. `replace_notes_for_file` invalidates
+        // the notes cache; the boost cache must refresh from it.
+        seed_note(&store, dir.path(), -1.0, "targetFn");
+        let second = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        let second_score = second
+            .iter()
+            .find(|r| r.chunk.name == "targetFn")
+            .expect("target present")
+            .score;
+        assert!(
+            (second_score - (1.0 - factor)).abs() < 1e-6,
+            "after note change the boost cache must refresh to the -1.0 demote, got {second_score}"
+        );
     }
 }

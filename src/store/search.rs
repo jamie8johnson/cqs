@@ -1,8 +1,70 @@
 //! Search methods for the Store (FTS, name search).
 
+use std::future::Future;
+
+use sqlx::Row;
+
 use super::helpers::{self, ChunkRow, SearchResult};
 use super::{sanitize_fts_query, ChunkSummary, Store, StoreError};
 use crate::nl::normalize_for_fts;
+
+/// One row of the brute-force candidate scan: cursor position plus the
+/// scoring-relevant columns. `name` is populated only when the caller asked
+/// for it (hybrid/demotion paths); the brute-force loop scores from these.
+pub(crate) struct BruteForceRow {
+    pub rowid: i64,
+    pub id: String,
+    pub embedding_bytes: Vec<u8>,
+    pub name: Option<String>,
+}
+
+impl<Mode> Store<Mode> {
+    /// Drive an async future to completion on the store's runtime.
+    ///
+    /// The store owns the tokio runtime; search drives its algorithmic
+    /// pipeline (which interleaves store async SQL methods) through this
+    /// wrapper rather than reaching the private `rt` field directly. Keeps
+    /// the runtime an implementation detail of the store while letting the
+    /// search module compose store async calls.
+    pub(crate) fn block_on<F: Future>(&self, fut: F) -> F::Output {
+        self.rt.block_on(fut)
+    }
+
+    /// Fetch one cursor-paginated batch of brute-force scan candidates.
+    ///
+    /// `sql` is the pre-built `SELECT … FROM chunks WHERE … rowid > ? … LIMIT ?`
+    /// template (filter conditions + cursor + limit binds appended by the
+    /// caller); `bind_values` are the filter binds that precede the cursor and
+    /// limit. `need_name` controls whether the `name` column is read into the
+    /// returned rows. Store-owned SQL — the scoring loop reads the returned
+    /// rows search-side.
+    pub(crate) async fn fetch_brute_force_batch(
+        &self,
+        sql: &str,
+        bind_values: &[String],
+        last_rowid: i64,
+        batch_size: i64,
+        need_name: bool,
+    ) -> Result<Vec<BruteForceRow>, StoreError> {
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for val in bind_values {
+            q = q.bind(val);
+        }
+        q = q.bind(last_rowid);
+        q = q.bind(batch_size);
+        let rows = q.fetch_all(&self.pool).await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| BruteForceRow {
+                rowid: row.get::<i64, _>("rowid"),
+                id: row.get("id"),
+                embedding_bytes: row.get("embedding"),
+                name: if need_name { row.get("name") } else { None },
+            })
+            .collect())
+    }
+}
 
 impl<Mode> Store<Mode> {
     /// Search FTS5 index for keyword matches.
