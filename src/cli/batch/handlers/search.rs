@@ -6,7 +6,7 @@ use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 use crate::cli::commands::search::query::{
     merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped, Prepared,
-    QueryArgs,
+    ProjectSurface, QueryArgs,
 };
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
@@ -280,7 +280,16 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
     // semantics fold into the same `QueryArgs` the plain path builds; the
     // multi-store fan-out then consumes the prepared query.
     let qargs = daemon_ref_query_args(args);
-    let prepared = match prepare_query(ctx, &qargs)? {
+    // `--ref`-scoped searches one reference store and never reads the project
+    // index, so skip the project-surface resolution (project vector index +
+    // SPLADE encode + primed SPLADE index). `--include-refs` fans out over the
+    // project store (`retrieve_project`), so it resolves the full surface.
+    let surface = if args.ref_name.is_some() {
+        ProjectSurface::Skip
+    } else {
+        ProjectSurface::Resolve
+    };
+    let prepared = match prepare_query(ctx, &qargs, surface)? {
         // `name_only = false` + `fts_first = false` on the daemon ref path → the
         // project FTS short-circuit never fires, so it always prepares a dense
         // query. A request handler must never panic the daemon, so a future
