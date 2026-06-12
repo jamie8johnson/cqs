@@ -12,7 +12,7 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 ## Process
 
 1. **Classify the task** into one of the templates below based on the description.
-2. **Run scout**: `cqs scout "<task description>" --json -q`
+2. **Run scout**: `cqs scout "<task description>" --json 2>/dev/null` (no `-q` flag on subcommands)
 3. **Run targeted lookups** from the template's checklist — scout alone misses structural touchpoints (clap structs, dispatch arms, skill files).
 4. **Produce a plan** listing every file to change, what to change, and why. Be specific about struct fields, function signatures, and match arms.
 
@@ -27,13 +27,13 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 **When:** Adding a new flag, renaming a flag, changing a flag's type (bool → enum).
 
 **Checklist:**
-1. `src/cli/mod.rs` — `Commands` enum variant. Add/modify `#[arg]` field. If enum-typed, define with `clap::ValueEnum`.
-2. `src/cli/mod.rs` — `run_with()` match arm. Update destructuring and `cmd_<name>()` call.
-3. `src/cli/commands/<name>.rs` — `cmd_<name>()` signature. Update branching logic.
-4. `src/cli/commands/<name>.rs` — Display functions if the flag affects output format.
+1. `src/cli/definitions.rs` — `Commands` enum variant. Add/modify `#[arg]` field (often via a shared `*Args` struct in `src/cli/args.rs`). If enum-typed, define with `clap::ValueEnum`.
+2. `src/cli/dispatch.rs` — `run_with()`/`run_with_dispatch()` match arm. Update destructuring and `cmd_<name>()` call.
+3. `src/cli/commands/<group>/<name>.rs` (groups: search/, graph/, review/, index/, io/, infra/, eval/, train/) — flag flows into the `*_core` fn's typed `*Args`; update branching there, not just the CLI adapter.
+4. **Daemon surface**: if the flag affects core behavior, the daemon `dispatch_*` handler in `src/cli/batch/handlers/` must forward it too — CLI and daemon are parallel surfaces, wire both in the same PR. Parity tests live in `src/cli/batch/handlers/dispatch_tests.rs`.
 5. `src/store/*.rs` / `src/lib.rs` — Usually NO changes. Only if flag affects query behavior.
 6. Tests: `tests/<name>_test.rs` — add case for new value. Update tests using old flag name.
-7. `.claude/skills/cqs-<name>/SKILL.md` — update argument-hint and usage.
+7. `.claude/skills/cqs/SKILL.md` — update the command's flag table.
 8. `README.md` — update examples if the command is featured.
 9. Verify callers: `cqs callers cmd_<name> --json`
 
@@ -46,23 +46,24 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 
 **When:** Adding an entirely new `cqs <command>`.
 
-**Checklist:**
-1. `src/cli/mod.rs` — Add variant to `Commands` enum with args. Add `use` import for `cmd_<name>`. Add match arm in `run_with()`.
-2. `src/cli/commands/<name>.rs` — New file. Implement `cmd_<name>()`. Follow existing command pattern (open store, call library, format output).
-3. `src/cli/commands/mod.rs` — Add `mod <name>;` and `pub(crate) use <name>::cmd_<name>;`.
-4. `src/lib.rs` or `src/<module>.rs` — Library function if logic is non-trivial. Keep CLI layer thin.
-5. Tests: `tests/<name>_test.rs` — integration tests using `TestStore` or `assert_cmd`.
-6. `.claude/skills/cqs-<name>/SKILL.md` — New skill file with frontmatter.
-7. `.claude/skills/cqs-bootstrap/SKILL.md` — Add to portable skills list.
-8. `CLAUDE.md` — Add to "Key commands" list.
-9. `README.md` — Add to command reference.
-10. `CONTRIBUTING.md` — Update Architecture Overview if adding new source files.
+**Checklist (command-core pattern — the NEW-COMMAND RULE, see CONTRIBUTING):**
+1. `src/cli/commands/<group>/<name>.rs` — New file in the right group (search/, graph/, review/, index/, io/, infra/). Implement ONE surface-agnostic `<name>_core(...)` taking a typed Deserialize `<Name>Args` and returning a Serialize `<Name>Output`. `cmd_<name>()` is a thin CLI adapter over the core.
+2. `src/cli/commands/<group>/mod.rs` — Add `mod <name>;` and re-export `cmd_<name>` (+ the core for the daemon).
+3. `src/cli/definitions.rs` — Add variant to `Commands` enum with args (shared `*Args` structs live in `src/cli/args.rs`).
+4. `src/cli/dispatch.rs` — Add match arm calling `cmd_<name>()`.
+5. **Daemon surface in the same PR**: `dispatch_<name>` adapter in `src/cli/batch/handlers/` (thin wrapper: parse wire request into `<Name>Args`, call the core). Add a CLI==daemon parity test in `src/cli/batch/handlers/dispatch_tests.rs`.
+6. `src/lib.rs` or `src/<module>.rs` — Library function if logic is non-trivial. Keep CLI layer thin.
+7. Tests: `tests/<name>_test.rs` — integration tests using `TestStore` or `assert_cmd`.
+8. `.claude/skills/cqs/SKILL.md` — add the command to the dispatcher reference (and a `cqs-<name>` skill only if the workflow warrants it).
+9. `.claude/skills/cqs-bootstrap/SKILL.md` — Add to portable skills list / command reference.
+10. `CLAUDE.md` — Add to "Key commands" list.
+11. `README.md` — Add to command reference.
+12. `CONTRIBUTING.md` — Update Architecture Overview if adding new source files.
 
 **Patterns:**
 - Command files are ~50-150 lines. Store/library calls, then display.
-- `find_project_root()` + `resolve_index_dir()` + `Store::open()` boilerplate.
-- JSON output with `--json` flag, text output respects `--quiet`.
-- Tracing span at function entry: `let _span = tracing::info_span!("cmd_<name>").entered();`
+- JSON output with `--json` flag; text output via a display fn the daemon can reuse.
+- Tracing span at core entry: `let _span = tracing::info_span!("<name>_core").entered();`
 
 ### Fix a Bug
 
@@ -88,15 +89,16 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 
 **Checklist:**
 1. `Cargo.toml` — Add tree-sitter grammar dependency (optional).
-2. `src/language/mod.rs` — Add to `define_languages!` macro invocation.
-3. `src/language/<lang>.rs` — New file with `LanguageDef`: chunk_query, call_query, extensions.
-4. `Cargo.toml` features — Add `lang-<name>` feature, add to `default` and `lang-all`.
-5. Tests: `tests/fixtures/<lang>/` — sample files. Parser tests in `tests/parser_test.rs`.
-6. `tests/eval_test.rs` and `tests/model_eval.rs` — Add match arms.
+2. `src/language/mod.rs` — Add to the `define_languages!` macro invocation.
+3. `src/language/languages.rs` — Add the language's `LanguageDef` block (grammar wiring, extensions, extract/post-process hooks). Per-language files no longer exist — everything lives in this one file.
+4. `src/language/queries/<lang>.chunks.scm` + `<lang>.calls.scm` (+ `.types.scm` if type deps apply) — tree-sitter queries live as standalone `.scm` files, not inline strings.
+5. `Cargo.toml` features — Add `lang-<name>` feature, add to `default` and `lang-all`.
+6. Tests: `tests/fixtures/<lang>/` — sample files. Parser tests in `tests/parser_test.rs`.
+7. `tests/eval_test.rs` and `tests/model_eval.rs` — Add match arms.
 
 **Patterns:**
 - One-liner in `define_languages!` handles registration.
-- Chunk query captures must use names from `extract_chunk`'s `capture_types`: function, struct, class, enum, trait, interface, const.
+- Chunk query captures must use the parser's known capture names (see `src/parser/chunk.rs`): function, struct, class, enum, trait, interface, const, ...
 - Call query uses `@callee` capture.
 
 ### Add ChunkType Variant
@@ -104,11 +106,11 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 **When:** Adding a new chunk type (e.g., Extension, Protocol, Alias).
 
 **Checklist:**
-1. `src/chunk.rs` — Add variant to `ChunkType` enum. Update `Display`, `FromStr`, `is_callable()`.
+1. `src/language/mod.rs` — Add variant to the `define_chunk_types!` invocation (ChunkType lives here now). Classify it so `is_callable()`/`is_code()` derive correctly — a round-trip test enforces consistency.
 2. `src/nl/mod.rs` — Add natural language label for the variant (used in embedding text).
-3. `src/language/<lang>.rs` — Add capture using the new variant name in chunk_query.
-4. `src/parser/extract_chunk.rs` — Add to `capture_types` map if using a new capture name.
-5. `src/cli/commands/stats.rs` — Variant appears automatically via `ChunkType` iteration.
+3. `src/language/queries/<lang>.chunks.scm` — Add capture using the new variant name.
+4. `src/parser/chunk.rs` — Add to the capture-name map if using a new capture name.
+5. `src/cli/commands/index/stats.rs` — Variant appears automatically via `ChunkType` iteration.
 6. Tests: Parser tests for each language using the new variant. Verify `cqs search` returns results with correct type.
 7. `ROADMAP.md` — Update ChunkType Variant Status table.
 
@@ -122,8 +124,8 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 **When:** Adding multi-grammar parsing (e.g., HTML→JS, PHP→HTML, Svelte→CSS).
 
 **Checklist:**
-1. `src/language/<host>.rs` — Add `InjectionRule` to `LanguageDef::injection_rules()`. Specify `parent_node`, `content_node`, `target_language`, and optional `detect_language` callback.
-2. `src/language/<target>.rs` — Ensure target language's `LanguageDef` exists and parses correctly in isolation.
+1. `src/language/languages.rs` (host language's block) — Add `InjectionRule` to the host's injection rules. Specify `parent_node`, `content_node`, `target_language`, and optional `detect_language` callback.
+2. `src/language/languages.rs` (target language's block) — Ensure the target's `LanguageDef` exists and parses correctly in isolation.
 3. `src/parser/injection.rs` — Usually NO changes. Only if new detection logic is needed (e.g., `detect_script_language`, `detect_heredoc_language`).
 4. Tests: `tests/fixtures/<host>/` — sample file with embedded content. Verify chunks from both host and injected language appear.
 5. Verify depth limit: recursive injections (PHP→HTML→JS) must respect depth limit (default 3).
@@ -193,10 +195,10 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 **When:** Bumping the SQLite schema version (adding tables, columns, or changing data layout).
 
 **Checklist:**
-1. `src/store/helpers.rs + src/store/migrations.rs` — Bump `CURRENT_SCHEMA_VERSION` constant.
-2. `src/store/helpers.rs + src/store/migrations.rs` — Add migration function `migrate_vN_to_vN1()` with ALTER TABLE / CREATE TABLE statements.
-3. `src/store/helpers.rs + src/store/migrations.rs` — Register migration in `migrate()` match arms.
-4. `src/store/mod.rs` — Update `open()` if new tables need initialization or if Store fields changed.
+1. `src/store/helpers/mod.rs` — Bump `CURRENT_SCHEMA_VERSION` constant.
+2. `src/store/migrations.rs` — Add `async fn migrate_vN_to_vM()` with ALTER TABLE / CREATE TABLE statements.
+3. `src/store/migrations.rs` — Register it in the `MIGRATIONS` table as `(N, M, |c| Box::pin(migrate_vN_to_vM(c)))`.
+4. `src/store/mod.rs` — Update `open()` if new tables need initialization or if Store fields changed. `src/schema.sql` must reflect the new layout (its header states the version).
 5. `src/store/*.rs` — Update queries that read/write affected tables.
 6. Tests: Migration test with a v(N-1) database → verify v(N) upgrade succeeds and data is preserved.
 7. `PROJECT_CONTINUITY.md` — Update schema version in Architecture section.

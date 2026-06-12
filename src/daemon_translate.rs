@@ -146,6 +146,14 @@ pub fn translate_cli_args_to_batch(
 /// differ per subcommand (blame's `-n` is `--commits`).
 fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<String>) {
     let mut idx = 0;
+    // Top-level scope flags (`--lang`/`-l`, `--path`/`-p`) reach the CLI's
+    // `cmd_similar` through the top-level `Cli` region (`cqs --lang rust similar
+    // foo`); they're dropped with the rest of that region below. For the
+    // `similar` subcommand — whose batch `SimilarArgs` accepts `--lang`/`--path`
+    // — capture them here so they can be re-appended to the forwarded tail,
+    // keeping daemon-routed scoping on par with the CLI-direct path. Other
+    // subcommands don't take these flags, so the forward is gated on `similar`.
+    let mut scope_forward: Vec<String> = Vec::new();
     while idx < raw.len() {
         let tok = &raw[idx];
         if !tok.starts_with('-') {
@@ -156,8 +164,21 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         // spaced-form value flags consume their following value token too;
         // boolean flags consume only themselves.
         if !tok.contains('=') && spec.value_flags.contains(tok.as_str()) {
+            if is_scope_flag(tok) {
+                // Spaced form: capture the flag and its following value token.
+                if let Some(val) = raw.get(idx + 1) {
+                    scope_forward.push(tok.clone());
+                    scope_forward.push(val.clone());
+                }
+            }
             idx += 2;
         } else {
+            if let Some((key, _)) = tok.split_once('=') {
+                // Attached form (`--lang=rust`): forward the whole token.
+                if is_scope_flag(key) {
+                    scope_forward.push(tok.clone());
+                }
+            }
             idx += 1;
         }
     }
@@ -167,6 +188,16 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         return (String::new(), Vec::new());
     };
     let mut tail: Vec<String> = raw[idx + 1..].to_vec();
+    if cmd == "similar" && !scope_forward.is_empty() {
+        // Splice the captured top-level scope flags in *front* of the tail so
+        // the daemon's `dispatch_similar` builds the same `--lang`/`--path`
+        // filter the CLI would. A subcommand tail can also carry these directly
+        // (`cqs similar foo --lang rust`); putting the top-level capture first
+        // means clap's last-wins resolution keeps any tail-explicit value
+        // authoritative.
+        scope_forward.extend(tail);
+        tail = scope_forward;
+    }
     // `cqs notes list ...` → daemon `notes ...`. The CLI's `Notes`
     // command takes a NotesCommand subcommand enum (`list`/`add`/
     // `update`/`remove`) but the batch dispatcher only ever receives
@@ -180,6 +211,15 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         tail.remove(0);
     }
     (cmd, tail)
+}
+
+/// Whether `flag` is a top-level scope flag (`--lang`/`-l` or `--path`/`-p`)
+/// that the `similar` subcommand accepts on its batch tail. Used by
+/// [`translate_subcommand_args`] to re-forward these from the dropped top-level
+/// region onto a daemon-routed `similar` invocation. Spellings mirror the
+/// `args::SimilarArgs` clap definition (`-l`/`--lang`, `-p`/`--path`).
+fn is_scope_flag(flag: &str) -> bool {
+    matches!(flag, "--lang" | "-l" | "--path" | "-p")
 }
 
 /// Whether `tok` is a combined-short cluster (`-qv`, `-qn5`): a single `-`
@@ -1137,6 +1177,8 @@ mod tests {
                 "--tokens",
                 "-l",
                 "--lang",
+                "-p",
+                "--path",
             ]),
             bare_query_strip: set(&[
                 "--json",
@@ -1220,6 +1262,65 @@ mod tests {
         );
         assert_eq!(cmd, "callers");
         assert_eq!(args, v(&["foo"]));
+    }
+
+    /// `similar` is the one carve-out to the drop-the-top-level-region rule:
+    /// the `--lang` / `--path` scope flags reach the CLI's `cmd_similar` via the
+    /// top-level region, so they're re-forwarded onto the `similar` tail (its
+    /// batch `SimilarArgs` accepts them) — otherwise daemon-routed `similar`
+    /// would silently ignore scoping that CLI-direct honors.
+    #[test]
+    fn forwards_top_level_scope_flags_for_similar() {
+        // The captured scope flags are spliced in *front* of the tail (so a
+        // tail-explicit value stays last-wins authoritative). clap parses
+        // `--lang rust foo` identically to `foo --lang rust`.
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["--lang", "rust", "similar", "foo"]), true, &spec());
+        assert_eq!(cmd, "similar");
+        assert_eq!(args, v(&["--lang", "rust", "foo"]));
+
+        // Both flags, short + long, spaced — capture order preserved, in front.
+        let (cmd, args) = translate_cli_args_to_batch(
+            &v(&["-l", "rust", "-p", "src/*", "similar", "foo"]),
+            true,
+            &spec(),
+        );
+        assert_eq!(cmd, "similar");
+        assert_eq!(args, v(&["-l", "rust", "-p", "src/*", "foo"]));
+
+        // Attached-value form is one token, forwarded whole (still in front).
+        let (cmd, args) = translate_cli_args_to_batch(
+            &v(&["--path=src/store/", "similar", "foo"]),
+            true,
+            &spec(),
+        );
+        assert_eq!(cmd, "similar");
+        assert_eq!(args, v(&["--path=src/store/", "foo"]));
+    }
+
+    /// The scope carve-out is `similar`-only. A non-`similar` subcommand still
+    /// drops the whole top-level region (no spurious `--lang` appended), and a
+    /// tail-explicit scope flag on `similar` is preserved with the top-level
+    /// capture spliced in *front* so clap's last-wins keeps the tail value.
+    #[test]
+    fn scope_forward_is_similar_only_and_tail_wins() {
+        // Non-similar subcommand: top-level `--lang` dropped, nothing appended.
+        let (cmd, args) =
+            translate_cli_args_to_batch(&v(&["--lang", "rust", "callers", "foo"]), true, &spec());
+        assert_eq!(cmd, "callers");
+        assert_eq!(args, v(&["foo"]));
+
+        // Tail-explicit scope flag stays authoritative: the top-level capture
+        // (`--lang rust`) is spliced in *front* of the original tail
+        // (`foo --lang python`), so clap resolves `--lang` to the trailing
+        // tail value (`python`) by last-wins.
+        let (cmd, args) = translate_cli_args_to_batch(
+            &v(&["--lang", "rust", "similar", "foo", "--lang", "python"]),
+            true,
+            &spec(),
+        );
+        assert_eq!(cmd, "similar");
+        assert_eq!(args, v(&["--lang", "rust", "foo", "--lang", "python"]));
     }
 
     /// Bare-query search knobs forward verbatim (`-n` included — the batch

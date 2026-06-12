@@ -1,3 +1,9 @@
+---
+name: investigate
+description: Run before starting an implementation task — scout + gather assemble relevant files, functions, tests, and notes into a brief.
+argument-hint: "<task description>"
+---
+
 # Investigate
 
 Run before starting any implementation task. Assembles all relevant context in one call.

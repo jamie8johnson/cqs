@@ -599,11 +599,20 @@ pub fn cmd_similar_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Similar { args, output } => {
+        // Scope flags resolve subcommand-tail first (`cqs similar foo --lang
+        // rust`), then fall back to the top-level region (`cqs --lang rust
+        // similar foo`). The daemon path forwards the top-level values onto the
+        // tail, so honoring both spellings keeps CLI-direct and daemon-routed
+        // scoping identical.
+        let lang = args.lang.as_deref().or(cli.lang.as_deref());
+        let path = args.path.as_deref().or(cli.path.as_deref());
         commands::cmd_similar(
             ctx,
             &args.name,
             args.limit_arg.limit,
             args.threshold,
+            lang,
+            path,
             cli.json || output.json,
         )
     })

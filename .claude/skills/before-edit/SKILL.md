@@ -1,3 +1,9 @@
+---
+name: before-edit
+description: Run before modifying a function — impact + test-map + explain in one pass, presented as a modification checklist.
+argument-hint: "<function_name>"
+---
+
 # Before Edit
 
 Run before modifying any function. Shows what breaks, what tests cover it, and what to check.

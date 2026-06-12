@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: "Implementation agent with built-in cqs checkpoints — scout before, review after"
-model: inherit
+model: opus
 tools:
   - Bash
   - Read
@@ -42,10 +42,11 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 
 10. Run `cargo fmt`
 11. Run `cargo build --features cuda-index` — fix any errors
-12. Run `cargo clippy --features cuda-index -- -D warnings` — fix warnings
+12. Run `cargo clippy --all-targets --features cuda-index -- -D warnings` — fix warnings (CI runs `--all-targets`; a plain clippy pass can still fail CI on test/bench code)
 13. Run **targeted** tests only: `cargo test --features cuda-index -- test_name` for functions you changed
-14. For Standard or Risky scope: run `cqs review --json` to check the diff for risk
-15. Commit your changes
+14. Run the provenance lint on your diff: `git diff <base>...HEAD -- '*.rs' | python3 scripts/check_comment_provenance.py`. It scans COMMENTS only (string literals are inert), and CI diffs the merge ref — so comment lines you merely MOVED count as added. Fix violations by deleting the ID from the comment, not by rewording around it.
+15. For Standard or Risky scope: run `cqs review --json` to check the diff for risk
+16. Commit your changes
 
 ## Rules
 
@@ -53,8 +54,9 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 - If review shows risk > 0.5, add a test before finishing
 - Use `--features cuda-index` for ALL cargo commands
 - **NEVER run the full test suite** (`cargo test --features cuda-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
+- **Parallel agents need a private target dir**: if you may be running alongside other build/test agents, export `CARGO_TARGET_DIR=/tmp/cargo-target-$$` (or another private path) before any cargo command — the shared target dir's lock serializes everyone otherwise.
 - **Path discipline in worktrees**: if cwd contains `.claude/worktrees/`, use paths relative to project root in tool calls — worktree isolation is soft and absolute paths leak into the parent index.
-- **Worktree leakage guard (#1254)**: if any `cqs` command errors with "No cqs index found", you are in a git worktree without a local `.cqs/`. Do NOT fall back to absolute paths under `/mnt/c/Projects/cqs/...` — those reflect main's branch state, not the worktree's, and Edit calls on those paths land in the parent tree. Either restrict edits to relative paths under CWD, or refuse the task with a note that the worktree needs `cqs index` first. The cqs-side fix is tracked in #1254; until it ships, this guard is the agent-side workaround.
+- **Worktree leakage guard (#1254)**: in a `.claude/worktrees/` worktree of this repo, `cqs` does NOT error — it detects the Cargo workspace root and silently serves the PARENT tree's index, so scout/impact/review results reflect main's branch state, not your worktree. Treat them as hints; read the actual files at relative paths under CWD before editing. NEVER Edit absolute paths under `/mnt/c/Projects/cqs/...` — those Edits land in the parent tree. If `cqs` errors with "No cqs index found" (non-Cargo worktree), restrict yourself to relative paths or refuse with a note that the worktree needs `cqs index` first.
 
 ## Output
 

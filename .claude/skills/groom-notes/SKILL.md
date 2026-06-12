@@ -59,10 +59,11 @@ Notes capture **surprises** — things that broke predictions or would trip up a
 
 ## Staleness checks
 
-For each note, verify mentions still exist:
+Start with the built-in checker — it verifies every mention against the filesystem and index in one call:
 ```
-Glob for each file in mentions[] — if none match, flag as potentially stale
+cqs notes list --check --json
 ```
+For anything it flags, confirm manually (Glob the file, `cqs "<symbol>" --name-only`) before proposing removal.
 
 Cross-reference with git log — if a note mentions an issue number, check if that issue is closed.
 
