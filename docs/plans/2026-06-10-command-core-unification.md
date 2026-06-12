@@ -378,6 +378,14 @@ Consolidated list of every deferral made across the campaign, with its reason
 and tracking. None block the campaign's structural goal (one core per behavior,
 one schema per command); each is a deliberate scope boundary.
 
+The "every deferral" framing held for the deliberate scope boundaries below,
+but the campaign also had one *silent* gap: `similar` (dual-surface —
+`cmd_similar` CLI + `dispatch_similar` daemon) was cored in neither the phases
+nor this ledger, so it sat outside the NEW-COMMAND RULE with inline JSON on both
+surfaces. It is now cored (`similar_core` + `build_similar_output`, one typed
+`SimilarArgs`/`SimilarOutput`, CLI==daemon parity test); the dead
+`display_similar_results_json` it left behind is deleted.
+
 | Item | Phase | Reason deferred | Tracking |
 |------|-------|-----------------|----------|
 | ~~`read` full/focused union-schema~~ **DONE (#1775 PR)** | 2b | Daemon emits `notes_injected`+`trust_level` the CLI omits; CLI focused emits `injection_flags` the daemon omits; daemon does vendored-path detection the CLI doesn't. **Resolved:** one `read_core` with the union schema — `notes_injected` + skip-when-default `trust_level` on both full surfaces (shared vendored detection), skip-when-default `injection_flags` on both focused surfaces (now computed from focus content). Parity test pins CLI==daemon. | done |

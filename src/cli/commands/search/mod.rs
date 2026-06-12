@@ -7,7 +7,7 @@ pub(crate) mod query;
 mod related;
 pub(crate) mod scout;
 pub(crate) mod search_ctx;
-mod similar;
+pub(crate) mod similar;
 mod where_cmd;
 
 pub(crate) use gather::{build_gather_output, cmd_gather, GatherContext};
