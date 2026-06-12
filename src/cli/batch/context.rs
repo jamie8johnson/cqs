@@ -131,8 +131,8 @@ pub(crate) struct BatchContext {
     pub(super) config: RefCell<Option<CachedReload<cqs::config::Config>>>,
     /// `Arc<OnceLock<...>>` so views share one slot with the BatchContext. The
     /// inner type is `Arc<dyn cqs::Reranker>` so the trait object can be
-    /// swapped at construction time (NoopReranker for ablation, future
-    /// LlmReranker for batch eval, etc.) without touching the cache surface.
+    /// swapped at construction time (NoopReranker for ablation, an alternate
+    /// scorer for batch eval, etc.) without touching the cache surface.
     pub(super) reranker: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
     /// `RefCell<Option<CachedReload<AuditMode>>>` so the 30-min audit
     /// auto-expire fires while the daemon is up. Reloads from
