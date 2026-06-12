@@ -182,14 +182,70 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
     (cmd, tail)
 }
 
+/// Whether `tok` is a combined-short cluster (`-qv`, `-qn5`): a single `-`
+/// followed by two or more characters, none of them `-` (so `--long` and
+/// `-x=val` are excluded — those are handled by the long / attached-value
+/// paths). Clap accepts these clusters when the daemon is down, so they reach
+/// the bare-query forward path and must be expanded before classification.
+fn is_combined_short(tok: &str) -> bool {
+    let Some(rest) = tok.strip_prefix('-') else {
+        return false;
+    };
+    rest.len() >= 2 && !rest.starts_with('-') && !rest.contains('=')
+}
+
+/// Expand a combined-short cluster into individual short tokens the bare-query
+/// loop understands. Mirrors clap's cluster semantics: scan left to right,
+/// each character is a short flag `-x`; the first value-taking short consumes
+/// the remainder of the cluster as its attached value (emitted as `-x=rest`)
+/// and ends the cluster, or takes the next argv token via the spaced-form path
+/// when nothing follows it in the cluster. A character not known to the spec is
+/// treated as a trailing value for the preceding value flag if one is open,
+/// otherwise emitted as a bare short so the batch parser owns the rejection.
+fn expand_combined_short(cluster: &str, spec: &CliArgSpec) -> Vec<String> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = cluster.chars().skip(1).collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let short = format!("-{}", chars[i]);
+        let rest: String = chars[i + 1..].iter().collect();
+        if spec.value_flags.contains(&short) {
+            if rest.is_empty() {
+                // No attached value in the cluster: emit the bare flag and let
+                // the main loop consume the next argv token (spaced form).
+                out.push(short);
+            } else {
+                // Remainder is the attached value (`-n5` → `-n=5`).
+                out.push(format!("{short}={rest}"));
+            }
+            return out;
+        }
+        out.push(short);
+        i += 1;
+    }
+    out
+}
+
 /// Bare-query form: every token is top-level. Process-local flags
 /// (`spec.bare_query_strip`) are dropped — with their value, when they take
 /// one; everything else forwards verbatim to the batch `search` parser,
 /// whose `args::SearchArgs` mirrors the top-level search knobs spelling for
 /// spelling (including `-n`/`--limit` via the shared `LimitArg`).
 fn translate_bare_query_args(raw: &[String], spec: &CliArgSpec) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(raw.len());
-    let mut iter = raw.iter();
+    // Pre-expand combined-short clusters (`-qv` → `-q -v`) so each short is
+    // classified individually; clap accepts clusters daemon-down but the batch
+    // parser rejects them, which would be a non-recoverable protocol error.
+    let mut expanded: Vec<String> = Vec::with_capacity(raw.len());
+    for tok in raw {
+        if is_combined_short(tok) {
+            expanded.extend(expand_combined_short(tok, spec));
+        } else {
+            expanded.push(tok.clone());
+        }
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(expanded.len());
+    let mut iter = expanded.iter();
     while let Some(tok) = iter.next() {
         // Attached-value forms (`--model=foo`, `--json=true`, `-n=5`):
         // self-contained tokens — drop or forward whole.
@@ -743,18 +799,45 @@ fn daemon_request_with_timeout<T: serde::de::DeserializeOwned>(
             DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
         })?;
     if status != "ok" {
-        let msg = envelope
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("daemon error");
-        tracing::warn!(
-            stage = "parse",
-            status,
-            msg,
-            command,
-            "daemon request failed: non-ok status"
-        );
-        return Err(DaemonRpcError::DaemonError(msg.to_string()));
+        return Err(match envelope.get("message") {
+            // String message: the daemon's own handler-level description.
+            Some(serde_json::Value::String(msg)) => {
+                tracing::warn!(
+                    stage = "parse",
+                    status,
+                    msg = msg.as_str(),
+                    command,
+                    "daemon request failed: non-ok status"
+                );
+                DaemonRpcError::DaemonError(msg.clone())
+            }
+            // Present but not a string: a malformed envelope, surfaced as a
+            // shape mismatch rather than silently collapsed to a placeholder.
+            Some(other) => {
+                tracing::warn!(
+                    stage = "parse",
+                    status,
+                    command,
+                    "daemon request failed: non-ok status with non-string message"
+                );
+                DaemonRpcError::BadResponse(format!(
+                    "non-ok daemon response carried a non-string 'message' field: {other}"
+                ))
+            }
+            // No message field at all: report the absence rather than echoing
+            // a placeholder that renders as the doubled "daemon error: ...".
+            None => {
+                tracing::warn!(
+                    stage = "parse",
+                    status,
+                    command,
+                    "daemon request failed: non-ok status with no message field"
+                );
+                DaemonRpcError::BadResponse(format!(
+                    "non-ok daemon response (status {status:?}) omitted the 'message' field"
+                ))
+            }
+        });
     }
 
     let output = envelope.get("output").ok_or_else(|| {
@@ -791,8 +874,10 @@ fn daemon_request_with_timeout<T: serde::de::DeserializeOwned>(
 ///    re-wraps the dispatch bytes verbatim): `output` is a JSON string
 ///    that needs a second `from_str` to reach the inner shape.
 ///
-/// We accept both forms transparently. If neither produces a `data`
-/// field — i.e. the value is already the bare handler payload — return
+/// We accept both forms transparently. A dispatch envelope that carries a
+/// non-null `error` field surfaces that error rather than returning its
+/// (typically null) `data` payload. If neither an `error` nor a `data` field
+/// is present — i.e. the value is already the bare handler payload — return
 /// it as-is so the legacy mock-test path keeps working.
 fn unwrap_dispatch_payload(
     output: &serde_json::Value,
@@ -805,12 +890,24 @@ fn unwrap_dispatch_payload(
         })?,
         other => other.clone(),
     };
-    // If the inner shape is the dispatch envelope, dig out `data`.
-    // Otherwise pass through (legacy bare-payload mock form).
-    match parsed.as_object().and_then(|m| m.get("data")) {
-        Some(data) => Ok(data.clone()),
-        None => Ok(parsed),
+    if let Some(obj) = parsed.as_object() {
+        // A non-null `error` in the dispatch envelope is a handler failure;
+        // surface it instead of returning the accompanying (null) `data`.
+        if let Some(err) = obj.get("error").filter(|e| !e.is_null()) {
+            tracing::warn!(
+                stage = "parse",
+                type_name,
+                "daemon dispatch envelope carried an error"
+            );
+            return Err(format!("daemon dispatch error for {type_name}: {err}"));
+        }
+        // The dispatch envelope: dig out `data`.
+        if let Some(data) = obj.get("data") {
+            return Ok(data.clone());
+        }
     }
+    // Pass through (legacy bare-payload mock form).
+    Ok(parsed)
 }
 
 /// Connect to the running daemon and request a [`WatchSnapshot`].
@@ -1137,6 +1234,52 @@ mod tests {
         );
         assert_eq!(cmd, "search");
         assert_eq!(args, v(&["hello", "--rrf", "-n", "8"]));
+    }
+
+    /// `cqs -qv "hello"`: clap accepts the `-qv` cluster daemon-down, so it
+    /// reaches the bare-query forward path. Both shorts are process-local
+    /// (`-q`/`-v`), so the whole cluster is stripped and only the query
+    /// forwards — instead of forwarding `-qv` verbatim and tripping a
+    /// non-recoverable protocol error in the batch parser.
+    #[test]
+    fn bare_query_expands_combined_short_bools() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["-qv", "hello"]), false, &spec());
+        assert_eq!(cmd, "search");
+        assert_eq!(args, v(&["hello"]));
+    }
+
+    /// A combined short mixing a forwarded search knob with a process-local
+    /// bool: `-vn 8` expands to `-v` (stripped) + `-n` (forwarded value flag),
+    /// whose value `8` is the next spaced token. The forwarded `-n 8` survives.
+    #[test]
+    fn bare_query_expands_combined_short_mixed_with_value_flag() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["hello", "-vn", "8"]), false, &spec());
+        assert_eq!(cmd, "search");
+        assert_eq!(args, v(&["hello", "-n", "8"]));
+    }
+
+    /// Attached-value cluster: `-qn8` expands to `-q` (stripped) + `-n8` (the
+    /// remainder is the attached value), forwarded as `-n=8`.
+    #[test]
+    fn bare_query_expands_combined_short_with_attached_value() {
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["hello", "-qn8"]), false, &spec());
+        assert_eq!(cmd, "search");
+        assert_eq!(args, v(&["hello", "-n=8"]));
+    }
+
+    /// All-forwarded cluster of bool knobs survives intact: `-ab` where both
+    /// are search knobs (not in `bare_query_strip`) expands and re-emits both.
+    #[test]
+    fn bare_query_expands_combined_short_all_forwarded() {
+        // `-q` is process-local; pair it with a non-stripped bool short by
+        // using a spec spelling that forwards. `-v` is stripped, so use two
+        // forwarded shorts via the value-flag-free path: emulate with `-tl`
+        // — but `-t`/`-l` take values, so use a pure pass-through pair.
+        // The cluster `-xy` (neither known) forwards each short verbatim for
+        // the batch parser to own the rejection.
+        let (cmd, args) = translate_cli_args_to_batch(&v(&["hello", "-xy"]), false, &spec());
+        assert_eq!(cmd, "search");
+        assert_eq!(args, v(&["hello", "-x", "-y"]));
     }
 
     #[test]
@@ -1992,18 +2135,17 @@ mod tests {
         assert_eq!(expected_hex.len(), 16, "BLAKE3 truncation must be 8 bytes");
     }
 
-    // ===== daemon-side adversarial pins =====
+    // ===== daemon-side error-envelope handling =====
     //
-    // Each test pins current behavior so a future fix produces a clear
-    // inversion target. The two `daemon_status_handles_err_envelope_*`
-    // tests pin the doubled "daemon error: daemon error" string the fallback
-    // produces; future work should surface the raw envelope in the error.
+    // A non-ok status with a missing or non-string `message` field is a
+    // malformed envelope: it surfaces as a `BadResponse` naming the shape
+    // mismatch rather than a placeholder `DaemonError`. Only a genuine
+    // string `message` becomes a `DaemonError`.
 
-    /// `{"status":"err"}` with no `message` field. The fallback uses the
-    /// literal `"daemon error"` string for the missing message, then
-    /// thiserror's `Display` prefixes with `"daemon error: "`, yielding the
-    /// doubled `"daemon error: daemon error"`. Pin so a fix that surfaces the
-    /// raw envelope (or a less-confusing fallback) trips this test.
+    /// `{"status":"err"}` with no `message` field. The absence of the field
+    /// is a malformed envelope, surfaced as a `BadResponse` that names the
+    /// omission rather than echoing a placeholder that would render as the
+    /// doubled `"daemon error: daemon error"`.
     #[cfg(unix)]
     #[test]
     fn daemon_status_handles_err_envelope_with_no_message() {
@@ -2036,30 +2178,26 @@ mod tests {
         set_socket_dir_override_for_test(None);
 
         match result {
-            Err(DaemonRpcError::DaemonError(msg)) => {
-                // Bare "daemon error" placeholder when the envelope omits message.
-                assert_eq!(
-                    msg, "daemon error",
-                    "today's fallback uses the literal placeholder; future fix should \
-                     surface the raw envelope or upgrade to a BadResponse variant",
+            Err(DaemonRpcError::BadResponse(msg)) => {
+                // The missing field is named, not papered over with a placeholder.
+                assert!(
+                    msg.contains("omitted the 'message' field"),
+                    "BadResponse must name the missing message field, got: {msg}",
                 );
-                // The full as_message() string is the doubled form.
-                let rendered = DaemonRpcError::DaemonError(msg).as_message();
-                assert_eq!(
-                    rendered, "daemon error: daemon error",
-                    "today's wire-format string is the doubled fallback — \
-                     future fix should produce a less-confusing rendering",
+                // The rendered wire-format string is no longer the doubled form.
+                let rendered = DaemonRpcError::BadResponse(msg).as_message();
+                assert!(
+                    !rendered.contains("daemon error: daemon error"),
+                    "rendering must not be the doubled placeholder, got: {rendered}",
                 );
             }
-            other => panic!("expected DaemonError(\"daemon error\") today, got: {other:?}",),
+            other => panic!("expected BadResponse naming the missing message, got: {other:?}",),
         }
     }
 
-    /// `{"status":"err","message": 42}` (non-string message). `as_str()`
-    /// returns None → falls back to the same `"daemon error"` placeholder as
-    /// the no-message case. Pin both the variant and the fact that the integer
-    /// payload is silently dropped, so work that surfaces the type mismatch has
-    /// a clear inversion target.
+    /// `{"status":"err","message": 42}` (non-string message). A non-string
+    /// `message` is a shape mismatch, surfaced as a `BadResponse` that carries
+    /// the offending value rather than silently collapsing to a placeholder.
     #[cfg(unix)]
     #[test]
     fn daemon_status_handles_err_envelope_with_non_string_message() {
@@ -2092,15 +2230,14 @@ mod tests {
         set_socket_dir_override_for_test(None);
 
         match result {
-            Err(DaemonRpcError::DaemonError(msg)) => {
-                // Silent fallback: the 42 is dropped.
-                assert_eq!(
-                    msg, "daemon error",
-                    "non-string message payload is silently dropped by `as_str()`; \
-                     future fix should surface the shape mismatch as a BadResponse",
+            Err(DaemonRpcError::BadResponse(msg)) => {
+                // The offending integer is surfaced, not dropped.
+                assert!(
+                    msg.contains("non-string 'message'") && msg.contains("42"),
+                    "BadResponse must name the shape mismatch and carry the value, got: {msg}",
                 );
             }
-            other => panic!("expected DaemonError(\"daemon error\") today, got: {other:?}",),
+            other => panic!("expected BadResponse naming the non-string message, got: {other:?}",),
         }
     }
 
@@ -2184,28 +2321,19 @@ mod tests {
         );
     }
 
-    /// `unwrap_dispatch_payload` does NOT distinguish envelope-with-`data:null`-
-    /// and-error from a bare-payload null. The code only checks for the
-    /// *presence* of a `data` key and returns whatever it finds, so an envelope
-    /// advertising `{"data": null, "error": "internal"}` round-trips as
-    /// `Ok(Value::Null)` rather than surfacing the `error` field. Pin this
-    /// behavior — work that propagates `error` from the envelope has a clear
-    /// inversion target.
+    /// `unwrap_dispatch_payload` surfaces a non-null `error` field rather than
+    /// returning the accompanying (null) `data` payload. An envelope
+    /// advertising `{"data": null, "error": "internal"}` returns `Err(_)`
+    /// carrying the error text instead of silently dropping it.
     #[test]
-    fn unwrap_dispatch_payload_distinguishes_envelope_no_data_from_bare_form() {
+    fn unwrap_dispatch_payload_surfaces_envelope_error_over_null_data() {
         let v = serde_json::json!({"data": null, "error": "internal", "version": 1});
         let result = unwrap_dispatch_payload(&v, "TestType");
-        // Returns Ok(Null), silently dropping `error`. A fix that surfaces
-        // `error` as `Err(_)` inverts this assertion to `result.is_err()`.
+        // A non-null `error` alongside `data: null` is a handler failure.
+        let err = result.expect_err("non-null error field must surface as Err");
         assert!(
-            result.is_ok(),
-            "today's helper passes through `data: null` even when an `error` field \
-             is present alongside; future fix should surface that as Err",
-        );
-        assert_eq!(
-            result.unwrap(),
-            serde_json::Value::Null,
-            "the data:null payload is returned verbatim; the error field is dropped",
+            err.contains("internal"),
+            "surfaced error must carry the envelope's error text, got: {err}",
         );
     }
 

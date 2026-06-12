@@ -769,10 +769,10 @@ pub(super) enum Commands {
         overwrite: bool,
         /// Preview conversions (default writes the .md files).
         ///
-        /// Per the "Dry-Run vs Apply" rule, side-effect commands (`index`,
-        /// `convert`) default to mutating; analyser commands (`doctor`,
-        /// `suggest`) default to read-only and require `--fix`/`--apply` to
-        /// mutate. TODO(docs-agent): document this rule in CONTRIBUTING.md.
+        /// Per the CONTRIBUTING "Dry-Run vs Apply" rule, side-effect commands
+        /// (`index`, `convert`) default to mutating; analyser commands
+        /// (`doctor`, `suggest`) default to read-only and require
+        /// `--fix`/`--apply` to mutate.
         #[arg(long)]
         dry_run: bool,
         /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]

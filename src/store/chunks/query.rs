@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use sqlx::Row;
 
@@ -52,6 +53,21 @@ fn chunk_type_priority_case() -> &'static str {
         case
     })
 }
+
+/// Fully-rendered SQL for [`Store::get_chunks_by_name`]. The column list,
+/// priority CASE expression, and row limit are all compile-time/process-
+/// lifetime constants, so the statement is assembled once instead of being
+/// re-`format!`'d on every lookup (this is on the kind-routing hot path).
+static GET_CHUNKS_BY_NAME_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {cols} FROM chunks WHERE name = ?1 \
+         ORDER BY {priority}, chunk_type, origin, line_start \
+         LIMIT {limit}",
+        cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
+        priority = chunk_type_priority_case(),
+        limit = GET_CHUNKS_BY_NAME_LIMIT,
+    )
+});
 
 impl<Mode> Store<Mode> {
     /// Get the number of chunks in the index
@@ -324,15 +340,7 @@ impl<Mode> Store<Mode> {
             return Ok(Vec::new());
         }
         self.rt.block_on(async {
-            let sql = format!(
-                "SELECT {cols} FROM chunks WHERE name = ?1 \
-                 ORDER BY {priority}, chunk_type, origin, line_start \
-                 LIMIT {limit}",
-                cols = crate::store::helpers::CHUNK_ROW_SELECT_COLUMNS,
-                priority = chunk_type_priority_case(),
-                limit = GET_CHUNKS_BY_NAME_LIMIT,
-            );
-            let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            let rows = sqlx::query(sqlx::AssertSqlSafe(GET_CHUNKS_BY_NAME_SQL.as_str()))
                 .bind(name)
                 .fetch_all(&self.pool)
                 .await?;
