@@ -327,6 +327,11 @@ pub(crate) struct DeadArgs {
     /// Minimum confidence level to report
     #[arg(long, default_value = "low")]
     pub min_confidence: DeadConfidence,
+    /// Restrict output to one verdict: `test-only`, `low-confidence-live`,
+    /// `known-gap`, `dead`, or `unclassified`. `--verdict dead` is the
+    /// actionable residue. Omit for all verdicts.
+    #[arg(long, value_name = "VERDICT")]
+    pub verdict: Option<String>,
 }
 
 /// Arguments shared between CLI `similar` and batch `similar`.
@@ -414,6 +419,10 @@ pub(crate) struct CallersArgs {
     /// Query callers across all configured reference projects
     #[arg(long)]
     pub cross_project: bool,
+    /// Restrict to call edges of one provenance kind: `call` (syntactic),
+    /// `serde_callback`, `macro_heuristic`, or `fn_pointer`. Omit for all kinds.
+    #[arg(long, value_name = "KIND")]
+    pub edge_kind: Option<String>,
     /// Cap on callers/callees returned. Defaults to 5 to match the
     /// top-level `Cli`. The handler truncates the post-resolution list before
     /// rendering — both text and JSON paths respect the cap.

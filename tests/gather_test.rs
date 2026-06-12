@@ -6,7 +6,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::{CallSite, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, ChunkType, FunctionCalls, Language};
 use cqs::reference::ReferenceIndex;
 use cqs::{GatherDirection, GatherOptions};
 use std::path::PathBuf;
@@ -33,6 +33,7 @@ fn test_gather_basic() {
             calls: vec![CallSite {
                 callee_name: "func_b".to_string(),
                 line_number: 1,
+                kind: CallEdgeKind::Call,
             }],
         },
         FunctionCalls {
@@ -41,6 +42,7 @@ fn test_gather_basic() {
             calls: vec![CallSite {
                 callee_name: "func_c".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -155,6 +157,7 @@ fn test_gather_callers_only() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 1,
+                kind: CallEdgeKind::Call,
             }],
         },
         FunctionCalls {
@@ -163,6 +166,7 @@ fn test_gather_callers_only() {
             calls: vec![CallSite {
                 callee_name: "callee".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -236,6 +240,7 @@ fn test_gather_callees_only() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 1,
+                kind: CallEdgeKind::Call,
             }],
         },
         FunctionCalls {
@@ -244,6 +249,7 @@ fn test_gather_callees_only() {
             calls: vec![CallSite {
                 callee_name: "callee".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -334,6 +340,7 @@ fn test_gather_cross_index_basic() {
                 calls: vec![CallSite {
                     callee_name: "proj_callee".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -546,6 +553,7 @@ fn test_gather_cross_index_with_real_index() {
                 calls: vec![CallSite {
                     callee_name: "proj_callee".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )

@@ -4,7 +4,9 @@ mod common;
 
 use common::{mock_embedding, TestStore};
 use cqs::find_related;
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language, TypeEdgeKind, TypeRef};
+use cqs::parser::{
+    CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language, TypeEdgeKind, TypeRef,
+};
 use std::path::{Path, PathBuf};
 
 /// Create a chunk at a specific file and line
@@ -53,6 +55,7 @@ fn insert_calls(store: &TestStore, file: &str, calls: &[CallSpec]) {
                 .map(|(callee, cline)| CallSite {
                     callee_name: callee.to_string(),
                     line_number: *cline,
+                    kind: CallEdgeKind::Call,
                 })
                 .collect(),
         })

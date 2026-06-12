@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn test_suggest_untested_hotspot() {
         use crate::language::{ChunkType, Language};
-        use crate::parser::{CallSite, Chunk, FunctionCalls};
+        use crate::parser::{CallEdgeKind, CallSite, Chunk, FunctionCalls};
         use std::path::PathBuf;
 
         let (store, dir) = make_store();
@@ -545,6 +545,7 @@ mod tests {
                         calls: vec![CallSite {
                             callee_name: "hot_function".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         }],
                     }],
                 )
@@ -576,7 +577,7 @@ mod tests {
     #[test]
     fn test_suggest_high_risk_with_few_tests() {
         use crate::language::{ChunkType, Language};
-        use crate::parser::{CallSite, Chunk, FunctionCalls};
+        use crate::parser::{CallEdgeKind, CallSite, Chunk, FunctionCalls};
         use std::path::PathBuf;
 
         let (store, dir) = make_store();
@@ -651,6 +652,7 @@ mod tests {
                         calls: vec![CallSite {
                             callee_name: "risky_function".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         }],
                     }],
                 )
@@ -699,6 +701,7 @@ mod tests {
                     calls: vec![CallSite {
                         callee_name: "risky_function".to_string(),
                         line_number: 2,
+                        kind: CallEdgeKind::Call,
                     }],
                 }],
             )

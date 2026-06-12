@@ -417,6 +417,7 @@ fn parse_server_code_calls(
                     calls.push(super::types::CallSite {
                         callee_name,
                         line_number: call_line,
+                        kind: super::types::CallEdgeKind::Call,
                     });
                 }
             }

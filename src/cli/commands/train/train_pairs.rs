@@ -65,11 +65,7 @@ fn build_contrastive_prefix<Mode>(store: &Store<Mode>, chunk: &ChunkSummary) -> 
     }
 
     // Take up to 3 callees for the prefix
-    let callee_names: Vec<&str> = callees
-        .iter()
-        .take(3)
-        .map(|(name, _)| name.as_str())
-        .collect();
+    let callee_names: Vec<&str> = callees.iter().take(3).map(|c| c.name.as_str()).collect();
     match callee_names.len() {
         1 => Some(format!("Unlike {},", callee_names[0])),
         2 => Some(format!(

@@ -34,7 +34,7 @@ pub use rows::clamp_line_number;
 
 // Domain types
 pub use types::{
-    CallGraph, CallerInfo, CallerWithContext, ChunkIdentity, ChunkSummary, IndexStats,
+    CallGraph, CalleeInfo, CallerInfo, CallerWithContext, ChunkIdentity, ChunkSummary, IndexStats,
     NoteSearchResult, NoteStats, NoteSummary, ParentContext, SearchResult, StaleFile, StaleReport,
     UnifiedResult,
 };
@@ -158,7 +158,12 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   the parse on the next run instead of being re-parsed forever #1774. Plus
 ///   a CHECK on notes.sentiment pinning it to the five discrete documented
 ///   values (-1, -0.5, 0, 0.5, 1); the migration clamp-rewrites off-grid rows.
-pub const CURRENT_SCHEMA_VERSION: i32 = 29;
+/// - v30: function_calls.edge_kind column (default 'call') classifying call-graph
+///   edge provenance: syntactic 'call' vs 'serde_callback'/'macro_heuristic'/
+///   'fn_pointer' heuristics. Additive; pre-v30 rows default to 'call', which is
+///   wrong for the pre-existing serde/macro/fn-pointer edges — PARSER_VERSION is
+///   bumped 5→6 so the next reindex re-extracts and re-tags those edges.
+pub const CURRENT_SCHEMA_VERSION: i32 = 30;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

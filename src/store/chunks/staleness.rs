@@ -1883,7 +1883,7 @@ mod tests {
     /// would survive the happy-path test — this one catches it.
     #[test]
     fn test_prune_all_cascade_populates_all_counters() {
-        use crate::parser::{CallSite, FunctionCalls, TypeRef};
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls, TypeRef};
 
         let (store, dir) = setup_store();
 
@@ -1918,10 +1918,12 @@ mod tests {
                         CallSite {
                             callee_name: "helper_a".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         },
                         CallSite {
                             callee_name: "helper_b".to_string(),
                             line_number: 3,
+                            kind: CallEdgeKind::Call,
                         },
                     ],
                 }],
@@ -2440,7 +2442,7 @@ mod tests {
     /// file the indexer no longer owns until the next full `prune_all`.
     #[test]
     fn test_prune_gitignored_removes_function_calls() {
-        use crate::parser::{CallSite, FunctionCalls};
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
         let (store, dir) = setup_store();
 
@@ -2462,6 +2464,7 @@ mod tests {
                     calls: vec![CallSite {
                         callee_name: "ghost_callee".to_string(),
                         line_number: 2,
+                        kind: CallEdgeKind::Call,
                     }],
                 }],
             )

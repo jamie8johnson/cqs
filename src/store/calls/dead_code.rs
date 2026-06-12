@@ -97,6 +97,34 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Find callee names whose call-graph edges are ALL heuristic kinds
+    /// (`macro_heuristic`, `fn_pointer`) — i.e. they have callers, but every
+    /// edge reaching them is a low-confidence heuristic, never a syntactic
+    /// `call`. These are the `low-confidence-live` verdict population for
+    /// `cqs dead`: not zero-caller (so `find_dead_code` skips them), but their
+    /// liveness rests entirely on heuristics that could be false positives.
+    ///
+    /// Consumes §1's `function_calls.edge_kind` column. A callee qualifies when
+    /// `MIN(edge_kind) > 'call'` for the group — `'call'` sorts before every
+    /// heuristic label (c < f/m/s), so a callee with even one syntactic edge is
+    /// excluded.
+    pub fn find_low_confidence_live_names(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, StoreError> {
+        let _span = tracing::info_span!("find_low_confidence_live_names").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT callee_name
+                 FROM function_calls
+                 GROUP BY callee_name
+                 HAVING MIN(edge_kind) > 'call'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows.into_iter().map(|(n,)| n).collect())
+        })
+    }
+
     /// Phase 1: Query all callable chunks with no callers in the call graph.
     /// Returns lightweight metadata without content/doc to minimize memory.
     ///

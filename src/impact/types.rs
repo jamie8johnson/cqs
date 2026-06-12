@@ -2,6 +2,25 @@
 
 use std::path::PathBuf;
 
+use crate::parser::CallEdgeKind;
+
+/// serde skip predicate: a default `call` edge omits its `edge_kind` field
+/// (skip-when-default — the chunk-JSON convention).
+pub(crate) fn is_default_call_edge(kind: &CallEdgeKind) -> bool {
+    *kind == CallEdgeKind::Call
+}
+
+/// serde serializer rendering a [`CallEdgeKind`] as its stable string.
+pub(crate) fn serialize_edge_kind<S>(
+    kind: &CallEdgeKind,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(kind.as_str())
+}
+
 /// Direct caller with display-ready fields (call-site context + snippet).
 /// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
 /// only basic fields (name, file, line). This struct adds `call_line` and
@@ -15,6 +34,14 @@ pub struct CallerDetail {
     pub line: u32,
     pub call_line: u32,
     pub snippet: Option<String>,
+    /// Provenance of the call edge from this caller to the impacted target
+    /// (skip-when-default: absent ⇒ `call`).
+    #[serde(
+        default,
+        skip_serializing_if = "is_default_call_edge",
+        serialize_with = "serialize_edge_kind"
+    )]
+    pub edge_kind: CallEdgeKind,
 }
 
 /// Affected test with call depth

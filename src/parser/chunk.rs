@@ -19,7 +19,7 @@ use super::Parser;
 /// store-side UPSERT clause must include
 /// `OR chunks.parser_version != excluded.parser_version` so the bump
 /// triggers a refresh.
-pub const PARSER_VERSION: u32 = 5;
+pub const PARSER_VERSION: u32 = 6;
 
 /// Collapse every run of ASCII/Unicode whitespace in `s` to a single space,
 /// then trim. Pure string normalization — no tree required.

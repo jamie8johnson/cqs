@@ -74,6 +74,69 @@ pub struct Chunk {
     pub parser_version: u32,
 }
 
+/// Provenance of a call-graph edge — how the extractor decided this call
+/// exists. Stored as a string in the `function_calls.edge_kind` column and
+/// surfaced (skip-when-default) on callers/callees/impact/test-map entries so
+/// a consuming agent can weight a syntactic `call_expression` differently from
+/// a token-tree heuristic. Mirrors the `type_edges.edge_kind` precedent.
+///
+/// `Call` is the default and the overwhelming majority — it is the
+/// skip-when-default value, so a present `edge_kind` always signals a
+/// non-syntactic edge worth extra scrutiny.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
+pub enum CallEdgeKind {
+    /// Syntactic `call_expression` — ground truth.
+    #[default]
+    Call,
+    /// serde string-callback attribute (`#[serde(with = "...")]` etc.) — the
+    /// attribute grammar is explicit, high confidence.
+    SerdeCallback,
+    /// `ident(`-shape match inside an opaque Rust macro token-tree —
+    /// heuristic, no semantic resolution.
+    MacroHeuristic,
+    /// Bare function name passed as a fn-pointer / callback VALUE in argument
+    /// position — heuristic, intra-file precision filter only.
+    FnPointer,
+}
+
+impl CallEdgeKind {
+    /// String representation for database storage and JSON surfaces.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CallEdgeKind::Call => "call",
+            CallEdgeKind::SerdeCallback => "serde_callback",
+            CallEdgeKind::MacroHeuristic => "macro_heuristic",
+            CallEdgeKind::FnPointer => "fn_pointer",
+        }
+    }
+
+    /// Parse from the stored string, defaulting to [`CallEdgeKind::Call`] for
+    /// any unknown value — pre-v30 rows store the `'call'` default, and an
+    /// unrecognized future kind degrades to the safe ground-truth label rather
+    /// than failing the read.
+    pub fn from_str_or_default(s: &str) -> Self {
+        match s {
+            "serde_callback" => CallEdgeKind::SerdeCallback,
+            "macro_heuristic" => CallEdgeKind::MacroHeuristic,
+            "fn_pointer" => CallEdgeKind::FnPointer,
+            _ => CallEdgeKind::Call,
+        }
+    }
+
+    /// Whether this edge is a heuristic (non-syntactic) kind. Used by the
+    /// `dead` `low-confidence-live` verdict: a function whose only callers are
+    /// heuristic edges may be a false-positive live.
+    pub fn is_heuristic(&self) -> bool {
+        matches!(self, CallEdgeKind::MacroHeuristic | CallEdgeKind::FnPointer)
+    }
+}
+
+impl std::fmt::Display for CallEdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A function call site extracted from code
 #[derive(Debug, Clone)]
 pub struct CallSite {
@@ -81,6 +144,9 @@ pub struct CallSite {
     pub callee_name: String,
     /// Line number where the call occurs (1-indexed)
     pub line_number: u32,
+    /// Provenance of this edge (syntactic vs heuristic). Defaults to
+    /// [`CallEdgeKind::Call`] for the syntactic-call majority.
+    pub kind: CallEdgeKind,
 }
 
 /// A function with its call sites (for full call graph coverage)

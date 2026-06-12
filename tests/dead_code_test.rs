@@ -3,7 +3,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::{CallSite, FunctionCalls};
+use cqs::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
 #[test]
 fn test_find_dead_code_basic() {
@@ -26,6 +26,7 @@ fn test_find_dead_code_basic() {
         calls: vec![CallSite {
             callee_name: "func_b".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store

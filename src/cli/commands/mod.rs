@@ -72,6 +72,7 @@ pub(crate) use graph::cmd_impact;
 pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
+pub(crate) use graph::parse_edge_kind;
 // graph cores + arg types (daemon dispatch handlers call these). The
 // `*CoreOutput` types are returned by the cores and serialized via
 // `serde_json::to_value` / `to_value()` without being named at the call
@@ -91,8 +92,8 @@ pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
 pub(crate) use review::{
-    ci_core, dead_core, health_core, review_core, suggest_core, CiArgs, DeadArgs, HealthArgs,
-    ReviewArgs, SuggestArgs,
+    ci_core, dead_core, health_core, review_core, suggest_core, CiArgs, DeadArgs, DeadVerdict,
+    HealthArgs, ReviewArgs, SuggestArgs,
 };
 
 // -- index --

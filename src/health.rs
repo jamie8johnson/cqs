@@ -152,7 +152,7 @@ pub fn health_check<Mode>(
 mod tests {
     use super::*;
     use crate::language::{ChunkType, Language};
-    use crate::parser::{CallSite, Chunk, FunctionCalls};
+    use crate::parser::{CallEdgeKind, CallSite, Chunk, FunctionCalls};
     use crate::test_helpers::mock_embedding;
     use tempfile::TempDir;
 
@@ -338,6 +338,7 @@ mod tests {
                         calls: vec![CallSite {
                             callee_name: "hot_target".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         }],
                     }],
                 )
@@ -406,6 +407,7 @@ mod tests {
                         calls: vec![CallSite {
                             callee_name: "untested_hot".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         }],
                     }],
                 )
@@ -480,6 +482,7 @@ mod tests {
                         calls: vec![CallSite {
                             callee_name: "tested_hot".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         }],
                     }],
                 )
@@ -503,6 +506,7 @@ mod tests {
                     calls: vec![CallSite {
                         callee_name: "tested_hot".to_string(),
                         line_number: 51,
+                        kind: CallEdgeKind::Call,
                     }],
                 }],
             )

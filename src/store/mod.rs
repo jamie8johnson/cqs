@@ -71,6 +71,9 @@ pub use helpers::CallGraph;
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
 
+/// Information about a function callee (from call graph), carrying edge_kind.
+pub use helpers::CalleeInfo;
+
 /// Caller with call-site context for impact analysis.
 pub use helpers::CallerWithContext;
 
@@ -2131,6 +2134,7 @@ mod tests {
                     calls: vec![crate::parser::CallSite {
                         callee_name: "callee".to_string(),
                         line_number: 2,
+                        kind: crate::parser::CallEdgeKind::Call,
                     }],
                 }],
             )

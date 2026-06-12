@@ -32,27 +32,34 @@ pub(crate) async fn write_function_calls_in_tx(
     let all_calls: Vec<_> = function_calls
         .iter()
         .flat_map(|fc| {
-            fc.calls
-                .iter()
-                .map(move |call| (&fc.name, fc.line_start, &call.callee_name, call.line_number))
+            fc.calls.iter().map(move |call| {
+                (
+                    &fc.name,
+                    fc.line_start,
+                    &call.callee_name,
+                    call.line_number,
+                    call.kind.as_str(),
+                )
+            })
         })
         .collect();
 
     if !all_calls.is_empty() {
         use crate::store::helpers::sql::max_rows_per_statement;
-        const INSERT_BATCH: usize = max_rows_per_statement(5);
+        const INSERT_BATCH: usize = max_rows_per_statement(6);
         for batch in all_calls.chunks(INSERT_BATCH) {
             let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line, edge_kind) ",
             );
             query_builder.push_values(
                 batch.iter(),
-                |mut b, (caller_name, caller_line, callee_name, call_line)| {
+                |mut b, (caller_name, caller_line, callee_name, call_line, edge_kind)| {
                     b.push_bind(file_str)
                         .push_bind(*caller_name)
                         .push_bind(*caller_line as i64)
                         .push_bind(*callee_name)
-                        .push_bind(*call_line as i64);
+                        .push_bind(*call_line as i64)
+                        .push_bind(*edge_kind);
                 },
             );
             query_builder.build().execute(&mut **tx).await?;
@@ -302,7 +309,7 @@ impl Store<ReadWrite> {
 
             // Phase 2: collect all rows tagged with their file string, then
             // batched multi-row INSERT.
-            let mut all_rows: Vec<(&str, &str, u32, &str, u32)> = Vec::new();
+            let mut all_rows: Vec<(&str, &str, u32, &str, u32, &str)> = Vec::new();
             for ((_file, function_calls), file_str) in entries.iter().zip(file_strs.iter()) {
                 for fc in function_calls {
                     for call in &fc.calls {
@@ -312,25 +319,27 @@ impl Store<ReadWrite> {
                             fc.line_start,
                             call.callee_name.as_str(),
                             call.line_number,
+                            call.kind.as_str(),
                         ));
                     }
                 }
             }
 
             if !all_rows.is_empty() {
-                const INSERT_BATCH: usize = max_rows_per_statement(5);
+                const INSERT_BATCH: usize = max_rows_per_statement(6);
                 for batch in all_rows.chunks(INSERT_BATCH) {
                     let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line, edge_kind) ",
                     );
                     qb.push_values(
                         batch.iter(),
-                        |mut b, (file, caller_name, caller_line, callee_name, call_line)| {
+                        |mut b, (file, caller_name, caller_line, callee_name, call_line, edge_kind)| {
                             b.push_bind(*file)
                                 .push_bind(*caller_name)
                                 .push_bind(*caller_line as i64)
                                 .push_bind(*callee_name)
-                                .push_bind(*call_line as i64);
+                                .push_bind(*call_line as i64)
+                                .push_bind(*edge_kind);
                         },
                     );
                     qb.build().execute(&mut *tx).await?;

@@ -1,6 +1,8 @@
 # Design: Result Trust — Edge Provenance, Dead Verdicts, Worktree Overlay, Ranking Provenance
 
-Status: PROPOSED (design only — nothing queued)
+Status: §1 (edge provenance) + §2 (dead verdicts) IMPLEMENTED (schema v30,
+PARSER_VERSION 6). §3 (worktree overlay), §4 (ranking provenance), §5 (docs)
+remain PROPOSED.
 Origin: 2026-06-12 session. The motivating gaps were hit live during the
 v1.43.0 campaign by our own agents. A candidate feature
 (`cqs review --base`) turned out to already exist — see §5.

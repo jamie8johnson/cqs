@@ -18,8 +18,8 @@ pub mod types;
 
 pub use chunk::{canonical_hash_fallback, collapse_whitespace};
 pub use types::{
-    CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language, ParserError,
-    SignatureStyle, TypeEdgeKind, TypeRef,
+    CallEdgeKind, CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language,
+    ParserError, SignatureStyle, TypeEdgeKind, TypeRef,
 };
 
 use once_cell::sync::OnceCell;
@@ -696,6 +696,7 @@ impl Parser {
                         calls.push(CallSite {
                             callee_name,
                             line_number: call_line,
+                            kind: CallEdgeKind::Call,
                         });
                     }
                 }
@@ -762,6 +763,7 @@ impl Parser {
                                 CallSite {
                                     callee_name: call.callee_name.clone(),
                                     line_number: rel_line,
+                                    kind: call.kind,
                                 },
                             ));
                         }

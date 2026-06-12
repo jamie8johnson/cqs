@@ -4,9 +4,28 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::parser::{Chunk, ChunkType, Language};
+use crate::parser::{CallEdgeKind, Chunk, ChunkType, Language};
 
 use super::rows::ChunkRow;
+
+/// serde skip predicate: a call edge of the default [`CallEdgeKind::Call`]
+/// kind omits its `edge_kind` field entirely (skip-when-default, the
+/// chunk-JSON convention). A present `edge_kind` always signals a
+/// non-syntactic (heuristic / attribute-grammar) edge.
+pub(crate) fn is_default_call_edge(kind: &CallEdgeKind) -> bool {
+    *kind == CallEdgeKind::Call
+}
+
+/// serde serializer rendering a [`CallEdgeKind`] as its stable string.
+pub(crate) fn serialize_edge_kind<S>(
+    kind: &CallEdgeKind,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(kind.as_str())
+}
 
 /// Chunk metadata returned from search results
 ///
@@ -291,6 +310,30 @@ pub struct CallerInfo {
     /// Line where function starts
     #[serde(rename = "line_start")]
     pub line: u32,
+    /// Provenance of the call edge (skip-when-default: absent ⇒ `call`).
+    #[serde(
+        skip_serializing_if = "is_default_call_edge",
+        serialize_with = "serialize_edge_kind"
+    )]
+    pub edge_kind: CallEdgeKind,
+}
+
+/// Callee information from the full call graph: the called function's name,
+/// the line of the call, and the provenance of the edge. Returned by
+/// `get_callees_full` so the `callees` surface can carry `edge_kind` and the
+/// `--edge-kind` filter can run over it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CalleeInfo {
+    /// Name of the called function.
+    pub name: String,
+    /// Line where the call occurs.
+    pub line: u32,
+    /// Provenance of the call edge (skip-when-default: absent ⇒ `call`).
+    #[serde(
+        skip_serializing_if = "is_default_call_edge",
+        serialize_with = "serialize_edge_kind"
+    )]
+    pub edge_kind: CallEdgeKind,
 }
 
 /// Caller with call-site context for impact analysis
@@ -309,6 +352,12 @@ pub struct CallerWithContext {
     pub line: u32,
     /// Line where the call to the target occurs
     pub call_line: u32,
+    /// Provenance of the call edge (skip-when-default: absent ⇒ `call`).
+    #[serde(
+        skip_serializing_if = "is_default_call_edge",
+        serialize_with = "serialize_edge_kind"
+    )]
+    pub edge_kind: CallEdgeKind,
 }
 
 /// In-memory call graph for BFS traversal

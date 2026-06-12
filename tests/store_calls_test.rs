@@ -5,7 +5,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::CallSite;
+use cqs::parser::{CallEdgeKind, CallSite};
 
 // ===== upsert_calls tests =====
 
@@ -24,10 +24,12 @@ fn test_upsert_calls_batch_insert() {
         CallSite {
             callee_name: "foo".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "bar".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls).unwrap();
@@ -52,6 +54,7 @@ fn test_upsert_calls_replace() {
     let calls1 = vec![CallSite {
         callee_name: "foo".to_string(),
         line_number: 1,
+        kind: CallEdgeKind::Call,
     }];
     store.upsert_calls(&chunk.id, &calls1).unwrap();
 
@@ -64,10 +67,12 @@ fn test_upsert_calls_replace() {
         CallSite {
             callee_name: "bar".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "baz".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls2).unwrap();
@@ -93,6 +98,7 @@ fn test_upsert_calls_empty() {
     let calls = vec![CallSite {
         callee_name: "foo".to_string(),
         line_number: 1,
+        kind: CallEdgeKind::Call,
     }];
     store.upsert_calls(&chunk.id, &calls).unwrap();
 
@@ -122,6 +128,7 @@ fn test_get_callers_full_found() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
         FunctionCalls {
@@ -130,6 +137,7 @@ fn test_get_callers_full_found() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 15,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -273,14 +281,17 @@ fn test_get_callees_found() {
         CallSite {
             callee_name: "a".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "b".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "c".to_string(),
             line_number: 3,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls).unwrap();
@@ -334,10 +345,12 @@ fn test_call_stats_populated() {
                 CallSite {
                     callee_name: "foo".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "bar".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         )
@@ -351,10 +364,12 @@ fn test_call_stats_populated() {
                 CallSite {
                     callee_name: "foo".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "baz".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         )
@@ -386,7 +401,7 @@ fn count_function_calls_for_file(store: &cqs::store::Store, file: &str, callee: 
 
 #[test]
 fn delete_by_origin_purges_function_calls() {
-    use cqs::parser::{CallSite, FunctionCalls};
+    use cqs::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
     let store = TestStore::new();
 
@@ -408,6 +423,7 @@ fn delete_by_origin_purges_function_calls() {
                 calls: vec![CallSite {
                     callee_name: "delete_by_origin_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -471,6 +487,7 @@ fn prune_missing_purges_function_calls_for_removed_files() {
                 calls: vec![CallSite {
                     callee_name: "prune_keeper_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -484,6 +501,7 @@ fn prune_missing_purges_function_calls_for_removed_files() {
                 calls: vec![CallSite {
                     callee_name: "prune_victim_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -556,6 +574,7 @@ fn delete_phantom_chunks_does_not_touch_function_calls() {
                 calls: vec![CallSite {
                     callee_name: "phantom_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -594,6 +613,7 @@ fn test_get_callers_with_context_returns_call_line() {
         calls: vec![CallSite {
             callee_name: "target".to_string(),
             line_number: 25,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store
@@ -621,6 +641,7 @@ fn test_get_callers_full_batch_returns_per_name_results() {
         calls: vec![CallSite {
             callee_name: "real_target".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store
@@ -636,4 +657,106 @@ fn test_get_callers_full_batch_returns_per_name_results() {
     // is intentional, not silent. The audit suggested the "empty Vec"
     // shape but that's a contract change for callers.
     assert!(!result.contains_key("missing"));
+}
+
+// ===== edge provenance (§1) =====
+
+/// Edge kind written at the source survives the function_calls round-trip and
+/// surfaces on the CallerInfo / CalleeInfo results.
+#[test]
+fn edge_kind_round_trips_through_function_calls() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("caller_fn", "fn caller_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/x.rs"),
+            &[FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![
+                    CallSite {
+                        callee_name: "syntactic_callee".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "macro_callee".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+    // Caller side: the macro callee's caller carries the heuristic kind.
+    let callers = store.get_callers_full("macro_callee").unwrap();
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].edge_kind, CallEdgeKind::MacroHeuristic);
+
+    let syn_callers = store.get_callers_full("syntactic_callee").unwrap();
+    assert_eq!(syn_callers[0].edge_kind, CallEdgeKind::Call);
+
+    // Callee side: get_callees_full carries the kind too.
+    let callees = store.get_callees_full("caller_fn", None).unwrap();
+    let macro_callee = callees.iter().find(|c| c.name == "macro_callee").unwrap();
+    assert_eq!(macro_callee.edge_kind, CallEdgeKind::MacroHeuristic);
+}
+
+/// A callee reached only by heuristic edges is reported by
+/// `find_low_confidence_live_names`; one with a syntactic edge is not.
+#[test]
+fn low_confidence_live_names_finds_heuristic_only_callees() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("caller_fn", "fn caller_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/x.rs"),
+            &[FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![
+                    // heuristic-only callee
+                    CallSite {
+                        callee_name: "heuristic_only".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::FnPointer,
+                    },
+                    // has a syntactic edge → NOT low-confidence
+                    CallSite {
+                        callee_name: "has_syntactic".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "has_syntactic".to_string(),
+                        line_number: 4,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+    let names = store.find_low_confidence_live_names().unwrap();
+    assert!(
+        names.contains("heuristic_only"),
+        "heuristic-only callee must be low-confidence-live: {names:?}"
+    );
+    assert!(
+        !names.contains("has_syntactic"),
+        "a callee with even one syntactic edge is not low-confidence-live: {names:?}"
+    );
 }

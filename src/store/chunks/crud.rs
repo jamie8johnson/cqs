@@ -1604,7 +1604,7 @@ impl Store<ReadWrite> {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
-    use crate::parser::{CallSite, FunctionCalls};
+    use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
     use crate::test_helpers::{mock_embedding, setup_store};
 
     /// `upsert_chunks_calls_and_prune_with_file_calls` must write
@@ -1629,6 +1629,7 @@ mod tests {
             calls: vec![CallSite {
                 callee_name: "callee_alpha".to_string(),
                 line_number: 2,
+                kind: CallEdgeKind::Call,
             }],
         }];
 
@@ -1687,6 +1688,7 @@ mod tests {
             calls: vec![CallSite {
                 callee_name: "seeded_callee".to_string(),
                 line_number: 2,
+                kind: CallEdgeKind::Call,
             }],
         }];
         store

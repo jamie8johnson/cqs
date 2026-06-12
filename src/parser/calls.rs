@@ -7,8 +7,8 @@ use regex::Regex;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
-    capture_name_to_chunk_type, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
-    ParserError, TypeEdgeKind, TypeRef,
+    capture_name_to_chunk_type, CallEdgeKind, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls,
+    Language, ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
 
@@ -95,6 +95,7 @@ pub(crate) fn extract_serde_callback_calls(
         calls.push(CallSite {
             callee_name: terminal.to_string(),
             line_number,
+            kind: CallEdgeKind::SerdeCallback,
         });
     }
     calls
@@ -189,6 +190,7 @@ fn collect_macro_calls(
                     out.push(CallSite {
                         callee_name,
                         line_number,
+                        kind: CallEdgeKind::MacroHeuristic,
                     });
                 }
             }
@@ -369,6 +371,7 @@ fn push_arg_edge(
     out.push(CallSite {
         callee_name,
         line_number,
+        kind: CallEdgeKind::FnPointer,
     });
 }
 
@@ -470,6 +473,7 @@ impl Parser {
                     calls.push(CallSite {
                         callee_name,
                         line_number,
+                        kind: CallEdgeKind::Call,
                     });
                 }
             }
@@ -820,6 +824,7 @@ impl Parser {
                         calls.push(CallSite {
                             callee_name,
                             line_number: call_line,
+                            kind: CallEdgeKind::Call,
                         });
                     }
                 }

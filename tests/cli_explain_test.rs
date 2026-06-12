@@ -23,7 +23,7 @@ mod common;
 
 use assert_cmd::Command;
 use common::cqs_v1 as cqs;
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
 use cqs::store::ModelInfo;
 use cqs::Store;
 use serde_json::Value;
@@ -100,6 +100,7 @@ fn seed_explain_store() -> TempDir {
         calls: vec![CallSite {
             callee_name: "func_b".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store

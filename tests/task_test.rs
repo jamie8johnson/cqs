@@ -6,7 +6,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::{CallSite, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, ChunkType, FunctionCalls, Language};
 use std::path::PathBuf;
 
 /// Set up a test store with chunks and call graph for task tests.
@@ -54,10 +54,12 @@ fn setup_task_store() -> TestStore {
                 CallSite {
                     callee_name: "validate_query".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "normalize_for_fts".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         },
@@ -67,6 +69,7 @@ fn setup_task_store() -> TestStore {
             calls: vec![CallSite {
                 callee_name: "search_filtered".to_string(),
                 line_number: 10,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];

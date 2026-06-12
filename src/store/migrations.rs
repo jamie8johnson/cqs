@@ -399,6 +399,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (26, 27, |c| Box::pin(migrate_v26_to_v27(c))),
     (27, 28, |c| Box::pin(migrate_v27_to_v28(c))),
     (28, 29, |c| Box::pin(migrate_v28_to_v29(c))),
+    (29, 30, |c| Box::pin(migrate_v29_to_v30(c))),
 ];
 
 /// Run a single migration step
@@ -1174,6 +1175,38 @@ async fn migrate_v28_to_v29(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v29 → v30: add `function_calls.edge_kind` column classifying call-graph
+/// edge provenance.
+///
+/// The call-graph extractor emits four edge kinds with very different
+/// evidentiary weight: syntactic `call_expression` (`call`, ground truth),
+/// serde string-callback attributes (`serde_callback`), Rust macro token-tree
+/// heuristics (`macro_heuristic`), and bare fn-pointer arguments
+/// (`fn_pointer`). Before this column the four flatten into indistinguishable
+/// rows, so a consuming agent cannot weight a direct call differently from a
+/// heuristic match. Mirrors the `type_edges.edge_kind` precedent.
+///
+/// Additive `ALTER TABLE ADD COLUMN` with a `'call'` default. Existing rows
+/// take `'call'`, which is correct for the syntactic majority but WRONG for
+/// the pre-existing serde/macro/fn-pointer edges — those re-extract with the
+/// right kind on the next reindex (PARSER_VERSION is bumped 5→6 alongside this
+/// migration so a `cqs index` re-tags them). Pre-reindex, those edges read as
+/// `'call'`; the surfaces document the absence ⇒ `call` convention.
+async fn migrate_v29_to_v30(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v29_to_v30").entered();
+
+    sqlx::query("ALTER TABLE function_calls ADD COLUMN edge_kind TEXT NOT NULL DEFAULT 'call'")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v30: function_calls.edge_kind column (default 'call'). \
+         Pre-v30 serde/macro/fn-pointer edges read as 'call' until the next \
+         reindex re-tags them (PARSER_VERSION bumped 5→6)."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,7 +1239,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 30);
     }
 
     #[test]
@@ -4399,6 +4432,161 @@ mod tests {
             assert!(
                 mig_notes_sql.to_lowercase().contains("check"),
                 "migrated notes table must carry the sentiment CHECK, got: {mig_notes_sql}"
+            );
+        });
+    }
+
+    /// Build a minimal v29 schema (metadata + a v29-shaped `function_calls`
+    /// table WITHOUT the `edge_kind` column, stamped at version 29) at
+    /// `db_path`. Returns the open pool. Shared by the v29→v30 tests.
+    async fn setup_v29_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pre-v30 function_calls: no edge_kind column.
+        sqlx::query(
+            "CREATE TABLE function_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file TEXT NOT NULL,
+                caller_name TEXT NOT NULL,
+                caller_line INTEGER NOT NULL,
+                callee_name TEXT NOT NULL,
+                call_line INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '29')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v29 → v30 adds the `function_calls.edge_kind` column with a `'call'`
+    /// default. A pre-existing row (inserted before the migration without the
+    /// column) must read back `edge_kind = 'call'`, and a fresh insert can
+    /// carry a non-default kind.
+    #[test]
+    fn test_migrate_v29_to_v30_adds_edge_kind_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v29_schema(&db_path).await;
+
+            // Insert a pre-migration row (no edge_kind column yet).
+            sqlx::query(
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) \
+                 VALUES ('src/a.rs', 'caller', 1, 'callee', 2)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let pool = migrate(pool, &db_path, 29, 30).await.unwrap();
+
+            // Pre-migration row defaults to 'call'.
+            let (kind,): (String,) =
+                sqlx::query_as("SELECT edge_kind FROM function_calls WHERE callee_name = 'callee'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                kind, "call",
+                "pre-v30 function_calls row must default to edge_kind = 'call'"
+            );
+
+            // A fresh insert can carry a heuristic kind.
+            sqlx::query(
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line, edge_kind) \
+                 VALUES ('src/b.rs', 'c2', 1, 'cb', 2, 'serde_callback')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (kind2,): (String,) =
+                sqlx::query_as("SELECT edge_kind FROM function_calls WHERE callee_name = 'cb'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(kind2, "serde_callback");
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v29 → v30) must produce the same
+    /// `function_calls` shape: both carry an `edge_kind` column defaulting to
+    /// `'call'`. Compares the `sqlite_master.sql` text for the column presence.
+    #[test]
+    fn test_v30_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Fresh-create: apply schema.sql to an in-memory DB.
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+
+            let (fresh_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'function_calls'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert!(
+                fresh_sql.to_lowercase().contains("edge_kind"),
+                "fresh function_calls must carry edge_kind, got: {fresh_sql}"
+            );
+
+            // Migrated: build v29, migrate to v30.
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v29_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 29, 30).await.unwrap();
+
+            let (mig_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'function_calls'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                mig_sql.to_lowercase().contains("edge_kind"),
+                "migrated function_calls must carry edge_kind, got: {mig_sql}"
             );
         });
     }

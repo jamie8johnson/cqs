@@ -140,7 +140,7 @@ fn callees_returns_data_for_caller() {
         .store
         .get_callees_full("outer", None)
         .expect("get_callees_full");
-    let names: Vec<&str> = callees.iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = callees.iter().map(|c| c.name.as_str()).collect();
     assert!(
         names.contains(&"inner"),
         "expected `inner` in callees of `outer` (got {names:?})"

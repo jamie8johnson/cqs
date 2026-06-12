@@ -546,6 +546,7 @@ impl Parser {
                             calls.push(super::types::CallSite {
                                 callee_name,
                                 line_number: call_line,
+                                kind: super::types::CallEdgeKind::Call,
                             });
                         }
                     }
@@ -760,6 +761,7 @@ impl Parser {
                             calls.push(super::types::CallSite {
                                 callee_name,
                                 line_number: call_line,
+                                kind: super::types::CallEdgeKind::Call,
                             });
                         }
                     }
