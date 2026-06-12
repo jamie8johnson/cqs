@@ -15,7 +15,7 @@ Rebuild the cqs search index and compare stats.
 
 2. **Reindex**:
    - Default: `cqs index` (incremental — only re-embeds changed files)
-   - With `--force` argument: `cqs index --force` (full rebuild)
+   - With `--force` argument: `cqs index --force` (full rebuild). Stop the daemon first (`systemctl --user stop cqs-watch`) — cqs itself warns to do this — and restart it after.
 
 3. **After stats**: Run `cqs stats` again
 

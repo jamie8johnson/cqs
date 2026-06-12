@@ -40,14 +40,14 @@ echo 'callees main | callers | test-map' | cqs batch
 echo 'dead --min-confidence high | explain' | cqs batch
 ```
 
-**Pipeable downstream commands:** callers, callees, deps, explain, similar, impact, test-map, related, scout.
+**Pipeable downstream commands:** blame, callers, callees, deps, explain, similar, impact, test-map, related, scout.
 
-Pipeline output is a JSON envelope:
+Pipeline output is a JSON envelope (wrapped like every batch line, see Output below):
 ```json
-{"pipeline": "...", "stages": N, "results": [{"_input": "name", "data": ...}], "errors": [...], "total_inputs": N, "truncated": false}
+{"data": {"pipeline": "...", "stages": N, "results": [{"_input": "name", "data": ...}], "errors": [...], "total_inputs": N, "truncated": false}}
 ```
 
-**Limits:** Max 50 names per stage (prevents fan-out explosion). Quoted pipes (`search "foo | bar"`) are not treated as separators.
+**Limits:** Max 50 names per stage (prevents fan-out explosion; override with `CQS_PIPELINE_FAN_OUT`, clamped 10-1000). Quoted pipes (`search "foo | bar"`) are not treated as separators.
 
 ## Supported Commands
 
@@ -73,6 +73,15 @@ Pipeline output is a JSON envelope:
 | `stale` | `stale` |
 | `health` | `health` |
 | `notes` | `notes --warnings` or `notes --patterns` |
+| `blame <name>` | `blame search_filtered` |
+| `onboard <concept>` | `onboard "indexing pipeline"` |
+| `task <description>` | `task "add a --rerank flag"` |
+| `review` / `ci` | `review --base main` / `ci --gate high` |
+| `impact-diff` | `impact-diff --base main` |
+| `diff` / `drift` | `drift gemma --min-drift 0.1` |
+| `plan <description>` | `plan "fix panic in gather"` |
+| `suggest` | `suggest` |
+| `gc` | `gc` (MUTATING — removes stale chunks) |
 
 ## Input Format
 
@@ -84,4 +93,4 @@ Pipeline output is a JSON envelope:
 
 ## Output
 
-Compact JSONL — one JSON object per line, flushed after each command. Pipelines produce a single envelope per pipeline. Errors: `{"error":"message"}`.
+Compact JSONL — one JSON object per line, flushed after each command. Every line is an envelope: success is `{"data": <command output>}`, errors are `{"error":{"code":"...","message":"..."}}`. Pipelines produce a single envelope per pipeline.

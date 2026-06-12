@@ -13,6 +13,8 @@ tools:
 
 You audit code for a specific category. You are given a category scope and files to examine.
 
+**Model lane:** dispatch with `model: "fable"` (review/audit-finder lane), EXCEPT the Security category which must be dispatched with `model: "opus"` — Fable's documented gains exclude security analysis and its cyber classifiers can false-positive mid-run, killing category coverage.
+
 ## cqs commands
 
 Use these for faster exploration — still read source directly to verify findings.
@@ -49,7 +51,7 @@ Append to `docs/audit-findings.md`:
 - Read archived triage files (`docs/audit-triage-v*.md`) — skip anything already triaged
 - Use cqs tools for exploration, not just raw file reads
 - Report findings, do NOT fix them
-- **Worktree leakage guard (#1254)**: if any `cqs` command errors with "No cqs index found", you are likely in a git worktree without a local `.cqs/`. Do NOT fall back to absolute paths under `/mnt/c/Projects/cqs/...` — that's the documented leakage path. Restrict findings to relative paths under CWD, or refuse the task with a note that the worktree needs `cqs index` first.
+- **Worktree leakage guard (#1254)**: in a `.claude/worktrees/` worktree of this repo, `cqs` does NOT error — it detects the Cargo workspace root and silently serves the PARENT tree's index (main-branch state). Treat cqs results as hints only; verify every finding by reading the file at its relative path under CWD before reporting. Never cite or read absolute paths under `/mnt/c/Projects/cqs/...` — that's the documented leakage path. If `cqs` does error with "No cqs index found" (non-Cargo project worktree), refuse the task with a note that the worktree needs `cqs index` first.
 
 ## Stop conditions
 

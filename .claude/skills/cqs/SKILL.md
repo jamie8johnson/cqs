@@ -9,7 +9,9 @@ argument-hint: "<command> [args...]"
 
 Parse the first argument as the command name, pass remaining arguments as flags.
 
-Run via Bash: `cqs <command> <args> --json -q 2>/dev/null`
+Run via Bash: `cqs <command> <args> --json 2>/dev/null`
+
+`-q/--quiet` exists ONLY on top-level search (`cqs "query" -q`) — subcommands reject it. Use `2>/dev/null` to suppress tracing noise instead.
 
 Present results to the user.
 
@@ -18,7 +20,7 @@ Present results to the user.
 ## Search & Discovery
 
 ### search `<query>` — Semantic code search
-Finds functions by concept, not text. Use instead of grep/glob.
+Finds functions by concept, not text. Use instead of grep/glob. Default path is dense cosine + SPLADE sparse fusion with per-category routing (RRF keyword fusion is opt-in via `--rrf`).
 
 ```
 cqs "<query>" [flags] --json -q
@@ -26,30 +28,33 @@ cqs "<query>" [flags] --json -q
 
 | Flag | Description |
 |------|-------------|
-| `--lang <L>` | Filter by language (rust, python, typescript, javascript, go, c, java, sql, markdown) |
-| `-n/--limit <N>` | Max results (default 5, max 20) |
+| `-l/--lang <L>` | Filter by language (rust, python, typescript, javascript, go, c, java, sql, markdown) |
+| `-n/--limit <N>` | Max results (default 5; `--limit 0` rejected) |
 | `-t/--threshold <N>` | Similarity threshold (default 0.3) |
 | `--name-only` | Definition lookup, skips embedding |
-| `--semantic-only` | Pure vector similarity, no hybrid RRF |
-| `--rerank` | Cross-encoder re-ranking (slower, more accurate) |
+| `--rrf` | Enable RRF hybrid search (keyword + semantic fusion); off by default |
+| `--splade` / `--splade-alpha <F>` | Force SPLADE on for unknown-category queries / pin fusion weight (1.0 = pure cosine) |
+| `--reranker <none\|onnx>` | Cross-encoder re-ranking (default none; opt-in, measured net-negative on the standing eval) |
+| `--include-docs` | Include markdown/config chunks (default: code only) |
+| `--no-demote` | Disable demotion of test functions and underscore-prefixed names |
 | `-p/--path <glob>` | Path pattern filter (e.g., `src/cli/**`) |
 | `--include-type <T>` | Include only: function, method, class, struct, test, endpoint, etc. |
 | `--exclude-type <T>` | Exclude: test, variable, configkey, etc. |
 | `--pattern <P>` | Pattern: builder, error_swallow, async, mutex, unsafe, recursion |
-| `--note-only` | Return only notes |
-| `--note-weight <F>` | Note score weight 0.0-1.0 (default 1.0) |
-| `--ref <name>` | Search only this reference index |
+| `--name-boost <F>` | Weight for name matching in hybrid search 0.0-1.0 (default 0.2) |
+| `--ref <name>` | Search only this reference index (`--include-refs` to merge refs in) |
 | `--tokens <N>` | Token budget (greedy knapsack by score) |
-| `--expand` | Parent context (small-to-big retrieval) |
+| `--expand-parent` | Parent type/module context (small-to-big retrieval) |
 | `-C/--context <N>` | Lines of context around chunk |
 | `--no-content` | File:line only, no code |
 | `--no-stale-check` | Skip per-file staleness checks |
+| `--model <M>` | Query embedder override (embeddinggemma-300m default) |
 
 ### similar `<function>` — Find similar code
 Find code similar to a given function. Refactoring discovery, duplicates.
 
 ```
-cqs similar "<name>" --json -q
+cqs similar "<name>" --json
 ```
 
 ### gather `<query>` — Smart context assembly
@@ -61,9 +66,9 @@ cqs gather "<query>" [flags] --json 2>/dev/null
 
 | Flag | Description |
 |------|-------------|
-| `--expand <N>` | BFS depth (default 1, max 5) |
+| `-d/--depth <N>` (alias `--expand`) | BFS depth (default 1, max 5) |
 | `--direction <D>` | both, callers, callees (default both) |
-| `-n/--limit <N>` | Max results (default 10) |
+| `-n/--limit <N>` | Max seed results (default 5) |
 | `--tokens <N>` | Token budget |
 | `--ref <name>` | Cross-index: seed from reference, bridge into project |
 
@@ -71,7 +76,7 @@ cqs gather "<query>" [flags] --json 2>/dev/null
 Where to add new code based on semantic similarity and local patterns.
 
 ```
-cqs where "<description>" --json -q
+cqs where "<description>" --json
 ```
 
 ### scout `<task>` — Pre-investigation dashboard
@@ -99,7 +104,7 @@ cqs onboard "<concept>" [-d/--depth N] [--tokens N] --json 2>/dev/null
 File contents with notes injected as comments. Richer than raw Read.
 
 ```
-cqs read <path> [--focus <function>] --json -q
+cqs read <path> [--focus <function>] --json
 ```
 
 `--focus <function>` returns only the target function + type dependencies.
@@ -108,14 +113,14 @@ cqs read <path> [--focus <function>] --json -q
 Chunks, callers, callees, notes for a file.
 
 ```
-cqs context <file> --json -q
+cqs context <file> --json
 ```
 
 ### explain `<function>` — Function card
 Signature, docs, callers, callees, similar in one call.
 
 ```
-cqs explain "<name>" --json -q
+cqs explain "<name>" --json
 ```
 
 ---
@@ -124,40 +129,40 @@ cqs explain "<name>" --json -q
 
 ### callers `<function>` — Who calls this?
 ```
-cqs callers "<name>" --json -q
+cqs callers "<name>" --json
 ```
 
 ### callees `<function>` — What does this call?
 ```
-cqs callees "<name>" --json -q
+cqs callees "<name>" --json
 ```
 
 ### trace `<source>` `<target>` — Shortest call path
 BFS shortest path between two functions.
 
 ```
-cqs trace "<source>" "<target>" --json -q
+cqs trace "<source>" "<target>" --json
 ```
 
 ### deps `<name>` — Type dependencies
 Forward: who uses this type? Reverse (`--reverse`): what types does this function use?
 
 ```
-cqs deps "<name>" [--reverse] --json -q
+cqs deps "<name>" [--reverse] --json
 ```
 
 ### related `<function>` — Co-occurrence
 Functions sharing callers, callees, or types.
 
 ```
-cqs related "<name>" --json -q
+cqs related "<name>" --json
 ```
 
 ### impact `<function>` — What breaks if you change X?
 Callers with snippets + affected tests via reverse BFS.
 
 ```
-cqs impact "<name>" [--depth N] [--suggest-tests] --json -q
+cqs impact "<name>" [--depth N] [--suggest-tests] --json
 ```
 
 ### impact-diff — Diff-aware impact analysis
@@ -171,7 +176,7 @@ cqs impact-diff [--base <ref>] [--stdin] [--json] [--tokens N]
 Tests that exercise a function via reverse call graph.
 
 ```
-cqs test-map "<name>" --json -q
+cqs test-map "<name>" --json
 ```
 
 ---
@@ -182,14 +187,14 @@ cqs test-map "<name>" --json -q
 Functions/methods with no callers.
 
 ```
-cqs dead [--include-pub] [--min-confidence low|medium|high] --json -q
+cqs dead [--include-pub] [--min-confidence low|medium|high] --json
 ```
 
 ### stale — Index freshness
 Files modified since last index.
 
 ```
-cqs stale --json -q
+cqs stale --json
 ```
 
 ### health — Codebase quality snapshot
@@ -220,18 +225,18 @@ Scan for dead code clusters, untested hotspots, high-risk functions.
 cqs suggest [--apply] [--json]
 ```
 
-### gc — Report staleness
-Report/clean stale index entries.
+### gc — Garbage-collect the index
+Removes stale chunks and rebuilds the vector index. MUTATING — not a report-only command.
 
 ```
-cqs gc --json -q
+cqs gc --json
 ```
 
 ### stats — Index statistics
 Chunk counts, languages, last update.
 
 ```
-cqs stats --json -q
+cqs stats --json
 ```
 
 ---
@@ -240,19 +245,19 @@ cqs stats --json -q
 
 ### notes add `<text>` — Add a note
 ```
-cqs notes add "<text>" [--sentiment N] [--mentions a,b,c] -q
+cqs notes add "<text>" [--sentiment N] [--mentions a,b,c]
 ```
 
 Sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win).
 
 ### notes update `<exact text>` — Update a note
 ```
-cqs notes update "<exact text>" [--new-text "..."] [--new-sentiment N] -q
+cqs notes update "<exact text>" [--new-text "..."] [--new-sentiment N]
 ```
 
 ### notes remove `<exact text>` — Remove a note
 ```
-cqs notes remove "<exact text>" -q
+cqs notes remove "<exact text>"
 ```
 
 ### audit-mode — Toggle audit mode
@@ -276,12 +281,26 @@ Manage external codebases for multi-index search.
 | `ref update <name>` | Re-index reference |
 | `ref remove <name>` | Delete reference |
 
-### watch — File watcher
-Keep index fresh automatically.
+### watch — File watcher / daemon
+Keep index fresh automatically. `--serve` also answers daemon queries over the socket (3-19ms vs ~2s CLI startup); the systemd service runs `cqs watch --serve`.
 
 ```
-cqs watch [--debounce <ms>] [--no-ignore]
+cqs watch [--debounce <ms>] [--no-ignore] [--poll] [--serve]
 ```
+
+### Daemon & index plumbing
+
+| Command | Usage |
+|---------|-------|
+| `ping` | Daemon healthcheck — model, uptime, counters (`cqs ping --json`) |
+| `status` | Watch-mode freshness — is the index caught up (`cqs status --json`) |
+| `refresh` | Invalidate daemon caches, re-open the Store |
+| `slot list/create/promote/remove/active` | Named side-by-side indexes under `.cqs/slots/<name>/`; `--slot <name>` on most commands |
+| `cache stats/prune/compact` | Embeddings cache at `.cqs/embeddings_cache.db` |
+| `model show/list/swap` | Embedding model recorded in the index |
+| `eval <query_file>` | R@K eval harness (`cqs eval evals/queries/v3_test.v2.json --json`) |
+| `telemetry` | Usage dashboard — command frequency, categories, sessions |
+| `doctor [--fix]` | Check model, index, hardware |
 
 ### convert `<path>` — Document conversion
 PDF/HTML/CHM/MD to cleaned Markdown.
@@ -296,7 +315,7 @@ Tags: `aveva`, `pdf`, `generic`.
 Compare indexed snapshots. Requires references via `ref add`.
 
 ```
-cqs diff "<source>" [target] [--threshold F] [--lang L] --json -q
+cqs diff "<source>" [target] [--threshold F] [--lang L] --json
 ```
 
 ### drift `<reference>` — Semantic drift detection
