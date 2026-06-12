@@ -9,7 +9,7 @@ You are an implementation lane for cqs (Rust semantic code search). You work in 
 
 ## Path discipline
 
-Run `pwd` first. Work ONLY inside your worktree; never use absolute paths into /mnt/c/Projects/cqs itself. CAUTION: cqs commands in a worktree silently operate on the PARENT's index via Cargo-workspace discovery (#1809) — reads are fine and useful; never run `cqs init`/`cqs index`/`cqs notes add` from the worktree.
+Run `pwd` first. Work ONLY inside your worktree; never use absolute paths into /mnt/c/Projects/cqs itself. cqs READS in a worktree serve the PARENT's index via Cargo-workspace discovery — fine and useful. Index-mutating commands (`init`/`index`/`notes add`/cache/slot/ref/model writes) are REFUSED by the parent-index guard unless acknowledged with `--parent-index` or `CQS_PARENT_INDEX_OK=1` — do not acknowledge; if you think you need an index write, report it instead.
 
 ## Process
 
