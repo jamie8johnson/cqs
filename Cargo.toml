@@ -143,6 +143,10 @@ toml = "1.1"
 # Path canonicalization (strips Windows UNC \\?\ prefixes)
 dunce = "1"
 
+# Memory-mapped reads for the persisted SPLADE index body (avoids the
+# ~59MB+ transient heap copy from read_to_end on warm loads).
+memmap2 = "0.9"
+
 # Utilities
 blake3 = "1"
 bytemuck = { version = "1", features = ["derive"] }
