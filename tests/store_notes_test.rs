@@ -117,12 +117,12 @@ fn test_note_stats_sentiments() {
     // Patterns: sentiment > 0.3
     // Neutral: -0.3 <= sentiment <= 0.3
     let notes = vec![
-        test_note("1", "Warning 1", -1.0),        // warning
-        test_note("2", "Warning 2", -0.5),        // warning
-        test_note("3", "Neutral", 0.0),           // neutral
-        test_note("4", "Slightly positive", 0.2), // neutral (within threshold)
-        test_note("5", "Pattern 1", 0.5),         // pattern
-        test_note("6", "Pattern 2", 1.0),         // pattern
+        test_note("1", "Warning 1", -1.0), // warning
+        test_note("2", "Warning 2", -0.5), // warning
+        test_note("3", "Neutral", 0.0),    // neutral
+        test_note("4", "Neutral 2", 0.0), // neutral (0.0 is the only grid value inside the ±0.3 band)
+        test_note("5", "Pattern 1", 0.5), // pattern
+        test_note("6", "Pattern 2", 1.0), // pattern
     ];
 
     store
