@@ -1,9 +1,44 @@
-# Design: Edge Provenance, Dead-Code Verdicts, Worktree Search Overlay
+# Design: Result Trust — Edge Provenance, Dead Verdicts, Worktree Overlay, Ranking Provenance
 
 Status: PROPOSED (design only — nothing queued)
-Origin: 2026-06-12 session. All three motivating gaps were hit live during the
-v1.43.0 campaign by our own agents; this doc specs the fixes. A fourth
-candidate (`cqs review --base`) turned out to already exist — see §4.
+Origin: 2026-06-12 session. The motivating gaps were hit live during the
+v1.43.0 campaign by our own agents. A candidate feature
+(`cqs review --base`) turned out to already exist — see §5.
+
+## Thesis: one program, not separate features
+
+cqs's consumers are agents, and an agent's binding constraint on a retrieved
+result is not relevance — it's *calibration*: how much should I believe this
+before acting on it? cqs has been accumulating trust metadata for several
+releases without naming the program:
+
+| Signal | Trust question it answers | Shipped |
+|---|---|---|
+| `trust_level` / `injection_flags` | should I trust this **content**? | v1.30.1+, three-tier #1221 |
+| `_meta.stale_origins` warnings | should I trust this **freshness**? | #1752, both surfaces |
+| audit-mode | should I trust my own **priors** (notes)? | v1.23.x era |
+| CLI==daemon parity tests | should I trust the **surface** I queried? | command-core campaign |
+
+This doc extends the family to the remaining axes:
+
+- **§1 Edge provenance** — should I trust this **edge**? (syntactic ground
+  truth vs attribute grammar vs token-tree heuristic)
+- **§2 Dead verdicts** — should I trust this **absence**? Dead-code is an
+  absence claim, the hardest kind to calibrate: "no callers found" conflates
+  "none exist" with "none visible to the walker".
+- **§3 Worktree overlay** — should I trust that this answer is about **my
+  reality**? A result can be perfectly correct for the wrong corpus, and is
+  then indistinguishable from a lie.
+- **§4 Ranking provenance** — should I trust **why** this ranked? A hit that
+  matched the agent's literal string and one that matched its concept
+  warrant different follow-up.
+
+**The success metric is already written down, inconveniently.** The agent
+defs instruct: "treat cqs results as hints; read the actual files before
+acting." Every feature in this family should delete a clause of that
+sentence. When a lane can act on `cqs impact` without the defensive re-read,
+the program is done — and the savings compound, because the re-read tax is
+paid on every lane, every session.
 
 ---
 
@@ -205,7 +240,79 @@ reference index whose corpus is *the worktree's dirty delta*.
 
 ---
 
-## 4. Correction: `cqs review --base` already exists
+## 4. Ranking provenance (per-result "why did this rank")
+
+### Problem
+
+A search hit carries a score and nothing about its origin story. An agent
+cannot distinguish:
+
+- ranked by the **dense leg** (semantic neighbor — "matched my concept"),
+- ranked by the **sparse/FTS leg** (lexical overlap — "matched my literal
+  string"),
+- lifted by a **name-match boost** (identifier equality — strongest signal
+  for definition-lookup, noise for conceptual queries),
+- lifted by a **note boost** (a prior opinion, not evidence — exactly what
+  audit-mode exists to suppress),
+- or admitted by **centroid routing** choosing a category-specific α.
+
+These warrant different follow-up. A concept-match justifies reading the
+chunk; a string-match on a conceptual query is a known false-friend; a
+note-boosted rank should trigger exactly the skepticism audit-mode encodes.
+Today the agent pays the calibration cost by reading everything — the
+re-read tax again. This is distinct from the queued `cqs trace` roadmap
+item (a debugging command that explains one query end-to-end); ranking
+provenance is lightweight per-result metadata on **every** search response.
+
+### Design
+
+The implementation hook already exists: the #1719 ScoreSignal refactor made
+the scoring pipeline a fold over a signal slice — one place where every
+signal fires. Provenance is "record which signals contributed non-trivially
+per result" at fusion time:
+
+- Each result gains a skip-when-empty `rank_signals` array of compact
+  entries: `{signal, value}` where signal ∈ `dense`, `sparse`, `fts`,
+  `name_match`, `note_boost`, `type_boost`, … (the SCORING_KNOBS /
+  ScoreSignal names are the vocabulary — no new taxonomy). `value` is the
+  signal's contribution in its native unit (rank for RRF legs, multiplier
+  for boosts). RRF leg ranks are known at fusion (`rrf_fuse` consumes
+  per-leg rank lists); boost signals already flow through the ScoreSignal
+  fold — the recording is a side-channel write, not a scoring change.
+- **Bit-identical scores are the gate**: provenance recording must not
+  perturb ranking. Pin with the #1719-style exact-equality test (the
+  pre/post refactor pattern this codebase has used twice).
+- Surfaces: search/scout/gather/task per-chunk JSON (the chunk-JSON
+  convention: skip-when-default, agents opt into reading it). Text surface
+  omits it entirely — provenance is for machine consumers.
+- `note_boost` provenance doubles as an audit-mode complement: an agent can
+  see a note influenced ranking *without* turning notes off — softer than
+  audit-mode's blanket exclusion, usable per-query.
+- Cost: a few small allocations per result at fusion; no extra store reads.
+  Token cost on JSON output is the real price — skip-when-default keeps
+  unboosted dense-only results at zero overhead, and `--no-rank-signals`
+  (or a tokens-budget interaction) caps it for tight-budget calls.
+
+### Gate criteria
+
+- Exact-equality pin: scores and order bit-identical with recording on/off.
+- A fixture query where a known note boost fires → `rank_signals` carries
+  `note_boost`; same query under audit-mode → no note signal (and the pin
+  asserts audit-mode behavior unchanged).
+- Parity test: CLI==daemon `rank_signals` identical.
+- Recall gate trivially unaffected (no scoring change by construction, but
+  run it anyway — the cheap insurance rule).
+
+### Non-goals
+
+Not a replacement for `cqs trace` (full per-query routing narrative —
+classifier decision, α resolution, candidate pool sizes — stays a separate
+debugging command). No natural-language explanations; signal names + values
+only.
+
+---
+
+## 5. Correction: `cqs review --base` already exists
 
 The campaign's fable reviewer worked around "review only diffs uncommitted
 changes" with raw git plumbing — but `cqs review --base <ref>` shipped long
@@ -221,7 +328,13 @@ agent-def touch. No code change.
 
 §1 and §2 ship together (one PR: schema v30 + extractor tags + dead
 verdicts) — §2's `low-confidence-live` tier is the immediate consumer of
-§1's column, and one migration beats two. §4 rides any docs PR. §3 gets its
-own implementation plan after §1/§2 land (the overlay's shadow semantics
-deserve a fable review pass at design time, not just at PR time), and lands
-search-only behind the flag first.
+§1's column, and one migration beats two. §4 is independent of the others
+and gated only by the bit-identical pin — it can ship in parallel with
+§1/§2 (the ScoreSignal seam makes it a contained change). §5 rides any docs
+PR. §3 gets its own implementation plan after the rest land (the overlay's
+shadow semantics deserve a fable review pass at design time, not just at PR
+time), and lands search-only behind the flag first.
+
+Family-wide acceptance: after all four, revise the agent defs' "treat
+results as hints" guidance to enumerate exactly what may now be acted on
+without re-reading — the deleted clauses are the program's scoreboard.
