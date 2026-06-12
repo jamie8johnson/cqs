@@ -137,14 +137,17 @@ pub(crate) fn test_map_max_nodes() -> usize {
 /// OOM on dense graphs.
 ///
 /// Shared between CLI `cmd_test_map` and batch `dispatch_test_map`.
-pub(crate) fn build_test_map(
+pub(crate) fn build_test_map<'a, I>(
     target_name: &str,
     graph: &CallGraph,
-    test_chunks: &[ChunkSummary],
+    test_chunks: I,
     root: &Path,
     max_depth: usize,
     max_nodes: usize,
-) -> Vec<TestMatch> {
+) -> Vec<TestMatch>
+where
+    I: IntoIterator<Item = &'a ChunkSummary>,
+{
     let _span = tracing::info_span!("build_test_map", target_name, max_depth, max_nodes).entered();
 
     // Reverse BFS from target.
@@ -184,45 +187,66 @@ pub(crate) fn build_test_map(
         }
     }
 
-    // Collect matching tests
+    // Index test chunks by name so the match collection iterates the
+    // (capped) ancestor set rather than every test chunk in the project.
+    // `ancestors` is bounded by `max_nodes`; `test_chunks` is the full test
+    // corpus, which on large repos is the larger of the two. A name can map
+    // to several chunks (duplicate test names across files), so the index
+    // value is a `Vec`; each matching chunk still yields its own TestMatch,
+    // preserving the prior per-chunk behaviour.
+    let mut by_name: HashMap<&str, Vec<&ChunkSummary>> = HashMap::new();
+    for test in test_chunks {
+        by_name.entry(test.name.as_str()).or_default().push(test);
+    }
+
+    // Collect matching tests by walking the ancestor set (loop body O(1)
+    // amortised: one index probe per ancestor; chain walk only for hits).
     let mut matches: Vec<TestMatch> = Vec::new();
-    for test in test_chunks.iter() {
-        if let Some((depth, _)) = ancestors.get(test.name.as_str()) {
-            if *depth > 0 {
-                let mut chain: Vec<String> = Vec::new();
-                // The chain walk needs an owned `Arc<str>` cursor to iterate
-                // parent pointers. Each step clones via `Arc::clone` (RC
-                // bump only); the rendered chain entries are `String` for
-                // the public TestMatch API.
-                let mut cursor: Arc<str> = Arc::from(test.name.as_str());
-                // `saturating_add` keeps `chain_limit` bounded under any
-                // caller-supplied `max_depth`. The clap range bound on
-                // `TestMapArgs::depth` already caps this in practice
-                // (1..=50); the saturating arithmetic is defensive against
-                // direct lib callers bypassing clap.
-                let chain_limit = max_depth.saturating_add(1);
-                while chain.len() < chain_limit {
-                    chain.push(cursor.as_ref().to_string());
-                    if cursor.as_ref() == target_name {
-                        break;
-                    }
-                    cursor = match ancestors.get(&cursor) {
-                        Some((_, Some(p))) => Arc::clone(p),
-                        _ => {
-                            tracing::debug!(node = %cursor, "Chain walk hit dead end");
-                            break;
-                        }
-                    };
-                }
-                let rel_file = cqs::rel_display(&test.file, root);
-                matches.push(TestMatch {
-                    name: test.name.clone(),
-                    file: rel_file,
-                    line: test.line_start,
-                    depth: *depth,
-                    chain,
-                });
+    for (ancestor, (depth, _)) in ancestors.iter() {
+        if *depth == 0 {
+            continue;
+        }
+        let Some(tests) = by_name.get(ancestor.as_ref()) else {
+            continue;
+        };
+
+        // The chain from this ancestor back to the target is shared by every
+        // test chunk with this name, so walk it once per ancestor.
+        let mut chain: Vec<String> = Vec::new();
+        // The chain walk needs an owned `Arc<str>` cursor to iterate
+        // parent pointers. Each step clones via `Arc::clone` (RC bump
+        // only); the rendered chain entries are `String` for the public
+        // TestMatch API.
+        let mut cursor: Arc<str> = Arc::clone(ancestor);
+        // `saturating_add` keeps `chain_limit` bounded under any
+        // caller-supplied `max_depth`. The clap range bound on
+        // `TestMapArgs::depth` already caps this in practice
+        // (1..=50); the saturating arithmetic is defensive against
+        // direct lib callers bypassing clap.
+        let chain_limit = max_depth.saturating_add(1);
+        while chain.len() < chain_limit {
+            chain.push(cursor.as_ref().to_string());
+            if cursor.as_ref() == target_name {
+                break;
             }
+            cursor = match ancestors.get(&cursor) {
+                Some((_, Some(p))) => Arc::clone(p),
+                _ => {
+                    tracing::debug!(node = %cursor, "Chain walk hit dead end");
+                    break;
+                }
+            };
+        }
+
+        for test in tests {
+            let rel_file = cqs::rel_display(&test.file, root);
+            matches.push(TestMatch {
+                name: test.name.clone(),
+                file: rel_file,
+                line: test.line_start,
+                depth: *depth,
+                chain: chain.clone(),
+            });
         }
     }
 
@@ -287,7 +311,7 @@ pub(crate) fn test_map_core(
     let mut matches = build_test_map(
         &target_name,
         graph,
-        test_chunks,
+        test_chunks.iter(),
         root,
         args.max_depth,
         args.max_nodes,
@@ -320,11 +344,13 @@ pub(crate) fn test_map_cross_core(
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
     let test_chunks = cross_ctx.find_test_chunks_cross()?;
     let graph = cross_ctx.merged_call_graph()?;
-    let summaries: Vec<ChunkSummary> = test_chunks.iter().map(|tc| tc.chunk.clone()).collect();
+    // Borrow the wrapped `ChunkSummary` out of each `CrossProjectTestChunk`
+    // instead of collecting a second owned copy: `build_test_map` only reads
+    // the chunks, so the project-tagged Vec already in hand is enough.
     let mut matches = build_test_map(
         &args.name,
         &graph,
-        &summaries,
+        test_chunks.iter().map(|tc| &tc.chunk),
         root,
         args.max_depth,
         args.max_nodes,
