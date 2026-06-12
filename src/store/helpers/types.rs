@@ -318,6 +318,47 @@ pub struct CallerInfo {
     pub edge_kind: CallEdgeKind,
 }
 
+/// How a caller of a `Type::method`-qualified query was attributed to the
+/// queried Type's definition. The qualifier resolution is
+/// receiver-type disambiguation done read-side from `chunks.parent_type_name`
+/// — no new columns, no parser changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerAttribution {
+    /// The caller's own enclosing type equals the queried Type — a self-call,
+    /// unambiguously attributed to this Type's method.
+    SelfType,
+    /// The caller has no enclosing type, or an enclosing type that does not
+    /// define a same-named method, or it could not be resolved to a chunk.
+    /// Over-reported (included) but flagged so the user knows the receiver is
+    /// unproven — never silently dropped, never falsely certain.
+    Ambiguous,
+}
+
+impl CallerAttribution {
+    /// Stable wire label for the JSON `attribution` field. `SelfType` is the
+    /// default (proven) attribution and is rendered omitted; only `Ambiguous`
+    /// emits a label, so a marked entry stands out.
+    pub fn label(self) -> &'static str {
+        match self {
+            CallerAttribution::SelfType => "self",
+            CallerAttribution::Ambiguous => "ambiguous",
+        }
+    }
+}
+
+/// A caller of a `Type::method` query, carrying the base [`CallerInfo`] plus
+/// the receiver-type [`CallerAttribution`]. Callers parented to a *different*
+/// type that has its own same-named method are excluded upstream and never
+/// reach this struct.
+#[derive(Debug, Clone)]
+pub struct AttributedCaller {
+    /// The underlying caller (name, file, line, edge kind).
+    pub caller: CallerInfo,
+    /// Whether the receiver was proven (`SelfType`) or is unproven
+    /// (`Ambiguous`).
+    pub attribution: CallerAttribution,
+}
+
 /// Callee information from the full call graph: the called function's name,
 /// the line of the call, and the provenance of the edge. Returned by
 /// `get_callees_full` so the `callees` surface can carry `edge_kind` and the

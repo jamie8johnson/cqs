@@ -1520,4 +1520,234 @@ mod tests {
         );
         assert_eq!(daemon, core, "cross-project impact parity mismatch");
     }
+
+    // ===== total-count, Type::method, candidates, parity =====
+
+    /// Build a method-def chunk under an enclosing type at a given origin/line.
+    fn type_method_chunk(file: &str, name: &str, line: u32, parent: Option<&str>) -> Chunk {
+        let content = format!("fn {name}() {{}}");
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{file}:{line}:{name}"),
+            file: PathBuf::from(file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content,
+            doc: None,
+            line_start: line,
+            line_end: line + 1,
+            content_hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: parent.map(String::from),
+            parser_version: 0,
+        }
+    }
+
+    /// Seed two types (`Store`, `Index`) each defining `search`, plus a caller
+    /// in each type calling its own `search`, plus a free function calling
+    /// `search` bare. Returns a read-only daemon context over the index.
+    fn seed_type_method_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let chunks = vec![
+                (
+                    type_method_chunk("store.rs", "search", 10, Some("Store")),
+                    embedding.clone(),
+                ),
+                (
+                    type_method_chunk("index.rs", "search", 10, Some("Index")),
+                    embedding.clone(),
+                ),
+                (
+                    type_method_chunk("store.rs", "store_self", 20, Some("Store")),
+                    embedding.clone(),
+                ),
+                (
+                    type_method_chunk("index.rs", "index_self", 20, Some("Index")),
+                    embedding.clone(),
+                ),
+                (
+                    type_method_chunk("free.rs", "free_fn", 20, None),
+                    embedding.clone(),
+                ),
+            ];
+            store
+                .upsert_chunks_batch(&chunks, Some(0))
+                .expect("upsert chunks");
+            for (file, caller, line) in [
+                ("store.rs", "store_self", 20u32),
+                ("index.rs", "index_self", 20),
+                ("free.rs", "free_fn", 20),
+            ] {
+                let fc = FunctionCalls {
+                    name: caller.to_string(),
+                    line_start: line,
+                    calls: vec![CallSite {
+                        callee_name: "search".to_string(),
+                        line_number: line + 1,
+                        kind: CallEdgeKind::Call,
+                    }],
+                };
+                store
+                    .upsert_function_calls(Path::new(file), &[fc])
+                    .expect("upsert edge");
+            }
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// A clipped window surfaces both `count` (page size) and `total` (pre-cap
+    /// count) so the truncation is visible. Seed three callers, ask for
+    /// one.
+    #[test]
+    fn callers_total_count_when_clipped() {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let calls: Vec<FunctionCalls> = (0..3)
+                .map(|i| FunctionCalls {
+                    name: format!("caller_{i}"),
+                    line_start: (i + 1) as u32,
+                    calls: vec![CallSite {
+                        callee_name: "hot".to_string(),
+                        line_number: (i + 1) as u32,
+                        kind: CallEdgeKind::Call,
+                    }],
+                })
+                .collect();
+            store
+                .upsert_function_calls(Path::new("src/lib.rs"), &calls)
+                .expect("upsert edges");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        let args = CallersArgs {
+            name: "hot".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 1 },
+            edge_kind: None,
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert_eq!(json["count"], 1, "page is one entry");
+        assert_eq!(json["total"], 3, "total reflects the full pre-cap set");
+    }
+
+    /// `Type::method` returns only the queried type's self-callers plus
+    /// ambiguous (free-function) callers; callers in a *different* type that
+    /// owns its own `search` are excluded. Verified on the daemon
+    /// surface and pinned CLI==daemon.
+    #[test]
+    fn callers_type_method_picks_right_type_and_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        let (_dir, ctx) = seed_type_method_ctx();
+        let args = CallersArgs {
+            name: "Store::search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+
+        let names: Vec<&str> = daemon["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"store_self"),
+            "self-caller included: {names:?}"
+        );
+        assert!(
+            names.contains(&"free_fn"),
+            "ambiguous free fn included: {names:?}"
+        );
+        assert!(
+            !names.contains(&"index_self"),
+            "Index's own caller excluded: {names:?}"
+        );
+        // The free function's receiver is unproven → flagged ambiguous; the
+        // self-call carries no attribution (proven).
+        let free = daemon["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "free_fn")
+            .unwrap();
+        assert_eq!(free["attribution"], "ambiguous");
+        let self_caller = daemon["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "store_self")
+            .unwrap();
+        assert!(
+            self_caller.get("attribution").is_none(),
+            "proven self-call omits attribution"
+        );
+
+        // CLI==daemon parity.
+        let core_args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                .unwrap();
+        assert_eq!(daemon, core, "CLI==daemon parity for Type::method callers");
+    }
+
+    /// A bare name with more than one definition lists the `Type::method`
+    /// candidate forms + per-type counts, and CLI==daemon agree.
+    #[test]
+    fn callers_bare_multi_def_lists_candidates_and_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        let (_dir, ctx) = seed_type_method_ctx();
+        let args = CallersArgs {
+            name: "search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        let candidates = daemon["candidates"]
+            .as_array()
+            .expect("bare multi-def name carries candidates");
+        let quals: Vec<&str> = candidates
+            .iter()
+            .map(|c| c["qualified"].as_str().unwrap())
+            .collect();
+        assert!(quals.contains(&"Store::search"), "candidates: {quals:?}");
+        assert!(quals.contains(&"Index::search"), "candidates: {quals:?}");
+
+        let core_args = CallersCoreArgs {
+            name: "search".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                .unwrap();
+        assert_eq!(
+            daemon, core,
+            "CLI==daemon parity for bare multi-def candidates"
+        );
+    }
 }

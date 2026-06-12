@@ -235,6 +235,9 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
             line_start: c.line,
             project: String::new(),
             edge_kind: super::callers::edge_kind_field(c.edge_kind),
+            // explain renders the bare-name caller list — no Type::method
+            // receiver resolution here.
+            attribution: String::new(),
         })
         .collect();
 
@@ -511,6 +514,7 @@ mod output_tests {
                 line_start: 42,
                 project: String::new(),
                 edge_kind: String::new(),
+                attribution: String::new(),
             }],
             callees: vec![CalleeEntry {
                 name: "callee_b".into(),
@@ -566,6 +570,7 @@ mod output_tests {
                 line_start: 5,
                 project: String::new(),
                 edge_kind: String::new(),
+                attribution: String::new(),
             }],
             callees: vec![],
             similar: vec![],

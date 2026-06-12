@@ -1008,3 +1008,272 @@ fn min_collapse_uses_trust_rank_not_lexical() {
         "serde (rank 1) beats doc_reference (rank 4) despite lexical order"
     );
 }
+
+// ===== trust-rank ordering + Type::method attribution =====
+
+use cqs::parser::FunctionCalls;
+use cqs::store::CallerAttribution;
+
+/// Build a method-def chunk under an enclosing type, located at a given
+/// origin/line so `get_callers_attributed`'s `(origin, name, line_start)` join
+/// resolves it. `chunk_type` is Function (callable) so the candidate/owner
+/// queries count it.
+fn method_chunk(
+    file: &str,
+    name: &str,
+    line: u32,
+    parent_type: Option<&str>,
+) -> cqs::parser::Chunk {
+    use cqs::parser::{ChunkType, Language};
+    let content = format!("fn {name}() {{}}");
+    let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    cqs::parser::Chunk {
+        id: format!("{file}:{line}:{}", &hash[..8]),
+        file: std::path::PathBuf::from(file),
+        language: Language::Rust,
+        chunk_type: ChunkType::Function,
+        name: name.to_string(),
+        signature: format!("fn {name}()"),
+        content,
+        doc: None,
+        line_start: line,
+        line_end: line + 1,
+        content_hash: hash,
+        canonical_hash: String::new(),
+        parent_id: None,
+        window_idx: None,
+        parent_type_name: parent_type.map(String::from),
+        parser_version: 0,
+    }
+}
+
+/// A single doc_reference edge must never displace a direct call edge within a
+/// limited window: trust rank leads the ORDER BY. The doc edge sits in
+/// a file (`docs.md`) that sorts before the call edge's file (`src.rs`), so a
+/// lexical `ORDER BY file` would surface it first — the regression this guards.
+#[test]
+fn doc_reference_never_displaces_call_in_window() {
+    let store = TestStore::new();
+    // doc_reference edge from a file that sorts FIRST lexically.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("docs.md"),
+            &[FunctionCalls {
+                name: "doc_mention".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "target".to_string(),
+                    line_number: 1,
+                    kind: CallEdgeKind::DocReference,
+                }],
+            }],
+        )
+        .unwrap();
+    // Direct call edge from a file that sorts AFTER.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src.rs"),
+            &[FunctionCalls {
+                name: "real_caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "target".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let callers = store.get_callers_full("target").unwrap();
+    assert_eq!(callers.len(), 2);
+    // Trust rank leads: the direct call edge is first despite its file sorting
+    // last. A `--limit 1` window would therefore show the call edge, not the
+    // doc reference.
+    assert_eq!(callers[0].name, "real_caller");
+    assert_eq!(callers[0].edge_kind, CallEdgeKind::Call);
+    assert_eq!(callers[1].edge_kind, CallEdgeKind::DocReference);
+}
+
+/// Same property on the impact path (`get_callers_with_context`, no GROUP BY):
+/// the call edge leads the doc edge regardless of file order.
+#[test]
+fn context_callers_trust_rank_leads() {
+    let store = TestStore::new();
+    store
+        .upsert_function_calls(
+            std::path::Path::new("aaa_docs.md"),
+            &[FunctionCalls {
+                name: "doc_mention".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "target".to_string(),
+                    line_number: 1,
+                    kind: CallEdgeKind::DocReference,
+                }],
+            }],
+        )
+        .unwrap();
+    store
+        .upsert_function_calls(
+            std::path::Path::new("zzz_src.rs"),
+            &[FunctionCalls {
+                name: "real_caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "target".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let callers = store.get_callers_with_context("target").unwrap();
+    assert_eq!(callers[0].edge_kind, CallEdgeKind::Call);
+    assert_eq!(callers[0].name, "real_caller");
+}
+
+/// `Type::method` attribution: a caller whose own enclosing type IS the queried
+/// type is a self-call (`SelfType`); a caller parented to a DIFFERENT type that
+/// has its own same-named method is excluded; a free-function caller (no
+/// enclosing type) is included but flagged `Ambiguous`.
+#[test]
+fn attributed_callers_pick_right_type() {
+    let store = TestStore::new();
+
+    // Two types each define `search`. Store::search lives in store.rs:10,
+    // Index::search in index.rs:10.
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "search", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("index.rs", "search", 10, Some("Index")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+
+    // Caller chunks: a Store method that self-calls search; an Index method that
+    // calls its own search; a free function that calls search bare.
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "store_self", 20, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("index.rs", "index_self", 20, Some("Index")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("free.rs", "free_fn", 20, None),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+
+    // Edges: each caller calls `search`.
+    for (file, caller) in [
+        ("store.rs", "store_self"),
+        ("index.rs", "index_self"),
+        ("free.rs", "free_fn"),
+    ] {
+        store
+            .upsert_function_calls(
+                std::path::Path::new(file),
+                &[FunctionCalls {
+                    name: caller.to_string(),
+                    line_start: 20,
+                    calls: vec![CallSite {
+                        callee_name: "search".to_string(),
+                        line_number: 21,
+                        kind: CallEdgeKind::Call,
+                    }],
+                }],
+            )
+            .unwrap();
+    }
+
+    // other_owner_types for Store::search = {Index} (Index also owns `search`).
+    let mut others = std::collections::HashSet::new();
+    others.insert("Index".to_string());
+    let attributed = store
+        .get_callers_attributed("search", "Store", &others)
+        .unwrap();
+    let names: Vec<_> = attributed
+        .iter()
+        .map(|a| (a.caller.name.as_str(), a.attribution))
+        .collect();
+    // index_self is parented to Index (owns its own search) → excluded.
+    assert!(
+        !names.iter().any(|(n, _)| *n == "index_self"),
+        "caller in a different type that owns the method must be excluded, got {names:?}"
+    );
+    // store_self → self-call.
+    assert!(names.contains(&("store_self", CallerAttribution::SelfType)));
+    // free_fn → no enclosing type → ambiguous, included.
+    assert!(names.contains(&("free_fn", CallerAttribution::Ambiguous)));
+}
+
+/// `count_method_defs_by_type` groups a name's callable definitions by
+/// enclosing type, powering the bare-name candidate list and the
+/// other-owner-types exclusion set.
+#[test]
+fn count_method_defs_groups_by_type() {
+    let store = TestStore::new();
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "search", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("index.rs", "search", 10, Some("Index")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+
+    let defs = store.count_method_defs_by_type("search").unwrap();
+    assert_eq!(defs.len(), 2, "two enclosing types define `search`");
+    let types: std::collections::HashSet<_> = defs.iter().filter_map(|(t, _)| t.clone()).collect();
+    assert!(types.contains("Store"));
+    assert!(types.contains("Index"));
+}
+
+/// `get_type_method_origins` resolves the file(s) defining `Type::method`,
+/// scoping the callees `Type::method` path.
+#[test]
+fn type_method_origins_resolve_def_file() {
+    let store = TestStore::new();
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "search", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("index.rs", "search", 10, Some("Index")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+
+    let origins = store.get_type_method_origins("Store", "search").unwrap();
+    assert_eq!(origins, vec!["store.rs".to_string()]);
+}
