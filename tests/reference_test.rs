@@ -14,8 +14,8 @@ use std::path::PathBuf;
 // ============ Helpers ============
 
 fn make_code_result(name: &str, score: f32) -> SearchResult {
-    SearchResult {
-        chunk: cqs::store::ChunkSummary {
+    SearchResult::new(
+        cqs::store::ChunkSummary {
             id: format!("id-{}", name),
             file: PathBuf::from(format!("src/{}.rs", name)),
             language: Language::Rust,
@@ -34,7 +34,7 @@ fn make_code_result(name: &str, score: f32) -> SearchResult {
             vendored: false,
         },
         score,
-    }
+    )
 }
 
 /// Insert chunks with identical embeddings

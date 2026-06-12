@@ -214,6 +214,11 @@ pub(crate) struct SearchArgs {
     /// Disable search-time demotion of test functions and underscore-prefixed names
     #[arg(long)]
     pub no_demote: bool,
+
+    /// Suppress per-result `rank_signals` ranking provenance in JSON output
+    /// (saves tokens on tight-budget calls). The text surface never emits it.
+    #[arg(long)]
+    pub no_rank_signals: bool,
 }
 
 impl SearchArgs {

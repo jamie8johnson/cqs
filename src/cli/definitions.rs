@@ -293,6 +293,11 @@ pub struct Cli {
     #[arg(long)]
     pub no_demote: bool,
 
+    /// Suppress per-result `rank_signals` ranking provenance in JSON output
+    /// (saves tokens on tight-budget calls). The text surface never emits it.
+    #[arg(long)]
+    pub no_rank_signals: bool,
+
     /// Embedding model: embeddinggemma-300m (default), bge-large, e5-base, or custom.
     ///
     /// Honored across all commands: `cqs <q> --model X` selects the query embedder,

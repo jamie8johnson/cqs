@@ -118,6 +118,11 @@ pub(crate) struct QueryArgs {
     /// hybrid path for non-`--name-only` queries — so the core reproduces the
     /// daemon's exact retrieval when driven from the wire.
     pub fts_first: bool,
+    /// Record per-result ranking provenance (`rank_signals`). On by default for
+    /// JSON consumers; the CLI flips it off via `--no-rank-signals` and the
+    /// text surface drops it regardless. Recording is a side channel — it never
+    /// changes scores or order.
+    pub record_rank_signals: bool,
 }
 
 impl Default for QueryArgs {
@@ -149,6 +154,9 @@ impl Default for QueryArgs {
             // NameOnly strategy tries FTS-by-name first.
             always_route: false,
             fts_first: true,
+            // Recording on by default — JSON consumers get provenance unless
+            // they opt out; the cost is a post-pass over the final result set.
+            record_rank_signals: true,
         }
     }
 }
@@ -186,6 +194,11 @@ impl QueryArgs {
             // CLI semantics: explicit-flag classification gating + FTS-first.
             always_route: false,
             fts_first: true,
+            // On unless suppressed. Provenance is machine-only — the text
+            // surface drops the field at render time regardless, so this only
+            // governs the (cheap) recording post-pass; it matches the wire/MCP
+            // default and keeps `from_cli == QueryArgs::default`.
+            record_rank_signals: !cli.no_rank_signals,
         }
     }
 
@@ -528,6 +541,7 @@ pub(crate) fn prepare_query<'a>(
         f.enable_splade = use_splade;
         f.splade_alpha = splade_alpha;
         f.type_boost_types = type_boost_types;
+        f.record_rank_signals = args.record_rank_signals;
         f
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;

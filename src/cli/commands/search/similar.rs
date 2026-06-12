@@ -322,8 +322,8 @@ mod tests {
     }
 
     fn make_search_result(name: &str, score: f32, parent_id: Option<&str>) -> SearchResult {
-        SearchResult {
-            chunk: cqs::store::ChunkSummary {
+        SearchResult::new(
+            cqs::store::ChunkSummary {
                 id: format!("id-{name}"),
                 file: std::path::PathBuf::from(format!("src/{name}.rs")),
                 language: cqs::parser::Language::Rust,
@@ -342,7 +342,7 @@ mod tests {
                 vendored: false,
             },
             score,
-        }
+        )
     }
 
     /// `build_similar_output` projects the canonical per-result

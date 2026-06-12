@@ -237,6 +237,12 @@ pub struct GatheredChunk {
     /// Source: None = project, Some(name) = reference
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Ranking provenance for seed chunks (skip-when-empty). Mirrors the
+    /// `search` surface. Only seed hits (depth 0) carry it — BFS-expanded
+    /// chunks were not retrieved by fusion, so they have no leg ranks or
+    /// boosts and stay empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rank_signals: Vec<crate::store::RankSignal>,
 }
 
 impl GatheredChunk {
@@ -260,6 +266,7 @@ impl GatheredChunk {
             score,
             depth,
             source,
+            rank_signals: Vec::new(),
         }
     }
 }
@@ -422,6 +429,29 @@ pub(crate) fn fetch_and_assemble<Mode>(
     (chunks, search_degraded)
 }
 
+/// Attach seed-search `rank_signals` to the matching depth-0 chunks.
+///
+/// `seed_signals` maps a seed chunk name to the provenance recorded by the
+/// seed fusion search. Only depth-0 (seed) chunks are eligible — BFS-expanded
+/// chunks were fetched by name lookup, not fusion, so they have no leg ranks
+/// or boosts. Keying on `(name, depth == 0)` mirrors how the seed scores were
+/// inserted into `name_scores`.
+pub(crate) fn attach_seed_signals(
+    chunks: &mut [GatheredChunk],
+    seed_signals: &HashMap<String, Vec<crate::store::RankSignal>>,
+) {
+    if seed_signals.is_empty() {
+        return;
+    }
+    for c in chunks.iter_mut() {
+        if c.depth == 0 {
+            if let Some(sigs) = seed_signals.get(&c.name) {
+                c.rank_signals = sigs.clone();
+            }
+        }
+    }
+}
+
 /// Sort chunks by score desc (file/line/name tiebreak), truncate to limit,
 /// then re-sort to file/line reading order.
 ///
@@ -489,6 +519,9 @@ pub fn gather_with_graph<Mode>(
     let filter = SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
+        // Record provenance for the seed hits — attached to depth-0 chunks
+        // below. Side channel; no scoring change.
+        record_rank_signals: true,
         ..SearchFilter::default()
     };
     let seed_results = store.search_filtered(
@@ -506,10 +539,17 @@ pub fn gather_with_graph<Mode>(
         });
     }
 
-    // Seed names with their scores
+    // Seed names with their scores, and a name → seed `rank_signals` map so the
+    // depth-0 chunks can carry their provenance after assembly.
     let mut name_scores: HashMap<String, (f32, usize)> = HashMap::new();
+    let mut seed_signals: HashMap<String, Vec<crate::store::RankSignal>> = HashMap::new();
     for r in &seed_results {
         name_scores.insert(r.chunk.name.clone(), (r.score, 0));
+        if !r.rank_signals.is_empty() {
+            seed_signals
+                .entry(r.chunk.name.clone())
+                .or_insert_with(|| r.rank_signals.clone());
+        }
     }
 
     // 2. BFS expand
@@ -522,6 +562,10 @@ pub fn gather_with_graph<Mode>(
 
     // 3. Batch-fetch chunks, deduplicate
     let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, root);
+
+    // 3b. Attach seed provenance to depth-0 chunks. Expanded chunks (depth > 0)
+    // weren't retrieved by fusion and keep an empty `rank_signals`.
+    attach_seed_signals(&mut chunks, &seed_signals);
 
     // 4. Sort by score desc, truncate to limit, re-sort to reading order
     sort_and_truncate(&mut chunks, opts.limit);

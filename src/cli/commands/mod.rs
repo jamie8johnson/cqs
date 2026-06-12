@@ -1003,6 +1003,7 @@ mod tests {
                             caller_count: 3,
                             test_count: 1,
                             search_score: 0.9,
+                            rank_signals: vec![],
                         },
                         cqs::ScoutChunk {
                             name: "bar".into(),
@@ -1013,6 +1014,7 @@ mod tests {
                             caller_count: 0,
                             test_count: 0,
                             search_score: 0.5,
+                            rank_signals: vec![],
                         },
                     ],
                     is_stale: false,
@@ -1029,6 +1031,7 @@ mod tests {
                         caller_count: 1,
                         test_count: 0,
                         search_score: 0.7,
+                        rank_signals: vec![],
                     }],
                     is_stale: true,
                 },

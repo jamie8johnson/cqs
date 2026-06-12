@@ -36,7 +36,7 @@ pub use rows::clamp_line_number;
 pub use types::{
     AttributedCaller, CallGraph, CalleeInfo, CallerAttribution, CallerInfo, CallerWithContext,
     ChunkIdentity, ChunkSummary, IndexStats, NoteSearchResult, NoteStats, NoteSummary,
-    ParentContext, SearchResult, StaleFile, StaleReport, UnifiedResult,
+    ParentContext, RankSignal, SearchResult, StaleFile, StaleReport, UnifiedResult,
 };
 
 // Search filter

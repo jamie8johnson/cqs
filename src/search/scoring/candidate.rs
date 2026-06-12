@@ -652,8 +652,8 @@ mod tests {
         parent_type_name: Option<&str>,
         score: f32,
     ) -> SearchResult {
-        SearchResult {
-            chunk: ChunkSummary {
+        SearchResult::new(
+            ChunkSummary {
                 id: name.to_string(),
                 file: std::path::PathBuf::from("test.ts"),
                 language: crate::parser::Language::TypeScript,
@@ -672,7 +672,7 @@ mod tests {
                 vendored: false,
             },
             score,
-        }
+        )
     }
 
     #[test]
