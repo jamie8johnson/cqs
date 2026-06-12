@@ -146,9 +146,9 @@ New v1.42 findings: 107 (batch 1: 59 = 15/11/26/7; batch 2: 48 = 13/19/14/2). Ca
 | TC-V1.42-13 | No SQLITE_BUSY / concurrent-writer test anywhere; busy_timeout env fallback unpinned | src/store/helpers/sql.rs:14 | ✅ PR #1764 |
 | TC-V1.42-15 | Read-only .cqs/ — no permission-denied test for index creation/open | src/cli/commands/index/build.rs:135-190 | ❎ closed: P4 permission-test gap, low |
 | CQ-V1.42-7 | Fused-tx phantom-chunk pruning verbatim inline copy of delete_phantom_chunks | src/store/chunks/crud.rs:1059-1144 | ✅ PR #1779 |
-| CQ-V1.42-9 | Ref-path query preparation duplicated, wider than deferred ledger entry; cmd_query_project double-search_hybrid is the easy first slice | src/cli/commands/search/query.rs:918-1174 vs :239-527 | open |
-| CQ-V1.42-13 | serve/data.rs writes raw SQL via pub(crate) pool access — schema knowledge in two modules | src/serve/data.rs:224-1124 | open |
-| CQ-V1.42-14 | store ↔ search bidirectional coupling — Store's search API implemented in search module on private fields (root cause of CQ-V1.42-12's gate-in-dead-code) | src/search/query.rs:67, src/store/search.rs:8 | open |
+| CQ-V1.42-9 | Ref-path query preparation duplicated, wider than deferred ledger entry; cmd_query_project double-search_hybrid is the easy first slice | src/cli/commands/search/query.rs:918-1174 vs :239-527 | ✅ PR #1793 |
+| CQ-V1.42-13 | serve/data.rs writes raw SQL via pub(crate) pool access — schema knowledge in two modules | src/serve/data.rs:224-1124 | ✅ PR #1795 |
+| CQ-V1.42-14 | store ↔ search bidirectional coupling — Store's search API implemented in search module on private fields (root cause of CQ-V1.42-12's gate-in-dead-code) | src/search/query.rs:67, src/store/search.rs:8 | ✅ PR #1795 (residual → #1790) |
 | PERF-V1.42-9 | build_cluster streams the entire function_calls table per /api/embed/2d request, aggregating degree counts Rust-side — push GROUP BY into SQL like build_graph | src/serve/data.rs:1011-1026 | ❎ closed: serve dashboard, secondary surface |
 | TC-HAP-V1.42-4 | task e2e tests #[ignore]d AND vacuous (assertions satisfiable by any outcome); --tokens waterfall branch never executed | tests/task_test.rs:285-327, train/task.rs:609-641 | ✅ PR #1765 |
 
@@ -183,14 +183,14 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 
 | ID(s) | Finding | Effort | Status |
 |---|---|---|---|
-| DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | open |
+| DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | ✅ PR #1792 |
 | CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | ✅ PR #1769 |
 | RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | ✅ PR #1766 (socket single-write; envelope to_value kept as wire canonicalization) |
 | PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | open |
 | RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | ✅ PR #1770 |
 | AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | ✅ PR #1773 |
 | SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos (Cluster H leftover) | medium | ✅ PR #1769 |
-| PB-V1.40-9 | WAL mode unconditional on store open — unsupported on /mnt/c 9P bridge; detect and switch to DELETE | medium | open |
+| PB-V1.40-9 | WAL mode unconditional on store open — unsupported on /mnt/c 9P bridge; detect and switch to DELETE | medium | ❎ refuted: production runs WAL on v9fs daily (live evidence, this machine); premise false |
 | PERF-V1.40-8 | `meta_json_fragment` triple-work per JSONL emit — CAUTION: proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale); cache only the static part | easy | ✅ PR #1779 |
 | RM-V1.40-4 | `lookup_by_name` builds SQL via `format!` per call (surviving sub-claim of RB-V1.40-2) | easy | open |
 
@@ -209,12 +209,12 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | EH-V1.40-4 | `dispatch_deps` Type-forward misroutes Function names without warning | easy | ✅ PR #1773 |
 | EH-V1.40-5 | `meta_json_fragment` `.expect()` on hot path | easy | ✅ PR #1779 |
 | EH-V1.40-7 | `lookup_by_name` empty-string short-circuit undocumented | easy | ❎ closed: one doc line; fold into next query.rs touch |
-| API-V1.40-2 | Kind enum mixes 5 routing kinds + 3 resolution outcomes (verified today: no KindResolution split exists) | medium | open |
-| API-V1.40-3 | `Store::lookup_by_name` breaks `get_chunks_by_X` convention (verified today: unrenamed) | easy | open |
-| API-V1.40-5 | Two `pub enum OutputFormat` (output_format.rs vs cli/definitions.rs — verified today both exist; posture.rs rename in #1711 didn't resolve the type collision) | medium | open |
-| API-V1.40-6 | `emit_json_error_with_data` shape inconsistency vs wrap_error path | easy | open |
-| API-V1.40-9 | `CQS_DEFERRED_FLUSH_INTERVAL` is a count, not a duration — rename `_BATCHES` | easy | open |
-| API-V1.40-10 | `--format` and `--json` flags shadow each other | easy | open |
+| API-V1.40-2 | Kind enum mixes 5 routing kinds + 3 resolution outcomes (verified today: no KindResolution split exists) | medium | ✅ PR #1792 |
+| API-V1.40-3 | `Store::lookup_by_name` breaks `get_chunks_by_X` convention (verified today: unrenamed) | easy | ✅ PR #1792 (→ get_chunks_by_name) |
+| API-V1.40-5 | Two `pub enum OutputFormat` (output_format.rs vs cli/definitions.rs — verified today both exist; posture.rs rename in #1711 didn't resolve the type collision) | medium | ✅ PR #1792 (envelope side → EnvelopeShape) |
+| API-V1.40-6 | `emit_json_error_with_data` shape inconsistency vs wrap_error path | easy | ✅ PR #1792 |
+| API-V1.40-9 | `CQS_DEFERRED_FLUSH_INTERVAL` is a count, not a duration — rename `_BATCHES` | easy | ✅ PR #1792 |
+| API-V1.40-10 | `--format` and `--json` flags shadow each other | easy | ❎ closed in #1792: verdict keep both — conflicts_with documented deliberate |
 | CQ-V1.40-8 | `meta_value_for_envelope` duplicate fallback Map construction (partially reduced by #1711's delegation) | easy | ✅ verified already fixed (pre-existing refactor; confirmed in #1779) |
 | RB-V1.40-5 + SEC-V1.40-5 | `lookup_by_name` debug-span records full user-supplied name | easy | ✅ PR #1779 |
 | SHL-V1.40-2 | `clamp(1, 100)` literals duplicated 13+× — named constants in cli::limits (new SHL-V1.42-1 is the false-rationale sibling; fix together) | easy | ✅ PR #1771 |
