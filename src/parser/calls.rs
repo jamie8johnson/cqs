@@ -100,6 +100,109 @@ pub(crate) fn extract_serde_callback_calls(
     calls
 }
 
+/// Emit synthetic call edges for `func(args)`-shaped calls that live inside
+/// Rust macro token-trees.
+///
+/// In tree-sitter-rust a `macro_invocation` (`println!(...)`, `vec![...]`,
+/// `assert_eq!(...)`) carries its arguments as an opaque `token_tree`: the
+/// grammar does not parse the body, so a call like `auth_banner_tty(x, y)`
+/// inside `println!("{}", auth_banner_tty(x, y))` is a flat run of tokens, NOT
+/// a `call_expression`. The standard call query therefore never sees it, and a
+/// function called ONLY from inside macros shows zero callers — breaking
+/// callers / impact / test-map / dead.
+///
+/// Heuristic (high precision): inside any `token_tree`, an `identifier` whose
+/// immediate next named-or-anonymous sibling is itself a `token_tree` is the
+/// callee of a `func(args)` / `func[args]` / `func{args}` shape. We emit a call
+/// edge for it. Identifiers NOT followed by a `token_tree` (bare variables,
+/// the left half of a `m::n` path, struct field names) are skipped.
+///
+/// PATH-QUALIFIED CALLS: `m::n()` appears inside the token_tree as
+/// `identifier(m) :: identifier(n) token_tree(())`. Only `n` is immediately
+/// followed by a `token_tree`, so we emit `n` — the terminal segment, matching
+/// how the call graph resolves cross-module identifiers by bare last segment
+/// (see `extract_serde_callback_calls`). `m` (next sibling `::`) is skipped.
+///
+/// NESTED MACROS: a macro nested inside a token-tree arg (`outer!(inner!(j()))`)
+/// is parsed as a real `macro_invocation` node *inside* the outer token_tree.
+/// We recurse through `token_tree` AND `macro_invocation` children, so the
+/// inner call (`j`) is reached. The macro NAME itself (`println`, `inner`) is
+/// the `identifier` child of a `macro_invocation` whose next sibling is `!`
+/// (never a `token_tree`), so it is never emitted as a call.
+///
+/// Walks only `node`'s subtree, so callers pass the chunk node to stay scoped
+/// to one chunk's byte range. `line_offset` is subtracted (saturating, min 1)
+/// to convert absolute tree rows to chunk-relative 1-indexed lines, matching
+/// the `extract_calls` convention; pass `0` for absolute line numbers.
+pub(crate) fn extract_macro_call_edges(
+    node: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    line_offset: u32,
+) -> Vec<CallSite> {
+    let _span = tracing::debug_span!("extract_macro_call_edges", %language).entered();
+
+    if language != Language::Rust {
+        return Vec::new();
+    }
+
+    let mut calls = Vec::new();
+    collect_macro_calls(node, source, line_offset, false, &mut calls);
+    calls
+}
+
+/// Recursive worker for [`extract_macro_call_edges`].
+///
+/// `in_token_tree` tracks whether the current node is (transitively) inside a
+/// macro `token_tree`. Only once inside do we treat an `identifier` followed by
+/// a `token_tree` as a call — outside token-trees the normal call query already
+/// covers real `call_expression`s, and applying the heuristic there would
+/// double-count.
+fn collect_macro_calls(
+    node: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    in_token_tree: bool,
+    out: &mut Vec<CallSite>,
+) {
+    let mut cursor = node.walk();
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+
+    for (i, child) in children.iter().enumerate() {
+        let kind = child.kind();
+
+        // Inside a token_tree: an `identifier` immediately followed by a
+        // `token_tree` is the `func(args)` shape. The macro-name identifier of
+        // a nested `macro_invocation` is followed by `!`, never a `token_tree`,
+        // so it is naturally excluded.
+        if in_token_tree && kind == "identifier" {
+            let next_is_token_tree = children
+                .get(i + 1)
+                .map(|n| n.kind() == "token_tree")
+                .unwrap_or(false);
+            if next_is_token_tree {
+                let callee_name = source[child.byte_range()].to_string();
+                if !should_skip_callee(&callee_name) {
+                    let line_number = (child.start_position().row as u32 + 1)
+                        .saturating_sub(line_offset)
+                        .max(1);
+                    out.push(CallSite {
+                        callee_name,
+                        line_number,
+                    });
+                }
+            }
+        }
+
+        // Recurse. Descend into token_tree (its tokens may hold calls and
+        // nested token_trees) and macro_invocation (nested macros). The
+        // `in_token_tree` flag latches on once we enter a token_tree and stays
+        // set for that subtree.
+        let child_in_token_tree = in_token_tree || kind == "token_tree";
+        collect_macro_calls(*child, source, line_offset, child_in_token_tree, out);
+    }
+}
+
 impl Parser {
     /// Extract function calls from a chunk's source code
     /// Returns call sites found within the given byte range of the source.
@@ -201,6 +304,25 @@ impl Parser {
                     });
                 }
             }
+        }
+
+        // Macro token-tree call edges: calls inside `println!`/`vec!`/etc.
+        // token-trees are opaque tokens, not `call_expression`s, so the query
+        // above misses them. Scope the tree walk to the same byte range as the
+        // query cursor by descending to the node covering the range. Deduped
+        // below against query-captured calls so a name appearing in both a real
+        // call and a macro arg is counted once.
+        if language == Language::Rust {
+            let root = tree.root_node();
+            let scope = root
+                .descendant_for_byte_range(start_byte, end_byte)
+                .unwrap_or(root);
+            calls.extend(extract_macro_call_edges(
+                scope,
+                &source,
+                language,
+                line_offset,
+            ));
         }
 
         // Deduplicate calls to the same function (keep first occurrence)
@@ -520,6 +642,12 @@ impl Parser {
                 language,
                 line_start,
             ));
+
+            // Macro token-tree call edges: calls inside `println!`/`vec!`/etc.
+            // are opaque tokens, not `call_expression`s. Walk the chunk node for
+            // them. This loop uses ABSOLUTE line numbers (the call query above
+            // does not subtract line_start), so pass line_offset = 0.
+            calls.extend(extract_macro_call_edges(node, &source, language, 0));
 
             // Deduplicate calls
             seen.clear();
@@ -1342,6 +1470,202 @@ const CFG: Config = Config {
             "expected `post_process_helper` (from `Some(post_process_helper as PostProcessFn)`), got: {:?}",
             names
         );
+    }
+
+    mod macro_call_edge_tests {
+        use super::*;
+
+        /// Parse Rust source standalone and return all call edges found by
+        /// `extract_calls` (which now includes the macro token-tree pass).
+        fn calls_for(content: &str) -> Vec<String> {
+            let parser = Parser::new().unwrap();
+            let calls = parser.extract_calls(content, Language::Rust, 0, content.len(), 0);
+            calls.into_iter().map(|c| c.callee_name).collect()
+        }
+
+        /// Run ONLY the macro token-tree pass (`extract_macro_call_edges`) over
+        /// the parsed source. Used to assert what the heuristic alone emits —
+        /// distinct from `extract_calls`, which ALSO runs the tree-sitter call
+        /// query (whose `(macro_invocation macro: (identifier))` pattern
+        /// legitimately captures macro NAMES like `println` as callees, a
+        /// pre-existing dead-code behavior this pass leaves untouched).
+        fn macro_edges_for(content: &str) -> Vec<String> {
+            let grammar = Language::Rust.try_grammar().unwrap();
+            let mut ts = tree_sitter::Parser::new();
+            ts.set_language(&grammar).unwrap();
+            let tree = ts.parse(content, None).unwrap();
+            extract_macro_call_edges(tree.root_node(), content, Language::Rust, 0)
+                .into_iter()
+                .map(|c| c.callee_name)
+                .collect()
+        }
+
+        /// `println!("{}", f(x))` — a call inside a macro arg is invisible to
+        /// the call query (opaque token_tree). The macro pass must surface it.
+        #[test]
+        fn test_macro_println_arg_call() {
+            let content = r#"
+fn caller() {
+    println!("{}", auth_banner_tty(actual, token));
+}
+"#;
+            let names = calls_for(content);
+            assert!(
+                names.contains(&"auth_banner_tty".to_string()),
+                "expected auth_banner_tty edge from println! arg, got: {names:?}"
+            );
+            // The macro pass itself must NOT emit the macro name `println`
+            // (only the existing call query captures it, by design).
+            let macro_only = macro_edges_for(content);
+            assert!(
+                !macro_only.contains(&"println".to_string()),
+                "macro pass must not emit the macro name `println`, got: {macro_only:?}"
+            );
+        }
+
+        /// `assert_eq!(g(), h())` — both args are zero-arg calls.
+        #[test]
+        fn test_macro_assert_eq_both_args() {
+            let names = calls_for("fn c() { assert_eq!(g(), h()); }\n");
+            assert!(names.contains(&"g".to_string()), "got: {names:?}");
+            assert!(names.contains(&"h".to_string()), "got: {names:?}");
+            let macro_only = macro_edges_for("fn c() { assert_eq!(g(), h()); }\n");
+            assert!(
+                !macro_only.contains(&"assert_eq".to_string()),
+                "macro pass must not emit macro name, got: {macro_only:?}"
+            );
+        }
+
+        /// `vec![make(i)]` — bracket-delimited token_tree, call inside.
+        #[test]
+        fn test_macro_vec_bracket_call() {
+            let names = calls_for("fn c() { let v = vec![make(i)]; }\n");
+            assert!(names.contains(&"make".to_string()), "got: {names:?}");
+            let macro_only = macro_edges_for("fn c() { let v = vec![make(i)]; }\n");
+            assert!(
+                !macro_only.contains(&"vec".to_string()),
+                "macro pass must not emit macro name, got: {macro_only:?}"
+            );
+        }
+
+        /// Nested macro: `outer!(inner!(j()))` — the inner call must be reached
+        /// through the nested macro_invocation node, and neither macro name is
+        /// emitted by the macro pass.
+        #[test]
+        fn test_macro_nested_invocation() {
+            let names = calls_for("fn c() { outer!(inner!(j())); }\n");
+            assert!(
+                names.contains(&"j".to_string()),
+                "nested macro inner call should surface, got: {names:?}"
+            );
+            let macro_only = macro_edges_for("fn c() { outer!(inner!(j())); }\n");
+            assert!(
+                !macro_only.contains(&"outer".to_string())
+                    && !macro_only.contains(&"inner".to_string()),
+                "macro pass must not emit nested macro names, got: {macro_only:?}"
+            );
+            // The inner call IS emitted by the macro pass.
+            assert!(
+                macro_only.contains(&"j".to_string()),
+                "macro pass should emit inner call `j`, got: {macro_only:?}"
+            );
+        }
+
+        /// Path-qualified call inside a macro: `log!(m::n())` resolves to the
+        /// terminal segment `n` (matching the call graph's bare-last-segment
+        /// resolution), and the leading segment `m` is NOT emitted.
+        #[test]
+        fn test_macro_path_qualified_terminal_segment() {
+            let macro_only = macro_edges_for("fn c() { log!(m::n()); }\n");
+            assert!(
+                macro_only.contains(&"n".to_string()),
+                "terminal segment `n` should be emitted, got: {macro_only:?}"
+            );
+            assert!(
+                !macro_only.contains(&"m".to_string()),
+                "leading path segment `m` must not be emitted, got: {macro_only:?}"
+            );
+        }
+
+        /// A bare identifier inside a macro that is NOT followed by a token_tree
+        /// (a variable, not a call) must not produce an edge from the macro pass.
+        #[test]
+        fn test_macro_bare_identifier_not_emitted() {
+            let macro_only = macro_edges_for(
+                r#"fn c() { println!("{} {}", alpha, beta); }
+"#,
+            );
+            assert!(
+                !macro_only.contains(&"alpha".to_string())
+                    && !macro_only.contains(&"beta".to_string()),
+                "bare variables in a macro must not be call edges, got: {macro_only:?}"
+            );
+        }
+
+        /// Regression: a plain (non-macro) call still emits exactly ONE edge —
+        /// the macro heuristic must not double-count real `call_expression`s.
+        #[test]
+        fn test_plain_call_emits_exactly_once() {
+            let parser = Parser::new().unwrap();
+            let content = "fn caller() { do_work(); }\n";
+            let calls = parser.extract_calls(content, Language::Rust, 0, content.len(), 0);
+            let do_work_count = calls.iter().filter(|c| c.callee_name == "do_work").count();
+            assert_eq!(
+                do_work_count, 1,
+                "plain call should emit exactly one edge, got {do_work_count}: {:?}",
+                calls
+            );
+        }
+
+        /// A name appearing BOTH as a real call and inside a macro arg is
+        /// deduped to a single edge (extract_calls dedups by callee_name).
+        #[test]
+        fn test_call_and_macro_arg_deduped() {
+            let parser = Parser::new().unwrap();
+            let content = r#"
+fn caller() {
+    shared();
+    println!("{}", shared());
+}
+"#;
+            let calls = parser.extract_calls(content, Language::Rust, 0, content.len(), 0);
+            let shared_count = calls.iter().filter(|c| c.callee_name == "shared").count();
+            assert_eq!(
+                shared_count, 1,
+                "call + macro-arg occurrence must dedup to one edge, got {shared_count}"
+            );
+        }
+
+        /// End-to-end through `parse_file_relationships`: a function whose ONLY
+        /// reference to `auth_banner_tty` is inside a `println!` gets a
+        /// function_calls edge naming it — the store-level caller resolution
+        /// then sees the relationship. This is the issue's exact shape.
+        #[test]
+        fn test_parse_file_relationships_emits_macro_edge() {
+            let content = r#"
+fn auth_banner_tty(a: u32, b: u32) -> u32 { a + b }
+
+fn render() {
+    println!("{}", auth_banner_tty(1, 2));
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+            let render = calls
+                .iter()
+                .find(|fc| fc.name == "render")
+                .expect("render should have a function_calls entry");
+            let callees: Vec<&str> = render
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(
+                callees.contains(&"auth_banner_tty"),
+                "render should call auth_banner_tty via the println! macro, got: {callees:?}"
+            );
+        }
     }
 
     mod serde_callback_tests {

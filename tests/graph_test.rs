@@ -380,6 +380,57 @@ fn explain_process_reports_callers_and_callees() {
     );
 }
 
+/// A function whose ONLY call site is inside a macro token-tree
+/// (`println!("{}", auth_banner_tty(...))`) must still surface a caller
+/// edge end-to-end. Without the macro token-tree extractor, `auth_banner_tty`
+/// shows zero callers because its only use lives in an opaque token_tree the
+/// tree-sitter call query never parses. Exercises the full index pipeline
+/// (parse_file_all → upsert_function_calls → get_callers_full).
+#[test]
+fn macro_only_callee_has_a_caller_edge() {
+    let f = InProcessFixture::with_corpus(&[(
+        "src/banner.rs",
+        r#"
+/// Banner shown only via a formatting macro.
+fn auth_banner_tty(actual: u32, token: u32) -> u32 {
+    actual + token
+}
+
+/// No-auth banner line, also only used inside a macro.
+fn no_auth_banner_line() -> &'static str {
+    "no auth"
+}
+
+/// Renders the banner — the ONLY references to the two helpers above are
+/// inside macro token-trees, invisible to the plain call query.
+fn render_banner(actual: u32, token: u32) {
+    println!("{}", auth_banner_tty(actual, token));
+    eprintln!("{}", no_auth_banner_line());
+}
+"#,
+    )]);
+
+    let banner_callers = f
+        .store
+        .get_callers_full("auth_banner_tty")
+        .expect("callers");
+    let names: Vec<&str> = banner_callers.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"render_banner"),
+        "auth_banner_tty is called by render_banner via println!; got callers {names:?}"
+    );
+
+    let line_callers = f
+        .store
+        .get_callers_full("no_auth_banner_line")
+        .expect("callers");
+    let line_names: Vec<&str> = line_callers.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        line_names.contains(&"render_banner"),
+        "no_auth_banner_line is called by render_banner via eprintln!; got callers {line_names:?}"
+    );
+}
+
 /// TC-HAP-V1.33-5: pin the full `build_explain_data` contract at the lib
 /// level — callers, callees, similar (semantic search), and hints all
 /// firing together for a real chunk. The CLI handler `build_explain_data`
