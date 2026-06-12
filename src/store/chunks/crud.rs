@@ -211,11 +211,14 @@ async fn set_fingerprint_in_tx(
     .await?;
 
     // Persist the same fingerprint in the registry. For a file WITH chunks this
-    // is redundant with the chunk-row columns (the staleness readers prefer the
-    // chunk-row value), but it makes the registry a complete shadow so a later
-    // prune-to-zero leaves the fingerprint intact. For a ZERO-chunk file the
-    // UPDATE above touched nothing and THIS is the only place the fingerprint
-    // lands — exactly the #1774 fix.
+    // is redundant with the chunk-row columns — the staleness readers take a
+    // per-column MAX() over the UNION of both sources, which collapses to one
+    // row precisely BECAUSE this write keeps the two sides identical (every
+    // stamp path routes through here, so they cannot drift apart). It also
+    // makes the registry a complete shadow so a later prune-to-zero leaves the
+    // fingerprint intact. For a ZERO-chunk file the UPDATE above touched
+    // nothing and THIS is the only place the fingerprint lands — exactly the
+    // #1774 fix.
     set_registry_fingerprint_in_tx(tx, origin_str, fp.mtime, size_i64, hash_blob).await?;
 
     Ok(result.rows_affected())
@@ -800,10 +803,23 @@ impl Store<ReadWrite> {
     /// the next successful re-parse, but that's strictly better than ghost
     /// chunks plus a hot reindex loop.
     ///
-    /// Returns the number of chunk rows whose `source_mtime` was updated.
-    /// Callers can log a warn if `rows_affected == 0` (origin format mismatch
-    /// would be the most likely cause), but the typical case is `rows_affected
-    /// > 0` matching the chunk count for that file.
+    /// The stored `source_size` / `source_content_hash` are CLEARED (set NULL)
+    /// alongside the mtime bump. They describe content the parser couldn't
+    /// process; leaving them in place keeps the `MtimeOrHash` tiebreak
+    /// classifying the file divergent on every tick whenever the failing edit
+    /// changed the file's size — exactly the loop this helper exists to break.
+    /// NULL size+hash degrades the origin to the documented mtime-only
+    /// matching until the next successful reindex restores a full fingerprint.
+    ///
+    /// The same touched fingerprint is UPSERTed into `file_registry` so the
+    /// loop also breaks for origins with zero chunk rows (a comment-only file
+    /// edited into a syntax error, or a brand-new file that has never parsed) —
+    /// the chunk-row UPDATE alone touches nothing for those.
+    ///
+    /// Returns the number of chunk rows whose `source_mtime` was updated (the
+    /// registry UPSERT is not counted). Callers can log a warn if
+    /// `rows_affected == 0` for an origin expected to carry chunks (origin
+    /// format mismatch would be the most likely cause).
     pub fn touch_source_mtime(&self, origin: &Path, mtime_ms: i64) -> Result<u32, StoreError> {
         let _span =
             tracing::debug_span!("touch_source_mtime", origin = %origin.display(), mtime_ms)
@@ -816,10 +832,21 @@ impl Store<ReadWrite> {
 
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
-            let result = sqlx::query("UPDATE chunks SET source_mtime = ?1 WHERE origin = ?2")
-                .bind(mtime_ms)
-                .bind(&origin_str)
-                .execute(&mut *tx)
+            let result = sqlx::query(
+                "UPDATE chunks SET source_mtime = ?1, \
+                     source_size = NULL, source_content_hash = NULL \
+                 WHERE origin = ?2",
+            )
+            .bind(mtime_ms)
+            .bind(&origin_str)
+            .execute(&mut *tx)
+            .await?;
+            // Mirror the touched mtime-only fingerprint into the registry so
+            // zero-chunk / never-parsed origins also stop re-queuing. NULL
+            // size+hash here as well — the readers take MAX() across chunk
+            // rows and registry, so a stale registry hash would resurrect the
+            // tiebreak the chunk-side NULLing just disabled.
+            set_registry_fingerprint_in_tx(&mut tx, &origin_str, Some(mtime_ms), None, None)
                 .await?;
             tx.commit().await?;
             Ok(result.rows_affected() as u32)

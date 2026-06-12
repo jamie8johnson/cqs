@@ -1069,7 +1069,8 @@ async fn migrate_v27_to_v28(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// fingerprint and skips the parse. Created empty: the next `cqs index` /
 /// watch reindex populates it as zero-chunk files are seen. Backfilling from
 /// chunk rows is unnecessary — files WITH chunks already carry the fingerprint
-/// on their rows, and the union prefers the chunk-row value.
+/// on their rows, and an absent registry row contributes nothing to the
+/// readers' MAX()-over-UNION merge.
 ///
 /// **notes.sentiment CHECK.** Sentiment is documented as DISCRETE (only -1,
 /// -0.5, 0, 0.5, 1), but pre-v29 the schema accepted any REAL. The CHECK pins

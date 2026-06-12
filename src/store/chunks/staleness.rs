@@ -390,10 +390,19 @@ impl Store<ReadWrite> {
             // lock closes it.
             let (_guard, mut tx) = self.begin_write().await?;
 
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             // Reconcile stored origins against current filesystem state via
             // `origin_exists`. Pre-compute the slash-normalized string set
@@ -457,10 +466,19 @@ impl Store<ReadWrite> {
             // begin_write is reflected here; any reindex that committed
             // *after* will be queued behind our write lock. Either way the
             // missing-set lines up with what's actually deletable.
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
             // Pre-compute the slash-normalized string set once so the
@@ -594,10 +612,19 @@ impl Store<ReadWrite> {
 
             // Collect distinct origins via the tx's read snapshot so reads
             // and deletes serialise as one unit.
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             let cap = max_paths.unwrap_or(usize::MAX);
             let mut ignored: Vec<String> = Vec::new();
@@ -1598,12 +1625,10 @@ mod tests {
             .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/missing_empty.rs"), fp)])
             .unwrap();
 
-        // A chunk for the SAME missing origin so prune_missing has a chunk row
-        // to enumerate (prune walks DISTINCT chunk origins). Both should go.
-        let c = make_chunk("orphan", "src/missing_empty.rs");
-        store
-            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(1234))
-            .unwrap();
+        // Deliberately NO chunk row for this origin: the registry-only case is
+        // the population #1774 exists for, and the prune's origin enumeration
+        // must UNION `file_registry` to see it at all. (A chunk-bearing origin
+        // would mask an enumeration that only walks `chunks`.)
 
         // existing_files is empty → the origin is "missing" → pruned.
         let existing = HashSet::new();
@@ -1614,7 +1639,37 @@ mod tests {
                 .indexed_file_origins()
                 .unwrap()
                 .contains_key("src/missing_empty.rs"),
-            "prune_missing must remove the file_registry row for a missing origin"
+            "prune_missing must remove the file_registry row for a registry-only missing origin"
+        );
+    }
+
+    /// `prune_all` must also collect a registry-only missing origin — the
+    /// daemon GC pass uses prune_all, and the inotify delete event (the only
+    /// other cleanup) is unreliable on WSL mounts, so GC is the backstop.
+    #[test]
+    fn test_prune_all_prunes_registry_only_origin() {
+        use crate::store::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, dir) = setup_store();
+
+        let fp = FileFingerprint {
+            mtime: Some(99),
+            size: Some(5),
+            content_hash: Some([3u8; 32]),
+        };
+        store
+            .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/ghost_empty.rs"), fp)])
+            .unwrap();
+
+        let existing = HashSet::new();
+        store.prune_all(&existing, dir.path()).unwrap();
+
+        assert!(
+            !store
+                .indexed_file_origins()
+                .unwrap()
+                .contains_key("src/ghost_empty.rs"),
+            "prune_all must remove a registry-only missing origin"
         );
     }
 
