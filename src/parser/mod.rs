@@ -709,6 +709,14 @@ impl Parser {
                 line_start,
             ));
 
+            // Macro token-tree call edges: calls inside `println!`/`vec!`/etc.
+            // are opaque tokens the call query can't see. Walk the chunk node.
+            // This loop produces ABSOLUTE line numbers (matching the call query
+            // above, which does not subtract line_start), so pass line_offset =
+            // 0. The relative-line conversion for `chunk_calls` below applies to
+            // these edges identically.
+            calls.extend(calls::extract_macro_call_edges(node, &source, language, 0));
+
             seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
 
