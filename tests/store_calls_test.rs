@@ -1208,22 +1208,104 @@ fn attributed_callers_pick_right_type() {
     // other_owner_types for Store::search = {Index} (Index also owns `search`).
     let mut others = std::collections::HashSet::new();
     others.insert("Index".to_string());
-    let attributed = store
+    let (attributed, excluded) = store
         .get_callers_attributed("search", "Store", &others)
         .unwrap();
     let names: Vec<_> = attributed
         .iter()
         .map(|a| (a.caller.name.as_str(), a.attribution))
         .collect();
-    // index_self is parented to Index (owns its own search) → excluded.
+    // index_self is parented to Index (owns its own search) → excluded + counted.
     assert!(
         !names.iter().any(|(n, _)| *n == "index_self"),
         "caller in a different type that owns the method must be excluded, got {names:?}"
+    );
+    assert_eq!(
+        excluded, 1,
+        "the one Index-parented caller is counted as excluded"
     );
     // store_self → self-call.
     assert!(names.contains(&("store_self", CallerAttribution::SelfType)));
     // free_fn → no enclosing type → ambiguous, included.
     assert!(names.contains(&("free_fn", CallerAttribution::Ambiguous)));
+}
+
+/// An exact-qualified doc_reference edge (markdown
+/// `` `Store::open()` `` stores callee_name "Store::open") must be reachable
+/// from `callers Store::open`. The bare-method query can't match a qualified
+/// callee, so `get_callers_attributed` merges the exact-qualified rows in at
+/// proven self-attribution. Without the merge these doc edges are unreachable.
+#[test]
+fn attributed_callers_include_exact_qualified_doc_edge() {
+    let store = TestStore::new();
+    // Store::open is defined in store.rs.
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "open", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    // A code caller of bare `open` inside Store (self-call).
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "reopen", 30, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_function_calls(
+            std::path::Path::new("store.rs"),
+            &[FunctionCalls {
+                name: "reopen".to_string(),
+                line_start: 30,
+                calls: vec![CallSite {
+                    callee_name: "open".to_string(),
+                    line_number: 31,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+    // A doc file that references `Store::open()` — stored verbatim as the
+    // qualified callee_name.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("docs.md"),
+            &[FunctionCalls {
+                name: "Usage".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "Store::open".to_string(),
+                    line_number: 5,
+                    kind: CallEdgeKind::DocReference,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let others = std::collections::HashSet::new();
+    let (attributed, _excluded) = store
+        .get_callers_attributed("open", "Store", &others)
+        .unwrap();
+    let names: Vec<&str> = attributed.iter().map(|a| a.caller.name.as_str()).collect();
+    // Both the bare code self-call and the exact-qualified doc edge are present.
+    assert!(
+        names.contains(&"reopen"),
+        "code self-call present: {names:?}"
+    );
+    assert!(
+        names.contains(&"Usage"),
+        "exact-qualified doc edge must be reachable: {names:?}"
+    );
+    // The doc edge is proven self (the receiver is named in the reference).
+    let doc = attributed
+        .iter()
+        .find(|a| a.caller.name == "Usage")
+        .unwrap();
+    assert_eq!(doc.attribution, CallerAttribution::SelfType);
+    assert_eq!(doc.caller.edge_kind, CallEdgeKind::DocReference);
 }
 
 /// `count_method_defs_by_type` groups a name's callable definitions by

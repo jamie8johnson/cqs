@@ -9,6 +9,12 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
+/// One attributed-caller row from `get_callers_attributed`'s merged scan:
+/// `(file, caller_name, caller_line, edge_kind, trust_rank,
+/// caller_parent_type, callee_name)`. Aliased to keep the query under
+/// `clippy::type_complexity`.
+type AttributedCallerRow = (String, String, i64, String, i64, Option<String>, String);
+
 impl<Mode> Store<Mode> {
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
@@ -120,34 +126,52 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Callers of `Type::method`, attributed by receiver type.
+    /// Callers of `Type::method`, attributed by receiver type. Returns the
+    /// attributed callers plus the count of callers excluded as belonging to a
+    /// different owning type (`other_owner_types`).
     ///
     /// Resolution is read-side from `chunks.parent_type_name` — no new
-    /// columns, no parser changes. For each caller of the bare `method`, the
-    /// caller's own enclosing type is looked up by joining `function_calls`
-    /// back to `chunks` on `(file=origin, caller_name=name,
-    /// caller_line=line_start)`. Attribution:
+    /// columns, no parser changes. Two edge populations are merged:
     ///
-    /// - caller's enclosing type == `qualifier_type` → self-call, included as
-    ///   [`CallerAttribution::SelfType`];
-    /// - caller's enclosing type is a *different* type that itself defines a
-    ///   `method` (per `other_owner_types`) → excluded (it calls that other
-    ///   type's method, not ours);
-    /// - caller has no enclosing type, an enclosing type with no `method` def,
-    ///   or no resolvable chunk → included as [`CallerAttribution::Ambiguous`]
-    ///   (over-report with a flag, never silent exclusion, never false
-    ///   certainty).
+    /// 1. **Bare-method edges** (`callee_name = method`): code call sites
+    ///    extracted with the receiver stripped (`store.search()` records
+    ///    callee `search`). The caller's own enclosing type is looked up by
+    ///    joining `function_calls` back to `chunks` on `(file=origin,
+    ///    caller_name=name, caller_line=line_start)`, then attributed:
+    ///    - enclosing type == `qualifier_type` → self-call,
+    ///      [`CallerAttribution::SelfType`];
+    ///    - enclosing type is a *different* type that itself defines a
+    ///      same-named method (per `other_owner_types`) → **heuristically**
+    ///      excluded and counted. This is a heuristic, not a proof: a method
+    ///      on `Index` that calls `store.search()` genuinely targets
+    ///      `Store::search`, yet is excluded because `Index` also defines
+    ///      `search`. The exclusion count is surfaced so the narrowing is
+    ///      visible.
+    ///    - no enclosing type / enclosing type without a same-named method /
+    ///      unresolved chunk → [`CallerAttribution::Ambiguous`] (over-report
+    ///      with a flag, never a silent drop).
+    /// 2. **Exact-qualified edges** (`callee_name = 'Type::method'`): doc
+    ///    references store the full backticked string verbatim (markdown
+    ///    `` `Store::open()` `` records callee `Store::open`). These name the
+    ///    receiver explicitly, so they are unambiguously this method's edges —
+    ///    included at [`CallerAttribution::SelfType`]. Without this merge a
+    ///    `Type::method` query would never reach them (the bare-method query
+    ///    can't match a qualified callee), making them unreachable.
+    ///
+    /// Rows are de-duplicated by `(file, caller_name, caller_line)` so a
+    /// caller that appears in both populations is reported once (the exact
+    /// edge, being proven, wins).
     ///
     /// `other_owner_types` is the set of enclosing types (other than
     /// `qualifier_type`) that define a same-named method, derived once by the
-    /// caller from [`count_method_defs_by_type`] so this method stays a single
-    /// scan.
+    /// caller from [`count_method_defs_by_type`] so this method stays few
+    /// scans.
     pub fn get_callers_attributed(
         &self,
         method: &str,
         qualifier_type: &str,
         other_owner_types: &std::collections::HashSet<String>,
-    ) -> Result<Vec<crate::store::AttributedCaller>, StoreError> {
+    ) -> Result<(Vec<crate::store::AttributedCaller>, usize), StoreError> {
         use crate::store::{AttributedCaller, CallerAttribution, CallerInfo};
         let _span = tracing::debug_span!(
             "get_callers_attributed",
@@ -155,41 +179,62 @@ impl<Mode> Store<Mode> {
             qualifier_type = %qualifier_type
         )
         .entered();
+        let qualified = format!("{qualifier_type}::{method}");
         self.rt.block_on(async {
-            // LEFT JOIN so callers with no matching chunk (e.g. >100-line
-            // functions skipped at extraction) still appear — they resolve to
-            // a NULL enclosing type and fall into the Ambiguous bucket rather
-            // than vanishing. Trust rank leads the collapse + ordering exactly
-            // as `get_callers_full`.
             let rank_case = crate::parser::CallEdgeKind::rank_case_sql("fc.edge_kind");
+            // Both populations in one scan: `callee_name = bare` (code sites,
+            // attributed via the LEFT JOIN to the caller's enclosing type) OR
+            // `callee_name = 'Type::method'` (exact-qualified doc edges, always
+            // this method's). A NULL `parent_type_name` either means the caller
+            // chunk didn't resolve (>100-line skip) or the row is an exact edge.
+            // LEFT JOIN keeps unresolved callers rather than dropping them.
+            // Trust rank leads the collapse + ordering exactly as
+            // `get_callers_full`.
             let sql = format!(
                 "SELECT fc.file, fc.caller_name, fc.caller_line, fc.edge_kind,
-                        MIN({rank_case}) AS trust_rank, c.parent_type_name
+                        MIN({rank_case}) AS trust_rank, c.parent_type_name,
+                        fc.callee_name
                  FROM function_calls fc
                  LEFT JOIN chunks c
                    ON c.origin = fc.file
                   AND c.name = fc.caller_name
                   AND c.line_start = fc.caller_line
-                 WHERE fc.callee_name = ?1
+                 WHERE fc.callee_name = ?1 OR fc.callee_name = ?2
                  GROUP BY fc.file, fc.caller_name, fc.caller_line
                  ORDER BY trust_rank, fc.file, fc.caller_line"
             );
-            let rows: Vec<(String, String, i64, String, i64, Option<String>)> =
-                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-                    .bind(method)
-                    .fetch_all(&self.pool)
-                    .await?;
+            let rows: Vec<AttributedCallerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(method)
+                .bind(&qualified)
+                .fetch_all(&self.pool)
+                .await?;
 
             let mut out = Vec::new();
-            for (file, name, line, kind, _rank, parent_type) in rows {
-                let attribution = match parent_type.as_deref() {
-                    Some(t) if t == qualifier_type => CallerAttribution::SelfType,
-                    // Parented to a different type that owns its own `method`:
-                    // this caller targets that type's method, not ours.
-                    Some(t) if other_owner_types.contains(t) => continue,
-                    // No enclosing type, or an enclosing type with no same-named
-                    // method, or an unresolved chunk: receiver unproven.
-                    _ => CallerAttribution::Ambiguous,
+            let mut excluded = 0usize;
+            // The GROUP BY (file, caller_name, caller_line) already yields one
+            // row per call site, collapsing a co-located bare code edge and
+            // exact doc edge into a single min-trust-rank row — so the Call
+            // edge (rank 0) wins over the doc edge (rank 4) and the site is
+            // attributed via its enclosing type. No further de-dupe needed.
+            for (file, name, line, kind, _rank, parent_type, callee) in rows {
+                // An exact-qualified edge names the receiver — proven self.
+                let is_exact = callee == qualified;
+                let attribution = if is_exact {
+                    CallerAttribution::SelfType
+                } else {
+                    match parent_type.as_deref() {
+                        Some(t) if t == qualifier_type => CallerAttribution::SelfType,
+                        // Parented to a different type that owns its own
+                        // same-named method — heuristically excluded (the
+                        // receiver could still be ours; the count surfaces it).
+                        Some(t) if other_owner_types.contains(t) => {
+                            excluded += 1;
+                            continue;
+                        }
+                        // No enclosing type, enclosing type without a same-named
+                        // method, or an unresolved chunk: receiver unproven.
+                        _ => CallerAttribution::Ambiguous,
+                    }
                 };
                 out.push(AttributedCaller {
                     caller: CallerInfo {
@@ -201,7 +246,7 @@ impl<Mode> Store<Mode> {
                     attribution,
                 });
             }
-            Ok(out)
+            Ok((out, excluded))
         })
     }
 

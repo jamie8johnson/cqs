@@ -189,6 +189,19 @@ pub(crate) struct CallersOutput {
     /// available to narrow the query.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<DefCandidate>,
+    /// On a `Type::method` query, the count of callers heuristically excluded
+    /// because their enclosing type is a *different* type that also defines a
+    /// same-named method. Skip-when-zero (omitted on the bare path and when no
+    /// caller was excluded). The exclusion is a heuristic — a caller in type
+    /// `Index` that calls `store.search()` is excluded though its receiver is
+    /// really a `Store` — so surfacing the count keeps the narrowing visible.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub excluded_other_owner: usize,
+}
+
+/// serde skip predicate for skip-when-zero `usize` fields.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -261,6 +274,7 @@ pub(crate) fn build_callers(name: &str, callers: &[CallerInfo], total: usize) ->
         callers: entries,
         total,
         candidates: Vec::new(),
+        excluded_other_owner: 0,
     }
 }
 
@@ -369,23 +383,22 @@ fn multi_def_candidates(store: &Store<ReadOnly>, name: &str) -> Result<Vec<DefCa
     if defs.len() <= 1 {
         return Ok(Vec::new());
     }
-    Ok(defs
-        .into_iter()
-        .map(|(ty, count)| DefCandidate {
-            qualified: match ty {
-                Some(t) => format!("{t}::{name}"),
-                None => name.to_string(),
-            },
-            count,
-        })
-        .collect())
+    Ok(defs_to_candidates(&defs, name))
 }
 
 /// Resolve the queried `Type::method`'s callers with receiver-type
-/// attribution. `other_owner_types` (every *other* type that defines
-/// a same-named method) drives the exclusion of callers that target a
-/// different type's method; everything else is included, with unproven
-/// receivers flagged `ambiguous`.
+/// attribution. `other_owner_types` (every *other* type that defines a
+/// same-named method) drives the heuristic exclusion of callers that appear to
+/// target a different type's method; everything else is included, with
+/// unproven receivers flagged `ambiguous`. The count of excluded callers is
+/// surfaced (`excluded_other_owner`) so the narrowing is visible.
+///
+/// Existence check: when `qual_type` does NOT define `method` — a typo
+/// (`Banana::search`) or a `module::function` path mistaken for a type — the
+/// query resolves no definition. Rather than silently returning bare-method
+/// callers under the bogus qualifier, the output is empty with the real
+/// `Type::method` candidates for that method name listed, so the user sees the
+/// truth.
 fn callers_qualified(
     store: &Store<ReadOnly>,
     qual_type: &str,
@@ -393,8 +406,29 @@ fn callers_qualified(
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
 ) -> Result<CallersCoreOutput> {
-    let other_owner_types = other_owner_types(store, method, qual_type)?;
-    let mut attributed = store
+    // Single scan of the method's definitions feeds both the existence check
+    // and the other-owner-types exclusion set.
+    let defs = store
+        .count_method_defs_by_type(method)
+        .context("Failed to enumerate method definitions")?;
+    let qual_defines = defs.iter().any(|(ty, _)| ty.as_deref() == Some(qual_type));
+    if !qual_defines {
+        // Unknown qualifier: empty result + the real owners as candidates.
+        return Ok(CallersCoreOutput::Callers(CallersOutput {
+            name: format!("{qual_type}::{method}"),
+            callers: Vec::new(),
+            count: 0,
+            total: 0,
+            candidates: defs_to_candidates(&defs, method),
+            excluded_other_owner: 0,
+        }));
+    }
+    let other_owner_types: std::collections::HashSet<String> = defs
+        .iter()
+        .filter_map(|(ty, _)| ty.clone())
+        .filter(|t| t != qual_type)
+        .collect();
+    let (mut attributed, excluded) = store
         .get_callers_attributed(method, qual_type, &other_owner_types)
         .context("Failed to load attributed callers")?;
     if let Some(want) = edge_kind {
@@ -419,25 +453,24 @@ fn callers_qualified(
         callers: entries,
         total,
         candidates: Vec::new(),
+        excluded_other_owner: excluded,
     }))
 }
 
-/// The set of enclosing types (other than `qual_type`) that define a method
-/// named `method`. Callers parented to one of these target *that* type's
-/// method, so the `Type::method` resolution excludes them.
-fn other_owner_types(
-    store: &Store<ReadOnly>,
-    method: &str,
-    qual_type: &str,
-) -> Result<std::collections::HashSet<String>> {
-    let defs = store
-        .count_method_defs_by_type(method)
-        .context("Failed to enumerate method definitions")?;
-    Ok(defs
-        .into_iter()
-        .filter_map(|(ty, _)| ty)
-        .filter(|t| t != qual_type)
-        .collect())
+/// Project a method's definition rows (from [`Store::count_method_defs_by_type`])
+/// into `Type::method` candidate forms. Unlike [`multi_def_candidates`], this
+/// emits the list even for a single owner — the unknown-qualifier path uses it
+/// to show the one real owner of a method the bogus qualifier didn't define.
+fn defs_to_candidates(defs: &[(Option<String>, usize)], method: &str) -> Vec<DefCandidate> {
+    defs.iter()
+        .map(|(ty, count)| DefCandidate {
+            qualified: match ty {
+                Some(t) => format!("{t}::{method}"),
+                None => method.to_string(),
+            },
+            count: *count,
+        })
+        .collect()
 }
 
 /// Map a [`cqs::store::CallerAttribution`] to the skip-when-empty wire field:
@@ -574,6 +607,7 @@ pub(crate) fn callers_cross_core(
         callers: entries,
         total,
         candidates: Vec::new(),
+        excluded_other_owner: 0,
     })
 }
 
@@ -685,8 +719,16 @@ pub(crate) fn cmd_callers(
             if json {
                 crate::cli::json_envelope::emit_json(&output)?;
             } else if output.callers.is_empty() {
-                println!("No callers found for '{}'", name);
-                print_candidates(&output.candidates);
+                // An unknown qualifier (`Banana::search`) returns empty callers
+                // WITH candidates — the real owners. Distinguish it from a
+                // genuinely call-free name (empty callers, no candidates).
+                if name.contains("::") && !output.candidates.is_empty() {
+                    println!("'{}' is not a known Type::method — did you mean:", name);
+                    print_candidate_lines(&output.candidates);
+                } else {
+                    println!("No callers found for '{}'", name);
+                    print_candidates(&output.candidates);
+                }
             } else {
                 println!("Functions that call '{}':", name);
                 println!();
@@ -714,11 +756,28 @@ pub(crate) fn cmd_callers(
                 }
                 println!();
                 print_caller_total(output.count, output.total);
+                print_excluded_other_owner(output.excluded_other_owner);
                 print_candidates(&output.candidates);
             }
         }
     }
     Ok(())
+}
+
+/// Print the heuristic-exclusion notice for a `Type::method` query: N callers
+/// were dropped because they sit in a *different* type that also defines the
+/// method. No-op when nothing was excluded. Honors the "never silent
+/// exclusion" promise — the narrowing is shown.
+fn print_excluded_other_owner(excluded: usize) {
+    if excluded == 0 {
+        return;
+    }
+    let plural = if excluded == 1 { "caller" } else { "callers" };
+    println!(
+        "{}",
+        format!("({excluded} {plural} excluded: in another type that also defines this method)")
+            .dimmed()
+    );
 }
 
 /// Print the `Type::method` disambiguation candidates for a bare multi-def
@@ -733,6 +792,12 @@ fn print_candidates(candidates: &[DefCandidate]) {
         "{}",
         "This name has multiple definitions — narrow with a Type qualifier:".dimmed()
     );
+    print_candidate_lines(candidates);
+}
+
+/// Render the candidate lines (`Type::method (N defs)`) shared by the
+/// multi-def hint and the unknown-qualifier "did you mean" path.
+fn print_candidate_lines(candidates: &[DefCandidate]) {
     for c in candidates {
         let plural = if c.count == 1 { "def" } else { "defs" };
         println!("  {} ({} {})", c.qualified.cyan(), c.count, plural);

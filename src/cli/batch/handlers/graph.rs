@@ -1701,6 +1701,12 @@ mod tests {
             self_caller.get("attribution").is_none(),
             "proven self-call omits attribution"
         );
+        // index_self was excluded as an other-owner caller — the count is
+        // surfaced (skip-when-zero), honoring "never silent exclusion".
+        assert_eq!(
+            daemon["excluded_other_owner"], 1,
+            "one Index-parented caller excluded + counted: {daemon}"
+        );
 
         // CLI==daemon parity.
         let core_args = CallersCoreArgs {
@@ -1712,6 +1718,140 @@ mod tests {
             serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
                 .unwrap();
         assert_eq!(daemon, core, "CLI==daemon parity for Type::method callers");
+    }
+
+    /// An unknown qualifier (`Banana::search` — no `Banana` type defines
+    /// `search`) returns empty callers WITH the real `Type::method` candidates,
+    /// rather than misleading free-function callers under a fabricated
+    /// qualifier. CLI==daemon agree.
+    #[test]
+    fn callers_unknown_qualifier_lists_real_owners_and_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        let (_dir, ctx) = seed_type_method_ctx();
+        let args = CallersArgs {
+            name: "Banana::search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert_eq!(daemon["count"], 0, "no callers under a bogus qualifier");
+        assert!(
+            daemon["callers"].as_array().unwrap().is_empty(),
+            "callers empty: {daemon}"
+        );
+        let quals: Vec<&str> = daemon["candidates"]
+            .as_array()
+            .expect("unknown qualifier lists the real owners")
+            .iter()
+            .map(|c| c["qualified"].as_str().unwrap())
+            .collect();
+        assert!(quals.contains(&"Store::search"), "candidates: {quals:?}");
+        assert!(quals.contains(&"Index::search"), "candidates: {quals:?}");
+
+        let core_args = CallersCoreArgs {
+            name: "Banana::search".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                .unwrap();
+        assert_eq!(daemon, core, "CLI==daemon parity for unknown qualifier");
+    }
+
+    /// `cqs callers Store::open` reaches the exact-qualified doc_reference
+    /// edge (markdown stored callee_name "Store::open") alongside attributed
+    /// code callers — through the daemon surface, with CLI==daemon parity.
+    #[test]
+    fn callers_type_method_reaches_exact_qualified_doc_edge_and_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            store
+                .upsert_chunks_batch(
+                    &[
+                        (
+                            type_method_chunk("store.rs", "open", 10, Some("Store")),
+                            embedding.clone(),
+                        ),
+                        (
+                            type_method_chunk("store.rs", "reopen", 30, Some("Store")),
+                            embedding.clone(),
+                        ),
+                    ],
+                    Some(0),
+                )
+                .expect("upsert chunks");
+            store
+                .upsert_function_calls(
+                    Path::new("store.rs"),
+                    &[FunctionCalls {
+                        name: "reopen".to_string(),
+                        line_start: 30,
+                        calls: vec![CallSite {
+                            callee_name: "open".to_string(),
+                            line_number: 31,
+                            kind: CallEdgeKind::Call,
+                        }],
+                    }],
+                )
+                .expect("upsert code edge");
+            store
+                .upsert_function_calls(
+                    Path::new("docs.md"),
+                    &[FunctionCalls {
+                        name: "Usage".to_string(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "Store::open".to_string(),
+                            line_number: 5,
+                            kind: CallEdgeKind::DocReference,
+                        }],
+                    }],
+                )
+                .expect("upsert doc edge");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        let args = CallersArgs {
+            name: "Store::open".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        let names: Vec<&str> = daemon["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"reopen"), "code self-call: {names:?}");
+        assert!(
+            names.contains(&"Usage"),
+            "exact-qualified doc edge reachable: {names:?}"
+        );
+
+        let core_args = CallersCoreArgs {
+            name: "Store::open".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                .unwrap();
+        assert_eq!(
+            daemon, core,
+            "CLI==daemon parity for exact-qualified doc edge"
+        );
     }
 
     /// A bare name with more than one definition lists the `Type::method`
