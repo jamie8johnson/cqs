@@ -77,6 +77,23 @@ fn splade_max_index_bytes() -> u64 {
     })
 }
 
+/// `true` if `CQS_SPLADE_NO_MMAP` is set to a truthy value (`1`, `true`,
+/// `yes`, case-insensitive), forcing [`SpladeIndex::load`] onto the heap
+/// `read_to_end` path even on a fast filesystem.
+///
+/// Escape hatch for environments where memory-mapping misbehaves but the
+/// `is_slow_mmap_fs` mountinfo heuristic doesn't catch them (overlay/bind
+/// mounts, exotic FUSE backends). Not cached — load is infrequent and the
+/// var is cheap to read.
+fn force_heap_read() -> bool {
+    std::env::var("CQS_SPLADE_NO_MMAP")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        })
+        .unwrap_or(false)
+}
+
 /// Errors specific to SpladeIndex persistence.
 ///
 /// Audit EH-4 / API-8 / API-9: prior to v1.22.0 audit, five distinct
@@ -636,16 +653,25 @@ impl SpladeIndex {
     /// `expected_generation`, returns an `Err` describing the reason; the
     /// caller is expected to fall back to rebuild-from-SQLite and re-persist.
     ///
+    /// The body is memory-mapped on fast filesystems and read into a heap
+    /// `Vec` on slow ones (9P/NTFS/SMB/NFS, detected via the store's
+    /// `is_slow_mmap_fs`) or when `CQS_SPLADE_NO_MMAP` is set. Either way the
+    /// body is fully decoded into owned `id_map` / postings, so the mapping is
+    /// transient and unmapped before this returns — it never escapes into
+    /// `SpladeIndex`. mmap avoids the ~59MB+ heap copy `read_to_end` makes and
+    /// holds through the decode, cutting the load-time peak (the steady-state
+    /// resident size is unchanged).
+    ///
     /// Safety guards (audit cluster):
-    /// - RB-2: file size capped at `CQS_SPLADE_MAX_INDEX_BYTES` (default 2 GB)
-    ///   before `read_to_end`, so an attacker or corruption can't trigger an
-    ///   unbounded allocation
-    /// - RB-1: blake3 hash covers header[0..32] + body, so any header bit
+    /// - file size capped at `CQS_SPLADE_MAX_INDEX_BYTES` (default 2 GB)
+    ///   before any mmap or `read_to_end`, so an attacker or corruption can't
+    ///   trigger an unbounded allocation / oversized mapping
+    /// - blake3 hash covers header[0..32] + body, so any header bit
     ///   flip (not just body) is detected before `Vec::with_capacity` is
     ///   called on chunk_count / token_count
-    /// - RM-4: orphan temp files from previous crashed saves are cleaned up
+    /// - orphan temp files from previous crashed saves are cleaned up
     ///   at the top of `load()`, mirroring the HNSW pattern
-    /// - EH-4 / API-8: corrupt-data conditions route through the dedicated
+    /// - corrupt-data conditions route through the dedicated
     ///   `CorruptData` variant, and `ChecksumMismatch` carries `path` /
     ///   `expected` / `actual` hex fields instead of a unit variant
     pub fn load(
@@ -664,7 +690,7 @@ impl SpladeIndex {
         // Best-effort: errors are logged but don't fail the load.
         Self::cleanup_orphan_temp_files(path);
 
-        // Audit RB-2: cap file size BEFORE read_to_end. Env override
+        // Cap file size BEFORE mapping or reading the body. Env override
         // `CQS_SPLADE_MAX_INDEX_BYTES` for cases where a genuine 2+ GB
         // index is expected (huge corpus with SPLADE-Code 0.6B).
         let metadata = match std::fs::metadata(path) {
@@ -746,24 +772,108 @@ impl SpladeIndex {
             .try_into()
             .expect("invariant: header[32..64] is 32 bytes (CHECKSUM_LEN)");
 
-        // Pre-allocate the body Vec from known file size to avoid
-        // ~log₂(59MB) reallocations on a typical SPLADE-Code 0.6B index
-        // (~100ms of wasted memcpy per warm query).
         let body_len = (file_size as usize).saturating_sub(SPLADE_INDEX_HEADER_LEN);
+
+        // Obtain the body bytes either by memory-mapping the file (fast path,
+        // avoids the ~59MB+ transient heap copy that `read_to_end` makes and
+        // holds alive through the entire decode) or by reading into a heap
+        // `Vec` (fallback). Both yield a `&[u8]` view over the body region;
+        // `verify_and_parse_body` fully decodes into owned `id_map` / postings,
+        // so the body backing is dropped when this scope ends — mmap is a
+        // transient-peak optimization, not a zero-copy one (`SpladeIndex` owns
+        // its strings and posting vectors, no borrow into the file survives).
+        //
+        // Slow-FS guard: on 9P/NTFS/SMB/NFS (e.g. WSL `/mnt/c/`), mmap reads
+        // fall back to per-page host/network round-trips and are slower than a
+        // single sequential `read_to_end`. Reuse the store's filesystem
+        // detection (`is_slow_mmap_fs`) — the same backends that hurt SQLite
+        // mmap hurt this one. `CQS_SPLADE_NO_MMAP=1` forces the heap path.
+        let use_mmap = !force_heap_read() && !crate::store::is_slow_mmap_fs(path);
+
+        // Replace-while-mapped is safe: `save()` writes to a temp file and
+        // atomically renames it into place (`crate::fs::atomic_replace`). On
+        // Linux the old inode stays alive behind any live mapping and is
+        // unlinked only when the last reference drops, so a concurrent watch
+        // rebuild can't pull the bytes out from under a live mmap. The mapping
+        // is confined to this function — it never escapes into `Self` — so it
+        // is unmapped before `load` returns and the load-bearing invariant is
+        // "don't truncate the file in place," which the writer never does.
+        if use_mmap {
+            // SAFETY: the file is opened read-only and mapped read-only. The
+            // only writer (`save`) replaces the file atomically rather than
+            // mutating it in place, so the mapped pages are stable for the
+            // (short) lifetime of this mapping. The map covers the file's
+            // current length; we reject the mapping below unless its length
+            // equals the `file_size` the metadata stat captured, so any
+            // concurrent grow/shrink between stat and map falls back to a
+            // bounded heap read rather than parsing a torn view.
+            match unsafe { memmap2::Mmap::map(reader.get_ref()) } {
+                Ok(mmap) => {
+                    if mmap.len() != file_size as usize {
+                        // File changed size between stat and map — treat as a
+                        // transient inconsistency and fall back to the heap
+                        // read, which re-reads under the size cap.
+                        tracing::warn!(
+                            mapped = mmap.len(),
+                            expected = file_size,
+                            "SPLADE index mmap length mismatch, falling back to heap read"
+                        );
+                    } else {
+                        let body = &mmap[SPLADE_INDEX_HEADER_LEN..];
+                        return Self::verify_and_parse_body(
+                            path,
+                            &header,
+                            &stored_hash,
+                            chunk_count,
+                            token_count,
+                            body,
+                        )
+                        .map(Some);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "SPLADE index mmap failed, falling back to heap read"
+                    );
+                }
+            }
+        }
+
+        // Heap fallback. Pre-allocate from the known file size to avoid
+        // ~log₂(59MB) reallocations on a typical SPLADE-Code 0.6B index.
         let mut body = Vec::with_capacity(body_len);
         reader.read_to_end(&mut body)?;
+        Self::verify_and_parse_body(path, &header, &stored_hash, chunk_count, token_count, &body)
+            .map(Some)
+    }
 
+    /// Verify the body checksum and decode the body into owned
+    /// `id_map` / postings.
+    ///
+    /// Split out of [`SpladeIndex::load`] so the mmap-backed and
+    /// heap-backed read paths share one decode over a `&[u8]` view. The
+    /// returned `SpladeIndex` owns all of its data, so `body` may be dropped
+    /// (or unmapped) immediately after this returns.
+    fn verify_and_parse_body(
+        path: &Path,
+        header: &[u8; SPLADE_INDEX_HEADER_LEN],
+        stored_hash: &[u8; CHECKSUM_LEN],
+        chunk_count: u64,
+        token_count: u64,
+        body: &[u8],
+    ) -> Result<Self, SpladeIndexPersistError> {
         // Hash covers header[0..32] + body so flipping a bit in `chunk_count`
         // (header bytes [16..24]) fails the integrity check rather than
         // reaching `Vec::with_capacity(usize::MAX)` → process panic.
         let mut hasher = blake3::Hasher::new();
         hasher.update(&header[0..32]);
-        hasher.update(&body);
+        hasher.update(body);
         let actual_hash = hasher.finalize();
-        if actual_hash.as_bytes() != &stored_hash {
+        if actual_hash.as_bytes() != stored_hash {
             // Use blake3::Hash::to_hex for the expected hex encoding so we
             // don't pull in the `hex` crate just for this one call.
-            let expected_hex = blake3::Hash::from_bytes(stored_hash).to_hex().to_string();
+            let expected_hex = blake3::Hash::from_bytes(*stored_hash).to_hex().to_string();
             return Err(SpladeIndexPersistError::ChecksumMismatch {
                 path: path.display().to_string(),
                 expected: expected_hex,
@@ -805,8 +915,8 @@ impl SpladeIndex {
         }
 
         for _ in 0..chunk_count_usize {
-            need(&body, cursor, 4)?;
-            // `need(&body, cursor, 4)?` above ensures the 4-byte slice
+            need(body, cursor, 4)?;
+            // `need(body, cursor, 4)?` above ensures the 4-byte slice
             // exists; `try_into` of a 4-byte slice into `[u8; 4]` is
             // structurally infallible. `expect` documents the invariant.
             let len = u32::from_le_bytes(
@@ -815,7 +925,7 @@ impl SpladeIndex {
                     .expect("invariant: need(_, cursor, 4)? guarantees 4-byte slice"),
             ) as usize;
             cursor += 4;
-            need(&body, cursor, len)?;
+            need(body, cursor, len)?;
             // `.to_string()` allocates an owned String from a `&str` borrow
             // into `body`. Inherent — `id_map` owns its strings and `body` is
             // dropped after parsing, so there is no zero-copy path.
@@ -848,9 +958,9 @@ impl SpladeIndex {
             HashMap::with_capacity(token_count_usize);
 
         for _ in 0..token_count_usize {
-            need(&body, cursor, 8)?;
+            need(body, cursor, 8)?;
             // Each `try_into` is gated by the preceding
-            // `need(&body, cursor, N)?`; `expect` documents the invariant so a
+            // `need(body, cursor, N)?`; `expect` documents the invariant so a
             // future refactor that breaks the bound check fails loudly instead
             // of through `unwrap()`.
             let token_id = u32::from_le_bytes(
@@ -865,7 +975,7 @@ impl SpladeIndex {
                     .expect("invariant: same need() covers the posting_count u32"),
             ) as usize;
             cursor += 4;
-            need(&body, cursor, posting_count.saturating_mul(8))?;
+            need(body, cursor, posting_count.saturating_mul(8))?;
             let mut postings_for_token: Vec<(usize, f32)> = Vec::with_capacity(posting_count);
             for _ in 0..posting_count {
                 let chunk_idx =
@@ -904,7 +1014,7 @@ impl SpladeIndex {
             tokens = postings.len(),
             "SPLADE index loaded from disk"
         );
-        Ok(Some(Self { postings, id_map }))
+        Ok(Self { postings, id_map })
     }
 
     /// Audit RM-4: clean up `.splade.index.bin.*.tmp` orphan files left by
@@ -1442,5 +1552,131 @@ mod tests {
             loaded.is_some(),
             "live file must survive intact when save bails on stale .bak"
         );
+    }
+
+    /// Assert two indexes are structurally identical (id_map order + every
+    /// posting list, content not map-iteration order). Used by the
+    /// mmap-vs-heap parity tests below.
+    fn assert_indexes_equal(a: &SpladeIndex, b: &SpladeIndex) {
+        assert_eq!(a.id_map, b.id_map, "id_map mismatch");
+        assert_eq!(a.postings.len(), b.postings.len(), "posting count mismatch");
+        for (tok, list_a) in &a.postings {
+            let list_b = b
+                .postings
+                .get(tok)
+                .unwrap_or_else(|| panic!("token {tok} missing in other index"));
+            assert_eq!(list_a.len(), list_b.len(), "posting list len mismatch");
+            for (x, y) in list_a.iter().zip(list_b.iter()) {
+                assert_eq!(x.0, y.0, "chunk_idx mismatch");
+                assert!((x.1 - y.1).abs() < f32::EPSILON, "weight mismatch");
+            }
+        }
+    }
+
+    /// The mmap-backed load and the forced-heap load of the SAME on-disk file
+    /// must produce byte-for-byte identical decoded indexes. Serial because it
+    /// toggles the `CQS_SPLADE_NO_MMAP` process env var.
+    #[test]
+    #[serial_test::serial]
+    fn test_load_mmap_matches_heap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+        original.save(&path, 3).unwrap();
+
+        let prev = std::env::var("CQS_SPLADE_NO_MMAP").ok();
+
+        // Default path: tempdir is tmpfs/ext4 (fast), so this exercises mmap.
+        std::env::remove_var("CQS_SPLADE_NO_MMAP");
+        let via_mmap = SpladeIndex::load(&path, 3).unwrap().unwrap();
+
+        // Forced-heap path via the env escape hatch.
+        std::env::set_var("CQS_SPLADE_NO_MMAP", "1");
+        let via_heap = SpladeIndex::load(&path, 3).unwrap().unwrap();
+
+        match prev {
+            Some(v) => std::env::set_var("CQS_SPLADE_NO_MMAP", v),
+            None => std::env::remove_var("CQS_SPLADE_NO_MMAP"),
+        }
+
+        assert_indexes_equal(&via_mmap, &original);
+        assert_indexes_equal(&via_heap, &original);
+        assert_indexes_equal(&via_mmap, &via_heap);
+    }
+
+    /// `CQS_SPLADE_NO_MMAP` truthy values all select the heap path; the load
+    /// still succeeds and round-trips. This pins the env-parse branch in
+    /// `force_heap_read` without reaching into filesystem detection.
+    #[test]
+    #[serial_test::serial]
+    fn test_force_heap_read_env_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+        let original = make_test_index();
+        original.save(&path, 5).unwrap();
+
+        let prev = std::env::var("CQS_SPLADE_NO_MMAP").ok();
+        for v in ["1", "true", "YES", "True"] {
+            std::env::set_var("CQS_SPLADE_NO_MMAP", v);
+            assert!(force_heap_read(), "{v} should force heap read");
+            let loaded = SpladeIndex::load(&path, 5).unwrap().unwrap();
+            assert_indexes_equal(&loaded, &original);
+        }
+        for v in ["0", "false", "no", ""] {
+            std::env::set_var("CQS_SPLADE_NO_MMAP", v);
+            assert!(!force_heap_read(), "{v:?} should not force heap read");
+        }
+        std::env::remove_var("CQS_SPLADE_NO_MMAP");
+        assert!(!force_heap_read(), "unset should not force heap read");
+
+        match prev {
+            Some(v) => std::env::set_var("CQS_SPLADE_NO_MMAP", v),
+            None => std::env::remove_var("CQS_SPLADE_NO_MMAP"),
+        }
+    }
+
+    /// Writer contract under a live mapping: open an index (default = mmap on
+    /// tmpfs), then atomically replace the on-disk file with a NEW index via
+    /// `save()`, then reload. The first handle keeps reading the old bytes
+    /// (it owns decoded data; the mapping, if any, is already dropped after
+    /// load returns), and the reload sees the new content. This pins the
+    /// atomic-replace-vs-mmap invariant documented in `load`: the writer
+    /// renames a temp file into place rather than truncating in place, so a
+    /// concurrent rebuild can't corrupt a live reader.
+    #[test]
+    fn test_load_after_atomic_replace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("splade.index.bin");
+
+        let v1 = SpladeIndex::build(vec![("chunk_v1".to_string(), vec![(7u32, 0.25f32)])]);
+        v1.save(&path, 1).unwrap();
+
+        // Hold a live handle loaded from the v1 file. SpladeIndex owns its
+        // data, so this stays valid regardless of what happens to the file.
+        let live = SpladeIndex::load(&path, 1).unwrap().unwrap();
+        assert_eq!(&*live.id_map[0], "chunk_v1");
+
+        // Atomically replace the file with a v2 index while `live` is held.
+        let v2 = SpladeIndex::build(vec![
+            ("chunk_v2a".to_string(), vec![(8u32, 0.5f32)]),
+            ("chunk_v2b".to_string(), vec![(9u32, 0.75f32)]),
+        ]);
+        v2.save(&path, 2).unwrap();
+
+        // The pre-existing handle is unaffected (decoded data is owned).
+        assert_eq!(live.id_map.len(), 1);
+        assert_eq!(&*live.id_map[0], "chunk_v1");
+
+        // Reloading at the new generation sees the replaced content.
+        let reloaded = SpladeIndex::load(&path, 2).unwrap().unwrap();
+        assert_eq!(reloaded.id_map.len(), 2);
+        assert_eq!(&*reloaded.id_map[0], "chunk_v2a");
+        assert_eq!(&*reloaded.id_map[1], "chunk_v2b");
+        // The stale-generation load against the new file is rejected, proving
+        // the replace actually swapped bytes (not a no-op).
+        assert!(matches!(
+            SpladeIndex::load(&path, 1),
+            Err(SpladeIndexPersistError::GenerationMismatch { disk: 2, store: 1 })
+        ));
     }
 }

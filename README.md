@@ -940,6 +940,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_SPLADE_ALPHA` | (per-category default) | Global SPLADE fusion alpha override (0.0 = pure sparse, 1.0 = pure dense) |
 | `CQS_SPLADE_ALPHA_{CATEGORY}` | (per-category default) | Per-category SPLADE alpha override (e.g. `CQS_SPLADE_ALPHA_CONCEPTUAL`); takes precedence over `CQS_SPLADE_ALPHA` |
 | `CQS_SPLADE_BATCH` | `32` | Initial chunk batch size for SPLADE encoding during indexing |
+| `CQS_SPLADE_NO_MMAP` | (unset) | Set to `1` to force the heap-read path for the SPLADE index body instead of memory-mapping it. Escape hatch — mmap is auto-disabled on slow-mmap filesystems (WSL DrvFS etc.) already. |
 | `CQS_SPLADE_MAX_CHARS` | `4000` | Max chars per chunk for SPLADE encoding |
 | `CQS_SPLADE_MAX_INDEX_BYTES` | `2147483648` (2 GB) | Max `splade.index.bin` size before index build refuses to persist |
 | `CQS_SPLADE_MAX_SEQ` | `256` | Max sequence length (tokens) for SPLADE ONNX inference |

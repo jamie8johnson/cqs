@@ -421,16 +421,21 @@ fn resolve_mmap_size(default_bytes: &str, db_path: &Path) -> String {
     default_bytes.to_string()
 }
 
-/// Return `true` if `path` lives on a filesystem where SQLite `mmap_size > 0`
+/// Return `true` if `path` lives on a filesystem where memory-mapping
 /// degrades performance (WSL `/mnt/c/` 9P, NFS, SMB, NTFS-via-FUSE).
+///
+/// Used for two decisions: SQLite `mmap_size > 0` (this module) and the
+/// `memmap2`-backed SPLADE index body read (`splade::index::load`). Both
+/// suffer on the same backends (mmap falls back to per-page network/host
+/// I/O), so the detection is shared.
 ///
 /// Implementation: on Unix, parses `/proc/self/mountinfo` and looks up the
 /// fstype of the mount containing `path`. On non-Unix, returns `false` (mmap
-/// behavior on Windows native / macOS APFS is fine with the default size).
+/// behavior on Windows native / macOS APFS is fine).
 ///
-/// Canonicalizes `path` first; if canonicalization fails (e.g., the DB file
+/// Canonicalizes `path` first; if canonicalization fails (e.g., the file
 /// doesn't exist yet on first open), tries the parent directory.
-fn is_slow_mmap_fs(path: &Path) -> bool {
+pub(crate) fn is_slow_mmap_fs(path: &Path) -> bool {
     #[cfg(unix)]
     {
         // Resolve to an absolute path. On fresh opens the DB file may not
