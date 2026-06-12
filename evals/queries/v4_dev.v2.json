@@ -121,13 +121,27 @@
       "query": "fn generate_nl_with_template",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/nl/mod.rs:209:15ff5d4d:w3",
-        "name": "generate_nl_with_template",
+        "id": "src/nl/mod.rs:201:repin20260612",
+        "name": "generate_nl_with_template_and_seq_len",
         "origin": "src/nl/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 209,
-        "line_end": 384
+        "line_start": 201,
+        "line_end": 383
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "renamed with _and_seq_len suffix",
+          "kind": "equivalent",
+          "old_origin": "src/nl/mod.rs",
+          "old_name": "generate_nl_with_template",
+          "old_line_start": 209,
+          "old_line_end": 384,
+          "new_origin": "src/nl/mod.rs",
+          "new_name": "generate_nl_with_template_and_seq_len",
+          "new_line_start": 201,
+          "new_line_end": 383
+        }
       }
     },
     {
@@ -329,26 +343,54 @@
       "query": "cli::batch create_test_context",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:1468:423b7399:w0",
+        "id": "src/cli/batch/session.rs:94:repin20260612",
         "name": "create_test_context",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/session.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1468,
-        "line_end": 1512
+        "line_start": 94,
+        "line_end": 113
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "create_test_context",
+          "old_line_start": 1468,
+          "old_line_end": 1512,
+          "new_origin": "src/cli/batch/session.rs",
+          "new_name": "create_test_context",
+          "new_line_start": 94,
+          "new_line_end": 113
+        }
       }
     },
     {
       "query": "function cmd_watch",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w12",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -368,13 +410,27 @@
       "query": "fn reindex_files",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w4",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -433,13 +489,27 @@
       "query": "read_batch",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cache.rs:174:fd697463:w0",
+        "id": "src/cache/embedding_cache.rs:192:repin20260612",
         "name": "read_batch",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 174,
-        "line_end": 255
+        "line_start": 192,
+        "line_end": 296
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "read_batch",
+          "old_line_start": 174,
+          "old_line_end": 255,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "read_batch",
+          "new_line_start": 192,
+          "new_line_end": 296
+        }
       }
     },
     {
@@ -641,13 +711,27 @@
       "query": "EmbeddingCache write_batch",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cache.rs:51:53b6b3ec:w6",
+        "id": "src/cache/embedding_cache.rs:26:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 51,
-        "line_end": 506
+        "line_start": 26,
+        "line_end": 789
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 51,
+          "old_line_end": 506,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 26,
+          "new_line_end": 789
+        }
       }
     },
     {
@@ -693,13 +777,27 @@
       "query": "run_daemon_startup_gc",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:903:15d4fe68:w1",
+        "id": "src/cli/watch/gc.rs:123:repin20260612",
         "name": "run_daemon_startup_gc",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/gc.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 903,
-        "line_end": 983
+        "line_start": 123,
+        "line_end": 208
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "run_daemon_startup_gc",
+          "old_line_start": 903,
+          "old_line_end": 983,
+          "new_origin": "src/cli/watch/gc.rs",
+          "new_name": "run_daemon_startup_gc",
+          "new_line_start": 123,
+          "new_line_end": 208
+        }
       }
     },
     {
@@ -719,13 +817,27 @@
       "query": "reindex_files",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w4",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -797,13 +909,27 @@
       "query": "BatchContext",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w13",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -1064,6 +1190,15 @@
         "chunk_type": "function",
         "line_start": 34,
         "line_end": 36
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "model_repo fn removed; repo is now a ModelConfig field",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "model_repo",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -1213,13 +1348,27 @@
       "query": "function run_daemon_startup_gc",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:903:15d4fe68:w1",
+        "id": "src/cli/watch/gc.rs:123:repin20260612",
         "name": "run_daemon_startup_gc",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/gc.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 903,
-        "line_end": 983
+        "line_start": 123,
+        "line_end": 208
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "run_daemon_startup_gc",
+          "old_line_start": 903,
+          "old_line_end": 983,
+          "new_origin": "src/cli/watch/gc.rs",
+          "new_name": "run_daemon_startup_gc",
+          "new_line_start": 123,
+          "new_line_end": 208
+        }
       }
     },
     {
@@ -1252,26 +1401,54 @@
       "query": "cmd_query_project",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/commands/search/query.rs:351:3cf7a071:w4",
-        "name": "cmd_query_project",
+        "id": "src/cli/commands/search/query.rs:339:repin20260612",
+        "name": "query_core",
         "origin": "src/cli/commands/search/query.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 351,
-        "line_end": 610
+        "line_start": 339,
+        "line_end": 350
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_query_project collapsed into surface-agnostic query_core (command-core refactor)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/search/query.rs",
+          "old_name": "cmd_query_project",
+          "old_line_start": 351,
+          "old_line_end": 610,
+          "new_origin": "src/cli/commands/search/query.rs",
+          "new_name": "query_core",
+          "new_line_start": 339,
+          "new_line_end": 350
+        }
       }
     },
     {
       "query": "is_shutdown_requested",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:64:f720fe0f",
+        "id": "src/cli/watch/runtime.rs:25:repin20260612",
         "name": "is_shutdown_requested",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/runtime.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 64,
-        "line_end": 66
+        "line_start": 25,
+        "line_end": 27
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "is_shutdown_requested",
+          "old_line_start": 64,
+          "old_line_end": 66,
+          "new_origin": "src/cli/watch/runtime.rs",
+          "new_name": "is_shutdown_requested",
+          "new_line_start": 25,
+          "new_line_end": 27
+        }
       }
     },
     {
@@ -1330,13 +1507,27 @@
       "query": "create_test_context",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:1468:423b7399:w0",
+        "id": "src/cli/batch/session.rs:94:repin20260612",
         "name": "create_test_context",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/session.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1468,
-        "line_end": 1512
+        "line_start": 94,
+        "line_end": 113
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "create_test_context",
+          "old_line_start": 1468,
+          "old_line_end": 1512,
+          "new_origin": "src/cli/batch/session.rs",
+          "new_name": "create_test_context",
+          "new_line_start": 94,
+          "new_line_end": 113
+        }
       }
     },
     {
@@ -1642,26 +1833,54 @@
       "query": "clear_session",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:724:89c29a95",
+        "id": "src/embedder/core.rs:866:repin20260612",
         "name": "clear_session",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 724,
-        "line_end": 739
+        "line_start": 866,
+        "line_end": 930
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "clear_session",
+          "old_line_start": 724,
+          "old_line_end": 739,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "clear_session",
+          "new_line_start": 866,
+          "new_line_end": 930
+        }
       }
     },
     {
       "query": "cache prune_older_than",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cache.rs:486:8e93f459",
+        "id": "src/cache/query_cache.rs:295:repin20260612",
         "name": "prune_older_than",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 486,
-        "line_end": 505
+        "line_start": 295,
+        "line_end": 307
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "prune_older_than",
+          "old_line_start": 486,
+          "old_line_end": 505,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "prune_older_than",
+          "new_line_start": 295,
+          "new_line_end": 307
+        }
       }
     },
     {
@@ -1811,13 +2030,27 @@
       "query": "BatchContext implementation",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w26",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -2045,13 +2278,27 @@
       "query": "build_from_store",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cagra.rs:598:772a74ad:w0",
-        "name": "build_from_store",
+        "id": "src/cagra.rs:838:repin20260612",
+        "name": "build_from_store_with_metric",
         "origin": "src/cagra.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 598,
-        "line_end": 659
+        "line_start": 838,
+        "line_end": 915
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cagra build_from_store renamed build_from_store_with_metric (metric param added)",
+          "kind": "equivalent",
+          "old_origin": "src/cagra.rs",
+          "old_name": "build_from_store",
+          "old_line_start": 598,
+          "old_line_end": 659,
+          "new_origin": "src/cagra.rs",
+          "new_name": "build_from_store_with_metric",
+          "new_line_start": 838,
+          "new_line_end": 915
+        }
       }
     },
     {
@@ -2331,26 +2578,54 @@
       "query": "Embedder CQS_QUERY_CACHE_SIZE",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w1",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
       "query": "cagra build_from_store",
       "category": "identifier_lookup",
       "gold_chunk": {
-        "id": "src/cagra.rs:598:772a74ad:w0",
-        "name": "build_from_store",
+        "id": "src/cagra.rs:838:repin20260612",
+        "name": "build_from_store_with_metric",
         "origin": "src/cagra.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 598,
-        "line_end": 659
+        "line_start": 838,
+        "line_end": 915
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cagra build_from_store renamed build_from_store_with_metric (metric param added)",
+          "kind": "equivalent",
+          "old_origin": "src/cagra.rs",
+          "old_name": "build_from_store",
+          "old_line_start": 598,
+          "old_line_end": 659,
+          "new_origin": "src/cagra.rs",
+          "new_name": "build_from_store_with_metric",
+          "new_line_start": 838,
+          "new_line_end": 915
+        }
       }
     },
     {
@@ -2929,13 +3204,27 @@
       "query": "methods on BatchContext that return Result",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w19",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -2994,13 +3283,27 @@
       "query": "functions that take a Mutex reference as an argument",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:160:f41dda96:w2",
+        "id": "src/cli/watch/socket.rs:82:repin20260612",
         "name": "handle_socket_client",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 160,
-        "line_end": 406
+        "line_start": 82,
+        "line_end": 339
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "handle_socket_client",
+          "old_line_start": 160,
+          "old_line_end": 406,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "handle_socket_client",
+          "new_line_start": 82,
+          "new_line_end": 339
+        }
       }
     },
     {
@@ -3072,13 +3375,27 @@
       "query": "functions that return Result<Self, CacheError>",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cache.rs:989:76c06838",
+        "id": "src/cache/query_cache.rs:47:repin20260612",
         "name": "open",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 989,
-        "line_end": 991
+        "line_start": 47,
+        "line_end": 49
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "open",
+          "old_line_start": 989,
+          "old_line_end": 991,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "open",
+          "new_line_start": 47,
+          "new_line_end": 49
+        }
       }
     },
     {
@@ -3228,13 +3545,27 @@
       "query": "functions with no return type and a single self reference",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:475:098881ba:w1",
+        "id": "src/cli/batch/context.rs:694:repin20260612",
         "name": "invalidate_mutable_caches",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 475,
-        "line_end": 518
+        "line_start": 694,
+        "line_end": 702
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "invalidate_mutable_caches",
+          "old_line_start": 475,
+          "old_line_end": 518,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "invalidate_mutable_caches",
+          "new_line_start": 694,
+          "new_line_end": 702
+        }
       }
     },
     {
@@ -3254,13 +3585,27 @@
       "query": "functions that return Result<usize, CacheError>",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cache.rs:282:891d2956:w0",
+        "id": "src/cache/embedding_cache.rs:329:repin20260612",
         "name": "write_batch",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 282,
-        "line_end": 349
+        "line_start": 329,
+        "line_end": 419
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "write_batch",
+          "old_line_start": 282,
+          "old_line_end": 349,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "write_batch",
+          "new_line_start": 329,
+          "new_line_end": 419
+        }
       }
     },
     {
@@ -3332,13 +3677,27 @@
       "query": "methods taking a slice of BatchSubmitItem and returning a Result",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/llm/provider.rs:190:ba4fa81e",
-        "name": "submit_hyde_batch",
-        "origin": "src/llm/provider.rs",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
+        "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 190,
-        "line_end": 196
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "HyDE submit collapsed into submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/provider.rs",
+          "old_name": "submit_hyde_batch",
+          "old_line_start": 190,
+          "old_line_end": 196,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -3579,13 +3938,27 @@
       "query": "public methods with three string-like arguments",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cache.rs:1227:9ba42807",
+        "id": "src/cache/query_cache.rs:265:repin20260612",
         "name": "put",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 1227,
-        "line_end": 1249
+        "line_start": 265,
+        "line_end": 292
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "put",
+          "old_line_start": 1227,
+          "old_line_end": 1249,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "put",
+          "new_line_start": 265,
+          "new_line_end": 292
+        }
       }
     },
     {
@@ -3761,13 +4134,27 @@
       "query": "enums that wrap sqlx::Error and std::io::Error",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cache.rs:21:8c726acd",
+        "id": "src/cache/mod.rs:51:repin20260612",
         "name": "CacheError",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "enum",
-        "line_start": 21,
-        "line_end": 26
+        "line_start": 51,
+        "line_end": 62
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "CacheError",
+          "old_line_start": 21,
+          "old_line_end": 26,
+          "new_origin": "src/cache/mod.rs",
+          "new_name": "CacheError",
+          "new_line_start": 51,
+          "new_line_end": 62
+        }
       }
     },
     {
@@ -3924,6 +4311,15 @@
         "chunk_type": "function",
         "line_start": 258,
         "line_end": 262
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "test_mtimes (HashMap<PathBuf,i64>) removed; fingerprint maps now PathBuf->FileFingerprint",
+          "old_origin": "src/cli/pipeline/mod.rs",
+          "old_name": "test_mtimes",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -3943,13 +4339,27 @@
       "query": "public methods that return a string slice",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:357:3a5cb4fc:w0",
+        "id": "src/embedder/core.rs:282:repin20260612",
         "name": "model_fingerprint",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 357,
-        "line_end": 431
+        "line_start": 282,
+        "line_end": 425
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "model_fingerprint",
+          "old_line_start": 357,
+          "old_line_end": 431,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "model_fingerprint",
+          "new_line_start": 282,
+          "new_line_end": 425
+        }
       }
     },
     {
@@ -3969,13 +4379,27 @@
       "query": "functions that return a std::cell::Ref",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:843:5afbb19a",
+        "id": "src/cli/batch/view.rs:565:repin20260612",
         "name": "borrow_splade_index",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/view.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 843,
-        "line_end": 847
+        "line_start": 565,
+        "line_end": 575
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "borrow_splade_index",
+          "old_line_start": 843,
+          "old_line_end": 847,
+          "new_origin": "src/cli/batch/view.rs",
+          "new_name": "borrow_splade_index",
+          "new_line_start": 565,
+          "new_line_end": 575
+        }
       }
     },
     {
@@ -4138,13 +4562,27 @@
       "query": "functions that return Result<(usize, Vec<String>)>",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w0",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -4242,13 +4680,27 @@
       "query": "functions that return ignore::gitignore::Gitignore",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2805:9678605d",
+        "id": "src/cli/watch/tests.rs:211:repin20260612",
         "name": "gitignore_from_lines",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/tests.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2805,
-        "line_end": 2811
+        "line_start": 211,
+        "line_end": 217
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "gitignore_from_lines",
+          "old_line_start": 2805,
+          "old_line_end": 2811,
+          "new_origin": "src/cli/watch/tests.rs",
+          "new_name": "gitignore_from_lines",
+          "new_line_start": 211,
+          "new_line_end": 217
+        }
       }
     },
     {
@@ -4678,6 +5130,15 @@
         "chunk_type": "function",
         "line_start": 271,
         "line_end": 276
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead::model_path removed with feature",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "model_path",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -4769,6 +5230,15 @@
         "chunk_type": "function",
         "line_start": 110,
         "line_end": 112
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "confidence_label (DeadConfidence->&str) helper removed; no static-str-returning equivalent",
+          "old_origin": "src/cli/commands/review/dead.rs",
+          "old_name": "confidence_label",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -4801,13 +5271,27 @@
       "query": "functions that take a UnixStream by value",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:160:f41dda96:w2",
+        "id": "src/cli/watch/socket.rs:82:repin20260612",
         "name": "handle_socket_client",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 160,
-        "line_end": 406
+        "line_start": 82,
+        "line_end": 339
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "handle_socket_client",
+          "old_line_start": 160,
+          "old_line_end": 406,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "handle_socket_client",
+          "new_line_start": 82,
+          "new_line_end": 339
+        }
       }
     },
     {
@@ -4827,13 +5311,27 @@
       "query": "functions taking a Path reference and a Store reference",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2588:e06604e1",
+        "id": "src/cli/watch/reindex.rs:851:repin20260612",
         "name": "reindex_notes",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2588,
-        "line_end": 2620
+        "line_start": 851,
+        "line_end": 883
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_notes",
+          "old_line_start": 2588,
+          "old_line_end": 2620,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_notes",
+          "new_line_start": 851,
+          "new_line_end": 883
+        }
       }
     },
     {
@@ -4957,13 +5455,27 @@
       "query": "functions that return BatchSupport",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/definitions.rs:768:e770fd53:w1",
+        "id": "cqs-macros/src/lib.rs:184:repin20260612",
         "name": "batch_support",
-        "origin": "src/cli/definitions.rs",
+        "origin": "cqs-macros/src/lib.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 768,
-        "line_end": 866
+        "line_start": 184,
+        "line_end": 188
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/definitions.rs",
+          "old_name": "batch_support",
+          "old_line_start": 768,
+          "old_line_end": 866,
+          "new_origin": "cqs-macros/src/lib.rs",
+          "new_name": "batch_support",
+          "new_line_start": 184,
+          "new_line_end": 188
+        }
       }
     },
     {
@@ -5035,13 +5547,27 @@
       "query": "functions taking a slice of PathBuf and returning a Result",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w0",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -5061,13 +5587,27 @@
       "query": "functions that return Result<String, LlmError>",
       "category": "structural_search",
       "gold_chunk": {
-        "id": "src/llm/provider.rs:190:ba4fa81e",
-        "name": "submit_hyde_batch",
-        "origin": "src/llm/provider.rs",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
+        "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 190,
-        "line_end": 196
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "HyDE submit collapsed into submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/provider.rs",
+          "old_name": "submit_hyde_batch",
+          "old_line_start": 190,
+          "old_line_end": 196,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -5146,6 +5686,15 @@
         "chunk_type": "method",
         "line_start": 160,
         "line_end": 266
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead::classify removed; FusedClassification type gone",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "classify",
+          "chunk_type": "method"
+        }
       }
     },
     {
@@ -5282,13 +5831,27 @@
       "query": "how does the code map Commands enum variants to their string representations",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/dispatch.rs:546:4752e20f:w1",
-        "name": "command_variant_name",
-        "origin": "src/cli/dispatch.rs",
+        "id": "cqs-macros/src/lib.rs:172:repin20260612",
+        "name": "variant_name",
+        "origin": "cqs-macros/src/lib.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 546,
-        "line_end": 603
+        "line_start": 172,
+        "line_end": 176
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "command_variant_name replaced by derive-generated Commands::variant_name",
+          "kind": "equivalent",
+          "old_origin": "src/cli/dispatch.rs",
+          "old_name": "command_variant_name",
+          "old_line_start": 546,
+          "old_line_end": 603,
+          "new_origin": "cqs-macros/src/lib.rs",
+          "new_name": "variant_name",
+          "new_line_start": 172,
+          "new_line_end": 176
+        }
       }
     },
     {
@@ -5529,13 +6092,27 @@
       "query": "how does cmd_query_ref_only resolve a reference and determine the pool size",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/commands/search/query.rs:721:c901cffa:w0",
-        "name": "cmd_query_ref_only",
+        "id": "src/cli/commands/search/query.rs:789:repin20260612",
+        "name": "retrieve_ref_scoped",
         "origin": "src/cli/commands/search/query.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 721,
-        "line_end": 791
+        "line_start": 789,
+        "line_end": 829
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_query_ref_only became retrieve_ref_scoped (command-core refactor)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/search/query.rs",
+          "old_name": "cmd_query_ref_only",
+          "old_line_start": 721,
+          "old_line_end": 791,
+          "new_origin": "src/cli/commands/search/query.rs",
+          "new_name": "retrieve_ref_scoped",
+          "new_line_start": 789,
+          "new_line_end": 829
+        }
       }
     },
     {
@@ -5627,6 +6204,15 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
@@ -5737,13 +6323,27 @@
       "query": "function to get the HNSW rebuild threshold from environment variables",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:469:4a26b648",
+        "id": "src/cli/watch/rebuild.rs:48:repin20260612",
         "name": "hnsw_rebuild_threshold",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/rebuild.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 469,
-        "line_end": 477
+        "line_start": 48,
+        "line_end": 56
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "hnsw_rebuild_threshold",
+          "old_line_start": 469,
+          "old_line_end": 477,
+          "new_origin": "src/cli/watch/rebuild.rs",
+          "new_name": "hnsw_rebuild_threshold",
+          "new_line_start": 48,
+          "new_line_end": 56
+        }
       }
     },
     {
@@ -6010,13 +6610,27 @@
       "query": "function to query a specific reference by name",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/commands/search/query.rs:721:c901cffa:w0",
-        "name": "cmd_query_ref_only",
+        "id": "src/cli/commands/search/query.rs:789:repin20260612",
+        "name": "retrieve_ref_scoped",
         "origin": "src/cli/commands/search/query.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 721,
-        "line_end": 791
+        "line_start": 789,
+        "line_end": 829
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_query_ref_only became retrieve_ref_scoped (command-core refactor)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/search/query.rs",
+          "old_name": "cmd_query_ref_only",
+          "old_line_start": 721,
+          "old_line_end": 791,
+          "new_origin": "src/cli/commands/search/query.rs",
+          "new_name": "retrieve_ref_scoped",
+          "new_line_start": 789,
+          "new_line_end": 829
+        }
       }
     },
     {
@@ -6153,13 +6767,27 @@
       "query": "function to submit a batch of items for HyDE processing",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/llm/batch.rs:139:e854c845",
-        "name": "submit_hyde_batch",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
         "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 139,
-        "line_end": 145
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "HyDE submit collapsed into shared submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/batch.rs",
+          "old_name": "submit_hyde_batch",
+          "old_line_start": 139,
+          "old_line_end": 145,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -6374,13 +7002,27 @@
       "query": "how does the embedder handle concurrent query requests",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w10",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -6686,13 +7328,27 @@
       "query": "function to truncate impact result sections to a specific limit",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/batch/handlers/graph.rs:211:ad63423d",
+        "id": "src/cli/commands/graph/impact.rs:328:repin20260612",
         "name": "truncate_impact_sections",
-        "origin": "src/cli/batch/handlers/graph.rs",
+        "origin": "src/cli/commands/graph/impact.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 211,
-        "line_end": 216
+        "line_start": 328,
+        "line_end": 333
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/handlers/graph.rs",
+          "old_name": "truncate_impact_sections",
+          "old_line_start": 211,
+          "old_line_end": 216,
+          "new_origin": "src/cli/commands/graph/impact.rs",
+          "new_name": "truncate_impact_sections",
+          "new_line_start": 328,
+          "new_line_end": 333
+        }
       }
     },
     {
@@ -6738,13 +7394,27 @@
       "query": "how does the system process file changes during watching",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2118:e5d17464:w1",
+        "id": "src/cli/watch/events.rs:180:repin20260612",
         "name": "process_file_changes",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/events.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2118,
-        "line_end": 2358
+        "line_start": 180,
+        "line_end": 587
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "process_file_changes",
+          "old_line_start": 2118,
+          "old_line_end": 2358,
+          "new_origin": "src/cli/watch/events.rs",
+          "new_name": "process_file_changes",
+          "new_line_start": 180,
+          "new_line_end": 587
+        }
       }
     },
     {
@@ -6764,13 +7434,27 @@
       "query": "function to generate embeddings for a batch of strings",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:773:5803be93:w0",
+        "id": "src/embedder/core.rs:994:repin20260612",
         "name": "embed_batch",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 773,
-        "line_end": 915
+        "line_start": 994,
+        "line_end": 1271
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "embed_batch",
+          "old_line_start": 773,
+          "old_line_end": 915,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "embed_batch",
+          "new_line_start": 994,
+          "new_line_end": 1271
+        }
       }
     },
     {
@@ -6829,13 +7513,27 @@
       "query": "how to limit the size of callers and tests in an ImpactResult",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/batch/handlers/graph.rs:211:ad63423d",
+        "id": "src/cli/commands/graph/impact.rs:328:repin20260612",
         "name": "truncate_impact_sections",
-        "origin": "src/cli/batch/handlers/graph.rs",
+        "origin": "src/cli/commands/graph/impact.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 211,
-        "line_end": 216
+        "line_start": 328,
+        "line_end": 333
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/handlers/graph.rs",
+          "old_name": "truncate_impact_sections",
+          "old_line_start": 211,
+          "old_line_end": 216,
+          "new_origin": "src/cli/commands/graph/impact.rs",
+          "new_name": "truncate_impact_sections",
+          "new_line_start": 328,
+          "new_line_end": 333
+        }
       }
     },
     {
@@ -6946,13 +7644,27 @@
       "query": "how does the cache handle writing multiple entries with a model fingerprint",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cache.rs:282:891d2956:w0",
+        "id": "src/cache/embedding_cache.rs:329:repin20260612",
         "name": "write_batch",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 282,
-        "line_end": 349
+        "line_start": 329,
+        "line_end": 419
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "write_batch",
+          "old_line_start": 282,
+          "old_line_end": 349,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "write_batch",
+          "new_line_start": 329,
+          "new_line_end": 419
+        }
       }
     },
     {
@@ -7154,13 +7866,27 @@
       "query": "how does the system handle and dispatch input lines to commands",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:557:5e8908b9:w1",
+        "id": "src/cli/batch/context.rs:854:repin20260612",
         "name": "dispatch_line",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 557,
-        "line_end": 621
+        "line_start": 854,
+        "line_end": 874
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "dispatch_line",
+          "old_line_start": 557,
+          "old_line_end": 621,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "dispatch_line",
+          "new_line_start": 854,
+          "new_line_end": 874
+        }
       }
     },
     {
@@ -7388,13 +8114,27 @@
       "query": "function that handles updates to files in the store",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2118:e5d17464:w1",
+        "id": "src/cli/watch/events.rs:180:repin20260612",
         "name": "process_file_changes",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/events.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2118,
-        "line_end": 2358
+        "line_start": 180,
+        "line_end": 587
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "process_file_changes",
+          "old_line_start": 2118,
+          "old_line_end": 2358,
+          "new_origin": "src/cli/watch/events.rs",
+          "new_name": "process_file_changes",
+          "new_line_start": 180,
+          "new_line_end": 587
+        }
       }
     },
     {
@@ -7648,13 +8388,27 @@
       "query": "how does the embedder process documents in batches",
       "category": "behavioral_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w9",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -7804,13 +8558,27 @@
       "query": "LLM batch processing interface",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/llm/provider.rs:182:ccb23f87",
-        "name": "submit_doc_batch",
-        "origin": "src/llm/provider.rs",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
+        "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 182,
-        "line_end": 188
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "doc submit collapsed into submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/provider.rs",
+          "old_name": "submit_doc_batch",
+          "old_line_start": 182,
+          "old_line_end": 188,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -7895,13 +8663,27 @@
       "query": "lazy initialization with thread safety",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:458:330f516b",
+        "id": "src/embedder/core.rs:451:repin20260612",
         "name": "tokenizer",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 458,
-        "line_end": 478
+        "line_start": 451,
+        "line_end": 471
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "tokenizer",
+          "old_line_start": 458,
+          "old_line_end": 478,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "tokenizer",
+          "new_line_start": 451,
+          "new_line_end": 471
+        }
       }
     },
     {
@@ -7986,13 +8768,27 @@
       "query": "thread-safe singleton initialization with retry logic",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:631:d31570b7",
+        "id": "src/cli/watch/rebuild.rs:265:repin20260612",
         "name": "try_init_embedder",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/rebuild.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 631,
-        "line_end": 655
+        "line_start": 265,
+        "line_end": 289
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "try_init_embedder",
+          "old_line_start": 631,
+          "old_line_end": 655,
+          "new_origin": "src/cli/watch/rebuild.rs",
+          "new_name": "try_init_embedder",
+          "new_line_start": 265,
+          "new_line_end": 289
+        }
       }
     },
     {
@@ -8181,13 +8977,27 @@
       "query": "lazy initialization of a shared resource",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:676:9cf85ffa",
+        "id": "src/cli/batch/context.rs:1048:repin20260612",
         "name": "warm",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 676,
-        "line_end": 703
+        "line_start": 1048,
+        "line_end": 1081
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "warm",
+          "old_line_start": 676,
+          "old_line_end": 703,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "warm",
+          "new_line_start": 1048,
+          "new_line_end": 1081
+        }
       }
     },
     {
@@ -8240,6 +9050,15 @@
         "chunk_type": "function",
         "line_start": 63,
         "line_end": 67
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "corpus_fingerprint module removed",
+          "old_origin": "src/corpus_fingerprint.rs",
+          "old_name": "load_or_compute",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -8311,13 +9130,27 @@
       "query": "sqlite based embedding cache",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cache.rs:42:279c7942",
+        "id": "src/cache/embedding_cache.rs:15:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 42,
-        "line_end": 49
+        "line_start": 15,
+        "line_end": 24
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 42,
+          "old_line_end": 49,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 15,
+          "new_line_end": 24
+        }
       }
     },
     {
@@ -8389,26 +9222,54 @@
       "query": "command pattern with shared context",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/commands/search/query.rs:351:3cf7a071:w0",
-        "name": "cmd_query_project",
+        "id": "src/cli/commands/search/query.rs:339:repin20260612",
+        "name": "query_core",
         "origin": "src/cli/commands/search/query.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 351,
-        "line_end": 610
+        "line_start": 339,
+        "line_end": 350
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_query_project collapsed into surface-agnostic query_core (command-core refactor)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/search/query.rs",
+          "old_name": "cmd_query_project",
+          "old_line_start": 351,
+          "old_line_end": 610,
+          "new_origin": "src/cli/commands/search/query.rs",
+          "new_name": "query_core",
+          "new_line_start": 339,
+          "new_line_end": 350
+        }
       }
     },
     {
       "query": "dirty flag pattern for cache invalidation",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2118:e5d17464:w5",
+        "id": "src/cli/watch/events.rs:180:repin20260612",
         "name": "process_file_changes",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/events.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2118,
-        "line_end": 2358
+        "line_start": 180,
+        "line_end": 587
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "process_file_changes",
+          "old_line_start": 2118,
+          "old_line_end": 2358,
+          "new_origin": "src/cli/watch/events.rs",
+          "new_name": "process_file_changes",
+          "new_line_start": 180,
+          "new_line_end": 587
+        }
       }
     },
     {
@@ -8441,13 +9302,27 @@
       "query": "content hash based embedding cache",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w2",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -8753,13 +9628,27 @@
       "query": "overlapping chunking strategy",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:522:5ea9b989:w0",
+        "id": "src/embedder/core.rs:629:repin20260612",
         "name": "split_into_windows",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 522,
-        "line_end": 592
+        "line_start": 629,
+        "line_end": 711
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "split_into_windows",
+          "old_line_start": 522,
+          "old_line_end": 592,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "split_into_windows",
+          "new_line_start": 629,
+          "new_line_end": 711
+        }
       }
     },
     {
@@ -8779,13 +9668,27 @@
       "query": "thread-safe singleton cache pattern",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:481:01157a8a",
+        "id": "src/cli/watch/events.rs:13:repin20260612",
         "name": "max_pending_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/events.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 481,
-        "line_end": 489
+        "line_start": 13,
+        "line_end": 21
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "max_pending_files",
+          "old_line_start": 481,
+          "old_line_end": 489,
+          "new_origin": "src/cli/watch/events.rs",
+          "new_name": "max_pending_files",
+          "new_line_start": 13,
+          "new_line_end": 21
+        }
       }
     },
     {
@@ -8974,26 +9877,54 @@
       "query": "cache poisoning mitigation",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cache.rs:980:c5e81fd3:w6",
+        "id": "src/cache/query_cache.rs:32:repin20260612",
         "name": "QueryCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 980,
-        "line_end": 1265
+        "line_start": 32,
+        "line_end": 308
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "QueryCache",
+          "old_line_start": 980,
+          "old_line_end": 1265,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "QueryCache",
+          "new_line_start": 32,
+          "new_line_end": 308
+        }
       }
     },
     {
       "query": "sliding window text splitting",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:522:5ea9b989:w0",
+        "id": "src/embedder/core.rs:629:repin20260612",
         "name": "split_into_windows",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 522,
-        "line_end": 592
+        "line_start": 629,
+        "line_end": 711
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "split_into_windows",
+          "old_line_start": 522,
+          "old_line_end": 592,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "split_into_windows",
+          "new_line_start": 629,
+          "new_line_end": 711
+        }
       }
     },
     {
@@ -9072,6 +10003,15 @@
         "chunk_type": "method",
         "line_start": 136,
         "line_end": 203
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "DistilledHead::classify removed with classifier-head feature",
+          "old_origin": "src/classifier_head.rs",
+          "old_name": "classify",
+          "chunk_type": "method"
+        }
       }
     },
     {
@@ -9098,6 +10038,15 @@
         "chunk_type": "function",
         "line_start": 95,
         "line_end": 99
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "corpus_fingerprint module removed",
+          "old_origin": "src/corpus_fingerprint.rs",
+          "old_name": "recompute_and_cache",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -9182,39 +10131,81 @@
       "query": "persistent HNSW state management",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w15",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
       "query": "shared tokio runtime across components",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cache.rs:42:279c7942",
+        "id": "src/cache/embedding_cache.rs:15:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 42,
-        "line_end": 49
+        "line_start": 15,
+        "line_end": 24
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 42,
+          "old_line_end": 49,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 15,
+          "new_line_end": 24
+        }
       }
     },
     {
       "query": "thread-safe cache with read lock",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/store/metadata.rs:374:ffa09e6e",
+        "id": "src/search/query.rs:110:repin20260612",
         "name": "cached_note_boost_index",
-        "origin": "src/store/metadata.rs",
+        "origin": "src/search/query.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 374,
-        "line_end": 400
+        "line_start": 110,
+        "line_end": 116
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/store/metadata.rs",
+          "old_name": "cached_note_boost_index",
+          "old_line_start": 374,
+          "old_line_end": 400,
+          "new_origin": "src/search/query.rs",
+          "new_name": "cached_note_boost_index",
+          "new_line_start": 110,
+          "new_line_end": 116
+        }
       }
     },
     {
@@ -9280,6 +10271,15 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
@@ -9507,13 +10507,27 @@
       "query": "lazy initialization with atomic reference counting",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w5",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -9540,6 +10554,15 @@
         "chunk_type": "method",
         "line_start": 79,
         "line_end": 132
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "DistilledHead::load removed with classifier-head feature",
+          "old_origin": "src/classifier_head.rs",
+          "old_name": "load",
+          "chunk_type": "method"
+        }
       }
     },
     {
@@ -9572,13 +10595,27 @@
       "query": "delegation pattern for string generation with optional parameters",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/nl/mod.rs:43:abc7b53b",
-        "name": "generate_nl_with_call_context",
+        "id": "src/nl/mod.rs:44:repin20260612",
+        "name": "generate_nl_with_call_context_and_summary",
         "origin": "src/nl/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 43,
-        "line_end": 59
+        "line_start": 44,
+        "line_end": 137
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "renamed with _and_summary suffix",
+          "kind": "equivalent",
+          "old_origin": "src/nl/mod.rs",
+          "old_name": "generate_nl_with_call_context",
+          "old_line_start": 43,
+          "old_line_end": 59,
+          "new_origin": "src/nl/mod.rs",
+          "new_name": "generate_nl_with_call_context_and_summary",
+          "new_line_start": 44,
+          "new_line_end": 137
+        }
       }
     },
     {
@@ -9832,13 +10869,27 @@
       "query": "optional async runtime injection",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cache.rs:996:faf42c13:w0",
+        "id": "src/cache/query_cache.rs:54:repin20260612",
         "name": "open_with_runtime",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 996,
-        "line_end": 1094
+        "line_start": 54,
+        "line_end": 96
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "open_with_runtime",
+          "old_line_start": 996,
+          "old_line_end": 1094,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "open_with_runtime",
+          "new_line_start": 54,
+          "new_line_end": 96
+        }
       }
     },
     {
@@ -9930,32 +10981,69 @@
         "chunk_type": "function",
         "line_start": 63,
         "line_end": 67
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "corpus_fingerprint module removed",
+          "old_origin": "src/corpus_fingerprint.rs",
+          "old_name": "load_or_compute",
+          "chunk_type": "function"
+        }
       }
     },
     {
       "query": "memoizing a computed value",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:357:3a5cb4fc:w0",
+        "id": "src/embedder/core.rs:282:repin20260612",
         "name": "model_fingerprint",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 357,
-        "line_end": 431
+        "line_start": 282,
+        "line_end": 425
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "model_fingerprint",
+          "old_line_start": 357,
+          "old_line_end": 431,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "model_fingerprint",
+          "new_line_start": 282,
+          "new_line_end": 425
+        }
       }
     },
     {
       "query": "delegation pattern in rust",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/llm/batch.rs:405:8e6775ee",
-        "name": "submit_hyde_batch",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
         "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 405,
-        "line_end": 411
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "HyDE submit collapsed into shared submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/batch.rs",
+          "old_name": "submit_hyde_batch",
+          "old_line_start": 405,
+          "old_line_end": 411,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -10118,13 +11206,27 @@
       "query": "thread-safe singleton pattern using OnceLock",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:469:4a26b648",
+        "id": "src/cli/watch/rebuild.rs:48:repin20260612",
         "name": "hnsw_rebuild_threshold",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/rebuild.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 469,
-        "line_end": 477
+        "line_start": 48,
+        "line_end": 56
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "hnsw_rebuild_threshold",
+          "old_line_start": 469,
+          "old_line_end": 477,
+          "new_origin": "src/cli/watch/rebuild.rs",
+          "new_name": "hnsw_rebuild_threshold",
+          "new_line_start": 48,
+          "new_line_end": 56
+        }
       }
     },
     {
@@ -10144,13 +11246,27 @@
       "query": "attention mask based mean pooling",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:1051:84db93ca",
+        "id": "src/embedder/pooling.rs:87:repin20260612",
         "name": "mean_pool",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/pooling.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1051,
-        "line_end": 1078
+        "line_start": 87,
+        "line_end": 116
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "mean_pool",
+          "old_line_start": 1051,
+          "old_line_end": 1078,
+          "new_origin": "src/embedder/pooling.rs",
+          "new_name": "mean_pool",
+          "new_line_start": 87,
+          "new_line_end": 116
+        }
       }
     },
     {
@@ -10170,13 +11286,27 @@
       "query": "command batching capability",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/definitions.rs:768:e770fd53:w2",
+        "id": "cqs-macros/src/lib.rs:184:repin20260612",
         "name": "batch_support",
-        "origin": "src/cli/definitions.rs",
+        "origin": "cqs-macros/src/lib.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 768,
-        "line_end": 866
+        "line_start": 184,
+        "line_end": 188
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/definitions.rs",
+          "old_name": "batch_support",
+          "old_line_start": 768,
+          "old_line_end": 866,
+          "new_origin": "cqs-macros/src/lib.rs",
+          "new_name": "batch_support",
+          "new_line_start": 184,
+          "new_line_end": 188
+        }
       }
     },
     {
@@ -10242,6 +11372,15 @@
         "chunk_type": "struct",
         "line_start": 80,
         "line_end": 84
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "struct"
+        }
       }
     },
     {
@@ -10326,13 +11465,27 @@
       "query": "lazy initialization with environment variable",
       "category": "conceptual_search",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:469:4a26b648",
+        "id": "src/cli/watch/rebuild.rs:48:repin20260612",
         "name": "hnsw_rebuild_threshold",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/rebuild.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 469,
-        "line_end": 477
+        "line_start": 48,
+        "line_end": 56
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "hnsw_rebuild_threshold",
+          "old_line_start": 469,
+          "old_line_end": 477,
+          "new_origin": "src/cli/watch/rebuild.rs",
+          "new_name": "hnsw_rebuild_threshold",
+          "new_line_start": 48,
+          "new_line_end": 56
+        }
       }
     },
     {
@@ -10515,19 +11668,42 @@
         "chunk_type": "function",
         "line_start": 63,
         "line_end": 67
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "corpus_fingerprint module removed",
+          "old_origin": "src/corpus_fingerprint.rs",
+          "old_name": "load_or_compute",
+          "chunk_type": "function"
+        }
       }
     },
     {
       "query": "functions named cmd_watch AND taking debounce_ms as u64",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w15",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -10781,13 +11957,27 @@
       "query": "methods that take max_tokens AND return a Result with LlmError",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/llm/provider.rs:110:bdab3949",
-        "name": "submit_batch_prebuilt",
-        "origin": "src/llm/provider.rs",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
+        "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 110,
-        "line_end": 116
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "provider prebuilt submit collapsed into submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/provider.rs",
+          "old_name": "submit_batch_prebuilt",
+          "old_line_start": 110,
+          "old_line_end": 116,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -10937,13 +12127,27 @@
       "query": "methods that return Ok(usize) OR return EmbedderError",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w6",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -11093,13 +12297,27 @@
       "query": "functions that take a UnixStream AND a Mutex of BatchContext",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:160:f41dda96:w0",
+        "id": "src/cli/watch/socket.rs:82:repin20260612",
         "name": "handle_socket_client",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 160,
-        "line_end": 406
+        "line_start": 82,
+        "line_end": 339
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "handle_socket_client",
+          "old_line_start": 160,
+          "old_line_end": 406,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "handle_socket_client",
+          "new_line_start": 82,
+          "new_line_end": 339
+        }
       }
     },
     {
@@ -11145,13 +12363,27 @@
       "query": "functions in Embedder that take a text string AND return a usize",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w6",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -11275,26 +12507,54 @@
       "query": "functions that take an Embedder AND have a quiet boolean parameter",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w6",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
       "query": "structs with total_entries AND total_size_bytes fields",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cache.rs:30:e2926d90",
+        "id": "src/cache/mod.rs:78:repin20260612",
         "name": "CacheStats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "struct",
-        "line_start": 30,
-        "line_end": 36
+        "line_start": 78,
+        "line_end": 84
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "CacheStats",
+          "old_line_start": 30,
+          "old_line_end": 36,
+          "new_origin": "src/cache/mod.rs",
+          "new_name": "CacheStats",
+          "new_line_start": 78,
+          "new_line_end": 84
+        }
       }
     },
     {
@@ -11327,13 +12587,27 @@
       "query": "methods that call sqlx::query_scalar AND return CacheError",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cache.rs:404:9ba156e3:w0",
+        "id": "src/cache/embedding_cache.rs:526:repin20260612",
         "name": "stats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 404,
-        "line_end": 461
+        "line_start": 526,
+        "line_end": 563
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "stats",
+          "old_line_start": 404,
+          "old_line_end": 461,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "stats",
+          "new_line_start": 526,
+          "new_line_end": 563
+        }
       }
     },
     {
@@ -11873,13 +13147,27 @@
       "query": "macro that sets field to None AND logs via tracing::debug",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:486:0894bbe0",
-        "name": "try_clear_to_none",
-        "origin": "src/cli/batch/mod.rs",
+        "id": "src/cli/batch/context.rs:722:repin20260612",
+        "name": "try_clear_refcell",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "macro",
-        "line_start": 486,
-        "line_end": 496
+        "line_start": 722,
+        "line_end": 734
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "try_clear_to_none became try_clear_refcell (uses try_borrow_mut)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "try_clear_to_none",
+          "old_line_start": 486,
+          "old_line_end": 496,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "try_clear_refcell",
+          "new_line_start": 722,
+          "new_line_end": 734
+        }
       }
     },
     {
@@ -12679,13 +13967,27 @@
       "query": "macro named try_clear_to_none AND uses try_borrow_mut",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:486:0894bbe0",
-        "name": "try_clear_to_none",
-        "origin": "src/cli/batch/mod.rs",
+        "id": "src/cli/batch/context.rs:722:repin20260612",
+        "name": "try_clear_refcell",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "macro",
-        "line_start": 486,
-        "line_end": 496
+        "line_start": 722,
+        "line_end": 734
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "try_clear_to_none became try_clear_refcell (uses try_borrow_mut)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "try_clear_to_none",
+          "old_line_start": 486,
+          "old_line_end": 496,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "try_clear_refcell",
+          "new_line_start": 722,
+          "new_line_end": 734
+        }
       }
     },
     {
@@ -12731,13 +14033,27 @@
       "query": "functions that return CacheStats AND return Result",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/cache.rs:404:9ba156e3:w0",
+        "id": "src/cache/embedding_cache.rs:526:repin20260612",
         "name": "stats",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 404,
-        "line_end": 461
+        "line_start": 526,
+        "line_end": 563
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "stats",
+          "old_line_start": 404,
+          "old_line_end": 461,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "stats",
+          "new_line_start": 526,
+          "new_line_end": 563
+        }
       }
     },
     {
@@ -12822,13 +14138,27 @@
       "query": "functions that take BatchSubmitItem AND return Result<String, LlmError>",
       "category": "multi_step",
       "gold_chunk": {
-        "id": "src/llm/provider.rs:110:bdab3949",
-        "name": "submit_batch_prebuilt",
-        "origin": "src/llm/provider.rs",
+        "id": "src/llm/batch.rs:505:repin20260612",
+        "name": "submit_or_resume",
+        "origin": "src/llm/batch.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 110,
-        "line_end": 116
+        "line_start": 505,
+        "line_end": 615
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "provider prebuilt submit collapsed into submit_or_resume",
+          "kind": "equivalent",
+          "old_origin": "src/llm/provider.rs",
+          "old_name": "submit_batch_prebuilt",
+          "old_line_start": 110,
+          "old_line_end": 116,
+          "new_origin": "src/llm/batch.rs",
+          "new_name": "submit_or_resume",
+          "new_line_start": 505,
+          "new_line_end": 615
+        }
       }
     },
     {
@@ -13290,13 +14620,27 @@
       "query": "clear field to none without panicking on borrow",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:486:0894bbe0",
-        "name": "try_clear_to_none",
-        "origin": "src/cli/batch/mod.rs",
+        "id": "src/cli/batch/context.rs:722:repin20260612",
+        "name": "try_clear_refcell",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "macro",
-        "line_start": 486,
-        "line_end": 496
+        "line_start": 722,
+        "line_end": 734
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "try_clear_to_none became try_clear_refcell (uses try_borrow_mut)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "try_clear_to_none",
+          "old_line_start": 486,
+          "old_line_end": 496,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "try_clear_refcell",
+          "new_line_start": 722,
+          "new_line_end": 734
+        }
       }
     },
     {
@@ -13401,6 +14745,15 @@
         "chunk_type": "function",
         "line_start": 258,
         "line_end": 262
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "test_mtimes (HashMap<PathBuf,i64>) removed; fingerprint maps now PathBuf->FileFingerprint",
+          "old_origin": "src/cli/pipeline/mod.rs",
+          "old_name": "test_mtimes",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -13472,13 +14825,27 @@
       "query": "gitignore matcher that is not manually instantiated",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:757:dcfd7e4d:w1",
+        "id": "src/cli/watch/mod.rs:435:repin20260612",
         "name": "build_gitignore_matcher",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 757,
-        "line_end": 808
+        "line_start": 435,
+        "line_end": 500
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "build_gitignore_matcher",
+          "old_line_start": 757,
+          "old_line_end": 808,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "build_gitignore_matcher",
+          "new_line_start": 435,
+          "new_line_end": 500
+        }
       }
     },
     {
@@ -13524,13 +14891,27 @@
       "query": "reindex files that is not silent",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w6",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -14090,6 +15471,15 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
@@ -14447,13 +15837,27 @@
       "query": "watch command without using poll",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w1",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -14558,19 +15962,42 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
       "query": "cmd_watch that is not using a recursive poll",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w3",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -15032,13 +16459,27 @@
       "query": "load audit state that is not cached",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w22",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -15071,13 +16512,27 @@
       "query": "reload audit state without checking interval",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w22",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -15188,13 +16643,27 @@
       "query": "read focused command without write access to store",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/commands/io/read.rs:353:5946e559",
-        "name": "cmd_read_focused",
+        "id": "src/cli/commands/io/read.rs:136:repin20260612",
+        "name": "build_focused_output",
         "origin": "src/cli/commands/io/read.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 353,
-        "line_end": 395
+        "line_start": 136,
+        "line_end": 307
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_read_focused became build_focused_output (CLI/batch shared core)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/io/read.rs",
+          "old_name": "cmd_read_focused",
+          "old_line_start": 353,
+          "old_line_end": 395,
+          "new_origin": "src/cli/commands/io/read.rs",
+          "new_name": "build_focused_output",
+          "new_line_start": 136,
+          "new_line_end": 307
+        }
       }
     },
     {
@@ -15318,13 +16787,27 @@
       "query": "reindex files without quiet mode",
       "category": "negation",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2382:1f1d4456:w6",
+        "id": "src/cli/watch/reindex.rs:395:repin20260612",
         "name": "reindex_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2382,
-        "line_end": 2585
+        "line_start": 395,
+        "line_end": 848
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "reindex_files",
+          "old_line_start": 2382,
+          "old_line_end": 2585,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "reindex_files",
+          "new_line_start": 395,
+          "new_line_end": 848
+        }
       }
     },
     {
@@ -15617,13 +17100,27 @@
       "query": "impl blocks on Embedder",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w0",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -15708,39 +17205,81 @@
       "query": "impl blocks for Embedder",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w12",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
       "query": "methods on Cache",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:486:8e93f459",
+        "id": "src/cache/query_cache.rs:295:repin20260612",
         "name": "prune_older_than",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 486,
-        "line_end": 505
+        "line_start": 295,
+        "line_end": 307
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "prune_older_than",
+          "old_line_start": 486,
+          "old_line_end": 505,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "prune_older_than",
+          "new_line_start": 295,
+          "new_line_end": 307
+        }
       }
     },
     {
       "query": "methods in Embedder impl",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w8",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -15864,13 +17403,27 @@
       "query": "methods in EmbeddingCache impl",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:51:53b6b3ec:w4",
+        "id": "src/cache/embedding_cache.rs:26:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 51,
-        "line_end": 506
+        "line_start": 26,
+        "line_end": 789
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 51,
+          "old_line_end": 506,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 26,
+          "new_line_end": 789
+        }
       }
     },
     {
@@ -16098,13 +17651,27 @@
       "query": "all test functions for watch config with gitignore",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:2665:4130c5c3",
+        "id": "src/cli/watch/tests.rs:56:repin20260612",
         "name": "test_watch_config_with_gitignore",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/tests.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 2665,
-        "line_end": 2688
+        "line_start": 56,
+        "line_end": 80
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "test_watch_config_with_gitignore",
+          "old_line_start": 2665,
+          "old_line_end": 2688,
+          "new_origin": "src/cli/watch/tests.rs",
+          "new_name": "test_watch_config_with_gitignore",
+          "new_line_start": 56,
+          "new_line_end": 80
+        }
       }
     },
     {
@@ -16254,13 +17821,27 @@
       "query": "Drop implementation for SocketCleanupGuard",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:43:1cefdd3e",
+        "id": "src/cli/watch/socket.rs:19:repin20260612",
         "name": "SocketCleanupGuard",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 43,
-        "line_end": 53
+        "line_start": 19,
+        "line_end": 29
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "SocketCleanupGuard",
+          "old_line_start": 43,
+          "old_line_end": 53,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "SocketCleanupGuard",
+          "new_line_start": 19,
+          "new_line_end": 29
+        }
       }
     },
     {
@@ -16280,13 +17861,27 @@
       "query": "methods on the Embedder struct",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w0",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -16319,13 +17914,27 @@
       "query": "methods on the cache for read_batch",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:174:fd697463:w1",
+        "id": "src/cache/embedding_cache.rs:192:repin20260612",
         "name": "read_batch",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 174,
-        "line_end": 255
+        "line_start": 192,
+        "line_end": 296
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "read_batch",
+          "old_line_start": 174,
+          "old_line_end": 255,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "read_batch",
+          "new_line_start": 192,
+          "new_line_end": 296
+        }
       }
     },
     {
@@ -16371,13 +17980,27 @@
       "query": "impl block method drop",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:44:9bbea787",
+        "id": "src/cli/watch/socket.rs:20:repin20260612",
         "name": "drop",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 44,
-        "line_end": 52
+        "line_start": 20,
+        "line_end": 28
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "drop",
+          "old_line_start": 44,
+          "old_line_end": 52,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "drop",
+          "new_line_start": 20,
+          "new_line_end": 28
+        }
       }
     },
     {
@@ -16423,26 +18046,54 @@
       "query": "methods on the model for fingerprinting",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:357:3a5cb4fc:w0",
+        "id": "src/embedder/core.rs:282:repin20260612",
         "name": "model_fingerprint",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 357,
-        "line_end": 431
+        "line_start": 282,
+        "line_end": 425
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "model_fingerprint",
+          "old_line_start": 357,
+          "old_line_end": 431,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "model_fingerprint",
+          "new_line_start": 282,
+          "new_line_end": 425
+        }
       }
     },
     {
       "query": "methods for QueryContext",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/commands/search/query.rs:351:3cf7a071:w1",
-        "name": "cmd_query_project",
+        "id": "src/cli/commands/search/query.rs:339:repin20260612",
+        "name": "query_core",
         "origin": "src/cli/commands/search/query.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 351,
-        "line_end": 610
+        "line_start": 339,
+        "line_end": 350
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "cmd_query_project collapsed into surface-agnostic query_core (command-core refactor)",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/search/query.rs",
+          "old_name": "cmd_query_project",
+          "old_line_start": 351,
+          "old_line_end": 610,
+          "new_origin": "src/cli/commands/search/query.rs",
+          "new_name": "query_core",
+          "new_line_start": 339,
+          "new_line_end": 350
+        }
       }
     },
     {
@@ -16540,13 +18191,27 @@
       "query": "methods for DiffResult display",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/commands/io/diff.rs:128:9109e61e",
-        "name": "display_diff",
+        "id": "src/cli/commands/io/diff.rs:202:repin20260612",
+        "name": "display_diff_from_output",
         "origin": "src/cli/commands/io/diff.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 128,
-        "line_end": 189
+        "line_start": 202,
+        "line_end": 248
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "display_diff renamed display_diff_from_output",
+          "kind": "equivalent",
+          "old_origin": "src/cli/commands/io/diff.rs",
+          "old_name": "display_diff",
+          "old_line_start": 128,
+          "old_line_end": 189,
+          "new_origin": "src/cli/commands/io/diff.rs",
+          "new_name": "display_diff_from_output",
+          "new_line_start": 202,
+          "new_line_end": 248
+        }
       }
     },
     {
@@ -16599,6 +18264,15 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
@@ -16904,39 +18578,81 @@
       "query": "methods in QueryCache impl",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:980:c5e81fd3:w6",
+        "id": "src/cache/query_cache.rs:32:repin20260612",
         "name": "QueryCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 980,
-        "line_end": 1265
+        "line_start": 32,
+        "line_end": 308
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "QueryCache",
+          "old_line_start": 980,
+          "old_line_end": 1265,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "QueryCache",
+          "new_line_start": 32,
+          "new_line_end": 308
+        }
       }
     },
     {
       "query": "impl Drop for SocketCleanupGuard",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:43:1cefdd3e",
+        "id": "src/cli/watch/socket.rs:19:repin20260612",
         "name": "SocketCleanupGuard",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/socket.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 43,
-        "line_end": 53
+        "line_start": 19,
+        "line_end": 29
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "SocketCleanupGuard",
+          "old_line_start": 43,
+          "old_line_end": 53,
+          "new_origin": "src/cli/watch/socket.rs",
+          "new_name": "SocketCleanupGuard",
+          "new_line_start": 19,
+          "new_line_end": 29
+        }
       }
     },
     {
       "query": "methods on BatchContext",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cli/batch/mod.rs:308:6d64ad6f:w18",
+        "id": "src/cli/batch/context.rs:306:repin20260612",
         "name": "BatchContext",
-        "origin": "src/cli/batch/mod.rs",
+        "origin": "src/cli/batch/context.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 308,
-        "line_end": 1162
+        "line_start": 306,
+        "line_end": 1505
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/batch/mod.rs",
+          "old_name": "BatchContext",
+          "old_line_start": 308,
+          "old_line_end": 1162,
+          "new_origin": "src/cli/batch/context.rs",
+          "new_name": "BatchContext",
+          "new_line_start": 306,
+          "new_line_end": 1505
+        }
       }
     },
     {
@@ -16982,13 +18698,27 @@
       "query": "impl blocks on EmbeddingCache",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:51:53b6b3ec:w6",
+        "id": "src/cache/embedding_cache.rs:26:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 51,
-        "line_end": 506
+        "line_start": 26,
+        "line_end": 789
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 51,
+          "old_line_end": 506,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 26,
+          "new_line_end": 789
+        }
       }
     },
     {
@@ -17086,13 +18816,27 @@
       "query": "clear method on cache",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:464:169cfd43",
+        "id": "src/cache/embedding_cache.rs:566:repin20260612",
         "name": "clear",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "method",
-        "line_start": 464,
-        "line_end": 483
+        "line_start": 566,
+        "line_end": 585
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "clear",
+          "old_line_start": 464,
+          "old_line_end": 483,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "clear",
+          "new_line_start": 566,
+          "new_line_end": 585
+        }
       }
     },
     {
@@ -17190,13 +18934,27 @@
       "query": "impl blocks for QueryCache",
       "category": "type_filtered",
       "gold_chunk": {
-        "id": "src/cache.rs:980:c5e81fd3:w6",
+        "id": "src/cache/query_cache.rs:32:repin20260612",
         "name": "QueryCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/query_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 980,
-        "line_end": 1265
+        "line_start": 32,
+        "line_end": 308
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "QueryCache",
+          "old_line_start": 980,
+          "old_line_end": 1265,
+          "new_origin": "src/cache/query_cache.rs",
+          "new_name": "QueryCache",
+          "new_line_start": 32,
+          "new_line_end": 308
+        }
       }
     },
     {
@@ -17346,13 +19104,27 @@
       "query": "Rust equivalent of creating a single-threaded event loop like Python's asyncio",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cache.rs:51:53b6b3ec:w1",
+        "id": "src/cache/embedding_cache.rs:26:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 51,
-        "line_end": 506
+        "line_start": 26,
+        "line_end": 789
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 51,
+          "old_line_end": 506,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 26,
+          "new_line_end": 789
+        }
       }
     },
     {
@@ -17385,13 +19157,27 @@
       "query": "how to initialize a tokio runtime in Rust compared to Go's goroutine scheduler",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cache.rs:51:53b6b3ec:w1",
+        "id": "src/cache/embedding_cache.rs:26:repin20260612",
         "name": "EmbeddingCache",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/embedding_cache.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 51,
-        "line_end": 506
+        "line_start": 26,
+        "line_end": 789
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "EmbeddingCache",
+          "old_line_start": 51,
+          "old_line_end": 506,
+          "new_origin": "src/cache/embedding_cache.rs",
+          "new_name": "EmbeddingCache",
+          "new_line_start": 26,
+          "new_line_end": 789
+        }
       }
     },
     {
@@ -17515,13 +19301,27 @@
       "query": "how to configure tokio runtime worker threads in Rust vs Go's GOMAXPROCS",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cache.rs:1277:f484e91d",
+        "id": "src/cache/mod.rs:287:repin20260612",
         "name": "build_daemon_runtime",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1277,
-        "line_end": 1289
+        "line_start": 287,
+        "line_end": 299
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "build_daemon_runtime",
+          "old_line_start": 1277,
+          "old_line_end": 1289,
+          "new_origin": "src/cache/mod.rs",
+          "new_name": "build_daemon_runtime",
+          "new_line_start": 287,
+          "new_line_end": 299
+        }
       }
     },
     {
@@ -17736,13 +19536,27 @@
       "query": "Python equivalent of locking a Mutex and recovering from a poisoned state for a batch encoder",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1051:8e93b65b:w1",
+        "id": "src/cli/watch/reindex.rs:102:repin20260612",
         "name": "encode_splade_for_changed_files",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/reindex.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1051,
-        "line_end": 1138
+        "line_start": 102,
+        "line_end": 200
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "encode_splade_for_changed_files",
+          "old_line_start": 1051,
+          "old_line_end": 1138,
+          "new_origin": "src/cli/watch/reindex.rs",
+          "new_name": "encode_splade_for_changed_files",
+          "new_line_start": 102,
+          "new_line_end": 200
+        }
       }
     },
     {
@@ -18191,13 +20005,27 @@
       "query": "how to implement document embedding batches in Rust vs Go",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w9",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -18334,13 +20162,27 @@
       "query": "how to implement a lazy-loaded model configuration in Rust vs Java",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w2",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
@@ -18874,6 +20716,15 @@
         "chunk_type": "impl",
         "line_start": 86,
         "line_end": 267
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "FusedHead feature removed tree-wide",
+          "old_origin": "src/fused_head.rs",
+          "old_name": "FusedHead",
+          "chunk_type": "impl"
+        }
       }
     },
     {
@@ -18939,6 +20790,15 @@
         "chunk_type": "function",
         "line_start": 95,
         "line_end": 99
+      },
+      "metadata": {
+        "dead_gold": true,
+        "dead_gold_2026_06_12": {
+          "reason": "corpus_fingerprint module removed",
+          "old_origin": "src/corpus_fingerprint.rs",
+          "old_name": "recompute_and_cache",
+          "chunk_type": "function"
+        }
       }
     },
     {
@@ -19036,13 +20896,27 @@
       "query": "how to implement a database transaction for note insertion in Rust vs Go",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/store/notes.rs:17:abd3677c",
-        "name": "insert_note_with_fts",
+        "id": "src/store/notes.rs:26:repin20260612",
+        "name": "insert_notes_with_fts_batched",
         "origin": "src/store/notes.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 17,
-        "line_end": 58
+        "line_start": 26,
+        "line_end": 97
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "single-insert collapsed into batched fts insert",
+          "kind": "equivalent",
+          "old_origin": "src/store/notes.rs",
+          "old_name": "insert_note_with_fts",
+          "old_line_start": 17,
+          "old_line_end": 58,
+          "new_origin": "src/store/notes.rs",
+          "new_name": "insert_notes_with_fts_batched",
+          "new_line_start": 26,
+          "new_line_end": 97
+        }
       }
     },
     {
@@ -19192,13 +21066,27 @@
       "query": "Rust equivalent of Python's threading.Lock for protecting shared state in a multi-threaded server",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w9",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -19322,13 +21210,27 @@
       "query": "Rust equivalent of creating a custom multi-threaded event loop in Node.js",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cache.rs:1277:f484e91d",
+        "id": "src/cache/mod.rs:287:repin20260612",
         "name": "build_daemon_runtime",
-        "origin": "src/cache.rs",
+        "origin": "src/cache/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1277,
-        "line_end": 1289
+        "line_start": 287,
+        "line_end": 299
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cache.rs",
+          "old_name": "build_daemon_runtime",
+          "old_line_start": 1277,
+          "old_line_end": 1289,
+          "new_origin": "src/cache/mod.rs",
+          "new_name": "build_daemon_runtime",
+          "new_line_start": 287,
+          "new_line_end": 299
+        }
       }
     },
     {
@@ -19374,13 +21276,27 @@
       "query": "Rust implementation of last token pooling compared to PyTorch",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:1102:7a780b06",
+        "id": "src/embedder/pooling.rs:140:repin20260612",
         "name": "last_token_pool",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/pooling.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1102,
-        "line_end": 1122
+        "line_start": 140,
+        "line_end": 175
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "last_token_pool",
+          "old_line_start": 1102,
+          "old_line_end": 1122,
+          "new_origin": "src/embedder/pooling.rs",
+          "new_name": "last_token_pool",
+          "new_line_start": 140,
+          "new_line_end": 175
+        }
       }
     },
     {
@@ -19504,13 +21420,27 @@
       "query": "How to implement a thread-safe shared context with Mutex and Arc in Rust compared to Java's synchronized blocks",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/cli/watch.rs:1170:3541735d:w9",
+        "id": "src/cli/watch/mod.rs:524:repin20260612",
         "name": "cmd_watch",
-        "origin": "src/cli/watch.rs",
+        "origin": "src/cli/watch/mod.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1170,
-        "line_end": 2019
+        "line_start": 524,
+        "line_end": 1971
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/cli/watch.rs",
+          "old_name": "cmd_watch",
+          "old_line_start": 1170,
+          "old_line_end": 2019,
+          "new_origin": "src/cli/watch/mod.rs",
+          "new_name": "cmd_watch",
+          "new_line_start": 524,
+          "new_line_end": 1971
+        }
       }
     },
     {
@@ -19621,13 +21551,27 @@
       "query": "How to implement last token pooling in Rust vs Python",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:1102:7a780b06",
+        "id": "src/embedder/pooling.rs:140:repin20260612",
         "name": "last_token_pool",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/pooling.rs",
         "language": "rust",
         "chunk_type": "function",
-        "line_start": 1102,
-        "line_end": 1122
+        "line_start": 140,
+        "line_end": 175
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (monolith splits + store/serve boundary refactor)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "last_token_pool",
+          "old_line_start": 1102,
+          "old_line_end": 1122,
+          "new_origin": "src/embedder/pooling.rs",
+          "new_name": "last_token_pool",
+          "new_line_start": 140,
+          "new_line_end": 175
+        }
       }
     },
     {
@@ -19673,13 +21617,27 @@
       "query": "Rust equivalent of lazy initialization for model fingerprints compared to Python",
       "category": "cross_language",
       "gold_chunk": {
-        "id": "src/embedder/mod.rs:265:322d5e3f:w2",
+        "id": "src/embedder/core.rs:134:repin20260612",
         "name": "Embedder",
-        "origin": "src/embedder/mod.rs",
+        "origin": "src/embedder/core.rs",
         "language": "rust",
         "chunk_type": "impl",
-        "line_start": 265,
-        "line_end": 916
+        "line_start": 134,
+        "line_end": 1272
+      },
+      "metadata": {
+        "repinned_2026_06_12": {
+          "reason": "origin file split/moved (disambiguated by module affinity + def kind)",
+          "kind": "moved",
+          "old_origin": "src/embedder/mod.rs",
+          "old_name": "Embedder",
+          "old_line_start": 265,
+          "old_line_end": 916,
+          "new_origin": "src/embedder/core.rs",
+          "new_name": "Embedder",
+          "new_line_start": 134,
+          "new_line_end": 1272
+        }
       }
     },
     {
