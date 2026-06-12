@@ -1559,11 +1559,20 @@ impl Store<ReadWrite> {
     /// per file, single commit for the whole sweep.
     ///
     /// An entry with empty `live_ids` deletes every chunk for that origin
-    /// (FTS + chunks). Unlike `delete_phantom_chunks`'s delegation to
-    /// `delete_by_origin`, no `function_calls` DELETE is issued here — the
-    /// pipeline's `upsert_function_calls_for_files` already
-    /// DELETE-then-INSERTed the current set for every file it touched (same
-    /// reasoning as the fused-tx prune in `upsert_chunks_calls_and_prune`).
+    /// (FTS + chunks) AND its `function_calls` rows — the whole-file-emptied
+    /// end-state, matching the single-file `delete_phantom_chunks` empty path
+    /// (which delegates to `delete_by_origin`). A zero-chunk file is no longer a
+    /// caller, so its caller-side call edges are orphans; clearing them here
+    /// makes the precondition structurally unviolatable for the empty case
+    /// (callers can no longer satisfy it "by halves" and leak orphaned edges).
+    /// The empty branch does NOT delete `file_registry`: zero-chunk
+    /// finalization stamps the registry right after the prune.
+    ///
+    /// An entry with NON-empty `live_ids` (the partial-prune case) does NOT
+    /// touch `function_calls` — the caller (the bulk pipeline's
+    /// `upsert_function_calls_for_files`, or the watch fused-tx prune in
+    /// `upsert_chunks_calls_and_prune`) DELETE-then-INSERTs the current set for
+    /// every file it touched, so a DELETE here would wipe just-written rows.
     ///
     /// Returns the total number of chunk rows deleted across all files.
     pub fn delete_phantom_chunks_batch(
@@ -1599,6 +1608,32 @@ impl Store<ReadWrite> {
                     .execute(&mut *tx)
                     .await?;
                     let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                        .bind(&origin_str)
+                        .execute(&mut *tx)
+                        .await?;
+                    // Whole-file-emptied means the file is no longer a CALLER:
+                    // its chunks are gone, so any `function_calls` rows keyed on
+                    // this origin are orphaned caller-side edges. `function_calls`
+                    // has no FK to `chunks` (it stores `caller_name` strings, not
+                    // chunk IDs), so the chunk DELETE above does NOT cascade.
+                    // Clear them here so this branch reaches the SAME end-state as
+                    // the single-file `delete_phantom_chunks` empty path (which
+                    // delegates to `delete_by_origin`, and that DELETEs
+                    // function_calls). Orphans left here surface as ghost
+                    // `cqs callers` rows and veto otherwise-dead callees
+                    // (`dead_code.rs`'s NOT EXISTS does not join chunks on the
+                    // caller side). This is the empty-live-set branch ONLY — the
+                    // non-empty branch below must NOT touch function_calls,
+                    // because its callers DELETE-then-INSERT the current call set
+                    // separately and a DELETE here would wipe just-written rows.
+                    //
+                    // No `file_registry` DELETE: unlike `delete_by_origin` (the
+                    // wholesale file-removal path), the zero-chunk finalization
+                    // that drives this branch STAMPS the registry fingerprint
+                    // immediately after the prune so the next reconcile tick
+                    // skips the file. Deleting the registry here would defeat
+                    // that.
+                    sqlx::query("DELETE FROM function_calls WHERE file = ?1")
                         .bind(&origin_str)
                         .execute(&mut *tx)
                         .await?;
@@ -2886,6 +2921,66 @@ mod tests {
         let (store, _dir) = setup_store();
         let deleted = store.delete_phantom_chunks_batch(&[]).unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    /// Whole-file-emptied (empty live set) must clear `function_calls` for the
+    /// origin — a zero-chunk file is no longer a caller, so its caller-side call
+    /// edges are orphans. The NON-empty (partial-prune) branch must NOT touch
+    /// `function_calls`, because its callers DELETE-then-INSERT the current set
+    /// separately. This pins the precondition the comment used to leave to
+    /// callers: the empty branch self-clears, the non-empty branch defers.
+    #[test]
+    fn delete_phantom_chunks_batch_empty_clears_calls_partial_does_not() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let f1 = make_chunk("f1a", "emptied.rs");
+        let f2 = make_chunk("f2a", "partial.rs");
+        let f2b = make_chunk("f2b", "partial.rs");
+        let f2_live = f2.id.clone();
+        store
+            .upsert_chunks_batch(
+                &[(f1, emb.clone()), (f2, emb.clone()), (f2b, emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+
+        // Both files are callers in the call graph.
+        let mk = |caller: &str, callee: &str| FunctionCalls {
+            name: caller.to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: callee.to_string(),
+                line_number: 1,
+                kind: CallEdgeKind::Call,
+            }],
+        };
+        store
+            .upsert_function_calls(std::path::Path::new("emptied.rs"), &[mk("f1a", "x")])
+            .unwrap();
+        store
+            .upsert_function_calls(std::path::Path::new("partial.rs"), &[mk("f2a", "y")])
+            .unwrap();
+        assert_eq!(store.get_callers_full("x").unwrap().len(), 1);
+        assert_eq!(store.get_callers_full("y").unwrap().len(), 1);
+
+        let files: Vec<(&std::path::Path, Vec<&str>)> = vec![
+            (std::path::Path::new("emptied.rs"), vec![]), // whole file emptied
+            (std::path::Path::new("partial.rs"), vec![f2_live.as_str()]), // partial prune
+        ];
+        store.delete_phantom_chunks_batch(&files).unwrap();
+
+        // Empty branch cleared the emptied file's call edge.
+        assert!(
+            store.get_callers_full("x").unwrap().is_empty(),
+            "empty-live-set branch must clear function_calls (no orphan edge)"
+        );
+        // Partial branch left partial.rs's call edge intact — the caller is
+        // still present, and its calls are owned by the separate upsert path.
+        assert_eq!(
+            store.get_callers_full("y").unwrap().len(),
+            1,
+            "partial-prune branch must NOT touch function_calls"
+        );
     }
 
     // ===== update_umap_coords_batch happy path =====

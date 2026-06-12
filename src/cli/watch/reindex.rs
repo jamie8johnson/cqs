@@ -346,11 +346,17 @@ fn stamp_zero_chunk_registry(store: &Store, root: &Path, rel_paths: &[PathBuf]) 
         return;
     }
 
-    // Prune each survivor's stale chunk rows with an EMPTY live set BEFORE
-    // stamping the registry below — same mechanism as the bulk path's
-    // `delete_phantom_chunks_batch(.., Vec::new())`. This deletes the ghost
-    // rows that would otherwise persist (and keep re-arming parser-drift) when
-    // a file is edited from has-chunks to zero-chunks under watch.
+    // Prune each survivor's stale rows with an EMPTY live set BEFORE stamping
+    // the registry below — same mechanism as the bulk path's
+    // `delete_phantom_chunks_batch(.., Vec::new())`. The empty-live-set branch
+    // deletes the file's chunks, FTS rows, AND function_calls rows in one tx:
+    // a zero-chunk file is no longer a caller, so its caller-side call edges
+    // are orphans. This is the single coherent end-state for a zero-chunk file
+    // — chunks/FTS pruned (no ghost search hits, no re-armed parser-drift) and
+    // function_calls cleared (no orphaned edges that produce ghost `cqs
+    // callers` rows or veto otherwise-dead callees). BOTH watch zero-chunk
+    // routes (whole-batch-empty early return AND partial) flow through here, so
+    // neither can reach the registry stamp with stale rows surviving.
     let prune_entries: Vec<(&Path, Vec<&str>)> = rel_paths
         .iter()
         .map(|p| (p.as_path(), Vec::new()))
@@ -858,30 +864,28 @@ pub(super) fn reindex_files(
     }
 
     // Any file that parsed to ZERO chunks is in `all_function_calls` but NOT
-    // in `by_file`. The per-file upsert loop above only ran for files with at
-    // least one chunk, so empty-chunk files would leak old function_calls rows
-    // without this clear. Handles the zero-chunk edge case (deleted-only /
-    // parser-emitted-empty) while keeping the atomic-with-chunks path for the
-    // common case.
-    let mut zero_chunk_files: Vec<PathBuf> = Vec::new();
-    for (rel_path, fcs) in &all_function_calls {
-        if !by_file.contains_key(rel_path) {
-            if let Err(e) = store.upsert_function_calls(rel_path, fcs) {
-                tracing::warn!(
-                    path = %rel_path.display(),
-                    error = %e,
-                    "Failed to write function_calls for zero-chunk watched file"
-                );
-            }
-            zero_chunk_files.push(rel_path.clone());
-        }
-    }
+    // in `by_file` (the per-file upsert loop above only ran for files with at
+    // least one chunk). Such a file is no longer a caller, so its old chunks AND
+    // its old `function_calls` rows must both go. `finalize_zero_chunk_files`
+    // (via `stamp_zero_chunk_registry` below) routes every zero-chunk origin
+    // through `delete_phantom_chunks_batch` with an empty live set, which now
+    // clears chunks + FTS + function_calls in one tx — so the explicit
+    // per-file `upsert_function_calls(.., &[])` clear this loop used to do is
+    // redundant. We only gather the file list here.
+    let zero_chunk_files: Vec<PathBuf> = all_function_calls
+        .keys()
+        .filter(|rel_path| !by_file.contains_key(*rel_path))
+        .cloned()
+        .collect();
 
     // Stamp the v29 `file_registry` reconcile fingerprint for the zero-chunk
     // survivors gathered above #1774 so the next reconcile tick skips them
     // instead of re-parsing to zero chunks every 30 s. The chunk-carrying files
     // already stamped their fingerprint inline (`set_file_fingerprint` in the
     // per-file loop above), which shadows into the registry too.
+    // `stamp_zero_chunk_registry` prunes chunks+FTS+function_calls (empty live
+    // set) BEFORE stamping — the crash-safe ordering (a crash between prune and
+    // stamp leaves zero rows + an unstamped registry, re-parsed idempotently).
     stamp_zero_chunk_registry(store, root, &zero_chunk_files);
 
     // Upsert type edges from the earlier parse_file_all() results.
@@ -966,6 +970,147 @@ mod tests {
         store
             .upsert_chunks_batch(&[(chunk, emb)], Some(100))
             .unwrap();
+    }
+
+    /// Seed a single `function_calls` row: `caller` (in `origin`) calls `callee`.
+    /// Used to exercise the caller-side orphan: when `origin`'s chunks are later
+    /// emptied, this edge must be cleared, not left dangling.
+    fn seed_call(store: &Store, origin: &str, caller: &str, callee: &str) {
+        store
+            .upsert_function_calls(
+                &PathBuf::from(origin),
+                &[cqs::parser::FunctionCalls {
+                    name: caller.to_string(),
+                    line_start: 1,
+                    calls: vec![cqs::parser::CallSite {
+                        callee_name: callee.to_string(),
+                        line_number: 1,
+                        kind: cqs::parser::CallEdgeKind::Call,
+                    }],
+                }],
+            )
+            .unwrap();
+    }
+
+    /// Coherent zero-chunk end-state, BOTH watch routes, WITH function_calls.
+    ///
+    /// The prior zero-chunk tests seeded chunks but NO `function_calls`, so
+    /// they could not catch the orphaned-edge leak: the watch zero-chunk
+    /// finalization pruned chunks but left the file's caller-side call edges
+    /// behind (the `delete_phantom_chunks_batch` empty branch deliberately did
+    /// not touch `function_calls`, and the early-return route never ran the
+    /// per-file calls-clear loop the partial route had). This test seeds a file
+    /// that is a CALLER, zeroes it through `stamp_zero_chunk_registry` (the one
+    /// function both watch routes flow through), and asserts the FULL end-state:
+    /// chunks, chunks_fts, AND function_calls all gone, registry stamped, drift
+    /// won't re-select.
+    #[test]
+    fn watch_zero_chunk_finalize_clears_function_calls_both_routes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("caller.rs"), "// only a comment now\n").unwrap();
+
+        let store = Store::open(&root.join("index.db")).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Pre-edit: caller.rs had a chunk AND named `victim` as a callee.
+        seed_chunk(
+            &store,
+            "caller.rs:1:c",
+            "caller.rs",
+            "caller_fn",
+            cqs::parser_version(),
+        );
+        seed_call(&store, "caller.rs", "caller_fn", "victim");
+        assert_eq!(
+            store.get_chunks_by_origin("caller.rs").unwrap().len(),
+            1,
+            "precondition: seeded caller chunk"
+        );
+        assert_eq!(
+            store.get_callers_full("victim").unwrap().len(),
+            1,
+            "precondition: victim has one caller edge"
+        );
+
+        // Route 1 (and route 2 share this): the watch zero-chunk finalization.
+        // Both the whole-batch-empty early return AND the partial route call
+        // `stamp_zero_chunk_registry`; exercising it here covers both because
+        // the partial route no longer does any separate calls-clear.
+        stamp_zero_chunk_registry(&store, &root, &[PathBuf::from("caller.rs")]);
+
+        // Full coherent end-state.
+        assert!(
+            store.get_chunks_by_origin("caller.rs").unwrap().is_empty(),
+            "chunks pruned"
+        );
+        assert!(
+            store.search_by_name("caller_fn", 5).unwrap().is_empty(),
+            "chunks_fts pruned (no search hit)"
+        );
+        assert!(
+            store.get_callers_full("victim").unwrap().is_empty(),
+            "function_calls cleared: the deleted caller no longer cites victim"
+        );
+        let drifted = store
+            .origins_with_parser_drift(&["caller.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            drifted.is_empty(),
+            "registry stamped, drift won't re-select"
+        );
+    }
+
+    /// Payload-poisoning repro from the audit: a callee referenced ONLY by a
+    /// now-deleted caller must become dead-eligible once the caller's file is
+    /// zeroed. `fetch_uncalled_functions`' `NOT EXISTS` does not join chunks on
+    /// the CALLER side, so an orphaned `function_calls` row (caller chunk gone,
+    /// edge surviving) falsely keeps the callee out of the dead set. Clearing
+    /// the orphan in the zero-chunk finalization restores the correct verdict.
+    #[test]
+    fn watch_zero_chunk_orphan_no_longer_vetoes_dead() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("caller.rs"), "// emptied\n").unwrap();
+
+        let store = Store::open(&root.join("index.db")).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // `victim` is a private function in its own file with no other callers.
+        seed_chunk(
+            &store,
+            "victim.rs:1:v",
+            "victim.rs",
+            "victim",
+            cqs::parser_version(),
+        );
+        // caller.rs is the ONLY thing that references victim.
+        seed_chunk(
+            &store,
+            "caller.rs:1:c",
+            "caller.rs",
+            "caller_fn",
+            cqs::parser_version(),
+        );
+        seed_call(&store, "caller.rs", "caller_fn", "victim");
+
+        // Before zeroing: the orphan-to-be edge vetoes victim from the dead set.
+        let (confident_before, _) = store.find_dead_code(true).unwrap();
+        assert!(
+            !confident_before.iter().any(|d| d.chunk.name == "victim"),
+            "precondition: victim is held live by its (soon-orphaned) caller edge"
+        );
+
+        // caller.rs parses to zero chunks under watch → finalize it.
+        stamp_zero_chunk_registry(&store, &root, &[PathBuf::from("caller.rs")]);
+
+        // The orphan is gone, so victim is now dead-eligible.
+        let (confident_after, _) = store.find_dead_code(true).unwrap();
+        assert!(
+            confident_after.iter().any(|d| d.chunk.name == "victim"),
+            "after the caller file is zeroed, victim must become dead-eligible \
+             (orphaned edge no longer vetoes the dead verdict)"
+        );
     }
 
     /// #1830 repro: a file edited from has-chunks to zero-chunks under watch
