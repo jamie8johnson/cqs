@@ -203,6 +203,175 @@ fn collect_macro_calls(
     }
 }
 
+/// Collect the names of every Rust function definition in `node`'s subtree.
+///
+/// Used by [`extract_fn_pointer_arg_edges`] as the intra-file precision filter:
+/// a bare `identifier` in argument position is emitted as a fn-pointer edge ONLY
+/// if it names a function defined in the same file. This keeps the common
+/// variable-as-argument case (`f(state, count)` where `count` is a local) out of
+/// the call graph while still catching `f(state, handler)` where `handler` is a
+/// local free function passed by value.
+///
+/// Captures `function_item` (free / inherent / associated fns) and
+/// `function_signature_item` (trait method declarations). Callers pass the WHOLE
+/// file's root so the set is file-wide — a fn referenced in one chunk but defined
+/// in another still resolves.
+pub(crate) fn collect_rust_fn_names(
+    node: tree_sitter::Node,
+    source: &str,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        let kind = n.kind();
+        if kind == "function_item" || kind == "function_signature_item" {
+            if let Some(name_node) = n.child_by_field_name("name") {
+                names.insert(source[name_node.byte_range()].to_string());
+            }
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    names
+}
+
+/// Emit synthetic call edges for functions passed as bare fn-pointer / callback
+/// VALUES in argument position — the half of #1818 the serde-callback and
+/// macro-token-tree passes don't reach.
+///
+/// Target shapes (all invisible to the `call_expression function:` call query,
+/// because the function is a *value* not a callee):
+/// - `from_fn_with_state(touch_state, touch_idle_clock)` — axum middleware
+/// - `ctrlc::set_handler(on_sigterm)`
+/// - `items.iter().map(parse_line)`
+/// - `register(m::handler)` — scoped path argument
+///
+/// PRECISION (the whole problem): a bare `identifier` in argument position is
+/// USUALLY a variable, not a function. Emitting an edge for every identifier
+/// argument would flood the graph with variable-name noise. Two-tier rule:
+///   1. Bare `(identifier)` arg → emit ONLY if it's in `known_fns` (a function
+///      defined in the same file). Cheap, high-precision, intra-file only.
+///   2. `(scoped_identifier)` arg (`m::handler`) → emit the terminal segment
+///      UNCONDITIONALLY. A `::`-qualified path in value position is a strong
+///      function/const signal (variables are bare), and bare-last-segment
+///      resolution matches the rest of the call graph.
+/// The cross-file BARE-identifier case (`f(handler)` where `handler` is a `use`d
+/// free fn from another module) is the residual gap — it needs a query-time
+/// edge_kind filter (schema v30), out of scope here.
+///
+/// Also descends into `tuple_expression` and `array_expression` arguments
+/// (`register((a, b))`, `dispatch([handler_a, handler_b])`) applying the same
+/// two-tier rule to their elements.
+///
+/// Scoped to `node`'s subtree; callers pass the chunk node (whole-file path) or
+/// the range-covering node (standalone path). `line_offset` is subtracted
+/// (saturating, min 1) to convert absolute tree rows to chunk-relative 1-indexed
+/// lines; pass `0` for absolute line numbers. No-op for non-Rust languages.
+pub(crate) fn extract_fn_pointer_arg_edges(
+    node: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+) -> Vec<CallSite> {
+    let _span = tracing::debug_span!("extract_fn_pointer_arg_edges", %language).entered();
+
+    if language != Language::Rust {
+        return Vec::new();
+    }
+
+    let mut calls = Vec::new();
+    collect_fn_pointer_args(node, source, line_offset, known_fns, &mut calls);
+    calls
+}
+
+/// Recursive worker for [`extract_fn_pointer_arg_edges`]. Finds every
+/// `call_expression`, inspects its `arguments` node, and emits fn-pointer edges
+/// per the two-tier precision rule. Recurses through the whole subtree so calls
+/// nested in any position are reached.
+fn collect_fn_pointer_args(
+    node: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    out: &mut Vec<CallSite>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(args) = node.child_by_field_name("arguments") {
+            let mut cursor = args.walk();
+            for arg in args.named_children(&mut cursor) {
+                emit_fn_pointer_arg(arg, source, line_offset, known_fns, out);
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_fn_pointer_args(child, source, line_offset, known_fns, out);
+    }
+}
+
+/// Apply the two-tier fn-pointer rule to a single argument node.
+///
+/// - `(identifier)` → emit if in `known_fns` (intra-file function name).
+/// - `(scoped_identifier name: (identifier))` → emit terminal segment always.
+/// - `(tuple_expression …)` / `(array_expression …)` → recurse into elements.
+/// Other argument shapes (literals, real nested `call_expression`s, references,
+/// closures) are left alone: nested calls are handled by the outer recursion in
+/// [`collect_fn_pointer_args`], and the rest are not fn-pointer values.
+fn emit_fn_pointer_arg(
+    arg: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    out: &mut Vec<CallSite>,
+) {
+    match arg.kind() {
+        "identifier" => {
+            let name = source[arg.byte_range()].to_string();
+            if known_fns.contains(&name) && !should_skip_callee(&name) {
+                push_arg_edge(arg, name, line_offset, out);
+            }
+        }
+        "scoped_identifier" => {
+            // Terminal segment (`m::handler` → `handler`), matching the call
+            // graph's bare-last-segment resolution.
+            if let Some(name_node) = arg.child_by_field_name("name") {
+                let name = source[name_node.byte_range()].to_string();
+                if !should_skip_callee(&name) {
+                    push_arg_edge(name_node, name, line_offset, out);
+                }
+            }
+        }
+        "tuple_expression" | "array_expression" => {
+            let mut cursor = arg.walk();
+            for inner in arg.named_children(&mut cursor) {
+                emit_fn_pointer_arg(inner, source, line_offset, known_fns, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Push a [`CallSite`] for a fn-pointer argument, converting the node's absolute
+/// row to a chunk-relative 1-indexed line via `line_offset`.
+fn push_arg_edge(
+    node: tree_sitter::Node,
+    callee_name: String,
+    line_offset: u32,
+    out: &mut Vec<CallSite>,
+) {
+    let line_number = (node.start_position().row as u32 + 1)
+        .saturating_sub(line_offset)
+        .max(1);
+    out.push(CallSite {
+        callee_name,
+        line_number,
+    });
+}
+
 impl Parser {
     /// Extract function calls from a chunk's source code
     /// Returns call sites found within the given byte range of the source.
@@ -322,6 +491,22 @@ impl Parser {
                 &source,
                 language,
                 line_offset,
+            ));
+
+            // Fn-pointer / callback argument edges: `f(state, handler)`,
+            // `set_handler(on_sigterm)`, `.map(parse_line)`, `register(m::h)`.
+            // The function is a VALUE in argument position, invisible to the
+            // call query. Known-fn set is collected from the whole tree (the
+            // `source` slice) so an intra-file fn referenced inside this range
+            // but defined outside it still resolves. Deduped below against
+            // query-captured calls.
+            let known_fns = collect_rust_fn_names(root, &source);
+            calls.extend(extract_fn_pointer_arg_edges(
+                scope,
+                &source,
+                language,
+                line_offset,
+                &known_fns,
             ));
         }
 
@@ -573,6 +758,17 @@ impl Parser {
         let capture_names = chunk_query.capture_names();
         let name_idx = chunk_query.capture_index_for_name("name");
 
+        // File-wide Rust function-name set for the fn-pointer-argument precision
+        // filter (bare-identifier args emit an edge only if they name a function
+        // defined in this file). Computed once over the whole tree so a fn
+        // referenced in one chunk but defined in another still resolves. Empty
+        // for non-Rust languages (the pass is a no-op there).
+        let known_fns = if language == Language::Rust {
+            collect_rust_fn_names(tree.root_node(), &source)
+        } else {
+            std::collections::HashSet::new()
+        };
+
         while let Some(m) = matches.next() {
             // Find chunk node
             let func_node = m.captures.iter().find(|c| {
@@ -648,6 +844,14 @@ impl Parser {
             // them. This loop uses ABSOLUTE line numbers (the call query above
             // does not subtract line_start), so pass line_offset = 0.
             calls.extend(extract_macro_call_edges(node, &source, language, 0));
+
+            // Fn-pointer / callback argument edges: a function passed as a VALUE
+            // in argument position (`from_fn_with_state(state, touch_idle_clock)`,
+            // `set_handler(on_sigterm)`, `.map(parse_line)`). Same ABSOLUTE line
+            // convention as the macro pass → line_offset = 0.
+            calls.extend(extract_fn_pointer_arg_edges(
+                node, &source, language, 0, &known_fns,
+            ));
 
             // Deduplicate calls
             seen.clear();
@@ -1815,6 +2019,205 @@ struct Settings {
                 "container-level serde attr is a known limitation (left to the \
                  dead-code backstop); it must NOT be emitted by this pass, got: {:?}",
                 callees
+            );
+        }
+    }
+
+    /// Fn-pointer / callback ARGUMENT-position edges (#1818 second half):
+    /// functions passed as a VALUE into a call (`f(state, handler)`,
+    /// `set_handler(on_sigterm)`, `.map(parse_line)`, `register(m::handler)`).
+    mod fn_pointer_arg_tests {
+        use super::*;
+
+        /// Run the whole-file relationship path and collect the callees of the
+        /// named chunk (file-wide known-fn set — the production shape).
+        fn callees_of(content: &str, chunk_name: &str) -> Vec<String> {
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+            calls
+                .iter()
+                .find(|fc| fc.name == chunk_name)
+                .map(|fc| {
+                    fc.calls
+                        .iter()
+                        .map(|c| c.callee_name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+
+        /// axum-style `from_fn_with_state(state, handler)`: both `touch_state`
+        /// and `touch_idle_clock` are local free fns passed by value. Both must
+        /// surface as edges; the `state` ordinary variable must NOT.
+        #[test]
+        fn test_axum_state_handler_args() {
+            let content = r#"
+fn touch_state() {}
+fn touch_idle_clock() {}
+
+fn build() {
+    let state = make_state();
+    from_fn_with_state(state, touch_state, touch_idle_clock);
+}
+"#;
+            let callees = callees_of(content, "build");
+            assert!(
+                callees.contains(&"touch_state".to_string()),
+                "touch_state (fn-pointer arg) should emit an edge, got: {callees:?}"
+            );
+            assert!(
+                callees.contains(&"touch_idle_clock".to_string()),
+                "touch_idle_clock (fn-pointer arg) should emit an edge, got: {callees:?}"
+            );
+            // `state` is a local variable, not a function — precision pin.
+            assert!(
+                !callees.contains(&"state".to_string()),
+                "the `state` variable argument must NOT emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// `.map(parse_line)` — a free fn passed to an iterator adapter.
+        #[test]
+        fn test_map_function_arg() {
+            let content = r#"
+fn parse_line(s: &str) -> u32 { 0 }
+
+fn run(lines: Vec<&str>) {
+    let _: Vec<u32> = lines.iter().map(parse_line).collect();
+}
+"#;
+            let callees = callees_of(content, "run");
+            assert!(
+                callees.contains(&"parse_line".to_string()),
+                "parse_line passed to .map() should emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// `set_handler(on_sigterm)` — the ctrlc-handler shape (single fn arg).
+        #[test]
+        fn test_set_handler_arg() {
+            let content = r#"
+fn on_sigterm() {}
+
+fn install() {
+    set_handler(on_sigterm);
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                callees.contains(&"on_sigterm".to_string()),
+                "on_sigterm passed to set_handler should emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// A scoped path argument `m::handler` emits the terminal segment
+        /// UNCONDITIONALLY — no intra-file known-fn requirement, because a
+        /// `::`-qualified value is a strong function signal.
+        #[test]
+        fn test_scoped_path_arg() {
+            let content = r#"
+fn install() {
+    register(m::handler);
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                callees.contains(&"handler".to_string()),
+                "scoped `m::handler` arg should emit terminal segment `handler`, got: {callees:?}"
+            );
+            // The leading path segment `m` must not be emitted.
+            assert!(
+                !callees.contains(&"m".to_string()),
+                "leading path segment `m` must not be emitted, got: {callees:?}"
+            );
+        }
+
+        /// PRECISION PIN: a bare identifier argument that is NOT a known
+        /// function (an ordinary variable / value) must not produce an edge.
+        /// This is the whole-graph-noise guard.
+        #[test]
+        fn test_variable_argument_not_emitted() {
+            let content = r#"
+fn run() {
+    let count = 5;
+    let name = compute();
+    do_thing(count, name);
+}
+"#;
+            let callees = callees_of(content, "run");
+            assert!(
+                !callees.contains(&"count".to_string()),
+                "`count` variable argument must NOT emit an edge, got: {callees:?}"
+            );
+            assert!(
+                !callees.contains(&"name".to_string()),
+                "`name` variable argument must NOT emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// REGRESSION: a plain call `do_work()` still emits exactly ONE edge —
+        /// the fn-pointer pass must not double-count a real callee.
+        #[test]
+        fn test_plain_call_emits_exactly_once() {
+            let parser = Parser::new().unwrap();
+            let content = "fn do_work() {}\nfn caller() { do_work(); }\n";
+            let calls = parser.extract_calls(content, Language::Rust, 0, content.len(), 0);
+            let n = calls.iter().filter(|c| c.callee_name == "do_work").count();
+            assert_eq!(
+                n, 1,
+                "plain call must emit exactly one edge, got {n}: {calls:?}"
+            );
+        }
+
+        /// A fn passed in a tuple/array argument is reached and obeys the same
+        /// two-tier rule (known bare fn emits, scoped emits, variable does not).
+        #[test]
+        fn test_tuple_and_array_args() {
+            let content = r#"
+fn handler_a() {}
+fn handler_b() {}
+
+fn install() {
+    let v = 1;
+    register((handler_a, v));
+    dispatch([handler_a, handler_b]);
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                callees.contains(&"handler_a".to_string()),
+                "handler_a in tuple/array arg should emit, got: {callees:?}"
+            );
+            assert!(
+                callees.contains(&"handler_b".to_string()),
+                "handler_b in array arg should emit, got: {callees:?}"
+            );
+            assert!(
+                !callees.contains(&"v".to_string()),
+                "the `v` variable in a tuple arg must NOT emit, got: {callees:?}"
+            );
+        }
+
+        /// Documented limitation: a CROSS-FILE bare fn-pointer arg (the fn is
+        /// `use`d from another module, not defined in this file) is NOT emitted
+        /// — the intra-file known-fn filter can't see it. This is the v30-era
+        /// residual. Pins the boundary so a future query-time edge_kind filter
+        /// that closes it is noticed.
+        #[test]
+        fn test_cross_file_bare_arg_not_emitted() {
+            // `imported_handler` is referenced but never defined in this file,
+            // so it isn't in the known-fn set → no edge (the gap by design).
+            let content = r#"
+fn install() {
+    set_handler(imported_handler);
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                !callees.contains(&"imported_handler".to_string()),
+                "cross-file bare fn-pointer arg is the known v30 residual; it must \
+                 NOT be emitted by the intra-file filter, got: {callees:?}"
             );
         }
     }

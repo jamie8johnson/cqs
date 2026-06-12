@@ -192,6 +192,54 @@ fn default_ref_weight() -> f32 {{ 1.0 }}
     );
 }
 
+/// End-to-end (#1818 second half): a function passed as a bare fn-pointer
+/// VALUE in argument position — the `touch_idle_clock` shape from
+/// `src/serve/mod.rs` — resolves through the store-level `get_callers_full`.
+/// Pre-fix this was a live `cqs dead` false positive: the only reference to
+/// `touch_idle_clock` was as an argument to `from_fn_with_state`, invisible to
+/// the call query.
+#[test]
+fn test_get_callers_full_resolves_fn_pointer_arg() {
+    use cqs::parser::Parser;
+    use std::io::Write;
+
+    let mut file = tempfile::Builder::new()
+        .suffix(".rs")
+        .tempfile()
+        .expect("temp file");
+    write!(
+        file,
+        r#"
+fn touch_state() {{}}
+fn touch_idle_clock() {{}}
+
+fn build_middleware() {{
+    let state = make_state();
+    from_fn_with_state(state, touch_state, touch_idle_clock);
+}}
+"#
+    )
+    .expect("write temp file");
+    file.flush().expect("flush");
+
+    let parser = Parser::new().expect("parser");
+    let (calls, _types) = parser
+        .parse_file_relationships(file.path())
+        .expect("parse relationships");
+
+    let store = TestStore::new();
+    store
+        .upsert_function_calls(std::path::Path::new("serve.rs"), &calls)
+        .unwrap();
+
+    let callers = store.get_callers_full("touch_idle_clock").unwrap();
+    let names: Vec<_> = callers.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"build_middleware"),
+        "fn-pointer arg must list the enclosing function as a caller, got: {names:?}"
+    );
+}
+
 #[test]
 fn test_get_callers_full_not_found() {
     let store = TestStore::new();

@@ -637,6 +637,17 @@ impl Parser {
         let capture_names = chunk_query.capture_names();
         let name_idx = chunk_query.capture_index_for_name("name");
 
+        // File-wide Rust function-name set for the fn-pointer-argument precision
+        // filter (bare-identifier args emit an edge only when they name a
+        // function defined in this file). Computed once over the whole tree so a
+        // fn referenced in one chunk but defined in another still resolves. Empty
+        // for non-Rust languages (the pass no-ops there).
+        let known_fns = if language == Language::Rust {
+            calls::collect_rust_fn_names(tree.root_node(), &source)
+        } else {
+            std::collections::HashSet::new()
+        };
+
         while let Some(m) = matches2.next() {
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
@@ -716,6 +727,15 @@ impl Parser {
             // 0. The relative-line conversion for `chunk_calls` below applies to
             // these edges identically.
             calls.extend(calls::extract_macro_call_edges(node, &source, language, 0));
+
+            // Fn-pointer / callback argument edges: a function passed as a VALUE
+            // in argument position (`from_fn_with_state(state, touch_idle_clock)`,
+            // `set_handler(on_sigterm)`, `.map(parse_line)`, `register(m::h)`).
+            // Invisible to the call query (the fn is a value, not the callee).
+            // ABSOLUTE line numbers like the macro pass → line_offset = 0.
+            calls.extend(calls::extract_fn_pointer_arg_edges(
+                node, &source, language, 0, &known_fns,
+            ));
 
             seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
