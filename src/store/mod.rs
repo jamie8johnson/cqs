@@ -167,6 +167,9 @@ pub use calls::DeadFunction;
 /// Confidence level for dead code detection.
 pub use calls::DeadConfidence;
 
+/// Heuristic-caller breakdown for a `low-confidence-live` callee.
+pub use calls::LowConfidenceLiveInfo;
+
 /// Detailed function call statistics (function_calls table).
 pub use calls::FunctionCallStats;
 

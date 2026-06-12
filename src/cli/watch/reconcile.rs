@@ -104,6 +104,18 @@ fn process_batch(
         }
     };
 
+    // PARSER_VERSION drift: chunks extracted by an older parser must re-parse
+    // even when the disk fingerprint is unchanged. Same hole the index
+    // pipeline's pre-filter closes. On query failure we degrade to
+    // fingerprint-only (drift simply isn't healed this pass).
+    let drifted = match store.origins_with_parser_drift(&origins_for_sql, cqs::parser_version()) {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::warn!(error = %e, "Reconcile: parser-version drift lookup failed");
+            std::collections::HashSet::new()
+        }
+    };
+
     for rel in batch {
         if pending_files.len() >= max_pending {
             *skipped_at_cap += 1;
@@ -120,6 +132,16 @@ fn process_batch(
                 continue;
             }
         };
+        // Version drift short-circuits the fingerprint comparison: queue the
+        // file regardless of whether its bytes moved.
+        if drifted.contains(origin.as_ref()) {
+            let normalized = normalize_pending_path(rel);
+            if pending_files.insert(normalized) {
+                *modified += 1;
+                *queued += 1;
+            }
+            continue;
+        }
         match indexed.get(origin.as_ref()) {
             None => {
                 let normalized = normalize_pending_path(rel);
@@ -721,7 +743,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
-            parser_version: 0,
+            parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
         };
 
         let store = open_store(&cqs_dir);
@@ -965,7 +987,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
-            parser_version: 0,
+            parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
         };
 
         let store = open_store(&cqs_dir);
@@ -1132,7 +1154,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
-            parser_version: 0,
+            parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
         };
 
         let store = open_store(&cqs_dir);
@@ -1258,7 +1280,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
-            parser_version: 0,
+            parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
         };
 
         let store = open_store(&cqs_dir);

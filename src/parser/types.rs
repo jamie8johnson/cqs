@@ -97,9 +97,52 @@ pub enum CallEdgeKind {
     /// Bare function name passed as a fn-pointer / callback VALUE in argument
     /// position — heuristic, intra-file precision filter only.
     FnPointer,
+    /// A Markdown cross-reference / link to a symbol — prose mention, not an
+    /// invocation. Lowest evidentiary weight: a doc mention neither proves a
+    /// function live (it stays a dead candidate) nor is it a heuristic caller
+    /// (it cannot promote a function to `low-confidence-live`). Before this
+    /// kind, markdown reference edges were mis-tagged `Call` and poisoned both
+    /// the dead-code collapse rules and the call-graph collapse.
+    DocReference,
+}
+
+/// Trust rank for a call-graph edge kind — lower is stronger evidence. Used by
+/// the call-graph and dead-code MIN-collapse rules to pick the single most
+/// authoritative kind among many edges to the same callee. Ordering is
+/// EXPLICIT, never lexical: the old code collapsed by `MIN(edge_kind)` (string
+/// alphabetical), which happened to rank `call` first only because `'c'` sorts
+/// before `'f'/'m'/'s'` — a coincidence that [`CallEdgeKind::DocReference`]
+/// ("doc_reference", `'d'`) breaks (it would sort second, ahead of the
+/// heuristics, which is wrong). Single-sourced here and projected into SQL via
+/// [`CallEdgeKind::rank_case_sql`].
+///
+/// Rank order, best (most trusted) to worst:
+/// 0 `call` — syntactic call expression, ground truth.
+/// 1 `serde_callback` — explicit attribute grammar, trusted.
+/// 2 `macro_heuristic` — `ident(`-shape inside an opaque macro token-tree.
+/// 3 `fn_pointer` — bare name in argument position, intra-file precision only.
+/// 4 `doc_reference` — prose mention, weakest of all.
+const fn call_edge_trust_rank(kind: CallEdgeKind) -> u8 {
+    match kind {
+        CallEdgeKind::Call => 0,
+        CallEdgeKind::SerdeCallback => 1,
+        CallEdgeKind::MacroHeuristic => 2,
+        CallEdgeKind::FnPointer => 3,
+        CallEdgeKind::DocReference => 4,
+    }
 }
 
 impl CallEdgeKind {
+    /// Every variant, in trust-rank order. Single source for SQL-list
+    /// generators so a new kind cannot drift out of sync with the queries.
+    pub const ALL: [CallEdgeKind; 5] = [
+        CallEdgeKind::Call,
+        CallEdgeKind::SerdeCallback,
+        CallEdgeKind::MacroHeuristic,
+        CallEdgeKind::FnPointer,
+        CallEdgeKind::DocReference,
+    ];
+
     /// String representation for database storage and JSON surfaces.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -107,6 +150,7 @@ impl CallEdgeKind {
             CallEdgeKind::SerdeCallback => "serde_callback",
             CallEdgeKind::MacroHeuristic => "macro_heuristic",
             CallEdgeKind::FnPointer => "fn_pointer",
+            CallEdgeKind::DocReference => "doc_reference",
         }
     }
 
@@ -119,15 +163,78 @@ impl CallEdgeKind {
             "serde_callback" => CallEdgeKind::SerdeCallback,
             "macro_heuristic" => CallEdgeKind::MacroHeuristic,
             "fn_pointer" => CallEdgeKind::FnPointer,
+            "doc_reference" => CallEdgeKind::DocReference,
             _ => CallEdgeKind::Call,
         }
     }
 
-    /// Whether this edge is a heuristic (non-syntactic) kind. Used by the
+    /// Whether this edge is a heuristic (non-syntactic) caller. Used by the
     /// `dead` `low-confidence-live` verdict: a function whose only callers are
-    /// heuristic edges may be a false-positive live.
+    /// heuristic edges may be a false-positive live. EXACTLY `macro_heuristic`
+    /// and `fn_pointer` — serde callbacks are trusted and doc references are
+    /// inert (prose, not a caller at all).
     pub fn is_heuristic(&self) -> bool {
         matches!(self, CallEdgeKind::MacroHeuristic | CallEdgeKind::FnPointer)
+    }
+
+    /// Whether this edge proves the callee genuinely live — a syntactic call or
+    /// a trusted serde callback. A function with at least one trusted edge is
+    /// never dead and never `low-confidence-live`. Heuristic and doc-reference
+    /// edges do NOT count: doc references are prose, so a doc mention cannot
+    /// disqualify a function from `low-confidence-live`.
+    pub fn is_trusted(&self) -> bool {
+        matches!(self, CallEdgeKind::Call | CallEdgeKind::SerdeCallback)
+    }
+
+    /// Explicit trust rank — lower is stronger evidence. See
+    /// [`call_edge_trust_rank`] for the ordering rationale.
+    pub fn trust_rank(&self) -> u8 {
+        call_edge_trust_rank(*self)
+    }
+
+    /// Comma-separated quoted SQL string list of the `is_heuristic()` kinds,
+    /// e.g. `'macro_heuristic', 'fn_pointer'`. Generated from the enum so the
+    /// query kind-set is single-sourced — adding a heuristic variant updates
+    /// every consumer automatically.
+    pub fn heuristic_kinds_sql() -> String {
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_heuristic())
+            .map(|k| format!("'{}'", k.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Comma-separated quoted SQL string list of the `is_trusted()` kinds,
+    /// e.g. `'call', 'serde_callback'`. Generated from the enum (single source).
+    pub fn trusted_kinds_sql() -> String {
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_trusted())
+            .map(|k| format!("'{}'", k.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// A SQL `CASE` expression mapping `edge_kind` text to its integer
+    /// [`trust_rank`](Self::trust_rank). Used in `MIN(...)`-collapse queries in
+    /// place of the old lexical `MIN(edge_kind)`. Single-sourced from the enum
+    /// so the rank order can never drift from [`call_edge_trust_rank`]. The
+    /// `col` argument is the qualified column name (e.g. `fc.edge_kind`); it is
+    /// caller-controlled SQL-identifier text, never user input.
+    pub fn rank_case_sql(col: &str) -> String {
+        let mut s = String::from("CASE ");
+        for kind in Self::ALL {
+            s.push_str(&format!(
+                "WHEN {col} = '{}' THEN {} ",
+                kind.as_str(),
+                kind.trust_rank()
+            ));
+        }
+        // Unknown / pre-v30 rows degrade to `call` (rank 0) — the same safe
+        // default `from_str_or_default` uses on the read side.
+        s.push_str(&format!("ELSE {} END", CallEdgeKind::Call.trust_rank()));
+        s
     }
 }
 

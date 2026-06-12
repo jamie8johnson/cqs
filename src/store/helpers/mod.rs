@@ -47,7 +47,7 @@ pub(crate) use scoring::score_name_match_ascii;
 pub use scoring::{score_name_match, score_name_match_pre_lower};
 
 // SQL helpers (crate-internal)
-pub(crate) use sql::make_placeholders;
+pub(crate) use sql::{make_placeholders, make_placeholders_offset};
 
 // Embedding serialization
 pub use embeddings::{bytes_to_embedding, embedding_slice, embedding_to_bytes};

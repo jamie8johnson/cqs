@@ -17,6 +17,14 @@ pub mod markdown;
 pub mod types;
 
 pub use chunk::{canonical_hash_fallback, collapse_whitespace};
+
+/// The current parser-logic version stamped onto every chunk this build
+/// extracts (`chunk::PARSER_VERSION`). Re-exported so the binary crate's
+/// staleness pre-filters can ask the store which origins carry an older
+/// stamp without reaching into the `pub(crate)` `chunk` module.
+pub fn parser_version() -> u32 {
+    chunk::PARSER_VERSION
+}
 pub use types::{
     CallEdgeKind, CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language,
     ParserError, SignatureStyle, TypeEdgeKind, TypeRef,

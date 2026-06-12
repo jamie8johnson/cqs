@@ -978,6 +978,59 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Report which of `origins` have at least one file chunk stamped with a
+    /// `parser_version` other than `current` — i.e. the chunks were extracted
+    /// by an older parser and need re-extraction even though their disk
+    /// fingerprint is unchanged.
+    ///
+    /// The staleness pre-filters (`filter_stale_files` and the watch reconcile
+    /// `process_batch`) select by fingerprint only, so a `PARSER_VERSION` bump
+    /// would otherwise heal nothing without `--force`: an unchanged file keeps
+    /// its stale chunks (and stale derived data — call edges, edge_kind, doc
+    /// enrichment) until its bytes change. Treating version drift as stale
+    /// closes that hole — a reindex re-parses drifted files and the UPSERT
+    /// rewrites the rows (`OR parser_version != excluded.parser_version`).
+    ///
+    /// Only `source_type = 'file'` chunks are considered (notes/registry rows
+    /// carry no parser stamp). An origin absent from the result either has no
+    /// indexed chunks or all of them already match `current`.
+    pub fn origins_with_parser_drift(
+        &self,
+        origins: &[&str],
+        current: u32,
+    ) -> Result<HashSet<String>, StoreError> {
+        let _span =
+            tracing::debug_span!("origins_with_parser_drift", count = origins.len()).entered();
+        if origins.is_empty() {
+            return Ok(HashSet::new());
+        }
+        self.rt.block_on(async {
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
+            let mut drifted: HashSet<String> = HashSet::new();
+            for batch in origins.chunks(BATCH_SIZE) {
+                // `make_placeholders` emits NUMBERED placeholders (`?1, ?2, …`),
+                // so `current` takes `?1` and the origins start at `?2`. Mixing
+                // a bare `?` with numbered ones mis-binds under SQLite.
+                let placeholders = crate::store::helpers::make_placeholders_offset(batch.len(), 2);
+                let sql = format!(
+                    "SELECT DISTINCT origin FROM chunks \
+                     WHERE source_type = 'file' AND parser_version != ?1 \
+                     AND origin IN ({})",
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str()));
+                query = query.bind(i64::from(current));
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
+                for (origin,) in query.fetch_all(&self.pool).await? {
+                    drifted.insert(origin);
+                }
+            }
+            Ok(drifted)
+        })
+    }
+
     /// Check if specific origins are stale (fingerprint diverged on disk).
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).

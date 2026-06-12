@@ -8,7 +8,7 @@ use sqlx::Row;
 
 use super::{
     build_entry_point_names, build_trait_method_names, DeadConfidence, DeadFunction, LightChunk,
-    TRAIT_IMPL_RE,
+    LowConfidenceLiveInfo, TRAIT_IMPL_RE,
 };
 use crate::parser::{ChunkType, Language};
 use crate::store::helpers::{clamp_line_number, ChunkRow, ChunkSummary, StoreError};
@@ -97,31 +97,65 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Find callee names whose call-graph edges are ALL heuristic kinds
-    /// (`macro_heuristic`, `fn_pointer`) — i.e. they have callers, but every
-    /// edge reaching them is a low-confidence heuristic, never a syntactic
-    /// `call`. These are the `low-confidence-live` verdict population for
-    /// `cqs dead`: not zero-caller (so `find_dead_code` skips them), but their
-    /// liveness rests entirely on heuristics that could be false positives.
+    /// Find callee names reached by at least one heuristic edge
+    /// (`macro_heuristic`, `fn_pointer`) and NO trusted edge (`call`,
+    /// `serde_callback`) — i.e. their entire liveness rests on heuristics that
+    /// could be false positives. These are the `low-confidence-live` verdict
+    /// population for `cqs dead`.
     ///
-    /// Consumes §1's `function_calls.edge_kind` column. A callee qualifies when
-    /// `MIN(edge_kind) > 'call'` for the group — `'call'` sorts before every
-    /// heuristic label (c < f/m/s), so a callee with even one syntactic edge is
-    /// excluded.
+    /// Consumes §1's `function_calls.edge_kind` column with the kind-sets
+    /// generated from [`CallEdgeKind`] (single source — no lexical ordering).
+    /// A callee qualifies when:
+    /// * it has ≥1 edge in the heuristic set, AND
+    /// * it has zero edges in the trusted set.
+    ///
+    /// `doc_reference` edges are inert here: a prose mention neither qualifies
+    /// (not heuristic) nor disqualifies (not trusted) a callee, so a function
+    /// reached only by a doc reference plus a macro edge still surfaces.
+    ///
+    /// The dead-candidate query (`fetch_uncalled_functions`) selects the same
+    /// heuristic-only population — it gates on absence of a TRUSTED edge, not
+    /// absence of ALL edges — so this set relabels those candidates to
+    /// `low-confidence-live`. The kind-sets are generated from `CallEdgeKind`
+    /// rather than a lexical comparison, so a new kind cannot drift out of sync.
     pub fn find_low_confidence_live_names(
         &self,
-    ) -> Result<std::collections::HashSet<String>, StoreError> {
+    ) -> Result<std::collections::HashMap<String, LowConfidenceLiveInfo>, StoreError> {
         let _span = tracing::info_span!("find_low_confidence_live_names").entered();
+        let heuristic = crate::parser::CallEdgeKind::heuristic_kinds_sql();
+        let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
+        // Per (callee, heuristic kind) count, restricted to callees with NO
+        // trusted edge. Grouping by kind too lets the verdict reason name the
+        // heuristic kinds and their counts. The outer trusted-edge exclusion is
+        // applied per callee via the windowed SUM in the HAVING-style subquery.
+        let sql = format!(
+            "SELECT callee_name, edge_kind, COUNT(*) AS n
+             FROM function_calls
+             WHERE edge_kind IN ({heuristic})
+               AND callee_name IN (
+                   SELECT callee_name FROM function_calls
+                   GROUP BY callee_name
+                   HAVING SUM(CASE WHEN edge_kind IN ({trusted}) THEN 1 ELSE 0 END) = 0
+               )
+             GROUP BY callee_name, edge_kind"
+        );
         self.rt.block_on(async {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT callee_name
-                 FROM function_calls
-                 GROUP BY callee_name
-                 HAVING MIN(edge_kind) > 'call'",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            Ok(rows.into_iter().map(|(n,)| n).collect())
+            let rows: Vec<(String, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .fetch_all(&self.pool)
+                    .await?;
+            let mut out: std::collections::HashMap<String, LowConfidenceLiveInfo> =
+                std::collections::HashMap::new();
+            for (name, kind, n) in rows {
+                let info = out.entry(name).or_default();
+                info.total += n.max(0) as u64;
+                info.kind_counts.push((kind, n.max(0) as u64));
+            }
+            // Stable kind order for deterministic reason strings.
+            for info in out.values_mut() {
+                info.kind_counts.sort();
+            }
+            Ok(out)
         })
     }
 
@@ -154,6 +188,17 @@ impl<Mode> Store<Mode> {
                 AND c.origin NOT LIKE '%.scss'
                 AND c.origin NOT LIKE '%.sass'
                 AND c.origin NOT LIKE '%.less'";
+        // Dead-candidate population: a function qualifies when NO TRUSTED edge
+        // (`call`, `serde_callback`) reaches it. That covers two cases that
+        // both warrant scrutiny in `cqs dead`:
+        //   * zero callers → verdict `dead`
+        //   * only heuristic / doc-reference callers → relabelled
+        //     `low-confidence-live` by the classifier
+        // The trusted kind-set is generated from `CallEdgeKind` (single source).
+        // Gating on a trusted edge (not on any edge at all) is what lets the
+        // heuristic-only population reach the candidate set and be relabelled —
+        // a NOT-EXISTS-any-edge gate would leave that verdict unreachable.
+        let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
         let sql = format!(
             "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
                     c.line_start, c.line_end, c.parent_id
@@ -161,7 +206,9 @@ impl<Mode> Store<Mode> {
              WHERE c.chunk_type IN ({callable})
                AND c.chunk_type != 'property'
                {doc_path_excludes}
-               AND NOT EXISTS (SELECT 1 FROM function_calls fc WHERE fc.callee_name = c.name LIMIT 1)
+               AND NOT EXISTS (SELECT 1 FROM function_calls fc \
+                               WHERE fc.callee_name = c.name \
+                                 AND fc.edge_kind IN ({trusted}) LIMIT 1)
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
         );

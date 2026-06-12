@@ -73,6 +73,7 @@ pub(crate) use graph::cmd_impact_diff;
 pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
 pub(crate) use graph::parse_edge_kind;
+pub(crate) use graph::EDGE_KIND_CROSS_PROJECT_ERR;
 // graph cores + arg types (daemon dispatch handlers call these). The
 // `*CoreOutput` types are returned by the cores and serialized via
 // `serde_json::to_value` / `to_value()` without being named at the call

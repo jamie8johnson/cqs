@@ -16,25 +16,30 @@ impl<Mode> Store<Mode> {
         tracing::debug!(callee_name, "querying callers from full call graph");
 
         self.rt.block_on(async {
-            // MIN(edge_kind) collapses duplicate (file, caller, line) edges to a
-            // single row while preferring the lexically-smallest kind. 'call'
-            // sorts before the heuristic kinds (c < f/m/s), so a caller reached
-            // by BOTH a syntactic call and a heuristic edge reports the
-            // ground-truth 'call' — the safe, highest-confidence label.
-            let rows: Vec<(String, String, i64, String)> = sqlx::query_as(
-                "SELECT file, caller_name, caller_line, MIN(edge_kind)
+            // Collapse duplicate (file, caller, line) edges to a single row,
+            // keeping the most-trusted kind. `MIN(rank_case)` over the explicit
+            // trust rank (call < serde < macro < fn-pointer < doc-reference)
+            // replaces the old lexical `MIN(edge_kind)` — alphabetical ordering
+            // was a coincidence and `doc_reference` ('d') breaks it. SQLite's
+            // bare-column rule lets the sibling `edge_kind` take its value from
+            // the same min-rank row, so we read the kind and discard the rank.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
+                "SELECT file, caller_name, caller_line, edge_kind, MIN({rank_case})
                  FROM function_calls
                  WHERE callee_name = ?1
                  GROUP BY file, caller_name, caller_line
-                 ORDER BY file, caller_line",
-            )
-            .bind(callee_name)
-            .fetch_all(&self.pool)
-            .await?;
+                 ORDER BY file, caller_line"
+            );
+            let rows: Vec<(String, String, i64, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(callee_name)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             let callers: Vec<CallerInfo> = rows
                 .into_iter()
-                .map(|(file, name, line, kind)| CallerInfo {
+                .map(|(file, name, line, kind, _rank)| CallerInfo {
                     file: PathBuf::from(file),
                     name,
                     line: clamp_line_number(line),
@@ -57,23 +62,27 @@ impl<Mode> Store<Mode> {
     ) -> Result<Vec<CalleeInfo>, StoreError> {
         let _span = tracing::debug_span!("get_callees_full", function = %caller_name).entered();
         self.rt.block_on(async {
-            // MIN(edge_kind) per (callee, line) — same ground-truth-wins
-            // collapse as get_callers_full.
-            let rows: Vec<(String, i64, String)> = sqlx::query_as(
-                "SELECT callee_name, call_line, MIN(edge_kind)
+            // MIN over the explicit trust rank per (callee, line) — same
+            // most-trusted-wins collapse as get_callers_full, replacing the old
+            // lexical `MIN(edge_kind)` that `doc_reference` would break.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
+                "SELECT callee_name, call_line, edge_kind, MIN({rank_case})
                  FROM function_calls
                  WHERE caller_name = ?1 AND (?2 IS NULL OR file = ?2)
                  GROUP BY callee_name, call_line
-                 ORDER BY call_line",
-            )
-            .bind(caller_name)
-            .bind(file)
-            .fetch_all(&self.pool)
-            .await?;
+                 ORDER BY call_line"
+            );
+            let rows: Vec<(String, i64, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(caller_name)
+                    .bind(file)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             Ok(rows
                 .into_iter()
-                .map(|(name, line, kind)| CalleeInfo {
+                .map(|(name, line, kind, _rank)| CalleeInfo {
                     name,
                     line: clamp_line_number(line),
                     edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
@@ -273,15 +282,19 @@ impl<Mode> Store<Mode> {
             // on large name sets.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
+            // MIN over the explicit trust rank, with `edge_kind` taking its
+            // value from the same min-rank row (SQLite bare-column rule). Same
+            // most-trusted-wins collapse as `get_callers_full`.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             for batch in callee_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT callee_name, file, caller_name, caller_line, MIN(edge_kind)
+                    "SELECT callee_name, file, caller_name, caller_line, edge_kind, MIN({})
                      FROM function_calls
                      WHERE callee_name IN ({})
                      GROUP BY callee_name, file, caller_name, caller_line
                      ORDER BY callee_name, file, caller_line",
-                    placeholders
+                    rank_case, placeholders
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {

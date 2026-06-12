@@ -21,7 +21,7 @@ use crate::cli::args::{
 use crate::cli::commands::{
     callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
     parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs,
-    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs, EDGE_KIND_CROSS_PROJECT_ERR,
 };
 use cqs::parser::CallEdgeKind;
 
@@ -109,6 +109,9 @@ pub(in crate::cli::batch) fn dispatch_callers(
     )
     .entered();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -158,6 +161,9 @@ pub(in crate::cli::batch) fn dispatch_callees(
     )
     .entered();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -621,6 +627,43 @@ mod tests {
 
             assert_eq!(daemon, core, "CLI==daemon parity for edge_kind={kind:?}");
         }
+    }
+
+    /// `--edge-kind` + `--cross-project` is an honest refusal on the daemon
+    /// surface too — the cross-project path discards edge kinds. Both
+    /// `dispatch_callers` and `dispatch_callees` error with the shared message;
+    /// the parity assertion pins that the CLI constant and the daemon error
+    /// string are the same text on both commands.
+    #[test]
+    fn dispatch_edge_kind_with_cross_project_is_refused() {
+        let (_dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+
+        let callers_args = CallersArgs {
+            name: "callee_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: Some("call".to_string()),
+        };
+        let callers_err = dispatch_callers(&view, &callers_args)
+            .expect_err("edge-kind + cross-project must be refused")
+            .to_string();
+        assert_eq!(callers_err, EDGE_KIND_CROSS_PROJECT_ERR);
+
+        let callees_args = CallersArgs {
+            name: "caller_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: Some("call".to_string()),
+        };
+        let callees_err = dispatch_callees(&view, &callees_args)
+            .expect_err("edge-kind + cross-project must be refused")
+            .to_string();
+        assert_eq!(callees_err, EDGE_KIND_CROSS_PROJECT_ERR);
+
+        // Parity: the same constant the CLI bails with (cmd_callers /
+        // cmd_callees both `bail!(EDGE_KIND_CROSS_PROJECT_ERR)`).
+        assert_eq!(callers_err, callees_err);
     }
 
     #[test]

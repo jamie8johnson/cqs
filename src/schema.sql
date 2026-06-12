@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS function_calls (
     caller_line INTEGER NOT NULL, -- line where function starts
     callee_name TEXT NOT NULL,    -- name of the called function
     call_line INTEGER NOT NULL,   -- line where call occurs
-    edge_kind TEXT NOT NULL DEFAULT 'call'  -- provenance: call|serde_callback|macro_heuristic|fn_pointer (v30)
+    edge_kind TEXT NOT NULL DEFAULT 'call'  -- provenance: call|serde_callback|macro_heuristic|fn_pointer|doc_reference (v30)
 );
 CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
 CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);

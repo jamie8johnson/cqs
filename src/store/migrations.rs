@@ -1178,20 +1178,24 @@ async fn migrate_v28_to_v29(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// v29 → v30: add `function_calls.edge_kind` column classifying call-graph
 /// edge provenance.
 ///
-/// The call-graph extractor emits four edge kinds with very different
+/// The call-graph extractor emits several edge kinds with very different
 /// evidentiary weight: syntactic `call_expression` (`call`, ground truth),
 /// serde string-callback attributes (`serde_callback`), Rust macro token-tree
-/// heuristics (`macro_heuristic`), and bare fn-pointer arguments
-/// (`fn_pointer`). Before this column the four flatten into indistinguishable
-/// rows, so a consuming agent cannot weight a direct call differently from a
-/// heuristic match. Mirrors the `type_edges.edge_kind` precedent.
+/// heuristics (`macro_heuristic`), bare fn-pointer arguments (`fn_pointer`),
+/// and markdown cross-references (`doc_reference`). Before this column they
+/// flatten into indistinguishable rows, so a consuming agent cannot weight a
+/// direct call differently from a heuristic or a prose mention. Mirrors the
+/// `type_edges.edge_kind` precedent.
 ///
 /// Additive `ALTER TABLE ADD COLUMN` with a `'call'` default. Existing rows
 /// take `'call'`, which is correct for the syntactic majority but WRONG for
-/// the pre-existing serde/macro/fn-pointer edges — those re-extract with the
-/// right kind on the next reindex (PARSER_VERSION is bumped 5→6 alongside this
-/// migration so a `cqs index` re-tags them). Pre-reindex, those edges read as
-/// `'call'`; the surfaces document the absence ⇒ `call` convention.
+/// the pre-existing serde/macro/fn-pointer/doc-reference edges — those
+/// re-extract with the right kind on the next reindex (PARSER_VERSION is
+/// bumped 5→6 alongside this migration). The staleness pre-filters treat
+/// PARSER_VERSION drift as stale (see `origins_with_parser_drift`), so a plain
+/// `cqs index` re-parses every drifted file and re-tags its edges — no
+/// `--force` needed. Pre-reindex, those edges read as `'call'`; the surfaces
+/// document the absence ⇒ `call` convention.
 async fn migrate_v29_to_v30(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     let _span = tracing::info_span!("migrate_v29_to_v30").entered();
 
@@ -1201,8 +1205,10 @@ async fn migrate_v29_to_v30(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
     tracing::info!(
         "Migrated to v30: function_calls.edge_kind column (default 'call'). \
-         Pre-v30 serde/macro/fn-pointer edges read as 'call' until the next \
-         reindex re-tags them (PARSER_VERSION bumped 5→6)."
+         Pre-v30 serde/macro/fn-pointer/doc-reference edges read as 'call' \
+         until the next reindex re-tags them; PARSER_VERSION drift (bumped \
+         5→6) makes drifted files stale so a plain reindex re-parses them \
+         (no --force needed)."
     );
     Ok(())
 }

@@ -30,12 +30,13 @@ pub(crate) enum DeadVerdict {
     /// Origin under `tests/` or enclosing `#[cfg(test)]` module — a test
     /// fixture, not product code.
     TestOnly,
-    /// Has callers, but every edge reaching it is a heuristic kind
-    /// (`macro_heuristic` / `fn_pointer`) — liveness rests on heuristics that
-    /// may be false positives. Consumes §1's `edge_kind` column.
+    /// No trusted caller (`call` / `serde_callback`), but ≥1 heuristic edge
+    /// (`macro_heuristic` / `fn_pointer`) reaches it — liveness rests on
+    /// heuristics that may be false positives. Doc-reference edges are inert
+    /// (a prose mention does not disqualify). Consumes §1's `edge_kind` column.
     LowConfidenceLive,
-    /// Language/extension in a known static call-graph gap (`.js` served
-    /// assets wired from HTML, Python runtime-invoked dunders).
+    /// Language/extension in a known static call-graph gap (served-asset `.js`
+    /// wired from HTML, Python runtime-invoked dunders).
     KnownGap,
     /// None of the above — the genuinely-dead residue.
     Dead,
@@ -69,34 +70,65 @@ impl DeadVerdict {
     }
 }
 
-/// Static known-gap table: (language/extension predicate, reason). Each row
-/// states a documented call-graph gap where "no callers" is a known
-/// false-positive, not genuine death. The classifier keys on the chunk's
-/// origin extension and language.
-///
-/// Rows:
-/// - `.js` served assets: event handlers are wired from HTML (`onclick="..."`,
-///   `addEventListener`) which the JS call-graph walker doesn't resolve to an
-///   edge, so served-asset handlers look uncalled.
-/// - Python dunder protocol methods (`__aenter__`, `__exit__`, `__iter__`, …):
-///   invoked by the runtime (context-manager / iterator / async protocols),
-///   never by a syntactic call, so they show zero callers.
+/// One row of the static known-gap table: a predicate over the dead entry and
+/// the reason string to attach when it matches. Each row states a documented
+/// call-graph gap where "no callers" is a known false-positive, not genuine
+/// death.
+struct KnownGapRule {
+    /// Returns true when this entry sits in the rule's known gap.
+    matches: fn(origin: &str, lang: &str, name: &str) -> bool,
+    /// Reason surfaced as `verdict_reason` on a `known-gap` entry.
+    reason: &'static str,
+}
+
+/// Whether `origin` is a served front-end asset — an `.js`/`.mjs` file under a
+/// served-assets directory whose handlers are wired from HTML (`onclick="..."`,
+/// `addEventListener`) rather than a syntactic call. SCOPED to the served path:
+/// the gap is "HTML-wired served assets", not "any .js anywhere". A build
+/// script like `scripts/build.mjs` with zero callers is genuinely dead and must
+/// NOT be excused. The prefix table is extensible so other corpora can add
+/// their served-assets roots.
+fn is_served_js_asset(origin: &str, _lang: &str, _name: &str) -> bool {
+    /// Served-assets directory prefixes. Origins are normalized to forward
+    /// slashes before classification, so only `/`-form prefixes are listed.
+    const SERVED_ASSET_PREFIXES: &[&str] = &["src/serve/assets/"];
+    let is_js = origin.ends_with(".js") || origin.ends_with(".mjs");
+    is_js
+        && SERVED_ASSET_PREFIXES
+            .iter()
+            .any(|prefix| origin.starts_with(prefix))
+}
+
+/// Whether `name` is a Python runtime-invoked dunder protocol method
+/// (`__aenter__`, `__exit__`, `__iter__`, …): invoked by the runtime
+/// (context-manager / iterator / async protocols), never by a syntactic call.
+fn is_python_dunder(_origin: &str, lang: &str, name: &str) -> bool {
+    lang == "python" && name.starts_with("__") && name.ends_with("__")
+}
+
+/// The known-gap table. First matching row wins.
+const KNOWN_GAP_RULES: &[KnownGapRule] = &[
+    KnownGapRule {
+        matches: is_served_js_asset,
+        reason: "served js asset — event handlers wired from HTML, not a syntactic call",
+    },
+    KnownGapRule {
+        matches: is_python_dunder,
+        reason: "python dunder — invoked by the runtime protocol, not a syntactic call",
+    },
+];
+
+/// Classify a dead entry against the static known-gap table. Returns the reason
+/// of the first matching rule, or `None` if no documented gap applies.
 fn known_gap_reason(entry: &DeadFunction) -> Option<&'static str> {
     let origin = entry.chunk.file.to_string_lossy();
     let lang = entry.chunk.language.to_string();
     let name = entry.chunk.name.as_str();
 
-    // .js served assets: HTML-wired event handlers.
-    if origin.ends_with(".js") || origin.ends_with(".mjs") {
-        return Some("js served asset — event handlers wired from HTML, not a syntactic call");
-    }
-
-    // Python runtime-invoked dunder protocol methods.
-    if lang == "python" && name.starts_with("__") && name.ends_with("__") {
-        return Some("python dunder — invoked by the runtime protocol, not a syntactic call");
-    }
-
-    None
+    KNOWN_GAP_RULES
+        .iter()
+        .find(|rule| (rule.matches)(&origin, &lang, name))
+        .map(|rule| rule.reason)
 }
 
 /// Whether a dead entry is test-only: origin under a `tests/` path segment, or
@@ -118,30 +150,46 @@ fn is_test_only(entry: &DeadFunction) -> bool {
 }
 
 /// Classify a dead entry into its verdict. Ordered, first-match-wins:
-/// test-only → low-confidence-live → known-gap → dead. `low_conf_names`
-/// carries the §1-derived set of heuristic-only-caller function names.
+/// test-only → low-confidence-live → known-gap → dead. `low_conf` maps a
+/// callee name to its §1-derived heuristic-caller breakdown (present only for
+/// functions reached solely by heuristic edges).
 fn classify_verdict(
     entry: &DeadFunction,
-    low_conf_names: &std::collections::HashSet<String>,
-) -> (DeadVerdict, &'static str) {
+    low_conf: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
+) -> (DeadVerdict, String) {
     if is_test_only(entry) {
+        // Softened to claim only what the substring scan actually knows: a
+        // `tests/` path segment or the literal `#[cfg(test)]` appearing in the
+        // chunk content (which the comment scan cannot distinguish from a real
+        // attribute — documented limitation).
         return (
             DeadVerdict::TestOnly,
-            "origin under tests/ or #[cfg(test)] module",
+            "origin under tests/ path or content contains '#[cfg(test)]'".to_string(),
         );
     }
-    if low_conf_names.contains(&entry.chunk.name) {
+    if let Some(info) = low_conf.get(&entry.chunk.name) {
+        // Name the heuristic kinds and counts rather than asserting "all
+        // callers are heuristic" generically.
+        let kinds = info
+            .kind_counts
+            .iter()
+            .map(|(kind, n)| format!("{kind}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         return (
             DeadVerdict::LowConfidenceLive,
-            "all callers reach via heuristic edges (macro/fn-pointer)",
+            format!(
+                "no trusted caller; reached only by {} heuristic edge(s) [{}]",
+                info.total, kinds
+            ),
         );
     }
     if let Some(reason) = known_gap_reason(entry) {
-        return (DeadVerdict::KnownGap, reason);
+        return (DeadVerdict::KnownGap, reason.to_string());
     }
     (
         DeadVerdict::Dead,
-        "no callers; none of the excusing tiers matched",
+        "no callers; none of the excusing tiers matched".to_string(),
     )
 }
 
@@ -263,16 +311,16 @@ pub(crate) fn dead_core(
         .filter(|d| d.confidence >= args.min_confidence)
         .collect();
 
-    // §1-derived low-confidence-live population: function names whose only
-    // call-graph edges are heuristic kinds. Used to classify the verdict; the
-    // `find_dead_code` candidates never overlap this set (they have zero
-    // callers, these have heuristic-only callers), so it only relabels via the
-    // ordered classifier.
-    let low_conf_names = store
+    // §1-derived low-confidence-live population: callees reached only by
+    // heuristic edges (no trusted edge). `find_dead_code` now also selects this
+    // population (it gates on absence of a TRUSTED edge, not absence of ALL
+    // edges), so these names ARE among the candidates and the classifier
+    // relabels them `low-confidence-live` with a kind/count reason.
+    let low_conf = store
         .find_low_confidence_live_names()
         .context("Failed to query low-confidence-live names")?;
 
-    let mut output = build_dead_output(&confident, &possibly_pub, root, &low_conf_names);
+    let mut output = build_dead_output(&confident, &possibly_pub, root, &low_conf);
 
     // Apply the `--verdict` filter to both lists, then recount.
     if let Some(want) = args.verdict {
@@ -292,12 +340,12 @@ pub(crate) fn dead_core(
 
 /// Build the typed dead-code report shared between CLI and batch. Each entry
 /// is classified into a [`DeadVerdict`] via the ordered `classify_verdict`;
-/// `low_conf_names` is the §1-derived heuristic-only-caller set.
+/// `low_conf` is the §1-derived heuristic-caller breakdown keyed by callee name.
 pub(crate) fn build_dead_output(
     confident: &[DeadFunction],
     possibly_pub: &[DeadFunction],
     root: &Path,
-    low_conf_names: &std::collections::HashSet<String>,
+    low_conf: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
 ) -> DeadOutput {
     let _span = tracing::info_span!(
         "build_dead_output",
@@ -307,7 +355,7 @@ pub(crate) fn build_dead_output(
     .entered();
 
     let format = |d: &DeadFunction| {
-        let (verdict, reason) = classify_verdict(d, low_conf_names);
+        let (verdict, reason) = classify_verdict(d, low_conf);
         DeadFunctionEntry {
             name: d.chunk.name.clone(),
             file: cqs::rel_display(&d.chunk.file, root).to_string(),
@@ -327,7 +375,7 @@ pub(crate) fn build_dead_output(
             verdict_reason: if verdict == DeadVerdict::Unclassified {
                 String::new()
             } else {
-                reason.to_string()
+                reason
             },
         }
     };
@@ -508,6 +556,26 @@ mod tests {
 
     // ----- Verdict classification (§2) -----
 
+    /// Empty low-confidence map for classifier tests with no heuristic callers.
+    fn no_low_conf() -> std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo> {
+        std::collections::HashMap::new()
+    }
+
+    /// Low-confidence map with one heuristic-only callee `name`.
+    fn low_conf_with(
+        name: &str,
+    ) -> std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            name.to_string(),
+            cqs::store::LowConfidenceLiveInfo {
+                total: 1,
+                kind_counts: vec![("macro_heuristic".to_string(), 1)],
+            },
+        );
+        m
+    }
+
     /// Build a minimal `DeadFunction` for classifier tests.
     fn dead_fn(
         name: &str,
@@ -547,7 +615,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn make_x() {}",
         );
-        let (v, _) = classify_verdict(&f, &std::collections::HashSet::new());
+        let (v, _) = classify_verdict(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -559,7 +627,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "#[cfg(test)]\nmod t { fn helper() {} }",
         );
-        let (v, _) = classify_verdict(&f, &std::collections::HashSet::new());
+        let (v, _) = classify_verdict(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -571,10 +639,13 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn cb() {}",
         );
-        let mut names = std::collections::HashSet::new();
-        names.insert("cb".to_string());
-        let (v, _) = classify_verdict(&f, &names);
+        let (v, reason) = classify_verdict(&f, &low_conf_with("cb"));
         assert_eq!(v, DeadVerdict::LowConfidenceLive);
+        // Reason names the heuristic kinds/counts, not a generic claim.
+        assert!(
+            reason.contains("macro_heuristic") && reason.contains("heuristic edge"),
+            "reason should name heuristic kinds: {reason}"
+        );
     }
 
     #[test]
@@ -585,8 +656,47 @@ mod tests {
             cqs::parser::Language::JavaScript,
             "function onClick() {}",
         );
-        let (v, _) = classify_verdict(&f, &std::collections::HashSet::new());
+        let (v, _) = classify_verdict(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::KnownGap);
+    }
+
+    /// A non-served build script (`scripts/build.mjs`) with zero callers is
+    /// genuinely dead — the known-gap excuse is scoped to served-assets paths,
+    /// so an `.mjs` outside `src/serve/assets/` classifies as `dead`, NOT
+    /// `known-gap` — the served-asset excuse is scoped to served paths.
+    #[test]
+    fn verdict_non_served_mjs_is_dead_not_known_gap() {
+        let f = dead_fn(
+            "buildBundle",
+            "scripts/build.mjs",
+            cqs::parser::Language::JavaScript,
+            "function buildBundle() {}",
+        );
+        let (v, _) = classify_verdict(&f, &no_low_conf());
+        assert_eq!(
+            v,
+            DeadVerdict::Dead,
+            "a build script outside served-assets must not get the known-gap excuse"
+        );
+    }
+
+    /// A doc mention does NOT disqualify a function from
+    /// `low-confidence-live`. The store-side query treats `doc_reference` edges
+    /// as inert (neither trusted nor heuristic), so a function reached by a doc
+    /// reference plus a macro edge still appears in `low_conf` and the classifier
+    /// labels it `low-confidence-live`, not `dead`.
+    #[test]
+    fn verdict_doc_reference_does_not_block_low_confidence_live() {
+        let f = dead_fn(
+            "doc_mentioned",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn doc_mentioned() {}",
+        );
+        // The map carries it because the store query found a heuristic edge and
+        // no trusted edge; the doc edge was ignored.
+        let (v, _) = classify_verdict(&f, &low_conf_with("doc_mentioned"));
+        assert_eq!(v, DeadVerdict::LowConfidenceLive);
     }
 
     #[test]
@@ -597,7 +707,7 @@ mod tests {
             cqs::parser::Language::Python,
             "def __aenter__(self): ...",
         );
-        let (v, _) = classify_verdict(&f, &std::collections::HashSet::new());
+        let (v, _) = classify_verdict(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::KnownGap);
     }
 
@@ -609,7 +719,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn genuinely_dead() {}",
         );
-        let (v, _) = classify_verdict(&f, &std::collections::HashSet::new());
+        let (v, _) = classify_verdict(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::Dead);
     }
 
@@ -622,9 +732,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn make_x() {}",
         );
-        let mut names = std::collections::HashSet::new();
-        names.insert("make_x".to_string());
-        let (v, _) = classify_verdict(&f, &names);
+        let (v, _) = classify_verdict(&f, &low_conf_with("make_x"));
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -651,7 +759,7 @@ mod tests {
     /// `unclassified` is omitted.
     #[test]
     fn dead_verdict_serialized_on_entry() {
-        let low = std::collections::HashSet::new();
+        let low = no_low_conf();
         let f = dead_fn("x", "src/lib.rs", cqs::parser::Language::Rust, "fn x() {}");
         let out = build_dead_output(&[f], &[], std::path::Path::new("."), &low);
         let json = serde_json::to_value(&out).unwrap();

@@ -29,6 +29,15 @@ use cqs::store::{CalleeInfo, CallerInfo, ReadOnly, Store};
 use super::notes_text;
 use super::KindFallbackOutput;
 
+/// Error message when `--edge-kind` is combined with `--cross-project`. The
+/// cross-project path loads a `CallGraph` that discards edge kinds (kinds are
+/// not threaded through the multi-index merge), so applying the filter would
+/// silently return the unfiltered superset. Honest refusal until kinds are
+/// threaded through `CallGraph` (tracked as a follow-up). Shared verbatim by
+/// CLI and daemon so the parity test can pin the exact string.
+pub(crate) const EDGE_KIND_CROSS_PROJECT_ERR: &str =
+    "edge-kind filtering is not supported with --cross-project";
+
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
 
 /// Input for [`callers_core`] / [`callees_core`]. Both commands take the
@@ -86,8 +95,9 @@ pub(crate) fn parse_edge_kind(s: &str) -> std::result::Result<CallEdgeKind, Stri
         "serde_callback" => Ok(CallEdgeKind::SerdeCallback),
         "macro_heuristic" => Ok(CallEdgeKind::MacroHeuristic),
         "fn_pointer" => Ok(CallEdgeKind::FnPointer),
+        "doc_reference" => Ok(CallEdgeKind::DocReference),
         other => Err(format!(
-            "invalid edge kind '{other}' (expected call|serde_callback|macro_heuristic|fn_pointer)"
+            "invalid edge kind '{other}' (expected call|serde_callback|macro_heuristic|fn_pointer|doc_reference)"
         )),
     }
 }
@@ -391,6 +401,10 @@ pub(crate) fn cmd_callers(
     let store = &ctx.store;
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
+
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let output = callers_cross_core(
@@ -498,6 +512,10 @@ pub(crate) fn cmd_callees(
     let store = &ctx.store;
     // See cmd_callers — same clamp range.
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
+
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;

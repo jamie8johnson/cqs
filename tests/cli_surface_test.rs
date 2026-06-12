@@ -732,6 +732,50 @@ fn session_callees_lists_seeded_callee() {
     );
 }
 
+/// `--edge-kind` + `--cross-project` is an honest refusal on the CLI
+/// surface — the cross-project path discards edge kinds, so the filter would
+/// silently return the unfiltered superset. The guard fires after the store
+/// opens, so the fixture seeds a real index first.
+#[test]
+fn callers_edge_kind_with_cross_project_is_refused() {
+    let dir = TempDir::new().unwrap();
+    seed_session_project(dir.path());
+    cqs()
+        .args([
+            "callers",
+            "consumer",
+            "--cross-project",
+            "--edge-kind",
+            "call",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "edge-kind filtering is not supported with --cross-project",
+        ));
+}
+
+#[test]
+fn callees_edge_kind_with_cross_project_is_refused() {
+    let dir = TempDir::new().unwrap();
+    seed_session_project(dir.path());
+    cqs()
+        .args([
+            "callees",
+            "producer",
+            "--cross-project",
+            "--edge-kind",
+            "call",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "edge-kind filtering is not supported with --cross-project",
+        ));
+}
+
 #[test]
 fn session_trace_finds_same_project_path() {
     let dir = TempDir::new().unwrap();

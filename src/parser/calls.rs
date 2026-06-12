@@ -514,9 +514,30 @@ impl Parser {
             ));
         }
 
-        // Deduplicate calls to the same function (keep first occurrence)
-        let mut seen = std::collections::HashSet::new();
-        calls.retain(|c| seen.insert(c.callee_name.clone()));
+        // Deduplicate calls to the same function, keeping the MOST-TRUSTED kind
+        // (lowest `trust_rank`: call < serde < macro < fn-pointer < doc-ref)
+        // rather than the first occurrence. Call edges are emitted first today,
+        // so first-wins happened to keep `call` — but that coupling is fragile,
+        // and the consuming MIN-collapse queries already collapse on the same
+        // trust rank. Picking the best kind here makes the per-chunk shape agree
+        // with the cross-chunk collapse explicitly. First occurrence still wins
+        // among equal-rank edges (stable line number).
+        let mut best: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (i, c) in calls.iter().enumerate() {
+            match best.get(&c.callee_name) {
+                Some(&j) if calls[j].kind.trust_rank() <= c.kind.trust_rank() => {}
+                _ => {
+                    best.insert(c.callee_name.clone(), i);
+                }
+            }
+        }
+        let keep: std::collections::HashSet<usize> = best.into_values().collect();
+        let mut idx = 0usize;
+        calls.retain(|_| {
+            let k = keep.contains(&idx);
+            idx += 1;
+            k
+        });
 
         calls
     }
@@ -548,13 +569,26 @@ impl Parser {
         // per-chunk shape stays in parity. Content is parsed standalone with
         // 1-indexed relative lines, so `line_offset = 1` puts an attribute on
         // the chunk's first content line at line 1 — matching the whole-file
-        // path's relative-line conversion. Deduped against existing calls so a
-        // callback that also appears in a real call_expression isn't doubled.
-        let mut seen: std::collections::HashSet<String> =
-            calls.iter().map(|c| c.callee_name.clone()).collect();
+        // path's relative-line conversion. Deduped against existing calls by
+        // trust rank: a serde edge replaces an existing edge only when it is
+        // strictly more trusted (e.g. it beats a macro/fn-pointer edge but
+        // never an existing syntactic `call`).
+        let mut by_name: std::collections::HashMap<String, usize> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.callee_name.clone(), i))
+            .collect();
         for sc in extract_serde_callback_calls(&chunk.content, chunk.language, 1) {
-            if seen.insert(sc.callee_name.clone()) {
-                calls.push(sc);
+            match by_name.get(&sc.callee_name) {
+                Some(&i) => {
+                    if sc.kind.trust_rank() < calls[i].kind.trust_rank() {
+                        calls[i] = sc;
+                    }
+                }
+                None => {
+                    by_name.insert(sc.callee_name.clone(), calls.len());
+                    calls.push(sc);
+                }
             }
         }
         calls

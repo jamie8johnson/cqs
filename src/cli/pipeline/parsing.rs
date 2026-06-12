@@ -101,10 +101,32 @@ fn filter_stale_files(
         }
     };
 
+    // PARSER_VERSION drift makes a file stale even when its bytes are
+    // unchanged: the stored chunks (and their derived call edges / edge_kind
+    // / doc enrichment) were extracted by an older parser. Selecting by
+    // fingerprint alone would never re-tag these without `--force`. The query
+    // is one batched SELECT; on failure we degrade to fingerprint-only
+    // (drift simply isn't healed this pass, same as before this fix).
+    let drifted = match store.origins_with_parser_drift(&origin_refs, cqs::parser_version()) {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::warn!(error = %e, "Parser-version drift lookup failed; fingerprint-only filter");
+            std::collections::HashSet::new()
+        }
+    };
+
     let mut survivors = Vec::with_capacity(file_batch.len());
     let mut refreshes: Vec<(PathBuf, FileFingerprint)> = Vec::new();
     for (rel, origin) in file_batch.iter().zip(origins.iter()) {
         let abs_path = root.join(rel);
+        // Version drift short-circuits the fingerprint comparison: the file
+        // must re-parse regardless of whether its bytes moved. Read a full
+        // disk fingerprint so the re-upsert stamps fresh mtime/size/hash.
+        if drifted.contains(origin.as_str()) {
+            fingerprints.insert(rel.clone(), full_disk_fingerprint(&abs_path));
+            survivors.push(rel.clone());
+            continue;
+        }
         match stored_map.get(origin.as_str()) {
             // Not indexed yet — always a survivor.
             None => {
@@ -567,6 +589,10 @@ mod tests {
         store.init(&cqs::store::ModelInfo::default()).unwrap();
 
         // Helper: a minimal indexed chunk for `rel` so the origin exists.
+        // Stamp the CURRENT parser version so this test exercises the
+        // fingerprint-only path — a version-0 stamp would register as parser
+        // drift and requeue every file (covered separately by
+        // `parser_stage_reparses_version_drifted_file`).
         let seed_chunk = |rel: &str, name: &str| cqs::Chunk {
             id: format!("{rel}:1:seed"),
             file: PathBuf::from(rel),
@@ -583,7 +609,7 @@ mod tests {
             parent_id: None,
             window_idx: None,
             parent_type_name: None,
-            parser_version: 0,
+            parser_version: cqs::parser_version(),
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
 
@@ -675,6 +701,96 @@ mod tests {
                 "{file:?} fingerprint needs content hash"
             );
         }
+    }
+
+    /// PARSER_VERSION drift makes an unchanged file stale. A file whose
+    /// disk fingerprint matches the stored one EXACTLY, but whose stored chunk
+    /// carries an older `parser_version`, must still be selected for reparse —
+    /// otherwise a `PARSER_VERSION` bump heals nothing without `--force` and
+    /// the v30 migration's "re-tags on next reindex" promise is false.
+    #[test]
+    fn parser_stage_reparses_version_drifted_file() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("drift.rs"), "pub fn drift_fn() {}\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Seed an indexed chunk at a STALE parser_version (current - 1) with a
+        // disk-matching fingerprint, so the only thing making it stale is the
+        // version drift, not a fingerprint divergence.
+        let stale_version = cqs::parser_version() - 1;
+        let chunk = cqs::Chunk {
+            id: "drift.rs:1:seed".to_string(),
+            file: PathBuf::from("drift.rs"),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: "drift_fn".to_string(),
+            signature: "pub fn drift_fn()".to_string(),
+            content: "pub fn drift_fn() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "seed".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: stale_version,
+        };
+        let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+
+        // Fingerprint that exactly matches disk — fingerprint-only filter
+        // would SKIP this file.
+        let disk_fp = FileFingerprint::read_disk(
+            &root.join("drift.rs"),
+            &FileFingerprint::default(),
+            FingerprintPolicy::HashOnly,
+        )
+        .expect("read drift.rs fingerprint");
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("drift.rs"), disk_fp);
+        store
+            .upsert_embedded_batch(&[(chunk, emb)], &[], &fps)
+            .unwrap();
+
+        // Sanity: the seeded chunk really does carry the stale version.
+        let drifted = store
+            .origins_with_parser_drift(&["drift.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            drifted.contains("drift.rs"),
+            "seeded chunk must register as parser-version drifted"
+        );
+
+        let rel_paths = vec![PathBuf::from("drift.rs")];
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: false, // incremental — only drift can save this file
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(rel_paths, ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        let parsed_files: HashSet<PathBuf> = batches
+            .iter()
+            .flat_map(|b| b.chunks.iter().map(|c| c.file.clone()))
+            .collect();
+        assert!(
+            parsed_files.contains(&PathBuf::from("drift.rs")),
+            "version-drifted file must be reparsed even with a matching fingerprint, got {parsed_files:?}"
+        );
     }
 
     /// File-complete fingerprint stamping: a file whose chunks straddle two

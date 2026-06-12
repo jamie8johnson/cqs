@@ -191,7 +191,7 @@ pub use note::{
     parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
     MAX_NOTE_MENTIONS, MAX_NOTE_MENTION_BYTES, MAX_NOTE_TEXT_BYTES, NOTES_HEADER,
 };
-pub use parser::{canonical_hash_fallback, collapse_whitespace, Chunk, Parser};
+pub use parser::{canonical_hash_fallback, collapse_whitespace, parser_version, Chunk, Parser};
 pub use reranker::{NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 
