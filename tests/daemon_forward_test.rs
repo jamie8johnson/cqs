@@ -78,6 +78,14 @@ fn spec() -> cqs::daemon_translate::CliArgSpec {
             "--model",
             "--slot",
         ]),
+        // Production derives these from the live clap definitions; the
+        // hand-built subset here mirrors the scope flags and the one current
+        // forward target (`similar`). The derivation that the production set
+        // tracks the wire `*Args` surfaces is pinned by a binary-crate unit
+        // test (`scope_targets_track_the_batch_wire_surface` in
+        // `cli::dispatch`) — `BatchInput` is `pub(crate)`, unreachable here.
+        scope_flags: set(&["-l", "--lang", "-p", "--path"]),
+        scope_targets: set(&["similar"]),
     }
 }
 
