@@ -192,8 +192,6 @@ pub use note::{
     MAX_NOTE_MENTIONS, MAX_NOTE_MENTION_BYTES, MAX_NOTE_TEXT_BYTES, NOTES_HEADER,
 };
 pub use parser::{canonical_hash_fallback, collapse_whitespace, Chunk, Parser};
-// `LlmReranker` is a scaffold-only stub (every score call returns Err), so
-// it is `pub(crate)` and absent from this re-export.
 pub use reranker::{NoopReranker, OnnxReranker, Reranker};
 pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 

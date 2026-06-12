@@ -543,6 +543,25 @@ Checklist for every new command:
 
 Pattern to follow: look at `src/cli/commands/io/blame.rs` or `src/cli/commands/review/dead.rs` for a minimal example.
 
+### Dry-Run vs Apply
+
+Commands that touch the filesystem split into two families with opposite
+defaults. Pick the one that matches the command's purpose:
+
+- **Side-effect commands** (`index`, `convert`) exist *to* mutate — writing the
+  index or the converted `.md` files is the point. They **default to mutating**
+  and expose an opt-out `--dry-run` flag that previews the work without writing.
+- **Analyser commands** (`doctor`, `suggest`) exist *to* report — their primary
+  output is the analysis, and any mutation is a follow-up the user asks for.
+  They **default to read-only** and require an explicit opt-in (`--fix`,
+  `--apply`) to mutate.
+
+The rule keeps the dangerous default safe: a command whose name promises a
+mutation may perform it unprompted, but a command whose name promises a report
+never surprises the caller by editing their tree. When adding a new
+filesystem-touching command, classify it first, then wire the matching default
++ flag (`--dry-run` to opt out of mutation, `--fix`/`--apply` to opt in).
+
 ## Adding Injection Rules (Multi-Grammar)
 
 Files like HTML contain embedded languages (`<script>` → JS, `<style>` → CSS). cqs handles this via injection rules on `LanguageDef`.
