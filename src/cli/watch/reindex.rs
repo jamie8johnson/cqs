@@ -311,8 +311,9 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
     true
 }
 
-/// Stamp the v29 `file_registry` reconcile fingerprint for watched files that
-/// parsed successfully but produced ZERO chunks #1774.
+/// Prune a zero-chunk survivor's stale chunk rows, then stamp the v29
+/// `file_registry` reconcile fingerprint for watched files that parsed
+/// successfully but produced ZERO chunks #1774.
 ///
 /// A zero-chunk file (comment-only source, parser-emitted-empty) has no chunk
 /// row to carry the chunk-level fingerprint the per-file upsert loop writes, so
@@ -321,6 +322,21 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
 /// + BLAKE3) and persisting it in the registry lets the next reconcile pass see
 /// a stored fingerprint and skip the file like any unchanged one.
 ///
+/// The prune mirrors the bulk pipeline (`upsert_chunks_calls_and_prune`): a
+/// file edited from has-chunks to zero-chunks keeps its OLD chunk rows unless
+/// they are deleted with an EMPTY live set. Leaving them is the #1830 ghost
+/// (stale rows stay searchable) AND drift-loop fuel — `origins_with_parser_drift`
+/// keys on `chunks.parser_version`, so a PARSER_VERSION bump makes the ghost
+/// rows re-drift-eligible every reconcile tick forever (parse to zero → stamp →
+/// no prune → loop). Pruning to zero rows removes both: the origin then has no
+/// `chunks` row, so the drift selection cannot return it.
+///
+/// Ordering is the crash-safety guarantee (per the #1772 convention used by the
+/// bulk path): prune FIRST, stamp SECOND. A crash between the two leaves the
+/// file with zero chunk rows AND an unstamped registry, so the next tick
+/// re-parses it to zero chunks idempotently. The reverse order (stamp before
+/// prune) is the bug — it would mark the file current while ghost rows survive.
+///
 /// `rel_paths` are project-relative; `root` joins them for the disk read.
 /// Best-effort: a stat/read failure forfeits the skip (the file re-parses next
 /// tick) but is not fatal. Mirrors the streaming-blake3 + size-from-metadata
@@ -328,6 +344,28 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
 fn stamp_zero_chunk_registry(store: &Store, root: &Path, rel_paths: &[PathBuf]) {
     if rel_paths.is_empty() {
         return;
+    }
+
+    // Prune each survivor's stale chunk rows with an EMPTY live set BEFORE
+    // stamping the registry below — same mechanism as the bulk path's
+    // `delete_phantom_chunks_batch(.., Vec::new())`. This deletes the ghost
+    // rows that would otherwise persist (and keep re-arming parser-drift) when
+    // a file is edited from has-chunks to zero-chunks under watch.
+    let prune_entries: Vec<(&Path, Vec<&str>)> = rel_paths
+        .iter()
+        .map(|p| (p.as_path(), Vec::new()))
+        .collect();
+    match store.delete_phantom_chunks_batch(&prune_entries) {
+        Ok(deleted) if deleted > 0 => tracing::info!(
+            count = deleted,
+            "Pruned phantom chunks from zero-chunk watched files"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            files = prune_entries.len(),
+            error = %e,
+            "Failed to prune chunks for zero-chunk watched files; stale rows may persist and re-arm parser-drift"
+        ),
     }
     let mut entries: Vec<(PathBuf, cqs::store::FileFingerprint)> =
         Vec::with_capacity(rel_paths.len());
@@ -898,4 +936,143 @@ pub(super) fn reindex_notes(root: &Path, store: &Store, quiet: bool) -> Result<u
     }
 
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::{Chunk, Embedding};
+
+    fn seed_chunk(store: &Store, id: &str, origin: &str, name: &str, version: u32) {
+        let chunk = Chunk {
+            id: id.to_string(),
+            file: PathBuf::from(origin),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("pub fn {name}()"),
+            content: format!("pub fn {name}() {{}}"),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: id.to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: version,
+        };
+        let emb = Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+        store
+            .upsert_chunks_batch(&[(chunk, emb)], Some(100))
+            .unwrap();
+    }
+
+    /// #1830 repro: a file edited from has-chunks to zero-chunks under watch
+    /// must have its OLD chunk rows pruned, not just the registry stamped.
+    /// Before the fix `stamp_zero_chunk_registry` only stamped the fingerprint,
+    /// so the stale rows survived as ghosts and kept returning search hits.
+    #[test]
+    fn watch_zero_chunk_stamp_prunes_stale_rows() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        // The post-edit on-disk content parses to zero chunks (comment only).
+        std::fs::write(root.join("ghost.rs"), "// only a comment now\n").unwrap();
+
+        let store = Store::open(&root.join("index.db")).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Pre-edit state: the file had two indexed chunks.
+        seed_chunk(
+            &store,
+            "ghost.rs:1:a",
+            "ghost.rs",
+            "ghost_a",
+            cqs::parser_version(),
+        );
+        seed_chunk(
+            &store,
+            "ghost.rs:2:b",
+            "ghost.rs",
+            "ghost_b",
+            cqs::parser_version(),
+        );
+        assert_eq!(
+            store.get_chunks_by_origin("ghost.rs").unwrap().len(),
+            2,
+            "precondition: two seeded chunk rows"
+        );
+
+        // Simulate the watch zero-chunk success path for this survivor.
+        stamp_zero_chunk_registry(&store, &root, &[PathBuf::from("ghost.rs")]);
+
+        // The ghost rows are GONE — not just the registry stamped.
+        assert!(
+            store.get_chunks_by_origin("ghost.rs").unwrap().is_empty(),
+            "stale chunk rows must be pruned, not left as searchable ghosts"
+        );
+        // And no search surfaces the ghost (FTS row pruned in the same tx).
+        assert!(
+            store.search_by_name("ghost_a", 5).unwrap().is_empty(),
+            "pruned chunk must not return from search"
+        );
+        // The registry fingerprint was still stamped so the next tick skips it.
+        let drifted = store
+            .origins_with_parser_drift(&["ghost.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(drifted.is_empty());
+    }
+
+    /// Round-3 drift-loop closure via the prune. A file with chunks at parser
+    /// version N is registry-stamped; a PARSER_VERSION bump to N+1 makes it
+    /// drift-eligible; the file now parses to zero chunks. The watch zero-chunk
+    /// path must prune the drifted rows so `origins_with_parser_drift` no longer
+    /// selects it on the next reconcile pass — closing the requeue loop without
+    /// any change to the drift predicate.
+    ///
+    /// Before the fix: the stamp left the stale-version rows in place, so the
+    /// second drift query re-selected the origin every tick forever.
+    #[test]
+    fn watch_zero_chunk_prune_closes_drift_loop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("drift.rs"), "// parses to zero chunks\n").unwrap();
+
+        let store = Store::open(&root.join("index.db")).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Seed a chunk at the OLD parser version (current - 1): the PARSER_VERSION
+        // bump on this branch is what makes the row drift-eligible.
+        let stale_version = cqs::parser_version() - 1;
+        seed_chunk(
+            &store,
+            "drift.rs:1:seed",
+            "drift.rs",
+            "drift_fn",
+            stale_version,
+        );
+
+        // First reconcile pass: the drifted file IS selected.
+        let pass1 = store
+            .origins_with_parser_drift(&["drift.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            pass1.contains("drift.rs"),
+            "precondition: version-drifted chunk must be selected on pass 1"
+        );
+
+        // The file parses to zero chunks this tick → watch zero-chunk path runs.
+        stamp_zero_chunk_registry(&store, &root, &[PathBuf::from("drift.rs")]);
+
+        // Second reconcile pass: the prune removed the drifted rows, so the
+        // origin is no longer selected — the loop is closed.
+        let pass2 = store
+            .origins_with_parser_drift(&["drift.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            !pass2.contains("drift.rs"),
+            "after the prune the drifted origin must NOT be re-selected (loop closed)"
+        );
+        assert!(store.get_chunks_by_origin("drift.rs").unwrap().is_empty());
+    }
 }
