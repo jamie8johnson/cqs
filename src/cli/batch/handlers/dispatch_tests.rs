@@ -471,6 +471,8 @@ fn parity_similar_daemon_matches_core() {
         name: "foo".into(),
         limit_arg: crate::cli::args::LimitArg { limit: 3 },
         threshold: 0.0,
+        lang: None,
+        path: None,
     };
     let daemon = dispatch_similar(&view, &wire).expect("dispatch_similar");
 
@@ -498,6 +500,224 @@ fn parity_similar_daemon_matches_core() {
         "seeded corpus must yield at least one similar result: {core}"
     );
     assert_eq!(daemon, core, "similar parity mismatch");
+}
+
+/// Construct a chunk with an explicit language + file, all else defaulted.
+/// `seed_ctx`/`make_chunk` hardcode Rust in `src/lib.rs`; the scope-parity
+/// tests below need a corpus that spans languages and paths so a `--lang` /
+/// `--path` filter actually drops rows.
+fn make_chunk_lang(id: &str, file: &str, name: &str, lang: Language) -> Chunk {
+    let content = format!("fn {name}() {{ }}");
+    let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    Chunk {
+        id: id.to_string(),
+        file: PathBuf::from(file),
+        language: lang,
+        chunk_type: ChunkType::Function,
+        name: name.to_string(),
+        signature: format!("fn {name}()"),
+        content,
+        doc: None,
+        line_start: 1,
+        line_end: 3,
+        content_hash,
+        canonical_hash: String::new(),
+        parent_id: None,
+        window_idx: None,
+        parent_type_name: None,
+        parser_version: 0,
+    }
+}
+
+/// Seed a context spanning two languages and two directories so a scope
+/// filter bites: `target` (Rust, `src/`) plus a Rust peer in `src/`, a Rust
+/// peer in `vendor/`, and a Python peer in `lib/`. All chunks share the unit
+/// embedding so cosine is 1.0 across the board — the *only* thing that can
+/// shrink the result set is the `--lang` / `--path` filter.
+fn seed_mixed_ctx() -> (TempDir, BatchContext) {
+    let dir = TempDir::new().expect("tempdir");
+    let cqs_dir = dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+    let index_path = cqs_dir.join("index.db");
+
+    let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+    emb_vec[0] = 1.0;
+    let embedding = Embedding::new(emb_vec);
+
+    let chunks = [
+        make_chunk_lang("src/a.rs:1:target0", "src/a.rs", "target", Language::Rust),
+        make_chunk_lang("src/b.rs:1:rspeer0", "src/b.rs", "rs_peer", Language::Rust),
+        make_chunk_lang(
+            "vendor/v.rs:1:vendrs0",
+            "vendor/v.rs",
+            "vendored_rs_peer",
+            Language::Rust,
+        ),
+        make_chunk_lang(
+            "lib/p.py:1:pypeer0",
+            "lib/p.py",
+            "py_peer",
+            Language::Python,
+        ),
+    ];
+
+    {
+        let store = Store::open(&index_path).expect("open store");
+        store.init(&ModelInfo::default()).expect("init store");
+        let pairs: Vec<(Chunk, Embedding)> = chunks
+            .iter()
+            .map(|c| (c.clone(), embedding.clone()))
+            .collect();
+        store
+            .upsert_chunks_batch(&pairs, Some(0))
+            .expect("upsert chunks");
+    }
+
+    let ctx = create_test_context(&cqs_dir).expect("create test ctx");
+    (dir, ctx)
+}
+
+/// Drive the daemon `dispatch_similar` for `target` with the given scope flags
+/// and return the parsed payload (envelope unwrapped to `data`).
+fn similar_filter_names(daemon: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    daemon["results"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| r["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `--lang` / `--path` scope flags reach the daemon `similar` path and produce
+/// the same payload as the CLI-shaped `similar_core` driven with the matching
+/// `build_similar_filter`. Two filtered cases (lang + path) each assert the
+/// filter actually *bites* — fewer results than the unfiltered baseline and
+/// the dropped rows are exactly the off-scope peers.
+#[test]
+fn parity_similar_scoped_daemon_matches_core() {
+    use super::info::dispatch_similar;
+    use crate::cli::commands::search::similar::{
+        build_similar_filter, build_similar_output, similar_core, SimilarArgs,
+    };
+
+    let (_dir, ctx) = seed_mixed_ctx();
+    let view = ctx.build_view(None);
+    let store = view.store();
+    let index = view.vector_index().expect("vector_index");
+
+    // Baseline: no scope. `target` (Rust/src) plus the three peers are all
+    // unit-embedding matches; self-match excluded, so 3 peers remain.
+    let unfiltered = dispatch_similar(
+        &view,
+        &crate::cli::args::SimilarArgs {
+            name: "target".into(),
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            threshold: 0.0,
+            lang: None,
+            path: None,
+        },
+    )
+    .expect("dispatch_similar baseline");
+    let baseline_names = similar_filter_names(&unfiltered);
+    assert_eq!(
+        baseline_names.len(),
+        3,
+        "unfiltered must surface all three peers: {unfiltered}"
+    );
+    assert!(
+        baseline_names.contains("py_peer")
+            && baseline_names.contains("vendored_rs_peer")
+            && baseline_names.contains("rs_peer"),
+        "baseline peer set unexpected: {baseline_names:?}"
+    );
+
+    // ── Case 1: `--lang rust` drops the Python peer. ──
+    let wire_lang = crate::cli::args::SimilarArgs {
+        name: "target".into(),
+        limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        threshold: 0.0,
+        lang: Some("rust".into()),
+        path: None,
+    };
+    let daemon_lang = dispatch_similar(&view, &wire_lang).expect("dispatch_similar lang");
+
+    let filter_lang = build_similar_filter(Some("rust"), None).expect("build_similar_filter lang");
+    let core_lang = similar_core(
+        &store,
+        index.as_deref(),
+        &filter_lang,
+        &SimilarArgs {
+            name: "target".into(),
+            limit: 10,
+            threshold: 0.0,
+        },
+    )
+    .expect("similar_core lang");
+    let core_lang_val =
+        serde_json::to_value(build_similar_output(&core_lang)).expect("serialize core lang");
+
+    assert_eq!(
+        daemon_lang, core_lang_val,
+        "lang-scoped similar parity mismatch"
+    );
+    let lang_names = similar_filter_names(&daemon_lang);
+    assert!(
+        lang_names.len() < baseline_names.len(),
+        "--lang rust must bite (fewer than unfiltered): {lang_names:?} vs {baseline_names:?}"
+    );
+    assert!(
+        !lang_names.contains("py_peer"),
+        "--lang rust must drop the Python peer: {lang_names:?}"
+    );
+    assert!(
+        lang_names.contains("rs_peer") && lang_names.contains("vendored_rs_peer"),
+        "--lang rust must keep the Rust peers: {lang_names:?}"
+    );
+
+    // ── Case 2: `--path src/*` drops the vendor + lib peers. ──
+    let wire_path = crate::cli::args::SimilarArgs {
+        name: "target".into(),
+        limit_arg: crate::cli::args::LimitArg { limit: 10 },
+        threshold: 0.0,
+        lang: None,
+        path: Some("src/*".into()),
+    };
+    let daemon_path = dispatch_similar(&view, &wire_path).expect("dispatch_similar path");
+
+    let filter_path = build_similar_filter(None, Some("src/*")).expect("build_similar_filter path");
+    let core_path = similar_core(
+        &store,
+        index.as_deref(),
+        &filter_path,
+        &SimilarArgs {
+            name: "target".into(),
+            limit: 10,
+            threshold: 0.0,
+        },
+    )
+    .expect("similar_core path");
+    let core_path_val =
+        serde_json::to_value(build_similar_output(&core_path)).expect("serialize core path");
+
+    assert_eq!(
+        daemon_path, core_path_val,
+        "path-scoped similar parity mismatch"
+    );
+    let path_names = similar_filter_names(&daemon_path);
+    assert!(
+        path_names.len() < baseline_names.len(),
+        "--path src/* must bite: {path_names:?} vs {baseline_names:?}"
+    );
+    assert!(
+        path_names.contains("rs_peer"),
+        "--path src/* must keep the src peer: {path_names:?}"
+    );
+    assert!(
+        !path_names.contains("vendored_rs_peer") && !path_names.contains("py_peer"),
+        "--path src/* must drop off-path peers: {path_names:?}"
+    );
 }
 
 #[test]

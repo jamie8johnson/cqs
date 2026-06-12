@@ -107,10 +107,14 @@ pub(in crate::cli::batch) fn dispatch_similar(
     let name = args.name.as_str();
     let _span = tracing::info_span!("batch_similar", name).entered();
 
-    // Thin adapter over the shared `similar_core`. The daemon path uses a
-    // default filter (no `--lang` / `--path` scoping) and its cached
-    // `dyn VectorIndex`; the core resolves, retrieves, and self-excludes.
-    let filter = cqs::SearchFilter::default();
+    // Thin adapter over the shared `similar_core`. The daemon path honors the
+    // `--lang` / `--path` scope flags (forwarded onto this subcommand tail by
+    // the CLI translator) via the same `build_similar_filter` helper the CLI
+    // uses, then runs the core over its cached `dyn VectorIndex`.
+    let filter = crate::cli::commands::search::similar::build_similar_filter(
+        args.lang.as_deref(),
+        args.path.as_deref(),
+    )?;
     let index = ctx.vector_index()?;
     let store = ctx.store();
     let core_args = crate::cli::commands::search::similar::SimilarArgs {

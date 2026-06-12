@@ -66,6 +66,8 @@ fn spec() -> cqs::daemon_translate::CliArgSpec {
             "--tokens",
             "-l",
             "--lang",
+            "-p",
+            "--path",
         ]),
         bare_query_strip: set(&[
             "--json",
@@ -205,6 +207,34 @@ fn test_translate_drops_top_level_region_with_subcommand() {
     // mistaken for the subcommand name.
     let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
         &v(&["--model", "bge-large", "callers", "foo"]),
+        true,
+        &spec(),
+    );
+    assert_eq!(cmd, "callers");
+    assert_eq!(args, v(&["foo"]));
+}
+
+#[test]
+fn test_translate_forwards_scope_flags_for_similar_only() {
+    // `--lang` / `--path` reach the CLI's `cmd_similar` via the
+    // top-level `Cli` region (`cqs --lang rust similar foo`). On daemon
+    // forwarding that region is dropped — so the translator re-appends the
+    // scope flags onto the `similar` tail (whose batch `SimilarArgs` accepts
+    // them) to keep daemon-routed scoping on par with the CLI-direct path.
+    // The captured scope flags are spliced in front of the tail; clap parses
+    // `--lang rust -p src/* foo` identically to `foo --lang rust -p src/*`.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--lang", "rust", "-p", "src/*", "similar", "foo"]),
+        true,
+        &spec(),
+    );
+    assert_eq!(cmd, "similar");
+    assert_eq!(args, v(&["--lang", "rust", "-p", "src/*", "foo"]));
+
+    // The carve-out is similar-only: a non-similar subcommand still drops the
+    // whole top-level region, no scope flag appended.
+    let (cmd, args) = cqs::daemon_translate::translate_cli_args_to_batch(
+        &v(&["--lang", "rust", "callers", "foo"]),
         true,
         &spec(),
     );
