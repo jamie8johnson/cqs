@@ -153,7 +153,12 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   embedding-reuse cache key so comment-only / formatting-only edits reuse
 ///   the prior embedding instead of re-embedding the corpus. Nullable; pre-v28
 ///   rows stay NULL (clean cache miss) until the next reindex writes it.
-pub const CURRENT_SCHEMA_VERSION: i32 = 28;
+/// - v29: file_registry table (origin → source_mtime/size/content_hash) persists
+///   the reconcile fingerprint for files that parse to ZERO chunks, so they skip
+///   the parse on the next run instead of being re-parsed forever #1774. Plus
+///   a CHECK on notes.sentiment pinning it to the five discrete documented
+///   values (-1, -0.5, 0, 0.5, 1); the migration clamp-rewrites off-grid rows.
+pub const CURRENT_SCHEMA_VERSION: i32 = 29;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

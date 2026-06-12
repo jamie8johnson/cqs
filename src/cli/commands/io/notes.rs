@@ -455,7 +455,12 @@ fn cmd_notes_add(
     .entered();
     let text = validate_note_text(text, "Note text")?;
 
-    let sentiment = sentiment.clamp(-1.0, 1.0);
+    // Snap to the discrete grid {-1, -0.5, 0, 0.5, 1} BEFORE writing the TOML,
+    // not just before the DB write. `parse_notes_str` snaps on read-back so the
+    // DB stays clean either way, but snapping only there would leave the raw
+    // value (e.g. 0.7) in notes.toml and in the printed confirmation while the
+    // DB holds 0.5 — a permanent file/DB disagreement.
+    let sentiment = cqs::note::snap_sentiment(sentiment);
     let mentions = validate_mentions(mentions.unwrap_or(&[]), "--mentions")?;
     // Normalize kind (trim + lowercase + reject empty). Mirrors the
     // parser's `normalize_kind` semantics so add and parse stay in sync —
@@ -609,7 +614,10 @@ fn cmd_notes_update(
 
     let text_trimmed = text.trim();
     let new_text_owned = new_text.map(|s| s.to_string());
-    let new_sentiment_clamped = new_sentiment.map(|s| s.clamp(-1.0, 1.0));
+    // Snap to the discrete grid before the TOML write — same rationale as
+    // `notes add`: keep the file, the confirmation output, and the DB all
+    // showing the same value.
+    let new_sentiment_clamped = new_sentiment.map(cqs::note::snap_sentiment);
     let new_mentions_owned = new_mentions
         .map(|m| validate_mentions(m, "--new-mentions"))
         .transpose()?;

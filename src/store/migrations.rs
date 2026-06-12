@@ -398,6 +398,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (25, 26, |c| Box::pin(migrate_v25_to_v26(c))),
     (26, 27, |c| Box::pin(migrate_v26_to_v27(c))),
     (27, 28, |c| Box::pin(migrate_v27_to_v28(c))),
+    (28, 29, |c| Box::pin(migrate_v28_to_v29(c))),
 ];
 
 /// Run a single migration step
@@ -1012,7 +1013,7 @@ async fn migrate_v26_to_v27(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 
     tracing::info!(
         "Migrated to v27: chunks.needs_embedding flag + partial index. \
-         Enables --llm-summaries first-pass-embed skip (#1452)."
+         Enables --llm-summaries first-pass-embed skip #1452."
     );
     Ok(())
 }
@@ -1056,6 +1057,123 @@ async fn migrate_v27_to_v28(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v28 → v29: file_registry table #1774 + notes.sentiment CHECK constraint.
+///
+/// **file_registry.** A file that parses to zero chunks (comment-only source,
+/// parser-emitted-empty) has no chunk row to carry the reconcile fingerprint,
+/// so the staleness pre-filter saw no rows, treated it as un-indexed, and
+/// re-parsed it on every `cqs index` run. The new `file_registry` table
+/// (origin → source_mtime/size/content_hash, mirroring the chunk-row
+/// fingerprint columns) persists the fingerprint independent of chunk rows;
+/// the staleness readers UNION it so a zero-chunk origin surfaces a stored
+/// fingerprint and skips the parse. Created empty: the next `cqs index` /
+/// watch reindex populates it as zero-chunk files are seen. Backfilling from
+/// chunk rows is unnecessary — files WITH chunks already carry the fingerprint
+/// on their rows, and an absent registry row contributes nothing to the
+/// readers' MAX()-over-UNION merge.
+///
+/// **notes.sentiment CHECK.** Sentiment is documented as DISCRETE (only -1,
+/// -0.5, 0, 0.5, 1), but pre-v29 the schema accepted any REAL. The CHECK pins
+/// the invariant at the schema layer (per the invalidation-must-be-enforced
+/// principle: enforce in schema, not call-site validation alone). SQLite cannot
+/// `ALTER TABLE ADD CONSTRAINT`, so the notes table is rebuilt in place
+/// (CREATE new → INSERT … SELECT → DROP old → RENAME), all transactional within
+/// the migration's single `pool.begin()`. Existing rows whose sentiment is
+/// off-grid (e.g. a `-0.8` written by a pre-snap `parse_notes_str`) are
+/// clamp-rewritten to the nearest discrete value during the copy so the rebuilt
+/// table satisfies its own CHECK — `round(sentiment * 2) / 2` after a
+/// `[-1, 1]` clamp lands exactly on the five legal values. A `warn!` reports
+/// how many rows were rewritten.
+async fn migrate_v28_to_v29(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v28_to_v29").entered();
+
+    // --- Part 1: file_registry table ---
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS file_registry (
+            origin TEXT PRIMARY KEY,
+            source_mtime INTEGER,
+            source_size INTEGER,
+            source_content_hash BLOB
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    // --- Part 2: notes.sentiment CHECK constraint ---
+    // Count off-grid rows up front so the migration log makes the clamp
+    // visible instead of silent. The CHECK below uses the same five-value
+    // IN-list the rebuilt table declares.
+    let (off_grid,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM notes \
+         WHERE sentiment NOT IN (-1.0, -0.5, 0.0, 0.5, 1.0)",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    // Rebuild the notes table with the CHECK. SQLite has no ADD CONSTRAINT, so
+    // create a sibling with the constraint, copy rows (snapping off-grid
+    // sentiment to the nearest discrete value via round(s*2)/2 over a [-1,1]
+    // clamp — MAX/MIN clamp, then the round expression), drop the old, rename.
+    // The `notes_fts` virtual table and its indexes are untouched (they key on
+    // `id`, which is preserved verbatim).
+    sqlx::query(
+        "CREATE TABLE notes_v29 (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            sentiment REAL NOT NULL CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0)),
+            mentions TEXT,
+            embedding BLOB NOT NULL,
+            source_file TEXT NOT NULL,
+            file_mtime INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO notes_v29 \
+            (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at, kind) \
+         SELECT id, text, \
+                round(MAX(-1.0, MIN(1.0, sentiment)) * 2.0) / 2.0, \
+                mentions, embedding, source_file, file_mtime, created_at, updated_at, kind \
+         FROM notes",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("DROP TABLE notes").execute(&mut *conn).await?;
+    sqlx::query("ALTER TABLE notes_v29 RENAME TO notes")
+        .execute(&mut *conn)
+        .await?;
+
+    // Recreate the indexes the original `notes` table carried — they were tied
+    // to the dropped table and don't survive the rename.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_notes_sentiment ON notes(sentiment)")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_notes_kind ON notes(kind)")
+        .execute(&mut *conn)
+        .await?;
+
+    if off_grid > 0 {
+        tracing::warn!(
+            rewritten = off_grid,
+            "v28→v29 migration clamp-rewrote {off_grid} notes with off-grid sentiment \
+             to the nearest discrete value (-1, -0.5, 0, 0.5, 1) to satisfy the new CHECK"
+        );
+    }
+
+    tracing::info!(
+        "Migrated to v29: file_registry table (#1774 — zero-chunk files persist a \
+         reconcile fingerprint and stop re-parsing every run) + notes.sentiment CHECK \
+         pinning the five discrete documented values."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,7 +1206,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 28);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
     }
 
     #[test]
@@ -3984,6 +4102,304 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(round.as_deref(), Some("canon123"));
+        });
+    }
+
+    /// Build a minimal v28 schema (metadata + a notes table WITHOUT the
+    /// sentiment CHECK, stamped at version 28) at `db_path`. Returns the open
+    /// pool. Shared by the v28→v29 tests.
+    async fn setup_v28_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pre-v29 notes table: sentiment is a bare REAL with no CHECK.
+        sqlx::query(
+            "CREATE TABLE notes (
+                id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                sentiment REAL NOT NULL,
+                mentions TEXT,
+                embedding BLOB NOT NULL,
+                source_file TEXT NOT NULL,
+                file_mtime INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                kind TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '28')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v28 → v29 creates the `file_registry` table #1774 that persists the
+    /// reconcile fingerprint independent of chunk rows. Verifies the table
+    /// exists, has the right columns, and round-trips an UPSERT.
+    #[test]
+    fn test_migrate_v28_to_v29_creates_file_registry() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v28_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 28, 29).await.unwrap();
+
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "29");
+
+            // The table exists.
+            let (tbl_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(tbl_count, 1, "v29 must create the file_registry table");
+
+            // Round-trip an UPSERT: insert, then conflict-update.
+            sqlx::query(
+                "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash) \
+                 VALUES ('src/empty.rs', 1000, 42, X'aabb')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash) \
+                 VALUES ('src/empty.rs', 2000, 84, X'ccdd') \
+                 ON CONFLICT(origin) DO UPDATE SET \
+                     source_mtime = excluded.source_mtime, \
+                     source_size = excluded.source_size, \
+                     source_content_hash = excluded.source_content_hash",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (mtime, size): (Option<i64>, Option<i64>) = sqlx::query_as(
+                "SELECT source_mtime, source_size FROM file_registry WHERE origin = 'src/empty.rs'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(mtime, Some(2000), "UPSERT must replace mtime");
+            assert_eq!(size, Some(84), "UPSERT must replace size");
+
+            // PRIMARY KEY on origin: exactly one row after the conflict.
+            let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM file_registry")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(cnt, 1, "origin is the PRIMARY KEY — no duplicate row");
+        });
+    }
+
+    /// v28 → v29 adds the notes.sentiment CHECK and clamp-rewrites any
+    /// pre-existing off-grid rows to the nearest discrete value (-1, -0.5, 0,
+    /// 0.5, 1). Verifies the clamp, the CHECK rejection of a new off-grid
+    /// insert, and that legal values still insert.
+    #[test]
+    fn test_migrate_v28_to_v29_sentiment_check_and_clamp() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v28_schema(&db_path).await;
+
+            // Seed off-grid notes the migration must clamp. -0.8 → -1.0,
+            // 0.9 → 1.0, 0.2 → 0.0, -0.3 → -0.5, 5.0 (out of range) → 1.0.
+            let seeds = [
+                ("n1", -0.8_f64, -1.0_f64),
+                ("n2", 0.9, 1.0),
+                ("n3", 0.2, 0.0),
+                ("n4", -0.3, -0.5),
+                ("n5", 5.0, 1.0),
+                ("n6", 0.5, 0.5), // already legal — must survive unchanged
+            ];
+            for (id, raw, _) in &seeds {
+                sqlx::query(
+                    "INSERT INTO notes (id, text, sentiment, mentions, embedding, \
+                     source_file, file_mtime, created_at, updated_at) \
+                     VALUES (?1, 'note', ?2, '[]', X'', 'notes.toml', 0, 'now', 'now')",
+                )
+                .bind(id)
+                .bind(raw)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            let pool = migrate(pool, &db_path, 28, 29).await.unwrap();
+
+            let (v,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(v, "29");
+
+            // Every seeded row clamped to its expected discrete value.
+            for (id, _, expected) in &seeds {
+                let (got,): (f64,) = sqlx::query_as("SELECT sentiment FROM notes WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    got, *expected,
+                    "note {id} sentiment must clamp to the nearest discrete value"
+                );
+            }
+
+            // The CHECK now rejects an off-grid insert.
+            let bad = sqlx::query(
+                "INSERT INTO notes (id, text, sentiment, mentions, embedding, \
+                 source_file, file_mtime, created_at, updated_at) \
+                 VALUES ('bad', 'x', -0.8, '[]', X'', 'notes.toml', 0, 'now', 'now')",
+            )
+            .execute(&pool)
+            .await;
+            assert!(
+                bad.is_err(),
+                "post-v29 the CHECK must reject an off-grid sentiment"
+            );
+
+            // A legal value still inserts.
+            sqlx::query(
+                "INSERT INTO notes (id, text, sentiment, mentions, embedding, \
+                 source_file, file_mtime, created_at, updated_at) \
+                 VALUES ('good', 'x', -0.5, '[]', X'', 'notes.toml', 0, 'now', 'now')",
+            )
+            .execute(&pool)
+            .await
+            .expect("a legal discrete sentiment must insert under the v29 CHECK");
+
+            // The notes indexes survived the table rebuild.
+            let (idx_count,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'index' AND name IN ('idx_notes_sentiment', 'idx_notes_kind')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                idx_count, 2,
+                "v29 must recreate the notes indexes after rebuild"
+            );
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v28 → v29) must produce the same
+    /// shape for the two objects v29 touches: `file_registry` exists in both,
+    /// and `notes` carries the sentiment CHECK in both. Compares the
+    /// `sqlite_master.sql` text for the notes table CHECK token and the
+    /// presence of the registry table.
+    #[test]
+    fn test_v29_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Fresh-create: apply schema.sql to an in-memory DB.
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            // Use the same BEGIN/END-aware splitter `Store::init` uses — a naive
+            // split on `;` breaks the `bump_splade_on_chunks_delete` trigger
+            // body (which contains internal `;`).
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+
+            // file_registry exists in the fresh schema.
+            let (fresh_reg,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert_eq!(fresh_reg, 1, "fresh schema.sql must define file_registry");
+
+            // Fresh notes table carries the sentiment CHECK.
+            let (fresh_notes_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notes'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert!(
+                fresh_notes_sql.to_lowercase().contains("check"),
+                "fresh notes table must carry the sentiment CHECK, got: {fresh_notes_sql}"
+            );
+
+            // Migrated: build v28, migrate to v29.
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v28_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 28, 29).await.unwrap();
+
+            let (mig_reg,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(mig_reg, 1, "migrated DB must define file_registry");
+
+            let (mig_notes_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notes'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                mig_notes_sql.to_lowercase().contains("check"),
+                "migrated notes table must carry the sentiment CHECK, got: {mig_notes_sql}"
+            );
         });
     }
 }

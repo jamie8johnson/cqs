@@ -1371,7 +1371,7 @@ impl<Mode> Store<Mode> {
 /// - Semicolons outside a `BEGIN`/`END` block end the statement
 /// - Semicolons inside a `BEGIN`/`END` block are part of the body
 /// - Case-insensitive keyword matching at word boundaries
-fn split_sql_statements(sql: &str) -> Vec<String> {
+pub(crate) fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut statements: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut in_trigger_body = false;

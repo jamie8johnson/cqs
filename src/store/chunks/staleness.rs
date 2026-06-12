@@ -313,6 +313,22 @@ async fn delete_origins_in_tx(
             calls_stmt = calls_stmt.bind(origin);
         }
         calls_stmt.execute(&mut **tx).await?;
+
+        // Prune the v29 `file_registry` fingerprint for the same origins
+        // #1774. These origins are being removed wholesale (file gone from
+        // disk / now gitignored), so the persisted zero-chunk fingerprint must
+        // go with them — otherwise a deleted-then-recreated file would be
+        // treated as unchanged against a stale registry row. Same transaction
+        // as the chunk delete so the registry never outlives the chunks.
+        let registry_query = format!(
+            "DELETE FROM file_registry WHERE origin IN ({})",
+            placeholder_str
+        );
+        let mut registry_stmt = sqlx::query(sqlx::AssertSqlSafe(registry_query.as_str()));
+        for origin in batch {
+            registry_stmt = registry_stmt.bind(origin);
+        }
+        registry_stmt.execute(&mut **tx).await?;
     }
 
     // Sweep orphan sparse_vectors inside the same transaction so no window
@@ -374,10 +390,19 @@ impl Store<ReadWrite> {
             // lock closes it.
             let (_guard, mut tx) = self.begin_write().await?;
 
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             // Reconcile stored origins against current filesystem state via
             // `origin_exists`. Pre-compute the slash-normalized string set
@@ -441,10 +466,19 @@ impl Store<ReadWrite> {
             // begin_write is reflected here; any reindex that committed
             // *after* will be queued behind our write lock. Either way the
             // missing-set lines up with what's actually deletable.
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             // Same filesystem-existence reconciliation as `prune_missing`.
             // Pre-compute the slash-normalized string set once so the
@@ -578,10 +612,19 @@ impl Store<ReadWrite> {
 
             // Collect distinct origins via the tx's read snapshot so reads
             // and deletes serialise as one unit.
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'")
-                    .fetch_all(&mut *tx)
-                    .await?;
+            // UNION (not UNION ALL) dedupes across the two sources. The
+            // `file_registry` arm is load-bearing for v29 #1774: a zero-chunk
+            // origin has NO chunk row, so without it a deleted comment-only
+            // file would never enter the missing-set and its registry row
+            // would leak forever — a permanent phantom in `list_stale_files`'
+            // missing list that no GC pass could ever collect.
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT origin FROM chunks WHERE source_type = 'file' \
+                 UNION \
+                 SELECT origin FROM file_registry",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
 
             let cap = max_paths.unwrap_or(usize::MAX);
             let mut ignored: Vec<String> = Vec::new();
@@ -673,14 +716,23 @@ impl<Mode> Store<Mode> {
             // picks the newer fingerprint when an in-flight reindex briefly
             // holds two rows for the same file — same dedup semantics as
             // `indexed_file_origins`.
+            // v29 #1774: UNION `file_registry` so zero-chunk origins are
+            // included in the staleness report — a comment-only file whose disk
+            // bytes changed should surface as stale even though it has no chunk
+            // rows. Same `MAX` GROUP BY collapse as `indexed_file_origins`.
             type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
             let rows: Vec<FpRow> = sqlx::query_as(
                 "SELECT origin, \
                         MAX(source_mtime) AS mtime, \
                         MAX(source_size) AS size, \
                         MAX(source_content_hash) AS content_hash \
-                 FROM chunks \
-                 WHERE source_type = 'file' \
+                 FROM ( \
+                     SELECT origin, source_mtime, source_size, source_content_hash \
+                     FROM chunks WHERE source_type = 'file' \
+                     UNION ALL \
+                     SELECT origin, source_mtime, source_size, source_content_hash \
+                     FROM file_registry \
+                 ) \
                  GROUP BY origin",
             )
             .fetch_all(&self.pool)
@@ -801,14 +853,26 @@ impl<Mode> Store<Mode> {
             // walks short-circuit on size match.
             // Tuple shape: (origin, mtime, size, content_hash) — all nullable
             // except origin.
+            //
+            // v29 #1774: UNION the `file_registry` table so origins that
+            // parse to ZERO chunks (no chunk row to carry a fingerprint) still
+            // surface a stored fingerprint and are classified MODIFIED-vs-
+            // unchanged instead of ADDED. A file WITH chunks contributes from
+            // both sources with identical fingerprints (the stamp writes both),
+            // so the `MAX` GROUP BY collapses to one row either way.
             type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
             let rows: Vec<FpRow> = sqlx::query_as(
                 "SELECT origin, \
                         MAX(source_mtime) AS mtime, \
                         MAX(source_size) AS size, \
                         MAX(source_content_hash) AS content_hash \
-                 FROM chunks \
-                 WHERE source_type = 'file' \
+                 FROM ( \
+                     SELECT origin, source_mtime, source_size, source_content_hash \
+                     FROM chunks WHERE source_type = 'file' \
+                     UNION ALL \
+                     SELECT origin, source_mtime, source_size, source_content_hash \
+                     FROM file_registry \
+                 ) \
                  GROUP BY origin",
             )
             .fetch_all(&self.pool)
@@ -867,18 +931,33 @@ impl<Mode> Store<Mode> {
             type FpRow = (String, Option<i64>, Option<i64>, Option<Vec<u8>>);
             let mut out: HashMap<String, FileFingerprint> = HashMap::with_capacity(origins.len());
             for batch in origins.chunks(BATCH_SIZE) {
+                // Two placeholder runs of the same `batch` length — one binds
+                // the chunks subquery's `origin IN (...)`, the other the
+                // registry subquery's. Both are bound in order below.
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
+                // v29 #1774: UNION `file_registry` so zero-chunk origins
+                // surface their persisted fingerprint here too (the reconcile
+                // pre-filter's primary lookup). Same `MAX` GROUP BY collapse as
+                // `indexed_file_origins`.
                 let sql = format!(
                     "SELECT origin, \
                             MAX(source_mtime) AS mtime, \
                             MAX(source_size) AS size, \
                             MAX(source_content_hash) AS content_hash \
-                     FROM chunks \
-                     WHERE source_type = 'file' AND origin IN ({}) \
+                     FROM ( \
+                         SELECT origin, source_mtime, source_size, source_content_hash \
+                         FROM chunks WHERE source_type = 'file' AND origin IN ({}) \
+                         UNION ALL \
+                         SELECT origin, source_mtime, source_size, source_content_hash \
+                         FROM file_registry WHERE origin IN ({}) \
+                     ) \
                      GROUP BY origin",
-                    placeholders
+                    placeholders, placeholders
                 );
                 let mut query = sqlx::query_as::<_, FpRow>(sqlx::AssertSqlSafe(sql.as_str()));
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
                 for origin in batch {
                     query = query.bind(*origin);
                 }
@@ -931,16 +1010,31 @@ impl<Mode> Store<Mode> {
                 let placeholders = crate::store::helpers::make_placeholders(batch.len());
                 // `MAX(...)` dedup: same semantics as `indexed_file_origins`
                 // when an in-flight reindex briefly holds two rows per origin.
+                // v29 #1774: UNION `file_registry` so a zero-chunk origin
+                // passed to the per-query staleness check resolves against its
+                // persisted fingerprint instead of being absent (which would
+                // silently skip the staleness warning). Two `origin IN (...)`
+                // placeholder runs, bound in order below.
                 let sql = format!(
                     "SELECT origin, \
                             MAX(source_mtime) AS mtime, \
                             MAX(source_size) AS size, \
                             MAX(source_content_hash) AS content_hash \
-                     FROM chunks WHERE origin IN ({}) GROUP BY origin",
-                    placeholders
+                     FROM ( \
+                         SELECT origin, source_mtime, source_size, source_content_hash \
+                         FROM chunks WHERE origin IN ({}) \
+                         UNION ALL \
+                         SELECT origin, source_mtime, source_size, source_content_hash \
+                         FROM file_registry WHERE origin IN ({}) \
+                     ) \
+                     GROUP BY origin",
+                    placeholders, placeholders
                 );
 
                 let mut query = sqlx::query_as::<_, FpRow>(sqlx::AssertSqlSafe(sql.as_str()));
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
                 for origin in batch {
                     query = query.bind(*origin);
                 }
@@ -1429,6 +1523,154 @@ mod tests {
         let map = store.indexed_file_origins().expect("indexed_file_origins");
         assert_eq!(map.len(), 1);
         assert!(map.keys().any(|k| k.ends_with("src/main.rs")));
+    }
+
+    // ===== v29 file_registry #1774 tests =====
+
+    /// A zero-chunk origin whose fingerprint lives ONLY in `file_registry`
+    /// (no chunk rows) must surface from `indexed_file_origins` and
+    /// `fingerprints_for_origins` — the UNION wiring that lets the staleness
+    /// pre-filter skip re-parsing comment-only files every run.
+    #[test]
+    fn test_file_registry_origin_surfaces_in_readers() {
+        use crate::store::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+
+        let fp = FileFingerprint {
+            mtime: Some(5000),
+            size: Some(17),
+            content_hash: Some([7u8; 32]),
+        };
+        let stamped = store
+            .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/empty.rs"), fp.clone())])
+            .expect("registry stamp");
+        assert_eq!(stamped, 1);
+
+        // indexed_file_origins (full-tree map) includes the registry origin
+        // even though no chunk row exists for it.
+        let map = store.indexed_file_origins().expect("indexed_file_origins");
+        let got = map
+            .get("src/empty.rs")
+            .expect("registry-only origin must appear in indexed_file_origins");
+        assert_eq!(got.mtime, Some(5000));
+        assert_eq!(got.size, Some(17));
+        assert_eq!(got.content_hash, Some([7u8; 32]));
+
+        // fingerprints_for_origins (batched, origin-scoped) returns it too.
+        let batched = store
+            .fingerprints_for_origins(&["src/empty.rs"])
+            .expect("fingerprints_for_origins");
+        assert_eq!(
+            batched.get("src/empty.rs").and_then(|f| f.mtime),
+            Some(5000),
+            "registry-only origin must resolve in the batched reconcile lookup"
+        );
+    }
+
+    /// `delete_by_origin` must prune the `file_registry` row alongside the
+    /// chunks so a deleted-then-recreated file isn't matched against a stale
+    /// persisted fingerprint.
+    #[test]
+    fn test_delete_by_origin_prunes_file_registry() {
+        use crate::store::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, _dir) = setup_store();
+
+        let fp = FileFingerprint {
+            mtime: Some(9000),
+            size: Some(3),
+            content_hash: Some([1u8; 32]),
+        };
+        store
+            .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/gone.rs"), fp)])
+            .unwrap();
+        assert!(
+            store
+                .indexed_file_origins()
+                .unwrap()
+                .contains_key("src/gone.rs"),
+            "precondition: registry origin present"
+        );
+
+        store
+            .delete_by_origin(&PathBuf::from("src/gone.rs"))
+            .unwrap();
+
+        assert!(
+            !store
+                .indexed_file_origins()
+                .unwrap()
+                .contains_key("src/gone.rs"),
+            "delete_by_origin must prune the file_registry row"
+        );
+    }
+
+    /// `prune_missing` (via `delete_origins_in_tx`) must remove the
+    /// `file_registry` row for an origin no longer on disk — otherwise the
+    /// persisted zero-chunk fingerprint outlives the file.
+    #[test]
+    fn test_prune_missing_prunes_file_registry() {
+        use crate::store::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, dir) = setup_store();
+
+        // Registry origin for a file that does NOT exist on disk.
+        let fp = FileFingerprint {
+            mtime: Some(1234),
+            size: Some(8),
+            content_hash: Some([2u8; 32]),
+        };
+        store
+            .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/missing_empty.rs"), fp)])
+            .unwrap();
+
+        // Deliberately NO chunk row for this origin: the registry-only case is
+        // the population #1774 exists for, and the prune's origin enumeration
+        // must UNION `file_registry` to see it at all. (A chunk-bearing origin
+        // would mask an enumeration that only walks `chunks`.)
+
+        // existing_files is empty → the origin is "missing" → pruned.
+        let existing = HashSet::new();
+        store.prune_missing(&existing, dir.path()).unwrap();
+
+        assert!(
+            !store
+                .indexed_file_origins()
+                .unwrap()
+                .contains_key("src/missing_empty.rs"),
+            "prune_missing must remove the file_registry row for a registry-only missing origin"
+        );
+    }
+
+    /// `prune_all` must also collect a registry-only missing origin — the
+    /// daemon GC pass uses prune_all, and the inotify delete event (the only
+    /// other cleanup) is unreliable on WSL mounts, so GC is the backstop.
+    #[test]
+    fn test_prune_all_prunes_registry_only_origin() {
+        use crate::store::FileFingerprint;
+        use std::path::PathBuf;
+        let (store, dir) = setup_store();
+
+        let fp = FileFingerprint {
+            mtime: Some(99),
+            size: Some(5),
+            content_hash: Some([3u8; 32]),
+        };
+        store
+            .set_file_registry_fingerprints_batch(&[(PathBuf::from("src/ghost_empty.rs"), fp)])
+            .unwrap();
+
+        let existing = HashSet::new();
+        store.prune_all(&existing, dir.path()).unwrap();
+
+        assert!(
+            !store
+                .indexed_file_origins()
+                .unwrap()
+                .contains_key("src/ghost_empty.rs"),
+            "prune_all must remove a registry-only missing origin"
+        );
     }
 
     // ===== prune_all tests =====

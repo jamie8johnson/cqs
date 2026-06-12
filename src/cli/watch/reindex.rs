@@ -311,6 +311,76 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
     true
 }
 
+/// Stamp the v29 `file_registry` reconcile fingerprint for watched files that
+/// parsed successfully but produced ZERO chunks #1774.
+///
+/// A zero-chunk file (comment-only source, parser-emitted-empty) has no chunk
+/// row to carry the chunk-level fingerprint the per-file upsert loop writes, so
+/// without this the watch reconcile reclassifies it ADDED every 30 s tick and
+/// re-parses it forever. Computing the full disk fingerprint here (mtime + size
+/// + BLAKE3) and persisting it in the registry lets the next reconcile pass see
+/// a stored fingerprint and skip the file like any unchanged one.
+///
+/// `rel_paths` are project-relative; `root` joins them for the disk read.
+/// Best-effort: a stat/read failure forfeits the skip (the file re-parses next
+/// tick) but is not fatal. Mirrors the streaming-blake3 + size-from-metadata
+/// pattern the chunk-carrying path uses.
+fn stamp_zero_chunk_registry(store: &Store, root: &Path, rel_paths: &[PathBuf]) {
+    if rel_paths.is_empty() {
+        return;
+    }
+    let mut entries: Vec<(PathBuf, cqs::store::FileFingerprint)> =
+        Vec::with_capacity(rel_paths.len());
+    for rel in rel_paths {
+        let abs_path = root.join(rel);
+        let meta = match std::fs::metadata(&abs_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(
+                    path = %abs_path.display(),
+                    error = %e,
+                    "Zero-chunk registry stamp: metadata() failed; file will re-parse next tick"
+                );
+                continue;
+            }
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(cqs::duration_to_mtime_millis);
+        let size = Some(meta.len());
+        let content_hash = match std::fs::File::open(&abs_path) {
+            Ok(f) => {
+                let mut hasher = blake3::Hasher::new();
+                if hasher.update_reader(std::io::BufReader::new(f)).is_ok() {
+                    Some(*hasher.finalize().as_bytes())
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        };
+        entries.push((
+            rel.clone(),
+            cqs::store::FileFingerprint {
+                mtime,
+                size,
+                content_hash,
+            },
+        ));
+    }
+    if !entries.is_empty() {
+        if let Err(e) = store.set_file_registry_fingerprints_batch(&entries) {
+            tracing::warn!(
+                files = entries.len(),
+                error = %e,
+                "Failed to stamp file_registry for zero-chunk watched files; they will re-parse next tick"
+            );
+        }
+    }
+}
+
 /// Reindex specific files.
 ///
 /// Returns `(chunk_count, content_hashes)` — the content hashes can be used for
@@ -449,6 +519,14 @@ pub(super) fn reindex_files(
     let chunks = crate::cli::pipeline::apply_windowing(chunks, embedder);
 
     if chunks.is_empty() {
+        // Every survivor parsed to zero chunks (comment-only files, etc.). They
+        // are all in `all_function_calls` (parse-error and deleted files never
+        // landed there). Stamp their reconcile fingerprint into `file_registry`
+        // #1774 so the next reconcile tick skips them instead of re-parsing to
+        // zero chunks every 30 s. Without this early-return stamp, an all-empty
+        // batch would never reach the per-file fingerprint path below.
+        let zero_chunk_files: Vec<PathBuf> = all_function_calls.keys().cloned().collect();
+        stamp_zero_chunk_registry(store, root, &zero_chunk_files);
         return Ok((0, Vec::new()));
     }
 
@@ -729,6 +807,7 @@ pub(super) fn reindex_files(
     // without this clear. Handles the zero-chunk edge case (deleted-only /
     // parser-emitted-empty) while keeping the atomic-with-chunks path for the
     // common case.
+    let mut zero_chunk_files: Vec<PathBuf> = Vec::new();
     for (rel_path, fcs) in &all_function_calls {
         if !by_file.contains_key(rel_path) {
             if let Err(e) = store.upsert_function_calls(rel_path, fcs) {
@@ -738,8 +817,16 @@ pub(super) fn reindex_files(
                     "Failed to write function_calls for zero-chunk watched file"
                 );
             }
+            zero_chunk_files.push(rel_path.clone());
         }
     }
+
+    // Stamp the v29 `file_registry` reconcile fingerprint for the zero-chunk
+    // survivors gathered above #1774 so the next reconcile tick skips them
+    // instead of re-parsing to zero chunks every 30 s. The chunk-carrying files
+    // already stamped their fingerprint inline (`set_file_fingerprint` in the
+    // per-file loop above), which shadows into the registry too.
+    stamp_zero_chunk_registry(store, root, &zero_chunk_files);
 
     // Upsert type edges from the earlier parse_file_all() results.
     // Type edges are soft data — separate from chunk+call atomicity.

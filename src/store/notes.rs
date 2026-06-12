@@ -469,27 +469,35 @@ mod tests {
         );
     }
 
-    /// Infinite sentiment (±Inf) round-trips through SQLite unlike NaN.
-    /// `note_stats` threshold comparisons work correctly: +Inf > 0.3 so
-    /// it counts as a pattern, -Inf < -0.3 so it counts as a warning.
-    /// Extreme values are not rejected by schema — callers should clamp.
+    /// Since v29 the `notes.sentiment` CHECK pins the column to the five
+    /// discrete values, so infinite sentiment (±Inf) — which pre-v29
+    /// round-tripped through SQLite — is now rejected at the schema layer. The
+    /// normal write path (`parse_notes_str`) clamps+snaps before reaching the
+    /// store, so a raw `Note` carrying ±Inf can only arrive via a bypass; the
+    /// CHECK is the backstop that keeps off-grid values out of the table.
     #[test]
-    fn test_upsert_notes_infinity_sentiment_roundtrips() {
+    fn test_upsert_notes_infinity_sentiment_rejected_by_check() {
         let (store, _dir) = setup_store();
         let source = Path::new("inf.toml");
 
-        let notes = vec![
-            make_note("pos_inf", "huge positive", f32::INFINITY),
-            make_note("neg_inf", "huge negative", f32::NEG_INFINITY),
-        ];
-        store.upsert_notes_batch(&notes, source, 100).unwrap();
+        for inf in [f32::INFINITY, f32::NEG_INFINITY] {
+            let notes = vec![make_note("inf", "huge", inf)];
+            let err = store
+                .upsert_notes_batch(&notes, source, 100)
+                .expect_err("±Inf sentiment must fail the v29 discrete-value CHECK");
+            let msg = err.to_string().to_lowercase();
+            assert!(
+                msg.contains("check") || msg.contains("constraint"),
+                "error should mention the CHECK rejection, got: {msg}"
+            );
+        }
 
-        assert_eq!(store.note_count().unwrap(), 2);
-
-        let stats = store.note_stats().unwrap();
-        assert_eq!(stats.total, 2);
-        assert_eq!(stats.warnings, 1, "-Inf satisfies `sentiment < threshold`");
-        assert_eq!(stats.patterns, 1, "+Inf satisfies `sentiment > threshold`");
+        // No partial write survived either failed transaction.
+        assert_eq!(
+            store.note_count().unwrap(),
+            0,
+            "failed off-grid upsert must not have written a row"
+        );
     }
 
     /// Empty mentions round-trip as `[]` and come back as an empty Vec.

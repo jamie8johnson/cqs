@@ -1,4 +1,16 @@
--- cq index schema v28 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28 columns annotated inline below)
+-- cq index schema v29 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29 columns annotated inline below)
+-- v29: file_registry table (origin → source_mtime/size/content_hash) persists
+--      the reconcile fingerprint for files that parse to ZERO chunks, where the
+--      chunk-row fingerprint columns have no row to live on. Without it, a
+--      zero-chunk file (comment-only source, parser-empty) is reclassified
+--      "not indexed" every run and re-parsed forever. The staleness readers
+--      (fingerprints_for_origins / indexed_file_origins / check_origins_stale /
+--      list_stale_files) UNION this table so a zero-chunk origin still surfaces
+--      a stored fingerprint and skips the parse like any unchanged file. Rows
+--      are pruned alongside chunk deletes (delete_by_origin / prune paths).
+--      v29 also adds a CHECK on notes.sentiment pinning it to the five discrete
+--      values (-1, -0.5, 0, 0.5, 1) the docs promise; parse_notes_str snaps to
+--      the nearest discrete value so continuous TOML inputs satisfy the CHECK.
 -- v28: chunks.canonical_hash TEXT (nullable) + idx_chunks_canonical_hash. blake3
 --      of a comment-/whitespace-normalized form of the chunk content; keys the
 --      embedding-reuse cache so comment-only / formatting-only edits reuse the
@@ -100,6 +112,24 @@ CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name);
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);
 CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id);
 
+-- v29 (#1774): per-origin reconcile fingerprint that persists INDEPENDENT of
+-- chunk rows. The reconcile fingerprint normally lives on chunk rows
+-- (chunks.source_mtime/source_size/source_content_hash), but a file that parses
+-- to zero chunks (comment-only source, parser-emitted-empty) has no chunk row to
+-- carry it. Before v29 such a file was re-parsed on EVERY `cqs index` run because
+-- the staleness pre-filter saw no rows and treated it as un-indexed. This table
+-- gives those origins somewhere to stash the fingerprint so the next run skips
+-- the parse. Columns mirror the chunk-row fingerprint shape exactly. Rows are
+-- written inside the same transaction as the chunk writes / prune (crash-safety
+-- convention, #1772) and pruned alongside chunk deletes (delete_by_origin /
+-- prune_missing / prune_all / prune_gitignored, #1759).
+CREATE TABLE IF NOT EXISTS file_registry (
+    origin TEXT PRIMARY KEY,              -- slash-normalized source identifier (matches chunks.origin)
+    source_mtime INTEGER,                 -- nullable: not all sources have mtime
+    source_size INTEGER,                  -- file size in bytes; NULL when unread
+    source_content_hash BLOB              -- BLAKE3 of file bytes (32 bytes); NULL when unhashed
+);
+
 -- FTS5 virtual table for keyword search (RRF hybrid search)
 -- Normalized text (camelCase/snake_case split to words) populated by application
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -157,7 +187,12 @@ CREATE INDEX IF NOT EXISTS idx_type_edges_target ON type_edges(target_type_name)
 CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,           -- "note:0", "note:1", etc.
     text TEXT NOT NULL,            -- the note content
-    sentiment REAL NOT NULL,       -- -1.0 to +1.0 (negative=warning, positive=pattern)
+    -- v29 (#1774 ride-along): sentiment is DISCRETE — only the five documented
+    -- values are valid. The CHECK enforces the invariant at the schema layer so
+    -- it can't be bypassed by a future call site; `parse_notes_str` snaps
+    -- continuous TOML inputs to the nearest discrete value before write, and the
+    -- v28→v29 migration clamp-rewrites any pre-existing off-grid rows.
+    sentiment REAL NOT NULL CHECK (sentiment IN (-1.0, -0.5, 0.0, 0.5, 1.0)),  -- negative=warning, positive=pattern
     mentions TEXT,                 -- JSON array of mentioned paths/functions
     embedding BLOB NOT NULL,       -- legacy: was 769-dim, now empty blob (SQ-9)
     source_file TEXT NOT NULL,     -- path to notes.toml
