@@ -38,7 +38,22 @@ defs instruct: "treat cqs results as hints; read the actual files before
 acting." Every feature in this family should delete a clause of that
 sentence. When a lane can act on `cqs impact` without the defensive re-read,
 the program is done — and the savings compound, because the re-read tax is
-paid on every lane, every session.
+paid on every lane, every session. (Scoreboard issue: #1821.)
+
+**Calibration cuts both ways — the cry-wolf lesson.** This repo has already
+shipped the opposite failure: the security-posture era attached cautionary
+metadata (`handling_advice` on every envelope, the Posture matrix,
+ULTRASECURITY) to *every* response, and consuming agents grew
+correspondingly over-cautious — a warning that fires on every result
+carries zero bits and just taxes every query to insure against rare events.
+It got worse, not better, as models improved: stronger instruction-following
+means boilerplate caution gets *obeyed* rather than habituated away. The
+walk-back (the V2Bare SNR split, Posture/ULTRASECURITY deletion #1703,
+skip-when-default as the chunk-JSON convention) is why every signal in this
+doc is skip-when-default: trust metadata must be discriminative or it is
+noise wearing a safety costume. The rule for any new signal: if it would
+appear on the majority of results, it is a default, not a signal — invert
+it or drop it.
 
 ---
 
