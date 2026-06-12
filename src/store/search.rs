@@ -36,8 +36,9 @@ impl<Mode> Store<Mode> {
     /// template (filter conditions + cursor + limit binds appended by the
     /// caller); `bind_values` are the filter binds that precede the cursor and
     /// limit. `need_name` controls whether the `name` column is read into the
-    /// returned rows. Store-owned SQL — the scoring loop reads the returned
-    /// rows search-side.
+    /// returned rows. Store-executed SQL — the template is still composed
+    /// search-side (its conditions come from the search filter), and the
+    /// scoring loop reads the returned rows search-side.
     pub(crate) async fn fetch_brute_force_batch(
         &self,
         sql: &str,
