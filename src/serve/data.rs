@@ -228,7 +228,7 @@ pub(crate) struct ClusterResponse {
 /// only the top N + only the edges whose endpoints touch that name set.
 /// When the caller passes `max_nodes = None`, `crate::limits::serve_graph_max_nodes()`
 /// is substituted; when they pass a value larger than the hard ceiling, the
-/// value is clamped. SEC-3 closes the DoS vector of a single unauth
+/// value is clamped. The cap closes the DoS vector of a single unauth
 /// request materialising millions of chunk rows into memory.
 ///
 /// The per-node `n_callers`/`n_callees`/`dead` fields reflect the GLOBAL
@@ -250,7 +250,7 @@ pub(crate) fn build_graph(
 
     // 1. Chunk fetch.
     //
-    // SEC-3: always bind an effective cap. When the client omits
+    // Always bind an effective cap. When the client omits
     // `?max_nodes`, fall back to `serve_graph_max_nodes()` so a
     // single request can't materialise a million chunks into
     // memory. The user-supplied value is clamped too so
@@ -293,7 +293,7 @@ pub(crate) fn build_graph(
 
     // 2. Edge fetch.
     //
-    // SEC-3: always use the name-scoped edge fetch and always bind
+    // Always use the name-scoped edge fetch and always bind
     // a hard LIMIT. The previous uncapped branch (`SELECT fc.*`)
     // would return the entire function_calls table (tens of
     // millions of rows on a large monorepo); the IN-scoped query
@@ -374,7 +374,7 @@ pub(crate) fn build_graph(
     }
 
     // 5. Drop edges whose endpoints didn't both land in the visible
-    //    set. SEC-3 always caps at `serve_graph_max_nodes()`, so this
+    //    set. The query always caps at `serve_graph_max_nodes()`, so this
     //    prune is always meaningful.
     let mut nodes: Vec<Node> = nodes_by_id.into_values().collect();
     let kept: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
@@ -611,7 +611,7 @@ pub(crate) fn build_hierarchy(
         }));
     }
 
-    // SEC-4: the store fetch chunks the IN-list for the chunk-metadata
+    // The store fetch chunks the IN-list for the chunk-metadata
     // fetch. Deep hierarchies (e.g. callers of a heavily-called std helper)
     // can generate >32k visited names, overflowing SQLite's bind cap.
     //
@@ -764,7 +764,7 @@ pub(crate) fn build_cluster(
 ) -> Result<ClusterResponse, StoreError> {
     let _span = tracing::info_span!("build_cluster", max_nodes = ?max_nodes).entered();
 
-    // SEC-3: always bind an effective cap. When the client omits
+    // Always bind an effective cap. When the client omits
     // `?max_nodes`, fall back to `serve_cluster_max_nodes()` so a
     // single request can't materialise the full chunks table.
     // The user-supplied value is clamped too so `?max_nodes=999999999`
@@ -791,7 +791,7 @@ pub(crate) fn build_cluster(
             .or_insert(row.id.clone());
     }
 
-    // SEC-3: cap the edge fetch too. function_calls can have tens of
+    // Cap the edge fetch too. function_calls can have tens of
     // millions of rows on a large monorepo — even though the loop
     // below filters on `name_to_first_id` membership, Rust-side
     // filtering after pulling every row over the wire is the DoS

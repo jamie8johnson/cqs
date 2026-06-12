@@ -114,7 +114,7 @@ impl<Mode> Store<Mode> {
                 .to_string();
             let mut binds: Vec<String> = Vec::new();
             if let Some(file) = file_filter {
-                // SEC-5: escape LIKE metacharacters so `%` / `_` in the
+                // Escape LIKE metacharacters so `%` / `_` in the
                 // query string stay literal. Without this, a hostile (or
                 // accidental) `%` in `?file=` turns the prefix filter into
                 // a full-text contains — changing the semantic contract
@@ -348,7 +348,7 @@ impl<Mode> Store<Mode> {
     ) -> Result<Vec<NeighborRow>, StoreError> {
         let _span = tracing::info_span!("serve_chunk_detail_tests").entered();
         self.rt.block_on(async {
-            // SEC-8: escape LIKE metacharacters in `name` so a chunk named
+            // Escape LIKE metacharacters in `name` so a chunk named
             // e.g. `%` or `foo_bar` doesn't turn the substring contains
             // into a wildcard that matches every test. Names come from the
             // chunks table, not user input, but parser-produced names can
@@ -407,7 +407,7 @@ impl<Mode> Store<Mode> {
     ) -> Result<Vec<HierarchyChunkRow>, StoreError> {
         let _span = tracing::info_span!("serve_hierarchy_chunk_meta").entered();
         self.rt.block_on(async {
-            // SEC-4: chunk the IN-list for the chunk-metadata fetch. Deep
+            // Chunk the IN-list for the chunk-metadata fetch. Deep
             // hierarchies (e.g. callers of a heavily-called std helper)
             // can generate >32k visited names, overflowing SQLite's bind
             // cap. Binds once per row, so batch size is
@@ -454,7 +454,7 @@ impl<Mode> Store<Mode> {
     ) -> Result<Vec<(String, String)>, StoreError> {
         let _span = tracing::info_span!("serve_hierarchy_edges").entered();
         self.rt.block_on(async {
-            // SEC-4: the edge SQL binds visited_names twice (once for
+            // The edge SQL binds visited_names twice (once for
             // caller_name, once for callee_name), so chunk at
             // `max_rows_per_statement(2)` (~16233). Because the WHERE
             // clause is an AND, splitting visited_names into N chunks
@@ -505,7 +505,7 @@ impl<Mode> Store<Mode> {
         let _span = tracing::info_span!("serve_cluster_nodes").entered();
         self.rt.block_on(async {
             // Chunks that have coords already projected. The ORDER BY id here
-            // is preserved from the pre-SEC-3 code; because it's by id rather
+            // is preserved from the pre-cap code; because it's by id rather
             // than n_callers_global, the cap under load picks an arbitrary
             // subset — for the UMAP cluster view that's fine (all points are
             // semantically meaningful) and lets us skip the correlated
@@ -558,7 +558,7 @@ impl<Mode> Store<Mode> {
     ) -> Result<Vec<(String, String)>, StoreError> {
         let _span = tracing::info_span!("serve_cluster_edges").entered();
         self.rt.block_on(async {
-            // SEC-3: cap the edge fetch too. function_calls can have tens of
+            // Cap the edge fetch too. function_calls can have tens of
             // millions of rows on a large monorepo — even though the loop
             // below filters on `name_to_first_id` membership, Rust-side
             // filtering after pulling every row over the wire is the DoS
