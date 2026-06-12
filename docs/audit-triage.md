@@ -186,13 +186,13 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | DS-V1.40-8 + DS-V1.40-10 | Kind-detect + real query share no read snapshot — dispatcher/existing-flow drift (v1.40 queue item 6) | medium | ✅ PR #1792 |
 | CQ-V1.40-10 + RB-V1.40-4 + EH-V1.40-10 + DS-V1.40-6 + PERF-V1.40-1 | Cluster A2: `filter_invoked_macros` N+1 GLOB full scans, no transaction (correctness fixed in #1627; perf half remains) | medium | ✅ PR #1769 |
 | RM-V1.40-9 + PERF-V1.40-5 + RM-V1.40-10 | Daemon socket triple payload allocation + `emit_json` double serialization — `dispatch_value` refactor (socket.rs TODO P2 #62) | medium | ✅ PR #1766 (socket single-write; envelope to_value kept as wire canonicalization) |
-| PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | open |
+| PERF-V1.40-7 | `build_test_map` iterates all test chunks per call — invert to iterate ancestors (modest; loop body O(1)) | easy | ✅ PR #1799 |
 | RM-V1.40-6 + RM-V1.40-7 | `CrossProjectContext::merged_call_graph` rebuilt per request; reference stores reopened (64 MB mmap × N refs) — cache in BatchContext (note: new CQ-V1.42-11 touches the same surface) | medium | ✅ PR #1770 |
 | AC-V1.40-6 + AC-V1.40-7 + EH-V1.40-3 | trace: macro falls through to empty BFS; `Multiple` masks ambiguity; `target` kind unvalidated | medium | ✅ PR #1773 |
 | SEC-V1.40-8 | `enumerate_files` no depth/file-count cap on adversarial repos (Cluster H leftover) | medium | ✅ PR #1769 |
 | PB-V1.40-9 | WAL mode unconditional on store open — unsupported on /mnt/c 9P bridge; detect and switch to DELETE | medium | ❎ refuted: production runs WAL on v9fs daily (live evidence, this machine); premise false |
 | PERF-V1.40-8 | `meta_json_fragment` triple-work per JSONL emit — CAUTION: proposed per-posture LazyLock is unsafe (fragment carries dynamic worktree_stale); cache only the static part | easy | ✅ PR #1779 |
-| RM-V1.40-4 | `lookup_by_name` builds SQL via `format!` per call (surviving sub-claim of RB-V1.40-2) | easy | open |
+| RM-V1.40-4 | `lookup_by_name` builds SQL via `format!` per call (surviving sub-claim of RB-V1.40-2) | easy | ✅ PR #1799 (renamed `get_chunks_by_name`; SQL hoisted to `LazyLock<String>`) |
 
 ## CF-P3 — carried forward, P3-grade
 
@@ -235,6 +235,6 @@ Source of truth: `docs/audit-triage-v1.40.0.md` — its "Verification 2026-06-09
 | PB-V1.40-10 | `worktree_name` no dunce::canonicalize — Windows verbatim prefix leaks into JSON | easy | ✅ PR #1779 |
 | RM-V1.40-2 | `dispatch_via_view` reconstructs token Vec — second full clone per dispatch | easy | ❎ closed: micro-clone, not measurable |
 | RM-V1.40-3 | `current_worktree_name` clones cached String per envelope emit | easy | ❎ closed: micro-clone, not measurable |
-| RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request | easy | open |
+| RM-V1.40-5 | `dispatch_test_map` clones every test chunk per cross-project request | easy | ✅ PR #1799 (finding moved into `test_map_cross_core` per #1760; dropped its redundant `Vec<ChunkSummary>` clone — `build_test_map` now borrows the wrapped chunk) |
 | PERF-V1.40-6 | `upsert_chunks_unembedded_batch` clones every chunk + zero-vec | easy | ✅ fixed by #1753 (verified by CF sweep) |
 | PERF-V1.40-9 | Telemetry write ~5 syscalls per CLI command — daemon-path handle caching | medium | ✅ PR #1769 |
