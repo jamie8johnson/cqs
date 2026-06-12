@@ -178,7 +178,19 @@ impl<Mode> Store<Mode> {
 /// path), [`Store::set_file_fingerprints_batch`] (one tx, many files), and
 /// [`Store::upsert_embedded_batch`] (stamp fused into the chunk-write tx).
 ///
+/// Writes the fingerprint to BOTH the chunk rows (so a file WITH chunks carries
+/// it inline, the steady state) AND the `file_registry` table (v29, #1774) so
+/// the fingerprint survives even for a file that has zero chunk rows. The
+/// chunk-row UPDATE affects 0 rows for a zero-chunk origin; the registry UPSERT
+/// is the load-bearing persistence in that case. Both run in the SAME
+/// transaction as the chunk writes, honoring the crash-safety convention
+/// #1772: a stamp never commits without its chunks, and vice versa.
+///
 /// `origin_str` must already be slash-normalized via `crate::normalize_path`.
+///
+/// Returns the number of *chunk* rows updated (unchanged contract — callers
+/// use it to diagnose origin-format drift); the registry UPSERT always touches
+/// exactly one row and isn't counted.
 async fn set_fingerprint_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     origin_str: &str,
@@ -193,11 +205,50 @@ async fn set_fingerprint_in_tx(
     )
     .bind(fp.mtime)
     .bind(size_i64)
-    .bind(hash_blob)
+    .bind(hash_blob.clone())
     .bind(origin_str)
     .execute(&mut **tx)
     .await?;
+
+    // Persist the same fingerprint in the registry. For a file WITH chunks this
+    // is redundant with the chunk-row columns (the staleness readers prefer the
+    // chunk-row value), but it makes the registry a complete shadow so a later
+    // prune-to-zero leaves the fingerprint intact. For a ZERO-chunk file the
+    // UPDATE above touched nothing and THIS is the only place the fingerprint
+    // lands — exactly the #1774 fix.
+    set_registry_fingerprint_in_tx(tx, origin_str, fp.mtime, size_i64, hash_blob).await?;
+
     Ok(result.rows_affected())
+}
+
+/// UPSERT one origin's fingerprint into the v29 `file_registry` table inside an
+/// open transaction #1774. Pre-normalized `origin_str` only.
+///
+/// Split out so the zero-chunk pipeline paths (which never call the chunk-row
+/// stamp) can write the registry directly, and so [`set_fingerprint_in_tx`] can
+/// shadow every chunk-row stamp into the registry through one code path.
+async fn set_registry_fingerprint_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    origin_str: &str,
+    mtime: Option<i64>,
+    size_i64: Option<i64>,
+    hash_blob: Option<Vec<u8>>,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(origin) DO UPDATE SET \
+             source_mtime = excluded.source_mtime, \
+             source_size = excluded.source_size, \
+             source_content_hash = excluded.source_content_hash",
+    )
+    .bind(origin_str)
+    .bind(mtime)
+    .bind(size_i64)
+    .bind(hash_blob)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 // Write methods live on `impl Store<ReadWrite>` — the compiler refuses to
@@ -718,6 +769,16 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
+            // Prune the v29 `file_registry` fingerprint for this origin #1774.
+            // `delete_by_origin` is the wholesale file-removal path (watch
+            // delete event, model swap, slot teardown), so the persisted
+            // zero-chunk fingerprint must go with the chunks — same transaction
+            // so the registry never outlives the rows it described.
+            sqlx::query("DELETE FROM file_registry WHERE origin = ?1")
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
             tx.commit().await?;
             Ok(result.rows_affected() as u32)
         })
@@ -835,6 +896,54 @@ impl Store<ReadWrite> {
             }
             tx.commit().await?;
             Ok(total)
+        })
+    }
+
+    /// Persist reconcile fingerprints in the v29 `file_registry` table for
+    /// files that produced ZERO chunks this run #1774.
+    ///
+    /// A zero-chunk file (comment-only source, parser-emitted-empty) has no
+    /// chunk row to carry the fingerprint, so [`Self::set_file_fingerprint`] /
+    /// [`Self::upsert_embedded_batch`]'s chunk-row UPDATE is a no-op for it.
+    /// Without a persisted fingerprint the staleness pre-filter reclassifies it
+    /// "not indexed" every run and re-parses it forever. This writes the
+    /// fingerprint straight into the registry so the next run's pre-filter sees
+    /// a stored fingerprint and skips the parse like any unchanged file.
+    ///
+    /// Called by the bulk pipeline's store stage and the watch reindex path for
+    /// their respective zero-chunk sets. One transaction for the whole batch.
+    /// Returns the number of origins stamped.
+    pub fn set_file_registry_fingerprints_batch(
+        &self,
+        entries: &[(
+            std::path::PathBuf,
+            crate::store::chunks::staleness::FileFingerprint,
+        )],
+    ) -> Result<u64, StoreError> {
+        let _span = tracing::info_span!(
+            "set_file_registry_fingerprints_batch",
+            files = entries.len()
+        )
+        .entered();
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            for (path, fp) in entries {
+                let size_i64: Option<i64> = fp.size.and_then(|s| i64::try_from(s).ok());
+                let hash_blob: Option<Vec<u8>> = fp.content_hash.map(|h| h.to_vec());
+                set_registry_fingerprint_in_tx(
+                    &mut tx,
+                    &crate::normalize_path(path),
+                    fp.mtime,
+                    size_i64,
+                    hash_blob,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(entries.len() as u64)
         })
     }
 

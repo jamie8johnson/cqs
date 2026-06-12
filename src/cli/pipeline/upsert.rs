@@ -269,12 +269,13 @@ pub(super) fn store_stage(
     // forever. Skip any origin that DID produce chunks this run — that file is
     // handled by its real live set.
     //
-    // The fingerprint lives only on chunk rows, so once an origin is pruned to
-    // zero rows there is nowhere to stamp it: the next run's pre-filter sees no
-    // rows, treats the file as un-indexed, and re-parses it — to zero chunks
-    // again, a cheap idempotent no-op (no embed, no writes). That is the
-    // correct steady state; the load-bearing fix is that the file's stale
-    // chunks no longer pollute search.
+    // v29 #1774: the fingerprint no longer lives ONLY on chunk rows — the
+    // `file_registry` table persists it for zero-chunk origins. We prune the
+    // file's stale chunks below, then stamp its fingerprint into the registry
+    // (after the prune block) so the next run's pre-filter sees a stored
+    // fingerprint and SKIPS the parse entirely instead of re-parsing to zero
+    // chunks every run. That re-parse was cheap but not free; the registry
+    // closes it.
     let mut prune_entries: Vec<(&std::path::Path, Vec<&str>)> = live_ids_per_file
         .iter()
         .map(|(file, live_ids)| {
@@ -303,6 +304,34 @@ pub(super) fn store_stage(
                 error = %e,
                 "Batched phantom prune failed; orphan rows from prior chunker versions may persist"
             );
+        }
+    }
+
+    // v29 #1774: persist the reconcile fingerprint for files that parsed to
+    // ZERO chunks this run into `file_registry`. A file that produced chunks in
+    // some batch is excluded — its fingerprint already rode the chunk-write
+    // transaction via `upsert_embedded_batch`. Only the genuinely zero-chunk
+    // survivors need the registry stamp, so the next `cqs index` pre-filter
+    // sees a stored fingerprint and skips the parse instead of re-parsing to
+    // zero chunks forever. Best-effort: a failure here only forfeits the skip
+    // (the file re-parses next run, idempotently), so it warns rather than
+    // aborting the index.
+    let registry_entries: Vec<(std::path::PathBuf, cqs::store::FileFingerprint)> =
+        empty_file_fingerprints
+            .into_iter()
+            .filter(|(file, _)| !live_ids_per_file.contains_key(file))
+            .collect();
+    if !registry_entries.is_empty() {
+        match store.set_file_registry_fingerprints_batch(&registry_entries) {
+            Ok(stamped) => tracing::debug!(
+                stamped,
+                "Stamped file_registry fingerprints for zero-chunk files"
+            ),
+            Err(e) => tracing::warn!(
+                files = registry_entries.len(),
+                error = %e,
+                "Failed to stamp file_registry for zero-chunk files; they will re-parse next run"
+            ),
         }
     }
 
@@ -532,6 +561,19 @@ mod tests {
             store.get_chunks_by_origin("gone.rs").unwrap().len(),
             0,
             "zero-chunk file's stale chunks must be pruned"
+        );
+
+        // v29 #1774: the fingerprint must now persist in `file_registry`
+        // even though no chunk rows remain — so the next `cqs index` pre-filter
+        // skips the parse instead of re-parsing to zero chunks forever. The
+        // staleness readers UNION the registry, so the origin resolves here.
+        let fps = store.fingerprints_for_origins(&["gone.rs"]).unwrap();
+        let fp = fps
+            .get("gone.rs")
+            .expect("zero-chunk origin must persist its fingerprint in file_registry");
+        assert!(
+            fp.content_hash.is_some() && fp.size.is_some() && fp.mtime.is_some(),
+            "registry fingerprint must be fully populated for the zero-chunk file; got {fp:?}"
         );
     }
 

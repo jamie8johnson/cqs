@@ -492,7 +492,7 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
             Note {
                 id,
                 text: entry.text.trim().to_string(),
-                sentiment: entry.sentiment.clamp(-1.0, 1.0),
+                sentiment: snap_sentiment(entry.sentiment),
                 mentions: entry.mentions,
                 kind: entry.kind.and_then(normalize_kind),
             }
@@ -500,6 +500,26 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
         .collect();
 
     Ok(notes)
+}
+
+/// Snap a sentiment value to the nearest of the five discrete documented
+/// values (-1, -0.5, 0, 0.5, 1).
+///
+/// Sentiment is DISCRETE by design (see CLAUDE.md and `docs/notes.toml`), but
+/// a hand-edited `notes.toml` can carry any continuous float. Since v29 the
+/// `notes.sentiment` column has a CHECK pinning it to exactly those five
+/// values, so a continuous input like `-0.8` must be snapped before write or
+/// the INSERT fails the constraint. Clamp to `[-1, 1]` first, then
+/// `round(s * 2) / 2` lands exactly on the grid. A `NaN` input (which the CLI
+/// `--sentiment` parser already rejects via `parse_finite_f32`, but a raw TOML
+/// edit could still smuggle in) clamps to `0.0` so the CHECK is satisfied
+/// rather than producing a `NaN` that fails it.
+pub fn snap_sentiment(raw: f32) -> f32 {
+    if raw.is_nan() {
+        return 0.0;
+    }
+    let clamped = raw.clamp(-1.0, 1.0);
+    (clamped * 2.0).round() / 2.0
 }
 
 /// Normalize a `kind` value: trim whitespace, lowercase, reject empty.
@@ -608,17 +628,40 @@ text = "neutral observation without explicit sentiment"
         let notes = parse_notes_str(content).unwrap();
         assert_eq!(notes.len(), 3);
 
-        assert_eq!(notes[0].sentiment, -0.8);
+        // Sentiment is DISCRETE (v29): `parse_notes_str` snaps continuous TOML
+        // inputs to the nearest of {-1, -0.5, 0, 0.5, 1} so the value satisfies
+        // the `notes.sentiment` CHECK. -0.8 → -1.0, 0.9 → 1.0.
+        assert_eq!(notes[0].sentiment, -1.0);
         assert!(notes[0].is_warning());
         assert!(notes[0].embedding_text().starts_with("Warning: "));
 
-        assert_eq!(notes[1].sentiment, 0.9);
+        assert_eq!(notes[1].sentiment, 1.0);
         assert!(notes[1].is_pattern());
         assert!(notes[1].embedding_text().starts_with("Pattern: "));
 
         assert_eq!(notes[2].sentiment, 0.0); // default
         assert!(!notes[2].is_warning());
         assert!(!notes[2].is_pattern());
+    }
+
+    /// `snap_sentiment` lands every input on exactly one of the five discrete
+    /// values, clamping out-of-range and mapping NaN to 0.
+    #[test]
+    fn test_snap_sentiment_discrete_grid() {
+        assert_eq!(snap_sentiment(-0.8), -1.0);
+        assert_eq!(snap_sentiment(-0.7), -0.5);
+        assert_eq!(snap_sentiment(-0.3), -0.5);
+        assert_eq!(snap_sentiment(-0.2), 0.0);
+        assert_eq!(snap_sentiment(0.2), 0.0);
+        assert_eq!(snap_sentiment(0.3), 0.5);
+        assert_eq!(snap_sentiment(0.9), 1.0);
+        assert_eq!(snap_sentiment(5.0), 1.0); // out of range clamps then snaps
+        assert_eq!(snap_sentiment(-5.0), -1.0);
+        assert_eq!(snap_sentiment(f32::NAN), 0.0);
+        // Already-legal values are fixpoints.
+        for v in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+            assert_eq!(snap_sentiment(v), v, "{v} must be a fixpoint");
+        }
     }
 
     #[test]
