@@ -1,7 +1,7 @@
 //! Note-based score boosting.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::note::path_matches_mention;
 use crate::store::helpers::NoteSummary;
@@ -261,6 +261,74 @@ impl OwnedNoteBoostIndex {
             }
             None => 1.0,
         }
+    }
+}
+
+/// Search-owned cache for the [`OwnedNoteBoostIndex`].
+///
+/// The owned index is computed once per notes-table revision and shared via
+/// `Arc` across all search paths, avoiding an O(notes × mentions) HashMap
+/// rebuild on every search (notes change far less often than searches fire).
+///
+/// The store holds one of these as an opaque cell — it never names the
+/// concrete index type and never runs the boost math. The store forwards
+/// `invalidate()` (on note mutation) and `clear()` (on `clear_caches`); the
+/// build-from-notes logic lives here, search-side.
+#[derive(Default)]
+pub(crate) struct NoteBoostCache {
+    inner: RwLock<Option<Arc<OwnedNoteBoostIndex>>>,
+}
+
+impl NoteBoostCache {
+    /// Return the cached index, building it from `notes` on first access or
+    /// after invalidation.
+    ///
+    /// Read-locks the fast path; on a miss, builds the index and write-locks
+    /// to store it, double-checking in case a concurrent reader populated
+    /// while we waited.
+    pub(crate) fn get_or_build(&self, notes: &[NoteSummary]) -> Arc<OwnedNoteBoostIndex> {
+        // Fast path: read lock, check if populated.
+        {
+            let guard = self.inner.read().unwrap_or_else(|p| {
+                tracing::warn!("note boost cache read lock poisoned, recovering");
+                p.into_inner()
+            });
+            if let Some(ref idx) = *guard {
+                return Arc::clone(idx);
+            }
+        }
+        // Cache miss — build index, write-lock to store.
+        let built = Arc::new(OwnedNoteBoostIndex::new(notes));
+        let mut guard = self.inner.write().unwrap_or_else(|p| {
+            tracing::warn!("note boost cache write lock poisoned, recovering");
+            p.into_inner()
+        });
+        // Double-check in case a concurrent read populated while we waited.
+        if let Some(ref existing) = *guard {
+            return Arc::clone(existing);
+        }
+        *guard = Some(Arc::clone(&built));
+        built
+    }
+
+    /// Drop the cached index so the next `get_or_build` rebuilds from fresh
+    /// notes. Called when the underlying notes change.
+    pub(crate) fn invalidate(&self) {
+        match self.inner.write() {
+            Ok(mut guard) => *guard = None,
+            Err(p) => {
+                tracing::warn!(
+                    "note boost cache write lock poisoned during invalidation, recovering"
+                );
+                *p.into_inner() = None;
+            }
+        }
+    }
+
+    /// Reset the cache. Equivalent to `invalidate` but named for the
+    /// `clear_caches` reset path, which drops every derived cache at once.
+    pub(crate) fn clear(&self) {
+        self.invalidate();
     }
 }
 

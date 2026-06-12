@@ -296,7 +296,6 @@ mod tests {
             store.init(&model_info)?;
             for (caller, callee) in &forward_edges {
                 store
-                    .rt
                     .block_on(async {
                         sqlx::query(
                             "INSERT OR IGNORE INTO function_calls (file, caller_name, callee_name, caller_line, call_line)
@@ -304,7 +303,7 @@ mod tests {
                         )
                         .bind(caller)
                         .bind(callee)
-                        .execute(&store.pool)
+                        .execute(store.pool())
                         .await
                     })?;
             }

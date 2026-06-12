@@ -6,12 +6,14 @@
 mod mmr;
 mod query;
 pub mod router;
-pub(crate) mod scoring;
+pub mod scoring;
 pub mod synonyms;
 
 // Re-export the shared scoring-knob table so binary-side code (e.g.
-// `cqs doctor`) can iterate `SCORING_KNOBS` without exposing the rest
-// of the `scoring` module (which is `pub(crate)` for the moment).
+// `cqs doctor`) can iterate `SCORING_KNOBS` without spelling out the
+// `scoring::` path. The module is `pub` so binary-side callers can reach
+// `cqs::search::scoring::set_rrf_k_from_config` directly; items inside keep
+// their own (mostly `pub(crate)`) visibility.
 pub use scoring::knob;
 
 use crate::store::helpers::{ChunkSummary, SearchResult};

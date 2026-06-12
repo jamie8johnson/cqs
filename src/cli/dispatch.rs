@@ -80,7 +80,7 @@ fn run_with_dispatch(
     // Wire the [scoring] config section to the RRF K override so a user
     // writing `[scoring] rrf_k = 40` in `.cqs.toml` is honored.
     if let Some(ref scoring) = config.scoring {
-        cqs::store::set_rrf_k_from_config(scoring);
+        cqs::search::scoring::set_rrf_k_from_config(scoring);
     }
 
     // Resolve embedding model config once. Priority:
