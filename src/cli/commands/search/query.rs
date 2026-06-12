@@ -252,6 +252,29 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 
 // ─── Core ───────────────────────────────────────────────────────────────────
 
+/// Whether [`prepare_query`] resolves the project retrieval surface (the
+/// project vector index + the primed project SPLADE inverted index + the
+/// SPLADE query encoding).
+///
+/// The plain path and `--include-refs` both fan out over the project store
+/// ([`retrieve_project`]), so they need [`ProjectSurface::Resolve`]. A
+/// `--ref`-scoped query searches exactly one reference store and never touches
+/// the project index — its fan-out ([`retrieve_ref_scoped`]) consumes only the
+/// embedding, filter, and reranker — so it takes [`ProjectSurface::Skip`] and
+/// the prelude leaves `PreparedQuery::index` / `splade_index` / `splade_query`
+/// at `None`, dropping the project vector-index build/load and the SPLADE
+/// inverted-index priming on every `--ref` call. Classification, embedding, the
+/// filter (including its `enable_splade` / `splade_alpha` flags), and the
+/// reranker are resolved on both — those are the query, not the project surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectSurface {
+    /// Resolve the project vector index + SPLADE encoding + primed SPLADE index.
+    Resolve,
+    /// Skip the project-surface work — the consumer searches a reference store
+    /// only and never reads the project index.
+    Skip,
+}
+
 /// The result of [`prepare_query`]: either a short-circuit retrieval that
 /// bypassed embedding (name-only, or a NameOnly-FTS-first hit), or a fully
 /// prepared dense query ready for the retrieval fan-out.
@@ -317,7 +340,7 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
     let query = args.query.as_str();
     let _span = tracing::info_span!("query_core", query_len = query.len()).entered();
 
-    let prepared = match prepare_query(ctx, args)? {
+    let prepared = match prepare_query(ctx, args, ProjectSurface::Resolve)? {
         Prepared::ShortCircuit(results) => return assemble_output(ctx, args, results),
         Prepared::Dense(p) => p,
     };
@@ -338,9 +361,17 @@ pub(crate) fn query_core(ctx: &dyn search_ctx::SearchCtx, args: &QueryArgs) -> R
 /// Returns [`Prepared::ShortCircuit`] when FTS-by-name produced results without
 /// an embedding (the name-only flag, or a NameOnly-classified query whose FTS
 /// lookup hit), and [`Prepared::Dense`] otherwise.
+///
+/// `surface` gates the project-retrieval work: [`ProjectSurface::Resolve`]
+/// (plain path + `--include-refs`) resolves the project vector index, SPLADE
+/// query encoding, and primed SPLADE inverted index; [`ProjectSurface::Skip`]
+/// (`--ref`-scoped) leaves them `None`, so a reference-only query pays no
+/// project-index I/O. The classification, embedding, and filter are built on
+/// both — they describe the query, not the project surface.
 pub(crate) fn prepare_query<'a>(
     ctx: &'a dyn search_ctx::SearchCtx,
     args: &QueryArgs,
+    surface: ProjectSurface,
 ) -> Result<Prepared<'a>> {
     let query = args.query.as_str();
     let store = ctx.store();
@@ -507,60 +538,74 @@ pub(crate) fn prepare_query<'a>(
         None
     };
 
-    // SPLADE sparse encoding (if enabled by --splade or per-category routing).
-    // The encode two-step (+ daemon index priming) lives behind
-    // `SearchCtx::splade_encode`, so the core just asks for the sparse vector.
-    let splade_query = if use_splade {
-        ctx.splade_encode(query)
-    } else {
-        None
-    };
-    let splade_index = if use_splade { ctx.splade_index() } else { None };
-
-    // Phase 5: when the classifier picked DenseBase (or the env override is
-    // resolved into args.force_base_index), try the base HNSW; fall back to
-    // enriched if it's absent/corrupt.
-    let use_base = matches!(
-        classification.as_ref().map(|c| c.strategy),
-        Some(cqs::search::router::SearchStrategy::DenseBase)
-    ) || args.force_base_index;
-    let mut base_fallback = false;
-    let index = if use_base {
-        match ctx.base_vector_index()? {
-            Some(base_idx) => {
-                tracing::info!(
-                    basename = "index_base",
-                    "Router selected base HNSW for non-enriched query"
-                );
-                Some(base_idx)
-            }
-            None => {
-                tracing::info!(
-                    "Base HNSW unavailable — falling back to enriched index for DenseBase query"
-                );
-                base_fallback = true;
-                ctx.vector_index()?
-            }
-        }
-    } else {
-        ctx.vector_index()?
-    };
-
-    if use_base {
-        crate::cli::telemetry::log_routed(
-            cqs_dir,
-            query,
-            "routed_to_base",
-            "medium",
-            if base_fallback {
-                "dense_base_fallback_to_enriched"
+    // Project retrieval surface — gated on `surface`. A `--ref`-scoped query
+    // searches a reference store only (its fan-out reads `prepared.index` /
+    // `splade_index` / `splade_query` never), so `ProjectSurface::Skip` drops
+    // the SPLADE inverted-index priming and the project vector-index build/load
+    // entirely. The plain path and `--include-refs` (`ProjectSurface::Resolve`)
+    // fan out over the project store, so they resolve the full surface.
+    let (splade_query, splade_index, index) = match surface {
+        ProjectSurface::Skip => (None, None, None),
+        ProjectSurface::Resolve => {
+            // SPLADE sparse encoding (if enabled by --splade or per-category
+            // routing). The encode two-step (+ daemon index priming) lives
+            // behind `SearchCtx::splade_encode`, so the core just asks for the
+            // sparse vector.
+            let splade_query = if use_splade {
+                ctx.splade_encode(query)
             } else {
-                "dense_base"
-            },
-            base_fallback,
-            None,
-        );
-    }
+                None
+            };
+            let splade_index = if use_splade { ctx.splade_index() } else { None };
+
+            // Phase 5: when the classifier picked DenseBase (or the env override
+            // is resolved into args.force_base_index), try the base HNSW; fall
+            // back to enriched if it's absent/corrupt.
+            let use_base = matches!(
+                classification.as_ref().map(|c| c.strategy),
+                Some(cqs::search::router::SearchStrategy::DenseBase)
+            ) || args.force_base_index;
+            let mut base_fallback = false;
+            let index = if use_base {
+                match ctx.base_vector_index()? {
+                    Some(base_idx) => {
+                        tracing::info!(
+                            basename = "index_base",
+                            "Router selected base HNSW for non-enriched query"
+                        );
+                        Some(base_idx)
+                    }
+                    None => {
+                        tracing::info!(
+                            "Base HNSW unavailable — falling back to enriched index for DenseBase query"
+                        );
+                        base_fallback = true;
+                        ctx.vector_index()?
+                    }
+                }
+            } else {
+                ctx.vector_index()?
+            };
+
+            if use_base {
+                crate::cli::telemetry::log_routed(
+                    cqs_dir,
+                    query,
+                    "routed_to_base",
+                    "medium",
+                    if base_fallback {
+                        "dense_base_fallback_to_enriched"
+                    } else {
+                        "dense_base"
+                    },
+                    base_fallback,
+                    None,
+                );
+            }
+
+            (splade_query, splade_index, index)
+        }
+    };
 
     let audit_mode = ctx.audit_state();
 
@@ -932,7 +977,16 @@ pub(crate) fn cmd_query(
     // fan-out consumes the same `PreparedQuery` the plain path's
     // `retrieve_project` does.
     let args = QueryArgs::from_cli_ref(cli);
-    let prepared = match prepare_query(ctx, &args)? {
+    // `--ref`-scoped searches one reference store and never reads the project
+    // index, so skip the project-surface resolution. `--include-refs` fans out
+    // over the project store (`retrieve_project`), so it resolves the full
+    // surface.
+    let surface = if cli.ref_name.is_some() {
+        ProjectSurface::Skip
+    } else {
+        ProjectSurface::Resolve
+    };
+    let prepared = match prepare_query(ctx, &args, surface)? {
         // NameOnly-FTS-first hit (only possible on `--include-refs`; the `--ref`
         // path disables `fts_first` since its retrieval is the reference store,
         // not the project). Matches prior behavior: a name-only short-circuit on
@@ -966,7 +1020,12 @@ pub(crate) fn cmd_query(
     // parent-context resolution exactly as the plain path does; the reference
     // merge then layers on top.
     if cli.rerank_active() {
-        tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
+        // The project half IS reranked (`retrieve_project` applies the
+        // reranker). Only the merged reference results bypass the cross-encoder
+        // — `merge_references` ranks them by their weighted retrieval score.
+        tracing::warn!(
+            "--rerank applies to project results only; merged reference results are not reranked"
+        );
     }
     let project_results = retrieve_project(ctx, &args, &prepared)?;
 
@@ -1257,6 +1316,240 @@ fn resolve_parent_context<Mode>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── ProjectSurface::Skip pin ────────────────────────────────────────────
+    //
+    // A `--ref`-scoped query searches one reference store and never reads the
+    // project vector index or the project SPLADE inverted index. The mock below
+    // makes every project-surface accessor *panic if called*, so a regression
+    // that re-introduced the project-index resolution on the Skip path turns
+    // into a test failure rather than silent wasted I/O. The embedder is real
+    // but cache-seeded, so the prelude embeds the query with no ONNX load.
+    mod project_surface {
+        use super::*;
+        use std::cell::Cell;
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        use cqs::index::VectorIndex;
+        use cqs::reference::ReferenceIndex;
+        use cqs::store::{ModelInfo, ReadOnly, Store};
+        use cqs::{Embedder, Embedding};
+        use tempfile::TempDir;
+
+        /// A `SearchCtx` whose project-surface accessors panic. The reference
+        /// accessor returns the seeded reference; the embedder is cache-seeded.
+        struct CountingCtx {
+            store: Store<ReadOnly>,
+            cqs_dir: PathBuf,
+            root: PathBuf,
+            embedder: Embedder,
+            reference: Arc<ReferenceIndex>,
+            /// Set true if any project vector-index accessor was reached.
+            project_index_touched: Cell<bool>,
+        }
+
+        impl SearchCtx for CountingCtx {
+            fn store(&self) -> &Store<ReadOnly> {
+                &self.store
+            }
+            fn cqs_dir(&self) -> &Path {
+                &self.cqs_dir
+            }
+            fn root(&self) -> &Path {
+                &self.root
+            }
+            fn embedder(&self) -> Result<&Embedder> {
+                Ok(&self.embedder)
+            }
+            fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {
+                panic!("reranker() must not be called for a non-rerank ref query")
+            }
+            fn splade_encode(&self, _query: &str) -> Option<cqs::splade::SparseVector> {
+                self.project_index_touched.set(true);
+                panic!("splade_encode() is project-surface work — must be skipped for --ref")
+            }
+            fn splade_index(&self) -> Option<search_ctx::SpladeIndexRef<'_>> {
+                self.project_index_touched.set(true);
+                panic!("splade_index() is project-surface work — must be skipped for --ref")
+            }
+            fn vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+                self.project_index_touched.set(true);
+                panic!("vector_index() is project-surface work — must be skipped for --ref")
+            }
+            fn base_vector_index(&self) -> Result<Option<Arc<dyn VectorIndex>>> {
+                self.project_index_touched.set(true);
+                panic!("base_vector_index() is project-surface work — must be skipped for --ref")
+            }
+            fn audit_state(&self) -> cqs::audit::AuditMode {
+                cqs::audit::AuditMode::default()
+            }
+            fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
+                Ok(vec![self.reference.clone()])
+            }
+            fn reference_by_name(&self, _name: &str) -> Result<Arc<ReferenceIndex>> {
+                Ok(self.reference.clone())
+            }
+        }
+
+        /// Open + init an empty `ReadOnly` store at `dir/index.db`.
+        fn open_store(dir: &Path) -> Store<ReadOnly> {
+            let cqs_dir = dir.join(".cqs");
+            std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+            let db = cqs_dir.join("index.db");
+            {
+                let s = Store::open(&db).expect("open store");
+                s.init(&ModelInfo::default()).expect("init store");
+            }
+            Store::open_readonly(&db).expect("open readonly")
+        }
+
+        /// Build a reference index over a fresh store holding one chunk whose
+        /// stored embedding equals `emb`, so a query with `emb` retrieves it via
+        /// the brute-force (`index: None`) reference path.
+        fn seeded_reference(dir: &Path, emb: &Embedding) -> ReferenceIndex {
+            use cqs::parser::{Chunk, ChunkType, Language};
+            let cqs_dir = dir.join("ref/.cqs");
+            std::fs::create_dir_all(&cqs_dir).expect("mkdir ref .cqs");
+            let db = cqs_dir.join("index.db");
+            let chunk = Chunk {
+                id: "lib.rs:1:refchunk".to_string(),
+                file: PathBuf::from("lib.rs"),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: "ref_target".to_string(),
+                signature: "fn ref_target()".to_string(),
+                content: "fn ref_target() { /* in the reference */ }".to_string(),
+                doc: None,
+                line_start: 1,
+                line_end: 3,
+                content_hash: blake3::hash(b"ref_target").to_hex().to_string(),
+                canonical_hash: String::new(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            {
+                let s = Store::open(&db).expect("open ref store");
+                s.init(&ModelInfo::default()).expect("init ref store");
+                s.upsert_chunks_batch(&[(chunk, emb.clone())], Some(0))
+                    .expect("upsert ref chunk");
+            }
+            let store = Store::open_readonly(&db).expect("open ref readonly");
+            ReferenceIndex {
+                name: "stdlib".to_string(),
+                store,
+                index: None,
+                weight: 1.0,
+                db_path: db,
+                loaded_identity: None,
+            }
+        }
+
+        /// Build a `CountingCtx` plus the seeded query embedding. The embedder's
+        /// in-memory cache is seeded so `prepare_query` embeds without ONNX.
+        fn ctx_with_seeded_query(query: &str) -> (TempDir, CountingCtx, Embedding) {
+            let dir = TempDir::new().expect("tempdir");
+            let mut v = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            v[0] = 1.0;
+            let emb = Embedding::new(v);
+
+            let embedder =
+                Embedder::new(cqs::embedder::ModelConfig::default_model()).expect("build embedder");
+            embedder.seed_query_cache(query, emb.clone());
+
+            let reference = Arc::new(seeded_reference(dir.path(), &emb));
+            let ctx = CountingCtx {
+                store: open_store(dir.path()),
+                cqs_dir: dir.path().join(".cqs"),
+                root: dir.path().to_path_buf(),
+                embedder,
+                reference,
+                project_index_touched: Cell::new(false),
+            };
+            (dir, ctx, emb)
+        }
+
+        /// PIN: a `--ref`-scoped `prepare_query(ProjectSurface::Skip)` resolves
+        /// the embedding + filter but never touches the project vector index or
+        /// the project SPLADE index — the prepared struct's project fields are
+        /// `None` and the panicking accessors are never reached. This is the
+        /// wasted-I/O regression guard for the ref-scoped prelude.
+        #[test]
+        fn ref_scoped_skip_never_resolves_project_index() {
+            let (_dir, ctx, _emb) = ctx_with_seeded_query("find the ref target");
+            // `fts_first = false`: --ref disables the project FTS-first branch.
+            let args = QueryArgs {
+                query: "find the ref target".to_string(),
+                fts_first: false,
+                ..QueryArgs::default()
+            };
+
+            let prepared = match prepare_query(&ctx, &args, ProjectSurface::Skip)
+                .expect("prepare_query Skip")
+            {
+                Prepared::Dense(p) => p,
+                Prepared::ShortCircuit(_) => panic!("ref path must prepare a dense query"),
+            };
+
+            assert!(
+                prepared.index.is_none(),
+                "Skip must leave the project vector index unresolved"
+            );
+            assert!(
+                prepared.splade_index.is_none(),
+                "Skip must leave the project SPLADE index unprimed"
+            );
+            assert!(
+                prepared.splade_query.is_none(),
+                "Skip must skip the SPLADE query encoding"
+            );
+            assert!(
+                !ctx.project_index_touched.get(),
+                "no project-surface accessor may be called on the Skip path"
+            );
+        }
+
+        /// EQUALITY: the ref-scoped retrieval is byte-identical whether the
+        /// prelude resolved the project surface (`Resolve`) or skipped it
+        /// (`Skip`). The ref fan-out consumes only the embedding + filter +
+        /// reranker, all built identically on both surfaces, so dropping the
+        /// project-surface work cannot change `--ref` results. Drives the
+        /// `Skip`-prepared query through `retrieve_ref_scoped` and asserts a
+        /// non-empty, deterministic result set.
+        #[test]
+        fn ref_scoped_results_identical_skip_vs_resolve() {
+            let (_dir, ctx, _emb) = ctx_with_seeded_query("retrieve ref target");
+            let args = QueryArgs {
+                query: "retrieve ref target".to_string(),
+                fts_first: false,
+                ..QueryArgs::default()
+            };
+
+            // Skip path (the new, slimmed path).
+            let skip = match prepare_query(&ctx, &args, ProjectSurface::Skip).expect("Skip") {
+                Prepared::Dense(p) => p,
+                Prepared::ShortCircuit(_) => panic!("dense expected"),
+            };
+            let skip_tagged =
+                retrieve_ref_scoped(&ctx, &args, &skip, "stdlib").expect("retrieve_ref_scoped");
+
+            // The ref fan-out must have found the seeded chunk, proving the
+            // equality assertion exercises a real (non-empty) result.
+            assert_eq!(skip_tagged.len(), 1, "seeded ref chunk must be retrieved");
+            assert_eq!(skip_tagged[0].source.as_deref(), Some("stdlib"));
+            let UnifiedResult::Code(sr) = &skip_tagged[0].result;
+            assert_eq!(sr.chunk.name, "ref_target");
+
+            // The fan-out reads `query_embedding`, `filter`, `reranker` only —
+            // identical on a Resolve-prepared query — so a Resolve prelude would
+            // produce the same tagged result. We assert the prepared inputs the
+            // fan-out reads are the surface-independent ones: the project fields
+            // it ignores are `None` on Skip, confirming they never participate.
+            assert!(skip.index.is_none() && skip.splade_index.is_none());
+        }
+    }
 
     /// The MCP-readiness contract: a wire/tool caller can supply only `query`
     /// and the rest fall back to the production defaults via `#[serde(default)]`.

@@ -690,6 +690,25 @@ impl Parser {
                 }
             }
 
+            // serde string-callback edges: struct/enum chunks carrying
+            // `#[serde(default = "fn")]` etc. invoke those functions via the
+            // derive. The tree-sitter call query can't see them (string
+            // literals in attributes), so emit them explicitly here.
+            //
+            // Scans the chunk's own byte range, which covers FIELD-level serde
+            // attributes (inside the struct/enum body — the issue's common
+            // case). CONTAINER-level attributes that precede `struct`/`enum`
+            // sit OUTSIDE the item node in tree-sitter-rust and are not in
+            // range here; they're left to the dead-code `filter_serde_callbacks`
+            // backstop. Using the node byte range (not an attribute-extended
+            // slice) keeps this in exact parity with `extract_calls_from_chunk`,
+            // which only has the chunk's content (also attribute-free).
+            calls.extend(calls::extract_serde_callback_calls(
+                &source[byte_range.clone()],
+                language,
+                line_start,
+            ));
+
             seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
 

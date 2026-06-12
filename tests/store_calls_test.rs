@@ -146,6 +146,52 @@ fn test_get_callers_full_found() {
     assert!(caller_names.contains(&"fn2"));
 }
 
+/// End-to-end: a serde string-callback (`#[serde(default = "fn")]`) must
+/// surface through `cqs callers` of the callback function. Parses a real Rust
+/// file with the extractor, upserts the resulting function_calls, then queries
+/// callers — without the extractor-side edge this returns empty.
+#[test]
+fn test_get_callers_full_resolves_serde_callback() {
+    use cqs::parser::Parser;
+    use std::io::Write;
+
+    let mut file = tempfile::Builder::new()
+        .suffix(".rs")
+        .tempfile()
+        .expect("temp file");
+    write!(
+        file,
+        r#"
+#[derive(serde::Deserialize)]
+struct RefWeightCfg {{
+    #[serde(default = "default_ref_weight")]
+    weight: f32,
+}}
+
+fn default_ref_weight() -> f32 {{ 1.0 }}
+"#
+    )
+    .expect("write temp file");
+    file.flush().expect("flush");
+
+    let parser = Parser::new().expect("parser");
+    let (calls, _types) = parser
+        .parse_file_relationships(file.path())
+        .expect("parse relationships");
+
+    let store = TestStore::new();
+    store
+        .upsert_function_calls(std::path::Path::new("cfg.rs"), &calls)
+        .unwrap();
+
+    let callers = store.get_callers_full("default_ref_weight").unwrap();
+    let names: Vec<_> = callers.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"RefWeightCfg"),
+        "serde default callback must list the carrying struct as a caller, got: {names:?}"
+    );
+}
+
 #[test]
 fn test_get_callers_full_not_found() {
     let store = TestStore::new();

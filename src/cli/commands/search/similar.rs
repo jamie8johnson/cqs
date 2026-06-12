@@ -78,6 +78,31 @@ pub(crate) struct SimilarMatches {
     pub results: Vec<SearchResult>,
 }
 
+// ─── Filter construction (shared by both surfaces) ──────────────────────────
+
+/// Build the `similar` search filter from the `--lang` / `--path` scope flags.
+///
+/// Both surfaces call this so a daemon-routed `similar` builds the exact same
+/// [`SearchFilter`] as the CLI-direct path. Parses `lang` to a concrete
+/// [`cqs::parser::Language`] (surfacing the valid-name list on a typo) and
+/// carries `path` through as the glob `path_pattern`. Notes stay excluded —
+/// `similar` is a code-only neighborhood search.
+pub(crate) fn build_similar_filter(lang: Option<&str>, path: Option<&str>) -> Result<SearchFilter> {
+    let languages = match lang {
+        Some(l) => Some(vec![l.parse().context(format!(
+            "Invalid language. Valid: {}",
+            cqs::parser::Language::valid_names_display()
+        ))?]),
+        None => None,
+    };
+    // SearchFilter is `#[non_exhaustive]`; external-crate construction goes
+    // through `Default` + field assignment.
+    let mut f = SearchFilter::default();
+    f.languages = languages;
+    f.path_pattern = path.map(|p| p.to_string());
+    Ok(f)
+}
+
 // ─── Core ───────────────────────────────────────────────────────────────────
 
 /// Surface-agnostic core for `cqs similar <name>`.
@@ -86,9 +111,10 @@ pub(crate) struct SimilarMatches {
 /// embedding, runs the index-guided search (requesting one extra to exclude the
 /// self-match), drops the source chunk, and truncates to the clamped limit. The
 /// vector index and filter are passed in rather than built internally so each
-/// adapter supplies its own (the CLI's `--lang`/`--path`-scoped filter +
-/// concrete HNSW handle, the daemon's cached `dyn VectorIndex` + default
-/// filter) without the core knowing which surface it runs on.
+/// adapter supplies its own (the CLI's concrete HNSW handle, the daemon's
+/// cached `dyn VectorIndex`) without the core knowing which surface it runs on.
+/// Both surfaces now build their `--lang`/`--path`-scoped filter through the
+/// shared [`build_similar_filter`], so daemon-routed scoping matches CLI-direct.
 pub(crate) fn similar_core(
     store: &Store<ReadOnly>,
     index: Option<&dyn VectorIndex>,
@@ -168,6 +194,8 @@ pub(crate) fn cmd_similar(
     name: &str,
     limit: usize,
     threshold: f32,
+    lang: Option<&str>,
+    path: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_similar", name).entered();
@@ -175,23 +203,10 @@ pub(crate) fn cmd_similar(
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
 
-    // Build the search filter (code only, no notes). The CLI honors the
-    // `--lang` / `--path` scoping flags; the daemon path uses a default filter.
-    let languages = match &ctx.cli.lang {
-        Some(l) => Some(vec![l.parse().context(format!(
-            "Invalid language. Valid: {}",
-            cqs::parser::Language::valid_names_display()
-        ))?]),
-        None => None,
-    };
-    // SearchFilter is `#[non_exhaustive]`; external-crate construction goes
-    // through `Default` + field assignment.
-    let filter = {
-        let mut f = SearchFilter::default();
-        f.languages = languages;
-        f.path_pattern = ctx.cli.path.clone();
-        f
-    };
+    // Build the scoped search filter via the shared helper so the CLI-direct
+    // and daemon-routed paths construct byte-identical filters from the same
+    // `--lang` / `--path` inputs.
+    let filter = build_similar_filter(lang, path)?;
 
     // Load the concrete HNSW index; the core takes a `dyn VectorIndex`.
     let index = cqs::HnswIndex::try_load_with_ef(cqs_dir, None, store.dim());

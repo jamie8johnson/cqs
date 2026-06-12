@@ -225,6 +225,20 @@ impl Embedder {
         })
     }
 
+    /// Seed the in-memory query cache so [`Self::embed_query`] returns `vec`
+    /// for `text` without loading the ONNX model.
+    ///
+    /// A test affordance, not part of the inference path: it lets a unit test in
+    /// the *binary* crate (where the library's `#[cfg(test)]` items aren't
+    /// visible) drive a query path that needs an embedding — e.g. the search
+    /// prelude — on a canned vector, with no model download or inference. Keying
+    /// mirrors [`Self::embed_query`] (the input is `trim`med before lookup).
+    pub fn seed_query_cache(&self, text: &str, vec: Embedding) {
+        let key = text.trim().to_string();
+        let mut cache = self.query_cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.put(key, vec);
+    }
+
     /// Lazy provider accessor. Resolves on first call by running the CUDA
     /// probe, then memoises. Pre-populated by `new_with_provider` for the
     /// explicit-CPU path.
