@@ -5,7 +5,9 @@
 //! `Kind` (Function | Type | Const | Module | Other). See
 //! `docs/polymorphic-routing.md` for the per-(command × kind) behavior matrix.
 //!
-//! This is a lib building block; no CLI command is rerouted through it yet.
+//! The graph commands (`callers` / `callees` / `deps` / `impact`) route
+//! through this via `detect_fallback`, which calls `detect_kind_for_store` to
+//! pick the fallback behavior when an exact-name lookup misses.
 //!
 //! ## Why a separate Kind enum (vs. reusing ChunkType / ChunkClass)
 //!
