@@ -30,8 +30,10 @@ pub struct QuerySet {
 
 /// One eval query with its expected gold chunk.
 ///
-/// Gold matching uses `(file == origin) AND (name == name) AND
-/// (line_start == line_start)` — the v3 standard. Queries without a gold
+/// Gold matching uses `(file == origin) AND (name == name)`. `line_start`
+/// is intentionally NOT part of the key (see `runner.rs`) so that
+/// audit-cycle line drift does not turn a still-correct gold into a miss;
+/// only file moves and renames require re-pinning. Queries without a gold
 /// chunk are skipped at scoring time (counted in `skipped`, not in
 /// `total`) so reported R@K is over scoreable queries only.
 ///
@@ -87,7 +89,7 @@ pub struct EvalQuery {
 
 /// The expected matching chunk. `origin` is the file path as indexed.
 ///
-/// `id`, `line_end`, `chunk_type`, `language` are present in the v3 file
+/// `id`, `line_end`, `chunk_type`, `language`) are present in the v3 file
 /// format but not used for matching; declared so `deny_unknown_fields`
 /// doesn't trip in the round-trip test.
 #[derive(Debug, Clone, Serialize, Deserialize)]
