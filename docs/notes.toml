@@ -1933,3 +1933,12 @@ mentions = [
     "seam-auditor",
     "escalation",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "cqs callers reports zero direct callers for name-ambiguous functions (two defs sharing a name, e.g. search_filtered = hnsw method + store method): the name-based resolver drops the edge rather than guess, so a fn with 23 call sites shows 0 direct (only doc_reference). False-absence — verify callers of overloaded names by grep. Tracked #1837."
+mentions = [
+    "src/impact",
+    "callers",
+    "search_filtered",
+]
