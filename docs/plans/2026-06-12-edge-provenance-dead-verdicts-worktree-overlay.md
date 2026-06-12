@@ -185,6 +185,14 @@ stays with the consumer (no-external-users does not mean no-wrong-deletes).
 
 ## 3. Worktree search overlay (the deep one)
 
+> **Superseded in detail** by
+> `docs/plans/2026-06-12-worktree-overlay-implementation.md`, whose
+> design-time review corrected four points here: shadowing must be
+> origin-level (not `(origin, name)`), the diff base is the parent's HEAD
+> (not the merge-base), `:memory:` needs a dedicated pinned-connection
+> Store constructor, and the cache mirrors the refs LRU (not the #1739
+> epoch cells). This section remains the problem statement and intent.
+
 ### Problem
 
 Lane agents work in `.claude/worktrees/<agent>` checkouts. Reads resolve to
