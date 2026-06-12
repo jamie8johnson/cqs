@@ -1,6 +1,9 @@
 //! Call extraction from tree-sitter parse trees
 
 use std::path::Path;
+use std::sync::LazyLock;
+
+use regex::Regex;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
@@ -8,6 +11,94 @@ use super::types::{
     ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
+
+/// serde string-callback attributes name a free/associated function (or, for
+/// `with`, a module) by path string. tree-sitter's call query never captures
+/// these — they live in `#[serde(...)]` attribute string literals, not in a
+/// `call_expression`. Without an explicit edge, `cqs callers default_ref_weight`
+/// returns empty even though serde's derive invokes the function. This is the
+/// extractor-side mirror of the dead-code `filter_serde_callbacks` heuristic:
+/// where that filter keeps a candidate *alive*, this emits a real call-graph
+/// edge so callers/impact/test-map see the relationship.
+///
+/// Captures the quoted path of `default`, `with`, `serialize_with`,
+/// `deserialize_with`, `skip_serializing_if`, `getter`. `bound = "..."` is
+/// excluded — it names types / where-clauses, not functions.
+///
+/// `with = "module"` references a *module* whose `serialize`/`deserialize`
+/// free functions serde calls. We emit an edge to the terminal segment of the
+/// path as written (`humantime_serde`), matching how the dead-code filter
+/// keeps a same-named function alive. We do NOT synthesize
+/// `module::serialize` / `module::deserialize` edges: the call graph resolves
+/// callee_name by bare last segment, so a synthetic `serialize` edge would
+/// alias *every* function named `serialize` in the index (massive false-edge
+/// fan-out). The module's inner serde fns therefore stay unlinked — a
+/// limitation of bare-name resolution, not a defect of this pass.
+static SERDE_CALLBACK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:default|with|serialize_with|deserialize_with|skip_serializing_if|getter)\s*=\s*"([^"]+)""#,
+    )
+    .expect("hardcoded serde-callback regex")
+});
+
+/// Emit synthetic call edges for serde string-callback attributes found in a
+/// Rust source slice (the byte range of a struct/enum chunk).
+///
+/// Returns one [`CallSite`] per distinct serde callback reference, with the
+/// callee set to the terminal path segment (`crate::a::b::f` → `f`) so it
+/// resolves the same way the call graph resolves cross-module identifiers
+/// (bare last segment — see [`SERDE_CALLBACK_RE`] docs). `line_offset` is the
+/// 1-indexed line of `source`'s first byte within the file, so returned line
+/// numbers are absolute and consistent with the tree-sitter call path.
+///
+/// No-op for non-Rust languages (serde is Rust-only) and for slices with no
+/// `serde` substring, so the common case pays only a `contains` scan.
+///
+/// CONTAINER-LEVEL ATTRIBUTES: in tree-sitter-rust the `struct_item` /
+/// `enum_item` node does NOT include the leading `#[serde(...)]`
+/// attribute_items that decorate it — those are prev_siblings, outside the
+/// chunk byte range. Field-level attributes live inside the item body and ARE
+/// in range, so the common `#[serde(default = "fn")]`-on-a-field case is
+/// covered. Container-level attributes on the type itself are not reached by
+/// this pass and rely on the dead-code `filter_serde_callbacks` backstop.
+pub(crate) fn extract_serde_callback_calls(
+    source: &str,
+    language: Language,
+    line_offset: u32,
+) -> Vec<CallSite> {
+    let _span = tracing::debug_span!("extract_serde_callback_calls", %language).entered();
+
+    if language != Language::Rust || !source.contains("serde") {
+        return Vec::new();
+    }
+
+    let mut calls = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for cap in SERDE_CALLBACK_RE.captures_iter(source) {
+        let m = match cap.get(1) {
+            Some(m) => m,
+            None => continue,
+        };
+        let path = m.as_str();
+        // Terminal path segment: `crate::a::b::f` → `f`. Matches how the call
+        // graph keys callee_name (bare last segment) and the dead-code filter.
+        let terminal = path.rsplit("::").next().unwrap_or(path);
+        if terminal.is_empty() || should_skip_callee(terminal) {
+            continue;
+        }
+        if !seen.insert(terminal.to_string()) {
+            continue;
+        }
+        // Line number of the attribute, absolute within the file.
+        let line_in_slice = source[..m.start()].bytes().filter(|&b| b == b'\n').count() as u32;
+        let line_number = line_offset.saturating_add(line_in_slice).max(1);
+        calls.push(CallSite {
+            callee_name: terminal.to_string(),
+            line_number,
+        });
+    }
+    calls
+}
 
 impl Parser {
     /// Extract function calls from a chunk's source code
@@ -134,13 +225,28 @@ impl Parser {
                 return extractor(chunk);
             }
         }
-        self.extract_calls(
+        let mut calls = self.extract_calls(
             &chunk.content,
             chunk.language,
             0,
             chunk.content.len(),
             0, // No line offset since we're parsing the content directly
-        )
+        );
+        // Mirror the serde string-callback edges emitted by the whole-file
+        // Pass-2 walk (parse_file_relationships / parse_file_all_inner) so the
+        // per-chunk shape stays in parity. Content is parsed standalone with
+        // 1-indexed relative lines, so `line_offset = 1` puts an attribute on
+        // the chunk's first content line at line 1 — matching the whole-file
+        // path's relative-line conversion. Deduped against existing calls so a
+        // callback that also appears in a real call_expression isn't doubled.
+        let mut seen: std::collections::HashSet<String> =
+            calls.iter().map(|c| c.callee_name.clone()).collect();
+        for sc in extract_serde_callback_calls(&chunk.content, chunk.language, 1) {
+            if seen.insert(sc.callee_name.clone()) {
+                calls.push(sc);
+            }
+        }
+        calls
     }
 
     /// Extract type references from a chunk's byte range
@@ -400,6 +506,20 @@ impl Parser {
                     }
                 }
             }
+
+            // serde string-callback edges: struct/enum chunks carrying
+            // `#[serde(default = "fn")]` etc. invoke those functions via the
+            // derive. The tree-sitter call query can't see them (string
+            // literals in attributes), so emit them explicitly here. Scans the
+            // chunk's byte range — FIELD-level serde attributes (inside the
+            // body) are covered; CONTAINER-level attributes preceding the item
+            // sit outside the node and are left to the dead-code backstop. See
+            // the matching note in `parse_file_all_inner`.
+            calls.extend(extract_serde_callback_calls(
+                &source[byte_range.clone()],
+                language,
+                line_start,
+            ));
 
             // Deduplicate calls
             seen.clear();
@@ -1222,5 +1342,156 @@ const CFG: Config = Config {
             "expected `post_process_helper` (from `Some(post_process_helper as PostProcessFn)`), got: {:?}",
             names
         );
+    }
+
+    mod serde_callback_tests {
+        use super::*;
+
+        /// Every serde string-callback attribute form on one struct emits a
+        /// call edge to the bare (terminal-segment) function name.
+        #[test]
+        fn test_extract_serde_callback_calls_all_forms() {
+            let source = r#"
+#[derive(serde::Deserialize)]
+struct Config {
+    #[serde(default = "default_ref_weight")]
+    weight: f32,
+    #[serde(with = "humantime_serde")]
+    timeout: Duration,
+    #[serde(serialize_with = "ser_custom")]
+    a: String,
+    #[serde(deserialize_with = "crate::de::de_custom")]
+    b: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    maybe: u32,
+    #[serde(getter = "get_inner")]
+    inner: Inner,
+}
+"#;
+            let calls = extract_serde_callback_calls(source, Language::Rust, 1);
+            let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+            for expected in [
+                "default_ref_weight",
+                "humantime_serde",
+                "ser_custom",
+                "de_custom", // terminal segment of `crate::de::de_custom`
+                "is_zero",
+                "get_inner",
+            ] {
+                assert!(
+                    names.contains(&expected),
+                    "expected serde callback `{expected}`, got: {names:?}"
+                );
+            }
+        }
+
+        /// `bound = "..."` names types / where-clauses, not functions — it must
+        /// not produce a spurious call edge.
+        #[test]
+        fn test_extract_serde_callback_calls_excludes_bound() {
+            let source = r#"
+#[derive(serde::Serialize)]
+#[serde(bound = "T: Serialize")]
+struct Wrapper<T> {
+    inner: T,
+}
+"#;
+            let calls = extract_serde_callback_calls(source, Language::Rust, 1);
+            assert!(
+                calls.is_empty(),
+                "bound must not emit a serde call edge, got: {:?}",
+                calls
+            );
+        }
+
+        /// No `serde` substring → fast no-op (and non-Rust languages skip).
+        #[test]
+        fn test_extract_serde_callback_calls_noop_paths() {
+            // No serde in source.
+            assert!(
+                extract_serde_callback_calls("struct Plain { x: u32 }", Language::Rust, 1)
+                    .is_empty()
+            );
+            // Non-Rust language with a serde-shaped string is ignored.
+            assert!(extract_serde_callback_calls(
+                r#"x = {default = "some_fn"}"#,
+                Language::Python,
+                1
+            )
+            .is_empty());
+        }
+
+        /// End-to-end through `parse_file_relationships`: the carrying struct
+        /// chunk gets a `function_calls` entry naming each callback, so the
+        /// store-level `get_callers_full` can resolve them.
+        #[test]
+        fn test_parse_file_relationships_emits_serde_edges() {
+            let content = r#"
+#[derive(serde::Deserialize)]
+struct RefWeightCfg {
+    #[serde(default = "default_ref_weight")]
+    weight: f32,
+}
+
+fn default_ref_weight() -> f32 { 1.0 }
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+
+            let cfg = calls
+                .iter()
+                .find(|fc| fc.name == "RefWeightCfg")
+                .expect("RefWeightCfg should have a function_calls entry");
+            let callees: Vec<&str> = cfg.calls.iter().map(|c| c.callee_name.as_str()).collect();
+            assert!(
+                callees.contains(&"default_ref_weight"),
+                "RefWeightCfg should call default_ref_weight, got: {:?}",
+                callees
+            );
+        }
+
+        /// Documented limitation: container-level `#[serde(...)]` attributes
+        /// (preceding `struct`/`enum`) sit OUTSIDE the item node's byte range
+        /// in tree-sitter-rust, so this pass does not emit an edge for them —
+        /// they rely on the dead-code `filter_serde_callbacks` backstop. A
+        /// FIELD-level attribute on the same struct IS captured. This test
+        /// pins both halves so a future grammar change that pulls container
+        /// attributes into range is noticed.
+        #[test]
+        fn test_parse_file_relationships_container_vs_field_attr() {
+            let content = r#"
+#[derive(serde::Deserialize)]
+#[serde(default = "container_default")]
+struct Settings {
+    #[serde(deserialize_with = "field_de")]
+    a: u32,
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+            let settings = calls
+                .iter()
+                .find(|fc| fc.name == "Settings")
+                .expect("Settings chunk should carry the field-level serde edge");
+            let callees: Vec<&str> = settings
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(
+                callees.contains(&"field_de"),
+                "field-level serde deserialize_with should emit an edge, got: {:?}",
+                callees
+            );
+            // Container-level attribute is out of range — not emitted here.
+            assert!(
+                !callees.contains(&"container_default"),
+                "container-level serde attr is a known limitation (left to the \
+                 dead-code backstop); it must NOT be emitted by this pass, got: {:?}",
+                callees
+            );
+        }
     }
 }
