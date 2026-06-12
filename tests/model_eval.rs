@@ -1485,8 +1485,8 @@ fn test_hard_reranker_comparison() {
                 .iter()
                 .map(|(i, score)| {
                     let desc = &chunk_descs[*i];
-                    SearchResult {
-                        chunk: cqs::store::ChunkSummary {
+                    SearchResult::new(
+                        cqs::store::ChunkSummary {
                             id: format!("eval-{}", i),
                             file: PathBuf::from("eval_fixture"),
                             language: desc.language,
@@ -1504,8 +1504,8 @@ fn test_hard_reranker_comparison() {
                             parser_version: 0,
                             vendored: false,
                         },
-                        score: *score,
-                    }
+                        *score,
+                    )
                 })
                 .collect();
 

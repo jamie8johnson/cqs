@@ -552,6 +552,7 @@ mod tests {
                 score: 0.5,
                 depth: 2,
                 source: None,
+                rank_signals: vec![],
             },
             GatheredChunk {
                 name: "shallow".into(),
@@ -565,6 +566,7 @@ mod tests {
                 score: 0.3,
                 depth: 1,
                 source: None,
+                rank_signals: vec![],
             },
         ];
         chunks.sort_by(|a, b| {

@@ -457,6 +457,7 @@ mod tests {
             score: 0.9,
             depth: 0,
             source: None,
+            rank_signals: vec![],
         }
     }
 

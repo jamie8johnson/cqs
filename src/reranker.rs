@@ -1335,7 +1335,7 @@ mod tests {
             parser_version: 0,
             vendored: false,
         };
-        SearchResult { chunk, score: 0.0 }
+        SearchResult::new(chunk, 0.0)
     }
 
     /// Seed three passages where the "baking sourdough" one

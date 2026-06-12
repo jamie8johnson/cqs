@@ -443,8 +443,8 @@ mod tests {
     ///
     /// A `SearchResult` containing a `ChunkSummary` representing a Rust function located at `src/{name}.rs` with minimal metadata and the provided score.
     fn make_code_result(name: &str, score: f32) -> SearchResult {
-        SearchResult {
-            chunk: ChunkSummary {
+        SearchResult::new(
+            ChunkSummary {
                 id: format!("id-{}", name),
                 file: std::path::PathBuf::from(format!("src/{}.rs", name)),
                 language: crate::parser::Language::Rust,
@@ -463,7 +463,7 @@ mod tests {
                 vendored: false,
             },
             score,
-        }
+        )
     }
 
     #[test]
@@ -594,8 +594,8 @@ mod tests {
     #[test]
     fn test_merge_deduplicates_by_content() {
         // Same content in primary and reference — keep highest score
-        let primary = vec![UnifiedResult::Code(SearchResult {
-            chunk: ChunkSummary {
+        let primary = vec![UnifiedResult::Code(SearchResult::new(
+            ChunkSummary {
                 id: "primary-id".to_string(),
                 file: std::path::PathBuf::from("src/foo.rs"),
                 language: crate::parser::Language::Rust,
@@ -613,12 +613,12 @@ mod tests {
                 parser_version: 0,
                 vendored: false,
             },
-            score: 0.9,
-        })];
+            0.9,
+        ))];
         let refs = vec![(
             "ref1".to_string(),
-            vec![SearchResult {
-                chunk: ChunkSummary {
+            vec![SearchResult::new(
+                ChunkSummary {
                     id: "ref-id".to_string(),
                     file: std::path::PathBuf::from("src/foo.rs"),
                     language: crate::parser::Language::Rust,
@@ -636,8 +636,8 @@ mod tests {
                     parser_version: 0,
                     vendored: false,
                 },
-                score: 0.7,
-            }],
+                0.7,
+            )],
         )];
 
         let merged = merge_results(primary, refs, 10);

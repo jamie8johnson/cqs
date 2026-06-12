@@ -76,6 +76,15 @@ pub struct SearchFilter {
     /// See `src/search/mmr.rs` for the surface-feature similarity model
     /// and `docs/audit-r5-failure-modes.md` for the motivating data.
     pub mmr_lambda: Option<f32>,
+    /// Record per-result ranking provenance (`rank_signals`) during search.
+    ///
+    /// Off by default. When set, `finalize_results` derives a `rank_signals`
+    /// array per result from the same inputs the scoring used (RRF leg ranks,
+    /// note/name/type-boost multipliers) as a side channel — it never
+    /// participates in the score arithmetic, so scores and order are
+    /// bit-identical with this on or off. Surfaced (skip-when-empty) in the
+    /// chunk JSON; the text surface omits it. Suppress via `--no-rank-signals`.
+    pub record_rank_signals: bool,
 }
 
 impl Default for SearchFilter {
@@ -93,6 +102,7 @@ impl Default for SearchFilter {
             splade_alpha: 0.7,
             type_boost_types: None,
             mmr_lambda: None,
+            record_rank_signals: false,
         }
     }
 }

@@ -52,6 +52,11 @@ pub struct ScoutChunk {
     pub test_count: usize,
     /// Semantic search score (0.0-1.0)
     pub search_score: f32,
+    /// Ranking provenance for the seed search hit (skip-when-empty). Mirrors
+    /// the `search` surface's per-result `rank_signals`. Empty for chunks with
+    /// no discriminative signal, and on the text surface.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rank_signals: Vec<crate::store::RankSignal>,
 }
 
 /// A file group in the scout result
@@ -201,6 +206,9 @@ pub(crate) fn scout_core<Mode>(
     let filter = SearchFilter {
         enable_rrf: false, // RRF off by default — pure cosine is faster + higher R@1 on expanded eval
         query_text: task.to_string(),
+        // Record ranking provenance so the per-chunk JSON carries `rank_signals`
+        // (skip-when-empty). Side channel — no scoring change.
+        record_rank_signals: true,
         ..SearchFilter::default()
     };
 
@@ -226,13 +234,11 @@ pub(crate) fn scout_core<Mode>(
         });
     }
 
-    // 2. Group by file
-    let mut file_map: HashMap<PathBuf, Vec<(f32, &ChunkSummary)>> = HashMap::new();
+    // 2. Group by file. Carry the whole `SearchResult` so the per-chunk
+    // `rank_signals` (recorded by the seed search) survive into ScoutChunk.
+    let mut file_map: HashMap<PathBuf, Vec<&crate::store::SearchResult>> = HashMap::new();
     for r in &results {
-        file_map
-            .entry(r.chunk.file.clone())
-            .or_default()
-            .push((r.score, &r.chunk));
+        file_map.entry(r.chunk.file.clone()).or_default().push(r);
     }
 
     // 3. Batch caller/callee counts
@@ -286,14 +292,16 @@ pub(crate) fn scout_core<Mode>(
     let mut groups: Vec<FileGroup> = file_map
         .into_iter()
         .map(|(file, chunks)| {
-            let relevance_score = chunks.iter().map(|(s, _)| s).sum::<f32>() / chunks.len() as f32;
+            let relevance_score = chunks.iter().map(|r| r.score).sum::<f32>() / chunks.len() as f32;
             // HashSet<String>::contains accepts &str via Borrow, so no
             // owned-String allocation is needed for the probe.
             let is_stale = stale_set.contains(file.to_string_lossy().as_ref());
 
             let scout_chunks: Vec<ScoutChunk> = chunks
                 .iter()
-                .map(|(score, chunk)| {
+                .map(|r| {
+                    let score = r.score;
+                    let chunk = &r.chunk;
                     let default_hints = crate::impact::FunctionHints {
                         caller_count: 0,
                         test_count: 0,
@@ -304,7 +312,7 @@ pub(crate) fn scout_core<Mode>(
                         .unwrap_or(&default_hints);
 
                     let role = classify_role(
-                        *score,
+                        score,
                         &chunk.name,
                         &chunk.file.to_string_lossy(),
                         modify_threshold,
@@ -318,7 +326,8 @@ pub(crate) fn scout_core<Mode>(
                         role,
                         caller_count: hints.caller_count,
                         test_count: hints.test_count,
-                        search_score: *score,
+                        search_score: score,
+                        rank_signals: r.rank_signals.clone(),
                     }
                 })
                 .collect();
@@ -533,8 +542,8 @@ mod tests {
     /// Build a mock `SearchResult` for a Rust function chunk with the given
     /// name, file, and score; other fields are placeholders.
     fn mock_result(name: &str, file: &str, score: f32) -> crate::store::SearchResult {
-        crate::store::SearchResult {
-            chunk: ChunkSummary {
+        crate::store::SearchResult::new(
+            ChunkSummary {
                 id: name.to_string(),
                 file: std::path::PathBuf::from(file),
                 language: crate::language::Language::Rust,
@@ -553,7 +562,7 @@ mod tests {
                 vendored: false,
             },
             score,
-        }
+        )
     }
 
     #[test]

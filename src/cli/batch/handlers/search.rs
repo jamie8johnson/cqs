@@ -104,6 +104,9 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
         // Daemon semantics — see fn doc.
         always_route: true,
         fts_first: false,
+        // The daemon surface is always JSON, so provenance is on unless the
+        // caller suppresses it for a tight token budget.
+        record_rank_signals: !args.no_rank_signals,
     }
 }
 

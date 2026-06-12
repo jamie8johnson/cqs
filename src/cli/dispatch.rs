@@ -435,6 +435,7 @@ const SEARCH_KNOB_ARG_IDS: &[&str] = &[
     "tokens",
     "no_stale_check",
     "no_demote",
+    "no_rank_signals",
 ];
 
 /// Top-level `Cli` arg IDs whose value is a *search scope* (`lang`, `path`)

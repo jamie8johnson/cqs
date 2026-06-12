@@ -110,6 +110,9 @@ pub use helpers::SearchFilter;
 /// A code chunk search result with similarity score.
 pub use helpers::SearchResult;
 
+/// One per-result ranking-provenance entry (`{signal, value}`).
+pub use helpers::RankSignal;
+
 /// A file in the index whose content has changed on disk.
 pub use helpers::StaleFile;
 

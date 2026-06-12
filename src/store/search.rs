@@ -231,7 +231,7 @@ impl<Mode> Store<Mode> {
                         let name_lower = chunk.name.to_lowercase();
                         helpers::score_name_match_pre_lower(&name_lower, &lower_name)
                     };
-                    SearchResult { chunk, score }
+                    SearchResult::new(chunk, score)
                 })
                 .collect::<Vec<_>>();
 

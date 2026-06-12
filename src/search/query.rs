@@ -4,7 +4,7 @@
 //! `search_filtered`, `finalize_results`, `search_filtered_with_index`,
 //! `search_by_candidate_ids`, and `search_code_results`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
@@ -20,8 +20,8 @@ use crate::store::{NoteSummary, Store, StoreError};
 use super::mmr::{mmr_lambda_from_env, mmr_rerank, MmrCandidate};
 use super::scoring::{
     apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, rrf_fuse, score_candidate, BoundedScoreHeap, NameMatcher,
-    NoteBoost, ScoringContext,
+    extract_file_from_chunk_id, rrf_fuse, score_candidate, signals_for, BoundedScoreHeap,
+    NameMatcher, NoteBoost, RankSignalCtx, RankSignalInputs, ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
 
@@ -301,6 +301,11 @@ impl<Mode> Store<Mode> {
 
             let scored = score_heap.into_sorted_vec();
 
+            let signal_inputs = filter.record_rank_signals.then_some(RankSignalInputs {
+                note_index: &note_boost,
+                name_matcher: name_matcher.as_ref(),
+                enable_demotion: filter.enable_demotion,
+            });
             let results = self
                 .finalize_results(
                     scored,
@@ -310,6 +315,7 @@ impl<Mode> Store<Mode> {
                     glob_matcher.as_ref(),
                     filter.type_boost_types.as_deref(),
                     filter.mmr_lambda,
+                    signal_inputs,
                 )
                 .await?;
 
@@ -327,7 +333,7 @@ impl<Mode> Store<Mode> {
     /// When `use_rrf` is true, fuses semantic rankings with FTS keyword results
     /// via Reciprocal Rank Fusion before fetching full content. Requests `limit * 2`
     /// candidates from RRF to compensate for parent dedup filtering.
-    #[allow(clippy::too_many_arguments)] // 8 args is the natural shape — the function joins per-call routing flags (use_rrf, mmr_lambda) with per-search inputs.
+    #[allow(clippy::too_many_arguments)] // The function joins per-call routing flags (use_rrf, mmr_lambda) with per-search inputs; the optional signal_inputs rides the same shape.
     async fn finalize_results(
         &self,
         mut scored: Vec<(String, f32)>,
@@ -337,6 +343,7 @@ impl<Mode> Store<Mode> {
         glob_matcher: Option<&globset::GlobMatcher>,
         type_boost_types: Option<&[ChunkType]>,
         mmr_lambda: Option<f32>,
+        signal_inputs: Option<RankSignalInputs<'_>>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         // Resolve MMR setting: explicit `filter.mmr_lambda` wins, else env
         // var, else None (disabled).
@@ -349,6 +356,22 @@ impl<Mode> Store<Mode> {
         // similarity (instead of surface features) is the other obvious
         // direction.
         let mmr_lambda = mmr_lambda.or_else(mmr_lambda_from_env);
+
+        // Ranking-provenance leg ranks. Built from the *incoming* `scored`
+        // (the semantic/base ordering fed to fusion) before it is consumed
+        // below, plus the FTS leg captured inside the RRF branch. Owned keys
+        // so the maps outlive the `scored`/`fts_ids` borrows; populated only
+        // when recording is on. This is a read-only mirror of the inputs the
+        // scoring already consumed — it never feeds back into a score.
+        let mut dense_ranks: HashMap<String, usize> = HashMap::new();
+        let mut fts_ranks: HashMap<String, usize> = HashMap::new();
+        if signal_inputs.is_some() {
+            for (rank, (id, _)) in scored.iter().enumerate() {
+                // 1-indexed to match the RRF rank convention (first = rank 1).
+                dense_ranks.entry(id.clone()).or_insert(rank + 1);
+            }
+        }
+
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
         let final_scored: Vec<(String, f32)> = if use_rrf {
             let normalized = normalize_for_fts(query_text);
@@ -385,6 +408,14 @@ impl<Mode> Store<Mode> {
                     fts_all
                 }
             };
+            if signal_inputs.is_some() {
+                // FTS leg ranks mirror `rrf_fuse`'s per-list dedup: first
+                // occurrence wins (1-indexed). Records the exact rank the
+                // fusion math used for this leg.
+                for (rank, id) in fts_ids.iter().enumerate() {
+                    fts_ranks.entry(id.clone()).or_insert(rank + 1);
+                }
+            }
             let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
             // Request extra candidates from RRF to compensate for parent dedup
             // filtering below — dedup can drop results, leaving fewer than `limit`.
@@ -413,10 +444,7 @@ impl<Mode> Store<Mode> {
                 let row = rows_map.remove(&id)?;
                 let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
                 if seen_parents.insert(dedup_key) {
-                    Some(SearchResult {
-                        chunk: ChunkSummary::from(row),
-                        score,
-                    })
+                    Some(SearchResult::new(ChunkSummary::from(row), score))
                 } else {
                     None
                 }
@@ -489,6 +517,31 @@ impl<Mode> Store<Mode> {
 
         // Step 5: Truncate back to requested limit after parent dedup
         results.truncate(limit);
+
+        // Step 6: Ranking provenance (opt-in). A pure post-pass over the final
+        // result set — scores and order are already fixed, so recording here
+        // is provably bit-identical to not recording. The leg rank maps and
+        // the caller's boost-lookup inputs reconstruct each signal's native
+        // contribution. Skip-when-empty: results with no recorded signal carry
+        // no `rank_signals` on the wire.
+        if let Some(inputs) = signal_inputs {
+            let dense_ref: HashMap<&str, usize> =
+                dense_ranks.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let fts_ref: HashMap<&str, usize> =
+                fts_ranks.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let signal_ctx = RankSignalCtx {
+                note_index: inputs.note_index,
+                name_matcher: inputs.name_matcher,
+                enable_demotion: inputs.enable_demotion,
+                type_boost_types,
+                type_boost_factor: type_boost_factor(),
+                dense_ranks: &dense_ref,
+                fts_ranks: &fts_ref,
+            };
+            for r in &mut results {
+                r.rank_signals = signals_for(r, &signal_ctx);
+            }
+        }
 
         Ok(results)
     }
@@ -1009,6 +1062,11 @@ impl<Mode> Store<Mode> {
             let scored: Vec<(String, f32)> =
                 scored.into_iter().map(|(c, score)| (c.id, score)).collect();
 
+            let signal_inputs = filter.record_rank_signals.then_some(RankSignalInputs {
+                note_index: &note_boost,
+                name_matcher: name_matcher.as_ref(),
+                enable_demotion: filter.enable_demotion,
+            });
             self.finalize_results(
                 scored,
                 &filter.query_text,
@@ -1017,6 +1075,7 @@ impl<Mode> Store<Mode> {
                 glob_matcher.as_ref(),
                 filter.type_boost_types.as_deref(),
                 filter.mmr_lambda,
+                signal_inputs,
             )
             .await
         })
@@ -2052,6 +2111,192 @@ mod tests {
         assert!(
             (second_score - (1.0 - factor)).abs() < 1e-6,
             "after note change the boost cache must refresh to the -1.0 demote, got {second_score}"
+        );
+    }
+
+    /// HARD GATE: ranking-provenance recording must be bit-identical to not
+    /// recording. Run the same search twice — once with
+    /// `record_rank_signals = false`, once `true` — over a corpus that
+    /// exercises a note boost, a test-function demotion, and an RRF fusion
+    /// path, and assert the per-result `(id, score)` sequence is byte-for-byte
+    /// equal. The only permitted difference is the populated `rank_signals`
+    /// field on the recording run. Mirrors the `apply_scoring_pipeline_pinned_
+    /// exact_scores` pre/post pattern at the full-search level.
+    #[test]
+    fn pin_rank_signals_recording_is_bit_identical() {
+        let (store, dir) = setup_store();
+        let c_target = make_chunk(
+            "handleError",
+            "src/err.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let c_test = make_chunk(
+            "test_handleError",
+            "src/err_test.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let c_plain = make_chunk(
+            "parseInput",
+            "src/in.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[
+                    (c_target.clone(), emb.clone()),
+                    (c_test.clone(), emb.clone()),
+                    (c_plain.clone(), emb.clone()),
+                ],
+                Some(1),
+            )
+            .unwrap();
+        // A note boost on handleError so the recording run has a discriminative
+        // signal to carry.
+        seed_note(&store, dir.path(), 0.5, "handleError");
+
+        let off = SearchFilter {
+            enable_rrf: true,
+            query_text: "error handling".to_string(),
+            record_rank_signals: false,
+            ..Default::default()
+        };
+        let on = SearchFilter {
+            enable_rrf: true,
+            query_text: "error handling".to_string(),
+            record_rank_signals: true,
+            ..Default::default()
+        };
+
+        let res_off = store.search_filtered(&emb, &off, 10, 0.0).unwrap();
+        let res_on = store.search_filtered(&emb, &on, 10, 0.0).unwrap();
+
+        // Same length, same order, bit-identical scores (exact f32 equality).
+        assert_eq!(res_off.len(), res_on.len(), "result count changed");
+        for (a, b) in res_off.iter().zip(res_on.iter()) {
+            assert_eq!(a.chunk.id, b.chunk.id, "result order changed");
+            assert_eq!(
+                a.score.to_bits(),
+                b.score.to_bits(),
+                "score bits changed for {} (off={}, on={})",
+                a.chunk.id,
+                a.score,
+                b.score
+            );
+        }
+
+        // The off run records nothing; the on run carries a note_boost on the
+        // mentioned chunk.
+        assert!(
+            res_off.iter().all(|r| r.rank_signals.is_empty()),
+            "recording-off run must carry no rank_signals"
+        );
+        let target = res_on
+            .iter()
+            .find(|r| r.chunk.name == "handleError")
+            .expect("target present");
+        assert!(
+            target
+                .rank_signals
+                .iter()
+                .any(|s| s.signal == "note_boost" && s.value > 1.0),
+            "recording-on run must carry note_boost on the mentioned chunk; got {:?}",
+            target.rank_signals
+        );
+    }
+
+    /// A test-function chunk picks up the `importance` demotion signal (and the
+    /// `dense` rank context) when recording is on. Pins the signal vocabulary
+    /// and skip-when-empty behaviour for a non-note signal.
+    #[test]
+    fn rank_signals_records_importance_for_test_chunk() {
+        let (store, _dir) = setup_store();
+        let prod = make_chunk("realFn", "src/real.rs", Language::Rust, ChunkType::Function);
+        let test = make_chunk(
+            "test_realFn",
+            "src/real_test.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[(prod.clone(), emb.clone()), (test.clone(), emb.clone())],
+                Some(1),
+            )
+            .unwrap();
+
+        let filter = SearchFilter {
+            record_rank_signals: true,
+            ..SearchFilter::default()
+        };
+        let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+
+        let test_res = results
+            .iter()
+            .find(|r| r.chunk.name == "test_realFn")
+            .expect("test chunk present");
+        assert!(
+            test_res
+                .rank_signals
+                .iter()
+                .any(|s| s.signal == "importance" && s.value < 1.0),
+            "demoted test chunk must record importance < 1.0; got {:?}",
+            test_res.rank_signals
+        );
+        // The production chunk has no discriminative signal → empty (the
+        // skip-when-empty case, zero wire overhead).
+        let prod_res = results
+            .iter()
+            .find(|r| r.chunk.name == "realFn")
+            .expect("prod chunk present");
+        assert!(
+            prod_res.rank_signals.is_empty(),
+            "unboosted production chunk must record nothing; got {:?}",
+            prod_res.rank_signals
+        );
+    }
+
+    /// `rank_signals` is an honest mirror of the scoring that actually ran: the
+    /// `note_boost` entry appears iff a note moved the score. This is the
+    /// audit-mode *complement* the design names — an agent reads note influence
+    /// per-query without disabling notes. Note that audit-mode at the search
+    /// layer forces the hybrid retrieval path but does not zero note boosting
+    /// in store scoring (that suppression is a display-layer concern in `read`
+    /// / the CLI envelope), so the discriminator here is note presence, not the
+    /// audit flag: with no notes seeded, no `note_boost` is recorded.
+    #[test]
+    fn rank_signals_note_boost_tracks_actual_scoring() {
+        let (store, _dir) = setup_store();
+        let chunk = make_chunk(
+            "lonelyFn",
+            "src/lonely.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(chunk.clone(), emb.clone())], Some(1))
+            .unwrap();
+
+        // No note seeded → the note boost is 1.0 → no `note_boost` signal, and
+        // with no other discriminative signal the array is empty.
+        let filter = SearchFilter {
+            record_rank_signals: true,
+            ..SearchFilter::default()
+        };
+        let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        let res = results
+            .iter()
+            .find(|r| r.chunk.name == "lonelyFn")
+            .expect("chunk present");
+        assert!(
+            !res.rank_signals.iter().any(|s| s.signal == "note_boost"),
+            "no note seeded → no note_boost signal; got {:?}",
+            res.rank_signals
         );
     }
 }

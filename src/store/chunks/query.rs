@@ -597,10 +597,10 @@ impl<Mode> Store<Mode> {
                     if let Some(chunk_row) = full_chunks.get(&id) {
                         let entry = result.entry(query_name).or_default();
                         if entry.len() < limit_per_name {
-                            entry.push(crate::store::SearchResult {
-                                chunk: ChunkSummary::from(chunk_row.clone()),
+                            entry.push(crate::store::SearchResult::new(
+                                ChunkSummary::from(chunk_row.clone()),
                                 score,
-                            });
+                            ));
                         }
                     }
                 }

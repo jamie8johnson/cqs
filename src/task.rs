@@ -375,6 +375,7 @@ mod tests {
             caller_count: 3,
             test_count: 1,
             search_score: 0.8,
+            rank_signals: vec![],
         }
     }
 
@@ -606,6 +607,7 @@ mod tests {
                 score: 0.9,
                 depth: 0,
                 source: None,
+                rank_signals: vec![],
             }],
             risk: vec![FunctionRisk {
                 name: "fn_a".to_string(),
