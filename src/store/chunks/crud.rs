@@ -1445,13 +1445,12 @@ impl Store<ReadWrite> {
                         );
                     }
                     // NOTE on `function_calls` cleanup: mirrors
-                    // `delete_phantom_chunks`. The watch loop calls
-                    // `upsert_function_calls` BEFORE us (at watch.rs :2492),
-                    // which DELETE-then-INSERTs the current set for the
-                    // file — adding a DELETE here would wipe those
-                    // just-written rows. The `delete_by_origin` /
-                    // `prune_missing` paths (file fully removed, no upsert
-                    // follows) DO include that DELETE.
+                    // `delete_phantom_chunks`. The parse-driven writer
+                    // (`upsert_function_calls_for_files`) DELETE-then-INSERTs
+                    // the current set for the file BEFORE this prune runs, so
+                    // adding a DELETE here would wipe those just-written rows.
+                    // The `delete_by_origin` / `prune_missing` paths (file
+                    // fully removed, no upsert follows) DO include that DELETE.
                 }
             }
 

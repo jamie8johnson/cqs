@@ -346,11 +346,20 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
 /// the full disk fingerprint (mtime + size + BLAKE3) and persisting it lets the
 /// next reconcile pass skip the file like any unchanged one.
 ///
-/// Ordering is the crash-safety guarantee (#1772 convention): replace calls and
-/// prune chunks FIRST, stamp registry SECOND. A crash between leaves the file
-/// with the refreshed call set + zero chunk rows + an unstamped registry, so
-/// the next tick re-parses it idempotently. Stamping before pruning is the bug
-/// — it would mark the file current while ghost rows survive.
+/// Ordering AND success are the safety guarantee. Sequence: replace
+/// calls and prune chunks FIRST, stamp registry SECOND — a crash between leaves
+/// the refreshed call set + zero chunk rows + an unstamped registry, re-parsed
+/// idempotently next tick. Stamping before pruning would mark the file current
+/// while ghost rows survive. But sequence alone is crash-safe, NOT error-safe:
+/// a step that returns Err (calls-replace or prune) commits nothing yet the
+/// later steps would still run. So each step is CONDITIONAL ON SUCCESS — a
+/// calls-replace Err returns early (no prune, no stamp); a prune Err returns
+/// early (no stamp). The stamp lands only when both upstream writes succeeded.
+/// The forfeited stamp is the heal trigger: an un-stamped file is reclassified
+/// and re-finalized next reconcile tick instead of committing stale calls +
+/// zero chunks + a current fingerprint (the ghost-caller / false-DEAD bug,
+/// reconcile-skipped on fingerprint-match and doctor-blind under the
+/// `find_orphaned_function_calls` registry-UNION arm — permanent if stamped).
 ///
 /// `entries` carry each zero-chunk file's project-relative path and its
 /// freshly parsed call set; `root` joins the paths for the disk read.
@@ -369,12 +378,26 @@ fn finalize_zero_chunk_files(
     // the single parse-driven writer. Empty sets clear, non-empty (oversize
     // function) sets refresh. This is the decoupled call-graph half; the chunk
     // prune below makes no call-graph decision.
+    //
+    // CONDITIONAL ON SUCCESS, not just ordered: a transient replace failure
+    // (e.g. SQLITE_BUSY past busy_timeout under a concurrent `cqs index
+    // --force`) must FORFEIT the prune AND the stamp. The stamp-last
+    // convention is crash-safe (nothing commits) but NOT error-safe — if the
+    // calls-replace fails and we stamped anyway, the file commits stale calls +
+    // zero chunks + a current fingerprint, which reconcile skips on
+    // fingerprint-match (drift keys on chunks, now gone) and the dead-code
+    // registry-UNION arm shields from the doctor: a PERMANENT ghost-caller /
+    // false-DEAD. Returning early leaves the file UN-stamped, which is exactly
+    // the designed heal trigger — the next reconcile tick reclassifies it ADDED
+    // and re-finalizes idempotently. The warn is kept for telemetry; we just
+    // stop committing past the failure.
     if let Err(e) = store.upsert_function_calls_for_files(entries) {
         tracing::warn!(
             files = entries.len(),
             error = %e,
-            "Failed to replace function_calls for zero-chunk watched files; call edges may be stale"
+            "Failed to replace function_calls for zero-chunk watched files; skipping prune + stamp so the files re-heal next tick"
         );
+        return;
     }
 
     let rel_paths: Vec<&Path> = entries.iter().map(|(p, _)| p.as_path()).collect();
@@ -382,7 +405,10 @@ fn finalize_zero_chunk_files(
     // Prune each survivor's stale CHUNK rows with an EMPTY live set BEFORE
     // stamping the registry below — same mechanism as the bulk path's
     // `delete_phantom_chunks_batch(.., Vec::new())`. Chunks + FTS only; the
-    // call graph was replaced above.
+    // call graph was replaced above. A prune failure ALSO forfeits the stamp
+    // (return early): an unstamped file re-finalizes next tick rather than
+    // committing surviving ghost rows under a current fingerprint that
+    // `origins_with_parser_drift` would re-arm forever.
     let prune_entries: Vec<(&Path, Vec<&str>)> =
         rel_paths.iter().map(|p| (*p, Vec::new())).collect();
     match store.delete_phantom_chunks_batch(&prune_entries) {
@@ -391,11 +417,14 @@ fn finalize_zero_chunk_files(
             "Pruned phantom chunks from zero-chunk watched files"
         ),
         Ok(_) => {}
-        Err(e) => tracing::warn!(
-            files = prune_entries.len(),
-            error = %e,
-            "Failed to prune chunks for zero-chunk watched files; stale rows may persist and re-arm parser-drift"
-        ),
+        Err(e) => {
+            tracing::warn!(
+                files = prune_entries.len(),
+                error = %e,
+                "Failed to prune chunks for zero-chunk watched files; skipping registry stamp so the files re-heal next tick"
+            );
+            return;
+        }
     }
     let mut entries_fp: Vec<(PathBuf, cqs::store::FileFingerprint)> =
         Vec::with_capacity(rel_paths.len());
@@ -1319,5 +1348,133 @@ mod tests {
             "after the prune the drifted origin must NOT be re-selected (loop closed)"
         );
         assert!(store.get_chunks_by_origin("drift.rs").unwrap().is_empty());
+    }
+
+    /// Run a single raw SQL statement against the on-disk DB through a separate
+    /// connection, bypassing the `Store` wrapper. Used to inject a deterministic
+    /// step-1 failure (drop `function_calls` out from under the finalize) and to
+    /// read `file_registry` directly, independent of the chunk-UNION readers.
+    fn raw_exec(db_path: &Path, sql: &str) {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let db_path = db_path.to_path_buf();
+        let sql = sql.to_string();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let mut conn = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .connect()
+                .await
+                .unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        });
+    }
+
+    /// Count `file_registry` rows for an origin through a separate connection.
+    fn raw_registry_count(db_path: &Path, origin: &str) -> i64 {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let db_path = db_path.to_path_buf();
+        let origin = origin.to_string();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let mut conn = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .connect()
+                .await
+                .unwrap();
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM file_registry WHERE origin = ?1")
+                    .bind(&origin)
+                    .fetch_one(&mut conn)
+                    .await
+                    .unwrap();
+            n
+        })
+    }
+
+    /// ERROR-PATH seam: a step-1 (function_calls replace) FAILURE must forfeit
+    /// the prune AND the registry stamp — the steps are conditional on success,
+    /// not merely ordered. The stamp-last sequence is crash-safe (nothing
+    /// commits) but NOT error-safe: under the prior warn-and-continue, a
+    /// transient calls-replace failure (e.g. SQLITE_BUSY past busy_timeout under
+    /// a concurrent `cqs index --force`) still pruned the chunks and stamped a
+    /// current fingerprint, committing stale calls + zero chunks + a current
+    /// stamp — the campaign's ghost-caller / false-DEAD bug made PERMANENT
+    /// (reconcile skips on fingerprint-match; the doctor's registry-UNION arm
+    /// shields it).
+    ///
+    /// Injection: drop `function_calls` out from under the finalize so the
+    /// replace's leading DELETE returns Err deterministically. A file being
+    /// emptied (zero parsed chunks, empty call set) with a surviving chunk row
+    /// is finalized.
+    ///
+    /// Fail-before (warn-and-continue): chunks pruned to zero AND registry
+    /// stamped → the file is committed incoherent and reconcile-skipped.
+    /// Pass-after (warn-and-return): chunks NOT pruned (the real row survives)
+    /// and the registry is NOT stamped, so the next reconcile tick reclassifies
+    /// and re-finalizes the file — it self-heals.
+    #[test]
+    fn watch_zero_chunk_calls_replace_failure_forfeits_prune_and_stamp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let db_path = root.join("index.db");
+        std::fs::write(root.join("caller.rs"), "// emptied\n").unwrap();
+
+        let store = Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Pre-edit: caller.rs has a chunk and an existing call edge.
+        seed_chunk(
+            &store,
+            "caller.rs:1:c",
+            "caller.rs",
+            "caller_fn",
+            cqs::parser_version(),
+        );
+        seed_call(&store, "caller.rs", "caller_fn", "victim");
+        assert_eq!(
+            store.get_chunks_by_origin("caller.rs").unwrap().len(),
+            1,
+            "precondition: seeded caller chunk"
+        );
+        assert_eq!(
+            raw_registry_count(&db_path, "caller.rs"),
+            0,
+            "precondition: caller.rs not yet stamped"
+        );
+
+        // Inject the step-1 failure: drop the table the calls-replace writes to,
+        // so its leading DELETE returns Err.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+
+        // Finalize the emptied file. The calls-replace fails; with the
+        // conditional fix it returns early, forfeiting prune + stamp.
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])]);
+
+        // PASS-AFTER assertions (fail-before would have pruned + stamped):
+        assert_eq!(
+            store.get_chunks_by_origin("caller.rs").unwrap().len(),
+            1,
+            "chunks must NOT be pruned after a calls-replace failure — the file \
+             keeps its real row and re-finalizes next tick instead of committing \
+             zero chunks under a stale call set"
+        );
+        assert_eq!(
+            raw_registry_count(&db_path, "caller.rs"),
+            0,
+            "registry must NOT be stamped after a calls-replace failure — an \
+             un-stamped file is reclassified and re-finalized next reconcile tick \
+             (the designed heal trigger)"
+        );
     }
 }
