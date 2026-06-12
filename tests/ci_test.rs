@@ -329,6 +329,64 @@ diff --git a/src/app.rs b/src/app.rs
     );
 }
 
+// ===== Seam-audit Finding 1: heuristic-only callee is not CI-dead =====
+
+/// A function reached ONLY by a fn-pointer heuristic edge is live (its liveness
+/// rests on a heuristic, but it is not dead). `run_ci_analysis` calls
+/// `find_dead_code` directly — it must NOT report such a function in
+/// `dead_in_diff`, or CI would fail a diff over genuinely-live code.
+///
+/// Fails before the Finding-1 fix: the dead-candidate query gated on absence of
+/// a TRUSTED edge, so the fn-pointer-only `helper` leaked into `find_dead_code`
+/// and surfaced here.
+#[test]
+fn test_ci_fn_pointer_only_helper_not_dead() {
+    let store = TestStore::new();
+
+    let chunks = vec![
+        chunk_at("register", "src/app.rs", 10, 20),
+        chunk_at("helper", "src/app.rs", 30, 40),
+    ];
+    insert_chunks(&store, &chunks);
+
+    // `helper` is referenced only as a function pointer (heuristic edge), never
+    // syntactically called.
+    store
+        .upsert_function_calls(
+            Path::new("src/app.rs"),
+            &[FunctionCalls {
+                name: "register".to_string(),
+                line_start: 10,
+                calls: vec![CallSite {
+                    callee_name: "helper".to_string(),
+                    line_number: 12,
+                    kind: CallEdgeKind::FnPointer,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let diff = "\
+diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -30,3 +30,4 @@ fn helper() {
+     let x = 1;
++    let y = 2;
+";
+
+    let report = run_ci_analysis(&store, diff, Path::new("/tmp"), GateThreshold::High).unwrap();
+    let dead_names: Vec<&str> = report
+        .dead_in_diff
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert!(
+        !dead_names.contains(&"helper"),
+        "fn-pointer-only `helper` is live, not dead — CI must not flag it: {dead_names:?}"
+    );
+}
+
 // ===== Dead code NOT in diff file is excluded =====
 
 #[test]

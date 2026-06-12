@@ -237,13 +237,19 @@ async fn set_registry_fingerprint_in_tx(
     size_i64: Option<i64>,
     hash_blob: Option<Vec<u8>>,
 ) -> Result<(), StoreError> {
+    // A successful stamp clears any drift parse-failure marker (v31): reaching
+    // this path means the file parsed (with or without chunks), so it is no
+    // longer the unparseable-drifted file the marker was suppressing. Drift is
+    // already healed by the re-stamped `chunks.parser_version`; resetting the
+    // marker to NULL keeps the registry state honest for a later bump.
     sqlx::query(
-        "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash) \
-         VALUES (?1, ?2, ?3, ?4) \
+        "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash, parse_failed_parser_version) \
+         VALUES (?1, ?2, ?3, ?4, NULL) \
          ON CONFLICT(origin) DO UPDATE SET \
              source_mtime = excluded.source_mtime, \
              source_size = excluded.source_size, \
-             source_content_hash = excluded.source_content_hash",
+             source_content_hash = excluded.source_content_hash, \
+             parse_failed_parser_version = NULL",
     )
     .bind(origin_str)
     .bind(mtime)
@@ -850,6 +856,57 @@ impl Store<ReadWrite> {
                 .await?;
             tx.commit().await?;
             Ok(result.rows_affected() as u32)
+        })
+    }
+
+    /// Record the drift parse-failure marker (v31) for one or more origins: the
+    /// parser version they failed to parse at. UPSERTs into `file_registry`,
+    /// preserving any existing fingerprint columns (a parse failure does not
+    /// touch the fingerprint — that is the FINGERPRINT loop-breaker's job, via
+    /// `touch_source_mtime`).
+    ///
+    /// `origins_with_parser_drift` excludes origins whose marker equals the
+    /// current parser version, so a version-drifted file that cannot parse is
+    /// not re-queued by drift every reconcile / `cqs index` tick until its
+    /// content changes. A successful re-parse clears the marker
+    /// (`set_registry_fingerprint_in_tx` writes NULL), and any content edit
+    /// re-routes the file through the parse path where it either succeeds
+    /// (clears) or fails again (re-stamps the marker).
+    ///
+    /// Origins must be slash-normalized (`crate::normalize_path`).
+    pub fn record_parse_failures(
+        &self,
+        origins: &[&str],
+        parser_version: u32,
+    ) -> Result<(), StoreError> {
+        let _span = tracing::debug_span!(
+            "record_parse_failures",
+            count = origins.len(),
+            parser_version
+        )
+        .entered();
+        if origins.is_empty() {
+            return Ok(());
+        }
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            for origin in origins {
+                // Preserve fingerprint columns: ON CONFLICT updates ONLY the
+                // marker. A brand-new (never-fingerprinted) origin inserts a row
+                // with NULL fingerprint columns and the marker set.
+                sqlx::query(
+                    "INSERT INTO file_registry (origin, parse_failed_parser_version) \
+                     VALUES (?1, ?2) \
+                     ON CONFLICT(origin) DO UPDATE SET \
+                         parse_failed_parser_version = excluded.parse_failed_parser_version",
+                )
+                .bind(*origin)
+                .bind(i64::from(parser_version))
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(())
         })
     }
 

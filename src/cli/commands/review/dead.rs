@@ -302,20 +302,31 @@ pub(crate) fn dead_core(
         .find_dead_code(args.include_pub)
         .context("Failed to detect dead code")?;
 
+    // §2 additive overlay (`cqs dead` ONLY): the heuristic-only-callee
+    // population. `find_dead_code` now holds the strict zero-edge contract
+    // (restoring `health`/`ci`/`suggest` to never-report-heuristic-live-as-dead),
+    // so these names are NOT among its candidates. We query them separately and
+    // UNION them into this report, where the classifier relabels them
+    // `low-confidence-live`. The two populations are disjoint by construction
+    // (zero-edge vs has-a-heuristic-edge), so the union never double-counts.
+    let (low_confident, low_possibly_pub) = store
+        .find_low_confidence_live_functions(args.include_pub)
+        .context("Failed to detect low-confidence-live functions")?;
+
     let confident: Vec<_> = confident
         .into_iter()
+        .chain(low_confident)
         .filter(|d| d.confidence >= args.min_confidence)
         .collect();
     let possibly_pub: Vec<_> = possibly_pub
         .into_iter()
+        .chain(low_possibly_pub)
         .filter(|d| d.confidence >= args.min_confidence)
         .collect();
 
-    // §1-derived low-confidence-live population: callees reached only by
-    // heuristic edges (no trusted edge). `find_dead_code` now also selects this
-    // population (it gates on absence of a TRUSTED edge, not absence of ALL
-    // edges), so these names ARE among the candidates and the classifier
-    // relabels them `low-confidence-live` with a kind/count reason.
+    // §1-derived heuristic-caller breakdown (kind + count), keyed by callee
+    // name. Drives the `low-confidence-live` verdict reason string for the
+    // unioned entries above.
     let low_conf = store
         .find_low_confidence_live_names()
         .context("Failed to query low-confidence-live names")?;

@@ -163,7 +163,13 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   'fn_pointer' heuristics. Additive; pre-v30 rows default to 'call', which is
 ///   wrong for the pre-existing serde/macro/fn-pointer edges — PARSER_VERSION is
 ///   bumped 5→6 so the next reindex re-extracts and re-tags those edges.
-pub const CURRENT_SCHEMA_VERSION: i32 = 30;
+/// - v31: file_registry.parse_failed_parser_version INTEGER (nullable). The
+///   drift loop-breaker: a version-drifted file that cannot parse records the
+///   parser version it failed at, so `origins_with_parser_drift` excludes it
+///   until its content changes. Without it a PARSER_VERSION bump re-queues an
+///   unparseable file every reconcile tick forever (the mtime touch heals only
+///   the fingerprint predicate, not drift).
+pub const CURRENT_SCHEMA_VERSION: i32 = 31;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

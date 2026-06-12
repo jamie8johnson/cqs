@@ -420,7 +420,8 @@ pub(crate) struct CallersArgs {
     #[arg(long)]
     pub cross_project: bool,
     /// Restrict to call edges of one provenance kind: `call` (syntactic),
-    /// `serde_callback`, `macro_heuristic`, or `fn_pointer`. Omit for all kinds.
+    /// `serde_callback`, `macro_heuristic`, `fn_pointer`, or `doc_reference`.
+    /// Omit for all kinds.
     #[arg(long, value_name = "KIND")]
     pub edge_kind: Option<String>,
     /// Cap on callers/callees returned. Defaults to 5 to match the

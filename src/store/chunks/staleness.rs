@@ -994,6 +994,15 @@ impl<Mode> Store<Mode> {
     /// Only `source_type = 'file'` chunks are considered (notes/registry rows
     /// carry no parser stamp). An origin absent from the result either has no
     /// indexed chunks or all of them already match `current`.
+    ///
+    /// Drift loop-breaker (v31): an origin whose `file_registry`
+    /// `parse_failed_parser_version` equals `current` is EXCLUDED even when its
+    /// chunks are version-drifted. Such a file already failed to parse at the
+    /// current parser version, so re-queuing it every tick re-runs a parse that
+    /// will fail again — an unbounded loop a `PARSER_VERSION` bump re-arms. The
+    /// marker is cleared by any successful re-parse (`set_fingerprint_in_tx`
+    /// writes NULL), so a content edit that fixes the file lets it re-queue and
+    /// heal normally.
     pub fn origins_with_parser_drift(
         &self,
         origins: &[&str],
@@ -1012,11 +1021,20 @@ impl<Mode> Store<Mode> {
                 // so `current` takes `?1` and the origins start at `?2`. Mixing
                 // a bare `?` with numbered ones mis-binds under SQLite.
                 let placeholders = crate::store::helpers::make_placeholders_offset(batch.len(), 2);
+                // The NOT EXISTS clause is the v31 drift loop-breaker: skip an
+                // origin already marked as having failed to parse at `?1` (the
+                // current parser version). `?1` binds both the drift comparison
+                // and the marker comparison, so the suppression tracks the same
+                // version the drift predicate keys on.
                 let sql = format!(
-                    "SELECT DISTINCT origin FROM chunks \
-                     WHERE source_type = 'file' AND parser_version != ?1 \
-                     AND origin IN ({})",
-                    placeholders
+                    "SELECT DISTINCT c.origin FROM chunks c \
+                     WHERE c.source_type = 'file' AND c.parser_version != ?1 \
+                     AND c.origin IN ({placeholders}) \
+                     AND NOT EXISTS ( \
+                         SELECT 1 FROM file_registry fr \
+                         WHERE fr.origin = c.origin \
+                           AND fr.parse_failed_parser_version = ?1 \
+                     )"
                 );
                 let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str()));
                 query = query.bind(i64::from(current));

@@ -1,4 +1,11 @@
--- cq index schema v29 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29 columns annotated inline below)
+-- cq index schema v31 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29+v30+v31 columns annotated inline below)
+-- v31: file_registry.parse_failed_parser_version INTEGER (nullable) — drift
+--      loop-breaker. A version-drifted file that cannot parse records the
+--      parser version it failed at; origins_with_parser_drift excludes origins
+--      whose marker == the current parser version, so an unparseable file is
+--      not re-queued every reconcile tick until its content changes.
+-- v30: function_calls.edge_kind TEXT NOT NULL DEFAULT 'call' — call-graph edge
+--      provenance (call|serde_callback|macro_heuristic|fn_pointer|doc_reference).
 -- v29: file_registry table (origin → source_mtime/size/content_hash) persists
 --      the reconcile fingerprint for files that parse to ZERO chunks, where the
 --      chunk-row fingerprint columns have no row to live on. Without it, a
@@ -127,7 +134,8 @@ CREATE TABLE IF NOT EXISTS file_registry (
     origin TEXT PRIMARY KEY,              -- slash-normalized source identifier (matches chunks.origin)
     source_mtime INTEGER,                 -- nullable: not all sources have mtime
     source_size INTEGER,                  -- file size in bytes; NULL when unread
-    source_content_hash BLOB              -- BLAKE3 of file bytes (32 bytes); NULL when unhashed
+    source_content_hash BLOB,             -- BLAKE3 of file bytes (32 bytes); NULL when unhashed
+    parse_failed_parser_version INTEGER   -- v31: parser version a drifted-but-unparseable file failed at; origins_with_parser_drift suppresses re-queue while marker == current parser version (NULL = no recorded failure)
 );
 
 -- FTS5 virtual table for keyword search (RRF hybrid search)

@@ -242,12 +242,22 @@ pub(super) fn parser_stage(
             continue;
         }
 
-        // Parse surviving files in parallel, collecting chunks and relationships
-        let (chunks, batch_rels): (Vec<cqs::Chunk>, RelationshipData) = survivors
+        // Parse surviving files in parallel, collecting chunks and
+        // relationships. The third tuple element accumulates the normalized
+        // origins of files that FAILED to parse — recorded after the reduce as
+        // a drift parse-failure marker (v31) so a version-drifted unparseable
+        // file is not re-queued by `origins_with_parser_drift` every `cqs index`
+        // run forever. Collected thread-locally in the fold, merged in reduce,
+        // written once on this (store-owning) thread.
+        let (chunks, batch_rels, parse_failed_origins): (
+            Vec<cqs::Chunk>,
+            RelationshipData,
+            Vec<String>,
+        ) = survivors
             .par_iter()
             .fold(
-                || (Vec::new(), RelationshipData::default()),
-                |(mut all_chunks, mut all_rels), rel_path| {
+                || (Vec::new(), RelationshipData::default(), Vec::new()),
+                |(mut all_chunks, mut all_rels, mut all_failed), rel_path| {
                     let abs_path = root.join(rel_path);
                     match parser.parse_file_all_with_chunk_calls(&abs_path) {
                         Ok((mut chunks, function_calls, chunk_type_refs, mut chunk_calls)) => {
@@ -319,14 +329,17 @@ pub(super) fn parser_stage(
                                 "Failed to parse file"
                             );
                             parse_errors.fetch_add(1, Ordering::Relaxed);
+                            // Stash the normalized origin so the post-reduce
+                            // step can stamp the drift parse-failure marker.
+                            all_failed.push(normalize_path(rel_path));
                         }
                     }
-                    (all_chunks, all_rels)
+                    (all_chunks, all_rels, all_failed)
                 },
             )
             .reduce(
-                || (Vec::new(), RelationshipData::default()),
-                |(mut chunks_a, mut rels_a), (chunks_b, rels_b)| {
+                || (Vec::new(), RelationshipData::default(), Vec::new()),
+                |(mut chunks_a, mut rels_a, mut failed_a), (chunks_b, rels_b, failed_b)| {
                     chunks_a.extend(chunks_b);
                     for (file, refs) in rels_b.type_refs {
                         rels_a.type_refs.entry(file).or_default().extend(refs);
@@ -335,9 +348,30 @@ pub(super) fn parser_stage(
                         rels_a.function_calls.entry(file).or_default().extend(calls);
                     }
                     rels_a.chunk_calls.extend(rels_b.chunk_calls);
-                    (chunks_a, rels_a)
+                    failed_a.extend(failed_b);
+                    (chunks_a, rels_a, failed_a)
                 },
             );
+
+        // Stamp the drift parse-failure marker for every file that failed to
+        // parse this batch (v31). Without this a version-drifted file that can't
+        // parse re-enters the survivor set on every `cqs index` run forever:
+        // its `chunks.parser_version` never advances (no successful re-parse),
+        // so `origins_with_parser_drift` keeps selecting it. Recording the
+        // current parser version here makes that query exclude the origin until
+        // its content changes (a successful re-parse clears the marker). Mirrors
+        // the watch path's `touch_mtime_or_warn` loop-breaker, for the drift
+        // predicate rather than the fingerprint predicate.
+        if !parse_failed_origins.is_empty() {
+            let failed_refs: Vec<&str> = parse_failed_origins.iter().map(|s| s.as_str()).collect();
+            if let Err(e) = store.record_parse_failures(&failed_refs, cqs::parser_version()) {
+                tracing::warn!(
+                    error = %e,
+                    count = failed_refs.len(),
+                    "Failed to record parse-failure markers; drifted unparseable files may re-queue next run"
+                );
+            }
+        }
 
         // No post-parse staleness filter: only survivors of the pre-filter
         // were parsed, so every chunk and relationship here belongs to a
@@ -790,6 +824,123 @@ mod tests {
         assert!(
             parsed_files.contains(&PathBuf::from("drift.rs")),
             "version-drifted file must be reparsed even with a matching fingerprint, got {parsed_files:?}"
+        );
+    }
+
+    /// Seam-audit Finding 2 (wiring): a version-drifted file that FAILS to
+    /// parse in `parser_stage` must not loop forever. The bulk path selects it
+    /// (drifted), the parse errors (here: an IO failure — the file is removed
+    /// after seeding, the same `Err` arm a tree-sitter `ParseFailed` takes), and
+    /// the post-reduce step stamps the drift parse-failure marker. A second
+    /// `origins_with_parser_drift` query — the pre-filter's drift selector —
+    /// must then NO LONGER select it; its chunks never advanced past the stale
+    /// version because no parse succeeded.
+    ///
+    /// Fails before the fix: the drift query keyed on `chunks.parser_version`
+    /// alone, so the second query still selected the origin.
+    #[test]
+    fn drifted_unparseable_file_not_requeued_after_failure() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("broken.rs"), "pub fn broken() {}\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Seed an indexed chunk at a STALE parser_version with a disk-matching
+        // fingerprint, so only version drift (not fingerprint divergence) makes
+        // it stale.
+        let stale_version = cqs::parser_version() - 1;
+        let chunk = cqs::Chunk {
+            id: "broken.rs:1:seed".to_string(),
+            file: PathBuf::from("broken.rs"),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: "broken".to_string(),
+            signature: "pub fn broken()".to_string(),
+            content: "pub fn broken() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "seed".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: stale_version,
+        };
+        let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+        let disk_fp = FileFingerprint::read_disk(
+            &root.join("broken.rs"),
+            &FileFingerprint::default(),
+            FingerprintPolicy::HashOnly,
+        )
+        .expect("read broken.rs fingerprint");
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("broken.rs"), disk_fp);
+        store
+            .upsert_embedded_batch(&[(chunk, emb)], &[], &fps)
+            .unwrap();
+
+        // First query: drifted (the loop's starting condition).
+        let drifted_first = store
+            .origins_with_parser_drift(&["broken.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            drifted_first.contains("broken.rs"),
+            "seeded drifted file must register as drifted on the first pass"
+        );
+
+        // Force the parse to fail: remove the file so `parse_file_all_with_chunk_calls`
+        // hits an IO error (the same `Err` arm as a tree-sitter ParseFailed).
+        // The drifted pre-filter still selects it (it pushes drifted origins
+        // unconditionally), then the parse errors and the marker is recorded.
+        std::fs::remove_file(root.join("broken.rs")).unwrap();
+
+        let (tx, _rx) = unbounded::<ParsedBatch>();
+        let parse_errors = Arc::new(AtomicUsize::new(0));
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: false,
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::clone(&parse_errors),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![PathBuf::from("broken.rs")], ctx, tx).unwrap();
+        assert!(
+            parse_errors.load(Ordering::Relaxed) >= 1,
+            "broken.rs must have failed to parse for this regression to be meaningful"
+        );
+
+        // Second query: the marker now suppresses the requeue. The file's chunks
+        // are still at the stale version (no parse succeeded), so without the
+        // loop-breaker this would still select broken.rs — the loop.
+        let drifted_second = store
+            .origins_with_parser_drift(&["broken.rs"], cqs::parser_version())
+            .unwrap();
+        assert!(
+            !drifted_second.contains("broken.rs"),
+            "a drifted file that already failed to parse at the current version must \
+             NOT be re-queued by drift on the second pass (Finding 2)"
+        );
+
+        // The marker is version-scoped: a future PARSER_VERSION bump (modeled by
+        // querying at current+1) re-arms the requeue so the file is retried once
+        // at the new version, where it either heals or re-stamps the marker.
+        let drifted_next_bump = store
+            .origins_with_parser_drift(&["broken.rs"], cqs::parser_version() + 1)
+            .unwrap();
+        assert!(
+            drifted_next_bump.contains("broken.rs"),
+            "a marker recorded at version N must NOT suppress drift at version N+1 \
+             — a new bump retries the parse once"
         );
     }
 

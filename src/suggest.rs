@@ -466,6 +466,92 @@ mod tests {
         );
     }
 
+    /// Seam-audit Finding 1: a file whose functions are all reached only by
+    /// fn-pointer heuristic edges is NOT a dead cluster. `detect_dead_clusters`
+    /// goes through `find_dead_code` (strict zero-edge); a heuristic-live
+    /// function must not be counted, so no `dead_code_cluster` suggestion fires
+    /// over genuinely-live code.
+    ///
+    /// Fails before the fix: the dead-candidate query gated on absence of a
+    /// TRUSTED edge, so these fn-pointer-only helpers leaked into
+    /// `find_dead_code` and `suggest` recommended deleting live code.
+    #[test]
+    fn test_fn_pointer_only_helpers_are_not_a_dead_cluster() {
+        use crate::language::{ChunkType, Language};
+        use crate::parser::{CallEdgeKind, CallSite, Chunk, FunctionCalls};
+        use std::path::{Path, PathBuf};
+
+        let (store, dir) = make_store();
+
+        let file = "src/handlers.rs";
+        let names = [
+            "handle_alpha",
+            "handle_beta",
+            "handle_gamma",
+            "handle_delta",
+            "handle_epsilon",
+            "handle_zeta",
+        ];
+
+        for (i, name) in names.iter().enumerate() {
+            let content = format!("fn {}() {{ todo!() }}", name);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let line = (i as u32 + 1) * 10;
+            let chunk = Chunk {
+                id: format!("{}:{}:{}", file, line, &hash[..8]),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {}()", name),
+                content,
+                doc: None,
+                line_start: line,
+                line_end: line + 5,
+                content_hash: hash,
+                canonical_hash: String::new(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            store
+                .upsert_chunk(
+                    &chunk,
+                    &crate::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]),
+                    Some(1000),
+                )
+                .unwrap();
+        }
+
+        // Each helper is registered as a function pointer (heuristic edge) — live,
+        // not dead.
+        let calls: Vec<FunctionCalls> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| FunctionCalls {
+                name: "register_handlers".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: name.to_string(),
+                    line_number: i as u32 + 2,
+                    kind: CallEdgeKind::FnPointer,
+                }],
+            })
+            .collect();
+        store
+            .upsert_function_calls(Path::new("src/registry.rs"), &calls)
+            .unwrap();
+
+        let suggestions = suggest_notes(&store, dir.path()).unwrap();
+        let dead_cluster = suggestions.iter().find(|s| s.reason == "dead_code_cluster");
+        assert!(
+            dead_cluster.is_none(),
+            "fn-pointer-only helpers are live — no dead_code_cluster suggestion should fire: {:?}",
+            suggestions.iter().map(|s| &s.reason).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_suggest_untested_hotspot() {
         use crate::language::{ChunkType, Language};

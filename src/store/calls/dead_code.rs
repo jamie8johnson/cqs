@@ -15,7 +15,16 @@ use crate::store::helpers::{clamp_line_number, ChunkRow, ChunkSummary, StoreErro
 use crate::store::Store;
 
 impl<Mode> Store<Mode> {
-    /// Find functions/methods never called by indexed code (dead code detection).
+    /// Find functions/methods never called by ANY indexed edge (dead code
+    /// detection). A function qualifies only when no `function_calls` row names
+    /// it as callee — trusted (`call`, `serde_callback`), heuristic
+    /// (`macro_heuristic`, `fn_pointer`), or `doc_reference` alike. This is the
+    /// strict zero-edge contract: heuristic-only callees do NOT enter this set.
+    /// (`cqs dead` separately surfaces the heuristic-only population via
+    /// [`Store::find_low_confidence_live_functions`] and relabels it
+    /// `low-confidence-live`; that union is additive on the `dead` surface only,
+    /// so `health`/`ci`/`suggest`, which consume this method directly, never see
+    /// heuristic-live code reported as dead.)
     /// Returns two lists:
     /// - `confident`: Functions with no callers that are likely dead (with confidence scores)
     /// - `possibly_dead_pub`: Public functions with no callers (may be used externally)
@@ -41,50 +50,8 @@ impl<Mode> Store<Mode> {
             let all_uncalled = self.fetch_uncalled_functions().await?;
             let total_uncalled = all_uncalled.len();
 
-            // Build test name set for exclusion (names-only query avoids ChunkSummary overhead)
-            let test_names: std::collections::HashSet<String> = self
-                .find_test_chunk_names_async()
-                .await?
-                .into_iter()
-                .collect();
-
-            // Phase 1 filtering: name/test/path/trait checks (don't need content)
-            let mut candidates = Self::filter_candidates(all_uncalled, &test_names);
-
-            // Phase 1.5: macros invoked at file-scope live outside any
-            // function chunk, so their `!()` invocation never produces a
-            // `function_calls` edge. Result: every macro_rules! shows up
-            // as "uncalled" even when it's used heavily. The call-graph
-            // extractor can't fix this without chunker changes (file-level
-            // macro_invocations aren't in any chunk's byte range), so we
-            // special-case Macro chunks at this layer: scan all chunks'
-            // content for `<name>!` substring; if any hit, drop from the
-            // candidates list.
-            //
-            // False-negative-friendly: a comment like "// foo! is broken"
-            // counts as a reference, keeping the macro live even when the
-            // implementation is actually unused. Dead-code analysis prefers
-            // under-reporting to over-reporting — comments referencing a
-            // name signal intentional retention.
-            candidates = self.filter_invoked_macros(candidates).await?;
-
-            // Phase 1.6: serde string-callback references. Functions named
-            // in attribute strings — `#[serde(default = "default_ref_weight")]`,
-            // `#[serde(skip_serializing_if = "is_zero_u32")]`,
-            // `#[serde(with = "...")]` — are reached by the derive-generated
-            // (de)serializer, not by a syntactic `foo()` call. The call-graph
-            // extractor walks call/macro nodes, so a string reference inside an
-            // attribute produces no edge and the callback shows as "uncalled".
-            // Drop any Rust function candidate whose name appears as the
-            // terminal segment of a serde-shaped attribute string anywhere in
-            // the corpus. Bounded content scan, same shape as the macro filter.
-            candidates = self.filter_serde_callbacks(candidates).await?;
-
-            // Phase 2: Batch-fetch content and score confidence
-            let active_files = self.fetch_active_files().await?;
-            let (confident, possibly_dead_pub) = self
-                .score_confidence(candidates, &active_files, include_pub)
-                .await?;
+            let (confident, possibly_dead_pub) =
+                self.filter_and_score(all_uncalled, include_pub).await?;
 
             tracing::info!(
                 total_uncalled,
@@ -95,6 +62,102 @@ impl<Mode> Store<Mode> {
 
             Ok((confident, possibly_dead_pub))
         })
+    }
+
+    /// Find functions reached by ≥1 heuristic edge (`macro_heuristic`,
+    /// `fn_pointer`) and NO trusted edge (`call`, `serde_callback`) — the
+    /// `low-confidence-live` population for `cqs dead`. Returns the same
+    /// `(confident, possibly_dead_pub)` shape as [`Store::find_dead_code`],
+    /// having run the identical Tier-1 candidate filters and confidence scoring,
+    /// so `dead_core` can union these entries into its report and relabel them.
+    ///
+    /// This is the SURFACE-SCOPED counterpart to `find_dead_code`'s strict
+    /// zero-edge contract: those two populations are disjoint by construction (a
+    /// callee either has zero edges or has a heuristic edge, never both at once
+    /// from the same predicate), and only `cqs dead` unions them. `health`,
+    /// `ci`, and `suggest` call `find_dead_code` alone and never see this set —
+    /// they must not report heuristic-live code as dead.
+    ///
+    /// `doc_reference` edges are inert here, mirroring
+    /// [`Store::find_low_confidence_live_names`]: a callee reached only by a doc
+    /// reference (no heuristic edge) is neither dead-by-this-method nor
+    /// heuristic-live — it falls out of both populations, which is correct
+    /// (a prose mention is not evidence of liveness).
+    pub fn find_low_confidence_live_functions(
+        &self,
+        include_pub: bool,
+    ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
+        let _span =
+            tracing::info_span!("find_low_confidence_live_functions", include_pub).entered();
+        self.rt.block_on(async {
+            let candidates = self.fetch_heuristic_only_callees().await?;
+            let total = candidates.len();
+            let (confident, possibly_dead_pub) =
+                self.filter_and_score(candidates, include_pub).await?;
+            tracing::info!(
+                total,
+                confident = confident.len(),
+                possibly_dead = possibly_dead_pub.len(),
+                "Low-confidence-live population resolved"
+            );
+            Ok((confident, possibly_dead_pub))
+        })
+    }
+
+    /// Shared Phase 1.5/1.6/2 pipeline: given a raw Phase-1 candidate set,
+    /// apply the test/entry-point/trait filters, the invoked-macro and
+    /// serde-callback content filters, then batch-fetch content and score
+    /// confidence. Both [`Store::find_dead_code`] (strict zero-edge candidates)
+    /// and [`Store::find_low_confidence_live_functions`] (heuristic-only
+    /// candidates) feed through this so the two surfaces filter identically.
+    async fn filter_and_score(
+        &self,
+        all_candidates: Vec<LightChunk>,
+        include_pub: bool,
+    ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
+        // Build test name set for exclusion (names-only query avoids ChunkSummary overhead)
+        let test_names: std::collections::HashSet<String> = self
+            .find_test_chunk_names_async()
+            .await?
+            .into_iter()
+            .collect();
+
+        // Phase 1 filtering: name/test/path/trait checks (don't need content)
+        let mut candidates = Self::filter_candidates(all_candidates, &test_names);
+
+        // Phase 1.5: macros invoked at file-scope live outside any
+        // function chunk, so their `!()` invocation never produces a
+        // `function_calls` edge. Result: every macro_rules! shows up
+        // as "uncalled" even when it's used heavily. The call-graph
+        // extractor can't fix this without chunker changes (file-level
+        // macro_invocations aren't in any chunk's byte range), so we
+        // special-case Macro chunks at this layer: scan all chunks'
+        // content for `<name>!` substring; if any hit, drop from the
+        // candidates list.
+        //
+        // False-negative-friendly: a comment like "// foo! is broken"
+        // counts as a reference, keeping the macro live even when the
+        // implementation is actually unused. Dead-code analysis prefers
+        // under-reporting to over-reporting — comments referencing a
+        // name signal intentional retention.
+        candidates = self.filter_invoked_macros(candidates).await?;
+
+        // Phase 1.6: serde string-callback references. Functions named
+        // in attribute strings — `#[serde(default = "default_ref_weight")]`,
+        // `#[serde(skip_serializing_if = "is_zero_u32")]`,
+        // `#[serde(with = "...")]` — are reached by the derive-generated
+        // (de)serializer, not by a syntactic `foo()` call. The call-graph
+        // extractor walks call/macro nodes, so a string reference inside an
+        // attribute produces no edge and the callback shows as "uncalled".
+        // Drop any Rust function candidate whose name appears as the
+        // terminal segment of a serde-shaped attribute string anywhere in
+        // the corpus. Bounded content scan, same shape as the macro filter.
+        candidates = self.filter_serde_callbacks(candidates).await?;
+
+        // Phase 2: Batch-fetch content and score confidence
+        let active_files = self.fetch_active_files().await?;
+        self.score_confidence(candidates, &active_files, include_pub)
+            .await
     }
 
     /// Find callee names reached by at least one heuristic edge
@@ -113,11 +176,15 @@ impl<Mode> Store<Mode> {
     /// (not heuristic) nor disqualifies (not trusted) a callee, so a function
     /// reached only by a doc reference plus a macro edge still surfaces.
     ///
-    /// The dead-candidate query (`fetch_uncalled_functions`) selects the same
-    /// heuristic-only population — it gates on absence of a TRUSTED edge, not
-    /// absence of ALL edges — so this set relabels those candidates to
-    /// `low-confidence-live`. The kind-sets are generated from `CallEdgeKind`
-    /// rather than a lexical comparison, so a new kind cannot drift out of sync.
+    /// This returns the heuristic-caller BREAKDOWN (kind + count per callee)
+    /// used to render the `low-confidence-live` verdict reason string. The
+    /// matching CHUNK population is fetched by
+    /// [`Store::find_low_confidence_live_functions`] (same heuristic-only
+    /// predicate) and unioned into the `cqs dead` report by `dead_core`;
+    /// `fetch_uncalled_functions` holds the disjoint strict zero-edge contract,
+    /// so the two populations never overlap. The kind-sets are generated from
+    /// `CallEdgeKind` rather than a lexical comparison, so a new kind cannot
+    /// drift out of sync.
     pub fn find_low_confidence_live_names(
         &self,
     ) -> Result<std::collections::HashMap<String, LowConfidenceLiveInfo>, StoreError> {
@@ -188,17 +255,14 @@ impl<Mode> Store<Mode> {
                 AND c.origin NOT LIKE '%.scss'
                 AND c.origin NOT LIKE '%.sass'
                 AND c.origin NOT LIKE '%.less'";
-        // Dead-candidate population: a function qualifies when NO TRUSTED edge
-        // (`call`, `serde_callback`) reaches it. That covers two cases that
-        // both warrant scrutiny in `cqs dead`:
-        //   * zero callers → verdict `dead`
-        //   * only heuristic / doc-reference callers → relabelled
-        //     `low-confidence-live` by the classifier
-        // The trusted kind-set is generated from `CallEdgeKind` (single source).
-        // Gating on a trusted edge (not on any edge at all) is what lets the
-        // heuristic-only population reach the candidate set and be relabelled —
-        // a NOT-EXISTS-any-edge gate would leave that verdict unreachable.
-        let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
+        // Dead-candidate population: strict zero-edge. A function qualifies only
+        // when NO `function_calls` row names it as callee — trusted, heuristic,
+        // or doc-reference alike. This is the contract `health`/`ci`/`suggest`
+        // depend on: a heuristic-only callee (macro/fn-pointer) is NOT dead and
+        // must not enter this set. `cqs dead` surfaces that heuristic-only
+        // population separately via `fetch_heuristic_only_callees` and relabels
+        // it `low-confidence-live` — an additive overlay on the `dead` surface
+        // only, never a mutation of this shared candidate set.
         let sql = format!(
             "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
                     c.line_start, c.line_end, c.parent_id
@@ -207,13 +271,65 @@ impl<Mode> Store<Mode> {
                AND c.chunk_type != 'property'
                {doc_path_excludes}
                AND NOT EXISTS (SELECT 1 FROM function_calls fc \
+                               WHERE fc.callee_name = c.name LIMIT 1)
+               AND c.parent_id IS NULL
+             ORDER BY c.origin, c.line_start"
+        );
+        Self::light_chunks_from_query(&sql, &self.pool).await
+    }
+
+    /// Phase 1 (low-confidence-live): query callable chunks reached by ≥1
+    /// heuristic edge (`macro_heuristic`, `fn_pointer`) and NO trusted edge
+    /// (`call`, `serde_callback`). Same Tier-1 noise filters as
+    /// `fetch_uncalled_functions` (Property exclusion, doc-path exclusion,
+    /// top-level only). The heuristic and trusted kind-sets are generated from
+    /// `CallEdgeKind` (single source), so a new edge kind updates both surfaces
+    /// at once. `doc_reference` edges are inert: they neither qualify (not
+    /// heuristic) nor disqualify (not trusted), matching
+    /// [`Store::find_low_confidence_live_names`].
+    async fn fetch_heuristic_only_callees(&self) -> Result<Vec<LightChunk>, StoreError> {
+        let callable = ChunkType::callable_sql_list();
+        let doc_path_excludes = "
+                AND c.origin NOT LIKE '%.md'
+                AND c.origin NOT LIKE '%.mdx'
+                AND c.origin NOT LIKE '%.adoc'
+                AND c.origin NOT LIKE '%.rst'
+                AND c.origin NOT LIKE '%.txt'
+                AND c.origin NOT LIKE '%.tex'
+                AND c.origin NOT LIKE '%.scss'
+                AND c.origin NOT LIKE '%.sass'
+                AND c.origin NOT LIKE '%.less'";
+        let heuristic = crate::parser::CallEdgeKind::heuristic_kinds_sql();
+        let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
+        let sql = format!(
+            "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
+                    c.line_start, c.line_end, c.parent_id
+             FROM chunks c
+             WHERE c.chunk_type IN ({callable})
+               AND c.chunk_type != 'property'
+               {doc_path_excludes}
+               AND EXISTS (SELECT 1 FROM function_calls fc \
+                           WHERE fc.callee_name = c.name \
+                             AND fc.edge_kind IN ({heuristic}) LIMIT 1)
+               AND NOT EXISTS (SELECT 1 FROM function_calls fc \
                                WHERE fc.callee_name = c.name \
                                  AND fc.edge_kind IN ({trusted}) LIMIT 1)
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
         );
-        let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-            .fetch_all(&self.pool)
+        Self::light_chunks_from_query(&sql, &self.pool).await
+    }
+
+    /// Run a Phase-1 dead-candidate SQL query (the canonical 9-column
+    /// `SELECT c.id, c.origin, ...` projection) and map rows to [`LightChunk`].
+    /// Shared by `fetch_uncalled_functions` and `fetch_heuristic_only_callees`
+    /// so both produce identical row shapes from a single mapping site.
+    async fn light_chunks_from_query(
+        sql: &str,
+        pool: &sqlx::SqlitePool,
+    ) -> Result<Vec<LightChunk>, StoreError> {
+        let rows: Vec<_> = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .fetch_all(pool)
             .await?;
 
         Ok(rows

@@ -509,6 +509,24 @@ pub(super) fn reindex_files(
                     // distinct warn at each FS step so operators can see *why* a
                     // touch failed and the reconcile loop persisted.
                     touch_mtime_or_warn(store, rel_path, &abs_path);
+                    // Drift loop-breaker (v31): the mtime touch heals only the
+                    // FINGERPRINT predicate. A version-drifted file that fails to
+                    // parse keeps stale-version chunks, so `origins_with_parser_drift`
+                    // would re-queue it every reconcile tick regardless of the
+                    // touched fingerprint. Stamp the parser version it failed at
+                    // so drift suppresses the requeue until its content changes.
+                    // Recorded AFTER the touch: `touch_source_mtime` resets the
+                    // marker to NULL via the shared registry UPSERT, so this must
+                    // run last to leave the marker set.
+                    let origin = cqs::normalize_path(rel_path);
+                    if let Err(e) = store.record_parse_failures(&[origin.as_str()], cqs::parser_version())
+                    {
+                        tracing::warn!(
+                            path = %rel_path.display(),
+                            error = %e,
+                            "Failed to record parse-failure drift marker; reconcile may re-queue this file on the next PARSER_VERSION drift"
+                        );
+                    }
                     vec![]
                 }
             }

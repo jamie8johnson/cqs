@@ -800,19 +800,24 @@ fn low_confidence_live_names_finds_heuristic_only_callees() {
     assert_eq!(info.kind_counts, vec![("fn_pointer".to_string(), 1)]);
 }
 
-/// A function `cb` whose ONLY caller edge is a macro-shape
-/// heuristic must appear in the `find_dead_code` candidate set (the
-/// low-confidence-live population). Before the fix the dead-candidate query
-/// gated on `NOT EXISTS (any edge)`, so a function WITH a heuristic edge was
-/// silently excluded and the low-confidence-live verdict could never fire.
-/// Adding a real syntactic caller removes it again.
+/// Seam-audit Finding 1 regression. A function `cb` whose ONLY caller edge is a
+/// macro-shape heuristic must NOT be reported by `find_dead_code` (the strict
+/// zero-edge contract that `health`/`ci`/`suggest` consume) — it has an edge, so
+/// it is not dead. It MUST instead surface in
+/// `find_low_confidence_live_functions`, the additive `cqs dead`-only overlay
+/// that `dead_core` relabels `low-confidence-live`. The two populations are
+/// disjoint. Adding a real syntactic caller removes `cb` from both sets.
+///
+/// Fails before the fix: the dead-candidate query gated on absence of a TRUSTED
+/// edge (not absence of ALL edges), so `cb` leaked into `find_dead_code` and the
+/// three non-relabelling consumers reported live code as dead.
 #[test]
-fn find_dead_code_surfaces_heuristic_only_callee() {
+fn heuristic_only_callee_is_low_conf_live_not_dead() {
     use cqs::parser::FunctionCalls;
 
     let store = TestStore::new();
-    // Define `cb` as a function chunk (the dead-candidate population). Give it a
-    // unique id/origin so it isn't a windowed/parented chunk.
+    // Define `cb` as a function chunk. Unique id/origin so it isn't a
+    // windowed/parented chunk.
     let mut cb = test_chunk("cb", "fn cb() {}");
     cb.id = "src/app.rs:10:cb".to_string();
     cb.file = std::path::PathBuf::from("src/app.rs");
@@ -836,18 +841,33 @@ fn find_dead_code_surfaces_heuristic_only_callee() {
         )
         .unwrap();
 
+    // find_dead_code (strict zero-edge): cb has an edge → NOT reported dead.
+    // This is the failing-before assertion: health/ci/suggest call this method
+    // directly and must never see cb.
     let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
-    let surfaced = confident
+    let in_dead = confident
         .iter()
         .chain(possibly_pub.iter())
         .any(|d| d.chunk.name == "cb");
     assert!(
-        surfaced,
-        "cb (macro-only caller) must be a dead candidate so it can be \
-         relabelled low-confidence-live (F2)"
+        !in_dead,
+        "cb (macro-only caller) must NOT be in find_dead_code — it has an edge, \
+         so health/ci/suggest must not report it dead (Finding 1)"
     );
 
-    // Add a real syntactic caller → cb now has a trusted edge and drops out.
+    // find_low_confidence_live_functions: cb surfaces here, the additive overlay.
+    let (lc_conf, lc_pub) = store.find_low_confidence_live_functions(true).unwrap();
+    let in_low_conf = lc_conf
+        .iter()
+        .chain(lc_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        in_low_conf,
+        "cb (macro-only caller) must surface in find_low_confidence_live_functions \
+         so dead_core can relabel it low-confidence-live (Finding 1)"
+    );
+
+    // Add a real syntactic caller → cb now has a trusted edge: out of BOTH sets.
     store
         .upsert_function_calls(
             std::path::Path::new("src/caller2.rs"),
@@ -864,13 +884,22 @@ fn find_dead_code_surfaces_heuristic_only_callee() {
         .unwrap();
 
     let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
-    let still_surfaced = confident
+    let still_dead = confident
         .iter()
         .chain(possibly_pub.iter())
         .any(|d| d.chunk.name == "cb");
     assert!(
-        !still_surfaced,
-        "cb with a syntactic caller has a trusted edge and is not a candidate"
+        !still_dead,
+        "cb with a syntactic caller is genuinely live, not dead"
+    );
+    let (lc_conf, lc_pub) = store.find_low_confidence_live_functions(true).unwrap();
+    let still_low_conf = lc_conf
+        .iter()
+        .chain(lc_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        !still_low_conf,
+        "cb with a trusted edge has graduated out of the low-confidence-live overlay"
     );
 }
 
