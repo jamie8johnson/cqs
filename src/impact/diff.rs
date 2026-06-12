@@ -242,6 +242,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
                 line: caller.line,
                 call_line: caller.call_line,
                 snippet,
+                edge_kind: caller.edge_kind,
             }
         })
         .collect();

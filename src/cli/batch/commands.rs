@@ -954,6 +954,7 @@ mod tests {
                 name: "foo".into(),
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
+                edge_kind: None,
             },
             output: TextJsonArgs { json: false },
         };
@@ -997,6 +998,7 @@ mod tests {
             args: crate::cli::args::DeadArgs {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
+                verdict: None,
             },
             output: TextJsonArgs { json: false },
         };

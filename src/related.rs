@@ -565,10 +565,12 @@ mod tests {
                 crate::parser::CallSite {
                     callee_name: "target_fn".to_string(),
                     line_number: 2,
+                    kind: crate::parser::CallEdgeKind::Call,
                 },
                 crate::parser::CallSite {
                     callee_name: "peer_fn".to_string(),
                     line_number: 3,
+                    kind: crate::parser::CallEdgeKind::Call,
                 },
             ],
         }];
@@ -622,6 +624,7 @@ mod tests {
                 calls: vec![crate::parser::CallSite {
                     callee_name: "common_helper".to_string(),
                     line_number: 2,
+                    kind: crate::parser::CallEdgeKind::Call,
                 }],
             },
             crate::parser::FunctionCalls {
@@ -630,6 +633,7 @@ mod tests {
                 calls: vec![crate::parser::CallSite {
                     callee_name: "common_helper".to_string(),
                     line_number: 11,
+                    kind: crate::parser::CallEdgeKind::Call,
                 }],
             },
         ];

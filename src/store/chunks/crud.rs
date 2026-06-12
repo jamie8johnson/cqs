@@ -237,13 +237,19 @@ async fn set_registry_fingerprint_in_tx(
     size_i64: Option<i64>,
     hash_blob: Option<Vec<u8>>,
 ) -> Result<(), StoreError> {
+    // A successful stamp clears any drift parse-failure marker (v31): reaching
+    // this path means the file parsed (with or without chunks), so it is no
+    // longer the unparseable-drifted file the marker was suppressing. Drift is
+    // already healed by the re-stamped `chunks.parser_version`; resetting the
+    // marker to NULL keeps the registry state honest for a later bump.
     sqlx::query(
-        "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash) \
-         VALUES (?1, ?2, ?3, ?4) \
+        "INSERT INTO file_registry (origin, source_mtime, source_size, source_content_hash, parse_failed_parser_version) \
+         VALUES (?1, ?2, ?3, ?4, NULL) \
          ON CONFLICT(origin) DO UPDATE SET \
              source_mtime = excluded.source_mtime, \
              source_size = excluded.source_size, \
-             source_content_hash = excluded.source_content_hash",
+             source_content_hash = excluded.source_content_hash, \
+             parse_failed_parser_version = NULL",
     )
     .bind(origin_str)
     .bind(mtime)
@@ -853,6 +859,57 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Record the drift parse-failure marker (v31) for one or more origins: the
+    /// parser version they failed to parse at. UPSERTs into `file_registry`,
+    /// preserving any existing fingerprint columns (a parse failure does not
+    /// touch the fingerprint — that is the FINGERPRINT loop-breaker's job, via
+    /// `touch_source_mtime`).
+    ///
+    /// `origins_with_parser_drift` excludes origins whose marker equals the
+    /// current parser version, so a version-drifted file that cannot parse is
+    /// not re-queued by drift every reconcile / `cqs index` tick until its
+    /// content changes. A successful re-parse clears the marker
+    /// (`set_registry_fingerprint_in_tx` writes NULL), and any content edit
+    /// re-routes the file through the parse path where it either succeeds
+    /// (clears) or fails again (re-stamps the marker).
+    ///
+    /// Origins must be slash-normalized (`crate::normalize_path`).
+    pub fn record_parse_failures(
+        &self,
+        origins: &[&str],
+        parser_version: u32,
+    ) -> Result<(), StoreError> {
+        let _span = tracing::debug_span!(
+            "record_parse_failures",
+            count = origins.len(),
+            parser_version
+        )
+        .entered();
+        if origins.is_empty() {
+            return Ok(());
+        }
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            for origin in origins {
+                // Preserve fingerprint columns: ON CONFLICT updates ONLY the
+                // marker. A brand-new (never-fingerprinted) origin inserts a row
+                // with NULL fingerprint columns and the marker set.
+                sqlx::query(
+                    "INSERT INTO file_registry (origin, parse_failed_parser_version) \
+                     VALUES (?1, ?2) \
+                     ON CONFLICT(origin) DO UPDATE SET \
+                         parse_failed_parser_version = excluded.parse_failed_parser_version",
+                )
+                .bind(*origin)
+                .bind(i64::from(parser_version))
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
     /// Refresh the full reconcile fingerprint (`source_mtime`, `source_size`,
     /// `source_content_hash`) on every chunk for `origin`.
     ///
@@ -1388,13 +1445,12 @@ impl Store<ReadWrite> {
                         );
                     }
                     // NOTE on `function_calls` cleanup: mirrors
-                    // `delete_phantom_chunks`. The watch loop calls
-                    // `upsert_function_calls` BEFORE us (at watch.rs :2492),
-                    // which DELETE-then-INSERTs the current set for the
-                    // file — adding a DELETE here would wipe those
-                    // just-written rows. The `delete_by_origin` /
-                    // `prune_missing` paths (file fully removed, no upsert
-                    // follows) DO include that DELETE.
+                    // `delete_phantom_chunks`. The parse-driven writer
+                    // (`upsert_function_calls_for_files`) DELETE-then-INSERTs
+                    // the current set for the file BEFORE this prune runs, so
+                    // adding a DELETE here would wipe those just-written rows.
+                    // The `delete_by_origin` / `prune_missing` paths (file
+                    // fully removed, no upsert follows) DO include that DELETE.
                 }
             }
 
@@ -1502,11 +1558,18 @@ impl Store<ReadWrite> {
     /// per file, single commit for the whole sweep.
     ///
     /// An entry with empty `live_ids` deletes every chunk for that origin
-    /// (FTS + chunks). Unlike `delete_phantom_chunks`'s delegation to
-    /// `delete_by_origin`, no `function_calls` DELETE is issued here — the
-    /// pipeline's `upsert_function_calls_for_files` already
-    /// DELETE-then-INSERTed the current set for every file it touched (same
-    /// reasoning as the fused-tx prune in `upsert_chunks_calls_and_prune`).
+    /// (FTS + chunks). This primitive touches `chunks` and `chunks_fts` ONLY —
+    /// it makes NO call-graph decision. `function_calls` is keyed by source
+    /// file, not chunk presence: a file whose single function exceeds
+    /// `CQS_PARSER_MAX_CHUNK_BYTES` parses to ZERO chunks but a NON-EMPTY call
+    /// set (Pass 1 drops the oversize chunk; Pass 2 emits file-level calls with
+    /// no size gate). "Zero chunks" is therefore not "zero calls", so this
+    /// chunk-frame primitive must never gate the call-graph table — doing so
+    /// destroys legitimate oversize-function edges. `function_calls` is replaced
+    /// per-file from the freshly parsed set by exactly one writer
+    /// (`replace_function_calls` / `upsert_function_calls_for_files` /
+    /// `write_function_calls_in_tx`), driven by parse-completion, on EVERY
+    /// reindex of the file (empty set → clears, non-empty → refreshes).
     ///
     /// Returns the total number of chunk rows deleted across all files.
     pub fn delete_phantom_chunks_batch(
@@ -1545,6 +1608,14 @@ impl Store<ReadWrite> {
                         .bind(&origin_str)
                         .execute(&mut *tx)
                         .await?;
+                    // Chunks + FTS only. This primitive makes NO call-graph
+                    // decision: `function_calls` is replaced per-file from the
+                    // parsed set by the single parse-driven writer, never gated
+                    // on chunk count (an oversize-function file parses to zero
+                    // chunks but a non-empty call set, so a DELETE here would
+                    // destroy legitimate edges). No `file_registry` DELETE
+                    // either: zero-chunk finalization stamps the registry right
+                    // after this prune.
                     deleted_total += result.rows_affected() as u32;
                     continue;
                 }
@@ -1604,7 +1675,7 @@ impl Store<ReadWrite> {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
-    use crate::parser::{CallSite, FunctionCalls};
+    use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
     use crate::test_helpers::{mock_embedding, setup_store};
 
     /// `upsert_chunks_calls_and_prune_with_file_calls` must write
@@ -1629,6 +1700,7 @@ mod tests {
             calls: vec![CallSite {
                 callee_name: "callee_alpha".to_string(),
                 line_number: 2,
+                kind: CallEdgeKind::Call,
             }],
         }];
 
@@ -1687,6 +1759,7 @@ mod tests {
             calls: vec![CallSite {
                 callee_name: "seeded_callee".to_string(),
                 line_number: 2,
+                kind: CallEdgeKind::Call,
             }],
         }];
         store
@@ -2827,6 +2900,145 @@ mod tests {
         let (store, _dir) = setup_store();
         let deleted = store.delete_phantom_chunks_batch(&[]).unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    /// The chunk-prune primitive must touch `function_calls` for NEITHER
+    /// branch. "Zero chunks" is not "zero calls": an oversize-function file
+    /// parses to zero chunks but a non-empty call set, so deleting
+    /// `function_calls` from the empty branch would destroy legitimate edges.
+    /// `function_calls` is owned by the single parse-driven writer; this
+    /// primitive is chunks/FTS only. This pins the single-responsibility
+    /// decouple — both the empty-live-set and partial-prune branches leave the
+    /// call graph alone.
+    #[test]
+    fn delete_phantom_chunks_batch_leaves_function_calls_alone_both_branches() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let f1 = make_chunk("f1a", "emptied.rs");
+        let f2 = make_chunk("f2a", "partial.rs");
+        let f2b = make_chunk("f2b", "partial.rs");
+        let f2_live = f2.id.clone();
+        store
+            .upsert_chunks_batch(
+                &[(f1, emb.clone()), (f2, emb.clone()), (f2b, emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+
+        // Both files are callers in the call graph.
+        let mk = |caller: &str, callee: &str| FunctionCalls {
+            name: caller.to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: callee.to_string(),
+                line_number: 1,
+                kind: CallEdgeKind::Call,
+            }],
+        };
+        store
+            .upsert_function_calls(std::path::Path::new("emptied.rs"), &[mk("f1a", "x")])
+            .unwrap();
+        store
+            .upsert_function_calls(std::path::Path::new("partial.rs"), &[mk("f2a", "y")])
+            .unwrap();
+        assert_eq!(store.get_callers_full("x").unwrap().len(), 1);
+        assert_eq!(store.get_callers_full("y").unwrap().len(), 1);
+
+        let files: Vec<(&std::path::Path, Vec<&str>)> = vec![
+            (std::path::Path::new("emptied.rs"), vec![]), // whole file emptied
+            (std::path::Path::new("partial.rs"), vec![f2_live.as_str()]), // partial prune
+        ];
+        store.delete_phantom_chunks_batch(&files).unwrap();
+
+        // Chunks were pruned for both files...
+        assert!(store.get_chunks_by_origin("emptied.rs").unwrap().is_empty());
+        assert_eq!(store.get_chunks_by_origin("partial.rs").unwrap().len(), 1);
+        // ...but the prune did NOT touch function_calls for either. Clearing
+        // the emptied file's edges is the parse-driven writer's job (with the
+        // file's freshly parsed call set), not the chunk primitive's — gating
+        // on chunk count would destroy the oversize-function case.
+        assert_eq!(
+            store.get_callers_full("x").unwrap().len(),
+            1,
+            "empty-live-set branch must NOT touch function_calls"
+        );
+        assert_eq!(
+            store.get_callers_full("y").unwrap().len(),
+            1,
+            "partial-prune branch must NOT touch function_calls"
+        );
+    }
+
+    /// STANDING INVARIANT (the mechanization): `find_orphaned_function_calls`
+    /// flags any `function_calls.file` absent from BOTH `chunks` and
+    /// `file_registry`, and ONLY those. Three cases pinned in one test:
+    ///   1. A file with chunks + an edge → coherent (not flagged).
+    ///   2. An oversize-function file: ZERO chunks but a file_registry row and a
+    ///      NON-empty call set → coherent (the `file_registry` shadow keeps it
+    ///      from being flagged; gating on chunks alone is the bug this guards).
+    ///   3. A deliberately-orphaned edge: function_calls row for a file with NO
+    ///      presence in chunks OR file_registry → FLAGGED.
+    /// Fail-before/pass-after: before the parse-driven decouple, the watch
+    /// whole-batch-empty route left exactly the case-3 orphan; this check fires
+    /// on it. After the decouple, only a genuinely-incoherent row trips it.
+    #[test]
+    fn find_orphaned_function_calls_flags_only_unknown_files() {
+        use crate::store::chunks::staleness::FileFingerprint;
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+
+        // Case 1: a normal chunk-bearing caller.
+        let c = make_chunk("ok_fn", "ok.rs");
+        store
+            .upsert_chunks_batch(&[(c, emb.clone())], Some(100))
+            .unwrap();
+        let mk = |caller: &str, callee: &str, file: &str| {
+            store
+                .upsert_function_calls(
+                    std::path::Path::new(file),
+                    &[FunctionCalls {
+                        name: caller.to_string(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: callee.to_string(),
+                            line_number: 1,
+                            kind: CallEdgeKind::Call,
+                        }],
+                    }],
+                )
+                .unwrap();
+        };
+        mk("ok_fn", "callee1", "ok.rs");
+
+        // Case 2: oversize-function file — NO chunks, but a file_registry row
+        // (the v29 shadow) and a NON-empty call set. Must NOT be flagged.
+        store
+            .set_file_registry_fingerprints_batch(&[(
+                std::path::PathBuf::from("big.rs"),
+                FileFingerprint {
+                    mtime: Some(1),
+                    size: Some(200_000),
+                    content_hash: None,
+                },
+            )])
+            .unwrap();
+        mk("big_fn", "helper", "big.rs");
+
+        // Coherent so far: both files are known.
+        assert!(
+            store.find_orphaned_function_calls().unwrap().is_empty(),
+            "chunk-bearing file AND registry-shadowed oversize file are both coherent"
+        );
+
+        // Case 3: a deliberately-orphaned edge — a function_calls row for a file
+        // present in NEITHER chunks NOR file_registry.
+        mk("ghost_fn", "ghost_callee", "ghost.rs");
+        let orphans = store.find_orphaned_function_calls().unwrap();
+        assert_eq!(
+            orphans,
+            vec!["ghost.rs".to_string()],
+            "only the file absent from chunks+file_registry is flagged (not ok.rs, not big.rs)"
+        );
     }
 
     // ===== update_umap_coords_batch happy path =====

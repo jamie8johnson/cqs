@@ -664,6 +664,7 @@ mod tests {
         let args = CallersArgs {
             name: "anything".into(),
             cross_project: true,
+            edge_kind: None,
             limit_arg: LimitArg { limit: 5 },
         };
 

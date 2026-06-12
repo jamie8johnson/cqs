@@ -263,11 +263,19 @@ pub(super) fn store_stage(
     //
     // Zero-chunk files (survived the pre-filter, parsed to nothing this run)
     // are pruned with an EMPTY live set: `delete_phantom_chunks_batch` deletes
-    // every chunk for an origin whose live set is empty. Without this their
-    // old chunks survive the prune (the loop above never saw them, so they
-    // have no `live_ids_per_file` entry) and keep returning stale search hits
-    // forever. Skip any origin that DID produce chunks this run — that file is
-    // handled by its real live set.
+    // every chunk for an origin whose live set is empty. Without this their old
+    // chunks survive the prune (the loop above never saw them, so they have no
+    // `live_ids_per_file` entry) and keep returning stale search hits forever.
+    // Skip any origin that DID produce chunks this run — that file is handled
+    // by its real live set.
+    //
+    // `function_calls` is handled SEPARATELY and earlier: parsing.rs stashes
+    // EVERY parsed file's call set (empty included), so the batched
+    // `upsert_function_calls_for_files` above already DELETE-then-INSERT
+    // replaced the set for every parsed origin — empty sets cleared,
+    // oversize-function files (zero chunks, NON-empty calls) refreshed. The
+    // chunk prune deliberately makes no call-graph decision: gating
+    // function_calls on chunk count would destroy the oversize-function edges.
     //
     // v29 #1774: the fingerprint no longer lives ONLY on chunk rows — the
     // `file_registry` table persists it for zero-chunk origins. We prune the

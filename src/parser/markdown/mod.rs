@@ -19,7 +19,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::types::{CallSite, Chunk, ChunkType, FunctionCalls, Language, ParserError};
+use super::types::{
+    CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language, ParserError,
+};
 use headings::{detect_heading_levels, extract_headings};
 use tables::{extract_table_chunks, TableContext};
 
@@ -385,6 +387,7 @@ pub fn parse_markdown_references(
                 calls: vec![CallSite {
                     callee_name: title.text.clone(),
                     line_number: 1,
+                    kind: CallEdgeKind::DocReference,
                 }],
             });
         }
@@ -747,6 +750,7 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
             calls.push(CallSite {
                 callee_name: link_text,
                 line_number,
+                kind: CallEdgeKind::DocReference,
             });
         }
 
@@ -757,6 +761,7 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
                 calls.push(CallSite {
                     callee_name: stem,
                     line_number,
+                    kind: CallEdgeKind::DocReference,
                 });
             }
         }
@@ -766,6 +771,7 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
                 calls.push(CallSite {
                     callee_name: anchor,
                     line_number,
+                    kind: CallEdgeKind::DocReference,
                 });
             }
         }
@@ -788,6 +794,7 @@ fn extract_references_from_text_with_start_line(text: &str, start_line: u32) -> 
             calls.push(CallSite {
                 callee_name,
                 line_number: func_line,
+                kind: CallEdgeKind::DocReference,
             });
         }
     }

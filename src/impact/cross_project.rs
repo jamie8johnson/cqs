@@ -124,6 +124,9 @@ pub fn analyze_impact_cross(
             line: 0,
             call_line: 0,
             snippet: None,
+            // Cross-project edges come from the in-memory CallGraph (no
+            // edge_kind tracking) — default `call`.
+            edge_kind: crate::parser::CallEdgeKind::Call,
         })
         .collect();
 

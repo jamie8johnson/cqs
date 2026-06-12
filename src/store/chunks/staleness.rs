@@ -978,6 +978,77 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Report which of `origins` have at least one file chunk stamped with a
+    /// `parser_version` other than `current` — i.e. the chunks were extracted
+    /// by an older parser and need re-extraction even though their disk
+    /// fingerprint is unchanged.
+    ///
+    /// The staleness pre-filters (`filter_stale_files` and the watch reconcile
+    /// `process_batch`) select by fingerprint only, so a `PARSER_VERSION` bump
+    /// would otherwise heal nothing without `--force`: an unchanged file keeps
+    /// its stale chunks (and stale derived data — call edges, edge_kind, doc
+    /// enrichment) until its bytes change. Treating version drift as stale
+    /// closes that hole — a reindex re-parses drifted files and the UPSERT
+    /// rewrites the rows (`OR parser_version != excluded.parser_version`).
+    ///
+    /// Only `source_type = 'file'` chunks are considered (notes/registry rows
+    /// carry no parser stamp). An origin absent from the result either has no
+    /// indexed chunks or all of them already match `current`.
+    ///
+    /// Drift loop-breaker (v31): an origin whose `file_registry`
+    /// `parse_failed_parser_version` equals `current` is EXCLUDED even when its
+    /// chunks are version-drifted. Such a file already failed to parse at the
+    /// current parser version, so re-queuing it every tick re-runs a parse that
+    /// will fail again — an unbounded loop a `PARSER_VERSION` bump re-arms. The
+    /// marker is cleared by any successful re-parse (`set_fingerprint_in_tx`
+    /// writes NULL), so a content edit that fixes the file lets it re-queue and
+    /// heal normally.
+    pub fn origins_with_parser_drift(
+        &self,
+        origins: &[&str],
+        current: u32,
+    ) -> Result<HashSet<String>, StoreError> {
+        let _span =
+            tracing::debug_span!("origins_with_parser_drift", count = origins.len()).entered();
+        if origins.is_empty() {
+            return Ok(HashSet::new());
+        }
+        self.rt.block_on(async {
+            const BATCH_SIZE: usize = max_rows_per_statement(1);
+            let mut drifted: HashSet<String> = HashSet::new();
+            for batch in origins.chunks(BATCH_SIZE) {
+                // `make_placeholders` emits NUMBERED placeholders (`?1, ?2, …`),
+                // so `current` takes `?1` and the origins start at `?2`. Mixing
+                // a bare `?` with numbered ones mis-binds under SQLite.
+                let placeholders = crate::store::helpers::make_placeholders_offset(batch.len(), 2);
+                // The NOT EXISTS clause is the v31 drift loop-breaker: skip an
+                // origin already marked as having failed to parse at `?1` (the
+                // current parser version). `?1` binds both the drift comparison
+                // and the marker comparison, so the suppression tracks the same
+                // version the drift predicate keys on.
+                let sql = format!(
+                    "SELECT DISTINCT c.origin FROM chunks c \
+                     WHERE c.source_type = 'file' AND c.parser_version != ?1 \
+                     AND c.origin IN ({placeholders}) \
+                     AND NOT EXISTS ( \
+                         SELECT 1 FROM file_registry fr \
+                         WHERE fr.origin = c.origin \
+                           AND fr.parse_failed_parser_version = ?1 \
+                     )"
+                );
+                let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql.as_str()));
+                query = query.bind(i64::from(current));
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
+                for (origin,) in query.fetch_all(&self.pool).await? {
+                    drifted.insert(origin);
+                }
+            }
+            Ok(drifted)
+        })
+    }
+
     /// Check if specific origins are stale (fingerprint diverged on disk).
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).
@@ -1883,7 +1954,7 @@ mod tests {
     /// would survive the happy-path test — this one catches it.
     #[test]
     fn test_prune_all_cascade_populates_all_counters() {
-        use crate::parser::{CallSite, FunctionCalls, TypeRef};
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls, TypeRef};
 
         let (store, dir) = setup_store();
 
@@ -1918,10 +1989,12 @@ mod tests {
                         CallSite {
                             callee_name: "helper_a".to_string(),
                             line_number: 2,
+                            kind: CallEdgeKind::Call,
                         },
                         CallSite {
                             callee_name: "helper_b".to_string(),
                             line_number: 3,
+                            kind: CallEdgeKind::Call,
                         },
                     ],
                 }],
@@ -2440,7 +2513,7 @@ mod tests {
     /// file the indexer no longer owns until the next full `prune_all`.
     #[test]
     fn test_prune_gitignored_removes_function_calls() {
-        use crate::parser::{CallSite, FunctionCalls};
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
         let (store, dir) = setup_store();
 
@@ -2462,6 +2535,7 @@ mod tests {
                     calls: vec![CallSite {
                         callee_name: "ghost_callee".to_string(),
                         line_number: 2,
+                        kind: CallEdgeKind::Call,
                     }],
                 }],
             )

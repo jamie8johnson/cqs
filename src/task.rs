@@ -756,6 +756,7 @@ mod tests {
                 calls: vec![crate::parser::CallSite {
                     callee_name: "validate_input".to_string(),
                     line_number: 3,
+                    kind: crate::parser::CallEdgeKind::Call,
                 }],
             },
             crate::parser::FunctionCalls {
@@ -764,6 +765,7 @@ mod tests {
                 calls: vec![crate::parser::CallSite {
                     callee_name: "validate_input".to_string(),
                     line_number: 2,
+                    kind: crate::parser::CallEdgeKind::Call,
                 }],
             },
         ];

@@ -23,10 +23,20 @@ use anyhow::{Context as _, Result};
 use colored::Colorize;
 
 use cqs::normalize_path;
-use cqs::store::{CallerInfo, ReadOnly, Store};
+use cqs::parser::CallEdgeKind;
+use cqs::store::{CalleeInfo, CallerInfo, ReadOnly, Store};
 
 use super::notes_text;
 use super::KindFallbackOutput;
+
+/// Error message when `--edge-kind` is combined with `--cross-project`. The
+/// cross-project path loads a `CallGraph` that discards edge kinds (kinds are
+/// not threaded through the multi-index merge), so applying the filter would
+/// silently return the unfiltered superset. Honest refusal until kinds are
+/// threaded through `CallGraph` (tracked as a follow-up). Shared verbatim by
+/// CLI and daemon so the parity test can pin the exact string.
+pub(crate) const EDGE_KIND_CROSS_PROJECT_ERR: &str =
+    "edge-kind filtering is not supported with --cross-project";
 
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
 
@@ -44,6 +54,11 @@ pub(crate) struct CallersArgs {
     pub name: String,
     /// Max callers/callees returned (clamped 1..=100 inside the core).
     pub limit: usize,
+    /// Restrict to edges of a single provenance kind (`call`, `serde_callback`,
+    /// `macro_heuristic`, `fn_pointer`). `None` ⇒ all kinds. Consumes §1's
+    /// `function_calls.edge_kind` column.
+    #[serde(default, deserialize_with = "de_opt_edge_kind")]
+    pub edge_kind: Option<CallEdgeKind>,
 }
 
 impl Default for CallersArgs {
@@ -52,7 +67,38 @@ impl Default for CallersArgs {
             name: String::new(),
             // Mirrors clap `LimitArg` default.
             limit: crate::cli::args::DEFAULT_LIMIT,
+            edge_kind: None,
         }
+    }
+}
+
+/// Deserialize an optional [`CallEdgeKind`] from its stable string. Kept local
+/// to the adapter so the lib enum stays `Serialize`-only.
+fn de_opt_edge_kind<'de, D>(de: D) -> std::result::Result<Option<CallEdgeKind>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let opt = Option::<String>::deserialize(de)?;
+    match opt {
+        None => Ok(None),
+        Some(s) => Ok(Some(parse_edge_kind(&s).map_err(serde::de::Error::custom)?)),
+    }
+}
+
+/// Parse a `--edge-kind` string into a [`CallEdgeKind`], rejecting unknown
+/// values (no silent default — an unknown kind is a user error worth
+/// surfacing). Shared by the CLI flag parse and the wire deserializer.
+pub(crate) fn parse_edge_kind(s: &str) -> std::result::Result<CallEdgeKind, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "call" => Ok(CallEdgeKind::Call),
+        "serde_callback" => Ok(CallEdgeKind::SerdeCallback),
+        "macro_heuristic" => Ok(CallEdgeKind::MacroHeuristic),
+        "fn_pointer" => Ok(CallEdgeKind::FnPointer),
+        "doc_reference" => Ok(CallEdgeKind::DocReference),
+        other => Err(format!(
+            "invalid edge kind '{other}' (expected call|serde_callback|macro_heuristic|fn_pointer|doc_reference)"
+        )),
     }
 }
 
@@ -71,6 +117,10 @@ pub(crate) struct CallerEntry {
     /// project) on the standard path.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub project: String,
+    /// Edge provenance, skip-when-default (absent ⇒ `call`). Empty string ⇒
+    /// the default `call` kind; rendered omitted.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub edge_kind: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -81,6 +131,20 @@ pub(crate) struct CalleeEntry {
     /// project) on the standard path.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub project: String,
+    /// Edge provenance, skip-when-default (absent ⇒ `call`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub edge_kind: String,
+}
+
+/// Render a [`CallEdgeKind`] for the skip-when-default entry field: the default
+/// `Call` kind maps to the empty string (omitted), any heuristic kind to its
+/// stable label.
+pub(crate) fn edge_kind_field(kind: CallEdgeKind) -> String {
+    if kind == CallEdgeKind::Call {
+        String::new()
+    } else {
+        kind.as_str().to_string()
+    }
 }
 
 /// Function-path output for `cqs callers <name>`: `{name, callers, count}`.
@@ -138,6 +202,7 @@ pub(crate) fn build_caller_entries(callers: &[CallerInfo]) -> Vec<CallerEntry> {
             file: normalize_path(&c.file).to_string(),
             line_start: c.line,
             project: String::new(),
+            edge_kind: edge_kind_field(c.edge_kind),
         })
         .collect()
 }
@@ -155,16 +220,17 @@ pub(crate) fn build_callers(name: &str, callers: &[CallerInfo]) -> CallersOutput
 }
 
 /// Build typed callees output -- shared between CLI and batch.
-pub(crate) fn build_callees(name: &str, callees: &[(String, u32)]) -> CalleesOutput {
+pub(crate) fn build_callees(name: &str, callees: &[CalleeInfo]) -> CalleesOutput {
     let _span = tracing::info_span!("build_callees", name, count = callees.len()).entered();
     CalleesOutput {
         name: name.to_string(),
         calls: callees
             .iter()
-            .map(|(n, line)| CalleeEntry {
-                name: n.clone(),
-                line_start: *line,
+            .map(|c| CalleeEntry {
+                name: c.name.clone(),
+                line_start: c.line,
                 project: String::new(),
+                edge_kind: edge_kind_field(c.edge_kind),
             })
             .collect(),
         count: callees.len(),
@@ -202,6 +268,11 @@ pub(crate) fn callers_core(
     let mut callers = store
         .get_callers_full(&args.name)
         .context("Failed to load callers")?;
+    // Edge-kind filter (§1): drop edges whose provenance kind doesn't match,
+    // BEFORE the cap so `--limit` applies to the filtered set.
+    if let Some(want) = args.edge_kind {
+        callers.retain(|c| c.edge_kind == want);
+    }
     callers.truncate(limit);
     Ok(CallersCoreOutput::Callers(build_callers(
         &args.name, &callers,
@@ -228,6 +299,9 @@ pub(crate) fn callees_core(
     let mut callees = store
         .get_callees_full(&args.name, None)
         .context("Failed to load callees")?;
+    if let Some(want) = args.edge_kind {
+        callees.retain(|c| c.edge_kind == want);
+    }
     callees.truncate(limit);
     Ok(CalleesCoreOutput::Callees(build_callees(
         &args.name, &callees,
@@ -267,6 +341,9 @@ pub(crate) fn callers_cross_core(
             file: normalize_path(&c.caller.file).to_string(),
             line_start: c.caller.line,
             project: c.project.clone(),
+            // Cross-project edges come from the in-memory CallGraph (no
+            // edge_kind tracking) — always the default `call`, rendered omitted.
+            edge_kind: edge_kind_field(c.caller.edge_kind),
         })
         .collect();
     Ok(CallersOutput {
@@ -297,6 +374,9 @@ pub(crate) fn callees_cross_core(
             name: c.name.clone(),
             line_start: c.line,
             project: c.project.clone(),
+            // Cross-project callees come from the in-memory CallGraph (no
+            // edge_kind) — default `call`, rendered omitted.
+            edge_kind: String::new(),
         })
         .collect();
     Ok(CalleesOutput {
@@ -314,11 +394,16 @@ pub(crate) fn cmd_callers(
     name: &str,
     limit: usize,
     cross_project: bool,
+    edge_kind: Option<CallEdgeKind>,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
+
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -327,6 +412,7 @@ pub(crate) fn cmd_callers(
             &CallersArgs {
                 name: name.to_string(),
                 limit,
+                edge_kind,
             },
         )?;
 
@@ -358,6 +444,7 @@ pub(crate) fn cmd_callers(
         &CallersArgs {
             name: name.to_string(),
             limit,
+            edge_kind,
         },
     )? {
         CallersCoreOutput::Fallback(fb) => {
@@ -376,11 +463,17 @@ pub(crate) fn cmd_callers(
                 println!("Functions that call '{}':", name);
                 println!();
                 for caller in &output.callers {
+                    let kind_suffix = if caller.edge_kind.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", caller.edge_kind.dimmed())
+                    };
                     println!(
-                        "  {} ({}:{})",
+                        "  {} ({}:{}){}",
                         caller.name.cyan(),
                         caller.file,
-                        caller.line_start
+                        caller.line_start,
+                        kind_suffix
                     );
                 }
                 println!();
@@ -412,12 +505,17 @@ pub(crate) fn cmd_callees(
     name: &str,
     limit: usize,
     cross_project: bool,
+    edge_kind: Option<CallEdgeKind>,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name, limit, cross_project).entered();
     let store = &ctx.store;
     // See cmd_callers — same clamp range.
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
+
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
 
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
@@ -426,6 +524,7 @@ pub(crate) fn cmd_callees(
             &CalleesArgs {
                 name: name.to_string(),
                 limit,
+                edge_kind,
             },
         )?;
 
@@ -453,6 +552,7 @@ pub(crate) fn cmd_callees(
         &CalleesArgs {
             name: name.to_string(),
             limit,
+            edge_kind,
         },
     )? {
         CalleesCoreOutput::Fallback(fb) => {
@@ -472,7 +572,11 @@ pub(crate) fn cmd_callees(
                     println!("  (no function calls found)");
                 } else {
                     for callee in &output.calls {
-                        println!("  {}", callee.name);
+                        if callee.edge_kind.is_empty() {
+                            println!("  {}", callee.name);
+                        } else {
+                            println!("  {} [{}]", callee.name, callee.edge_kind.dimmed());
+                        }
                     }
                 }
                 println!();
@@ -515,12 +619,15 @@ mod tests {
             file: "src/lib.rs".into(),
             line_start: 42,
             project: String::new(),
+            edge_kind: String::new(),
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("line_start").is_some());
         assert!(json.get("line").is_none());
         // Single-project entry omits the empty `project` field.
         assert!(json.get("project").is_none());
+        // Default `call` edge omits edge_kind (skip-when-default).
+        assert!(json.get("edge_kind").is_none());
     }
 
     #[test]
@@ -530,6 +637,7 @@ mod tests {
             file: "src/lib.rs".into(),
             line_start: 42,
             project: "openclaw".into(),
+            edge_kind: String::new(),
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["project"], "openclaw");
@@ -553,6 +661,7 @@ mod tests {
             name: "caller_fn".into(),
             file: std::path::PathBuf::from("src/lib.rs"),
             line: 12,
+            edge_kind: CallEdgeKind::Call,
         }];
         let output = build_callers("target", &info);
         let json = serde_json::to_value(&output).unwrap();
@@ -575,11 +684,20 @@ mod tests {
 
     #[test]
     fn test_callees_output_field_names() {
-        let output = build_callees("bar", &[("baz".into(), 10)]);
+        let output = build_callees(
+            "bar",
+            &[CalleeInfo {
+                name: "baz".into(),
+                line: 10,
+                edge_kind: CallEdgeKind::Call,
+            }],
+        );
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["name"], "bar");
         assert!(json.get("function").is_none());
         assert_eq!(json["calls"][0]["line_start"], 10);
+        // Default-call callee omits edge_kind.
+        assert!(json["calls"][0].get("edge_kind").is_none());
     }
 
     // Polymorphic-routing callers + callees kind-mismatch fallback shape.
@@ -698,5 +816,72 @@ mod tests {
         let content = defs[0]["content"].as_str().unwrap();
         assert!(content.ends_with("... (truncated)"));
         assert_eq!(defs[0]["truncated"], true);
+    }
+
+    // ----- Edge provenance (§1) -----
+
+    /// A default `call` caller omits `edge_kind`; a heuristic caller emits it.
+    #[test]
+    fn caller_entry_edge_kind_skip_when_default() {
+        let info = vec![
+            CallerInfo {
+                name: "syntactic".into(),
+                file: std::path::PathBuf::from("src/a.rs"),
+                line: 1,
+                edge_kind: CallEdgeKind::Call,
+            },
+            CallerInfo {
+                name: "heuristic".into(),
+                file: std::path::PathBuf::from("src/b.rs"),
+                line: 2,
+                edge_kind: CallEdgeKind::MacroHeuristic,
+            },
+        ];
+        let output = build_callers("target", &info);
+        let json = serde_json::to_value(&output).unwrap();
+        // Syntactic edge omits edge_kind.
+        assert!(json["callers"][0].get("edge_kind").is_none());
+        // Heuristic edge carries the label.
+        assert_eq!(json["callers"][1]["edge_kind"], "macro_heuristic");
+    }
+
+    /// Callee edge_kind round-trips the same way.
+    #[test]
+    fn callee_entry_edge_kind_emitted_for_heuristic() {
+        let callees = vec![CalleeInfo {
+            name: "fp".into(),
+            line: 4,
+            edge_kind: CallEdgeKind::FnPointer,
+        }];
+        let output = build_callees("caller", &callees);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["calls"][0]["edge_kind"], "fn_pointer");
+    }
+
+    /// `--edge-kind` parse rejects unknown kinds and round-trips known ones.
+    #[test]
+    fn parse_edge_kind_round_trip() {
+        assert_eq!(
+            parse_edge_kind("serde_callback").unwrap(),
+            CallEdgeKind::SerdeCallback
+        );
+        assert_eq!(
+            parse_edge_kind("fn_pointer").unwrap(),
+            CallEdgeKind::FnPointer
+        );
+        assert!(parse_edge_kind("bogus").is_err());
+    }
+
+    /// The wire `CallersArgs` deserializes `edge_kind` and rejects bad values.
+    #[test]
+    fn callers_args_deserialize_edge_kind() {
+        let args: CallersArgs =
+            serde_json::from_value(serde_json::json!({"name":"f","edge_kind":"macro_heuristic"}))
+                .unwrap();
+        assert_eq!(args.edge_kind, Some(CallEdgeKind::MacroHeuristic));
+        assert!(serde_json::from_value::<CallersArgs>(
+            serde_json::json!({"name":"f","edge_kind":"nope"})
+        )
+        .is_err());
     }
 }

@@ -31,9 +31,16 @@ pub(in crate::cli::batch) fn dispatch_dead(
 
     // Thin adapter over the shared `dead_core` — identical JSON shape across
     // the CLI and daemon surfaces.
+    let verdict = match args.verdict.as_deref() {
+        None => None,
+        Some(s) => {
+            Some(crate::cli::commands::DeadVerdict::parse(s).map_err(|e| anyhow::anyhow!(e))?)
+        }
+    };
     let core_args = crate::cli::commands::DeadArgs {
         include_pub: args.include_pub,
         min_confidence: args.min_confidence,
+        verdict,
     };
     let output = crate::cli::commands::dead_core(&ctx.store(), &ctx.root, &core_args)?;
     Ok(serde_json::to_value(&output)?)
@@ -277,6 +284,7 @@ mod parity_tests {
             &crate::cli::commands::DeadArgs {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
+                verdict: None,
             },
         )
         .expect("dead_core");
@@ -296,6 +304,7 @@ mod parity_tests {
             &crate::cli::args::DeadArgs {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
+                verdict: None,
             },
         )
         .expect("dispatch_dead");

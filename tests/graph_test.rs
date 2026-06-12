@@ -369,7 +369,7 @@ fn explain_process_reports_callers_and_callees() {
     let callees = f.store.get_callees_full("process", None).expect("callees");
 
     let caller_names: Vec<&str> = callers.iter().map(|c| c.name.as_str()).collect();
-    let callee_names: Vec<&str> = callees.iter().map(|(n, _)| n.as_str()).collect();
+    let callee_names: Vec<&str> = callees.iter().map(|c| c.name.as_str()).collect();
     assert!(
         caller_names.contains(&"main") || caller_names.contains(&"test_process"),
         "process is called by main + test_process; got callers {caller_names:?}"

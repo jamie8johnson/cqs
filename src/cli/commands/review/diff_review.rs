@@ -385,6 +385,7 @@ mod tests {
                 line: (i as u32) + 1,
                 call_line: (i as u32) + 10,
                 snippet: None,
+                edge_kind: cqs::parser::CallEdgeKind::Call,
             })
             .collect();
 

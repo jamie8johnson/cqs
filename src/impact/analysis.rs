@@ -145,6 +145,7 @@ fn build_caller_info<Mode>(
             line: caller.line,
             call_line: caller.call_line,
             snippet,
+            edge_kind: caller.edge_kind,
         });
     }
 

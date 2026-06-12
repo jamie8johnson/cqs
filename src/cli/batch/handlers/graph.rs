@@ -20,9 +20,20 @@ use crate::cli::args::{
 };
 use crate::cli::commands::{
     callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
-    test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs, DepsCoreArgs,
-    ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs,
+    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs, EDGE_KIND_CROSS_PROJECT_ERR,
 };
+use cqs::parser::CallEdgeKind;
+
+/// Parse the daemon-side `--edge-kind` wire string into a typed
+/// [`CallEdgeKind`], surfacing an unknown value as an error so CLI and daemon
+/// reject bad kinds identically.
+fn parse_dispatch_edge_kind(s: Option<&str>) -> Result<Option<CallEdgeKind>> {
+    match s {
+        None => Ok(None),
+        Some(s) => parse_edge_kind(s).map(Some).map_err(|e| anyhow::anyhow!(e)),
+    }
+}
 
 // ─── Daemon dispatch handlers ──────────────────────────────────────────────
 //
@@ -97,6 +108,10 @@ pub(in crate::cli::batch) fn dispatch_callers(
         cross_project
     )
     .entered();
+    let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -105,6 +120,7 @@ pub(in crate::cli::batch) fn dispatch_callers(
             &CallersCoreArgs {
                 name: name.to_string(),
                 limit: args.limit_arg.limit,
+                edge_kind,
             },
         )?;
         return Ok(serde_json::to_value(&output)?);
@@ -113,6 +129,7 @@ pub(in crate::cli::batch) fn dispatch_callers(
     let core_args = CallersCoreArgs {
         name: name.to_string(),
         limit: args.limit_arg.limit,
+        edge_kind,
     };
     let output = callers_core(&ctx.store(), &core_args)?;
     Ok(serde_json::to_value(&output)?)
@@ -143,6 +160,10 @@ pub(in crate::cli::batch) fn dispatch_callees(
         cross_project
     )
     .entered();
+    let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
+    if cross_project && edge_kind.is_some() {
+        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
+    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -151,6 +172,7 @@ pub(in crate::cli::batch) fn dispatch_callees(
             &CoreCalleesArgs {
                 name: name.to_string(),
                 limit: args.limit_arg.limit,
+                edge_kind,
             },
         )?;
         return Ok(serde_json::to_value(&output)?);
@@ -159,6 +181,7 @@ pub(in crate::cli::batch) fn dispatch_callees(
     let core_args = CoreCalleesArgs {
         name: name.to_string(),
         limit: args.limit_arg.limit,
+        edge_kind,
     };
     let output = callees_core(&ctx.store(), &core_args)?;
     Ok(serde_json::to_value(&output)?)
@@ -418,7 +441,7 @@ mod tests {
     use super::*;
     use crate::cli::batch::create_test_context;
     use cqs::embedder::Embedding;
-    use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+    use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
     use cqs::store::{ModelInfo, Store};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -486,6 +509,7 @@ mod tests {
                 calls: vec![CallSite {
                     callee_name: "callee_fn".to_string(),
                     line_number: 3,
+                    kind: CallEdgeKind::Call,
                 }],
             };
             store
@@ -503,6 +527,7 @@ mod tests {
             name: "callee_fn".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         // `callers_core` emits `{name, callers, count}` — the same object
@@ -524,6 +549,7 @@ mod tests {
             name: "caller_fn".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         // `build_callees` emits `CalleesOutput { name, calls, count }` —
@@ -536,6 +562,108 @@ mod tests {
             calls.iter().any(|c| c["name"] == "callee_fn"),
             "expected callee_fn in calls, got: {calls:?}"
         );
+    }
+
+    /// §1 parity: the daemon `dispatch_callers` and the CLI-direct
+    /// `callers_core` agree on the `edge_kind` filter and the surfaced field.
+    /// The seeded edge is `macro_heuristic`, so `--edge-kind macro_heuristic`
+    /// keeps it and `--edge-kind call` drops it — identically on both surfaces.
+    #[test]
+    fn callers_edge_kind_filter_cli_daemon_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        use cqs::parser::CallEdgeKind;
+
+        // Self-contained seed: a chunk plus a macro-heuristic caller edge to
+        // `macro_callee`, then a daemon context over the same index.
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            store
+                .upsert_chunks_batch(
+                    &[(make_chunk("src/m.rs:9:caller", "macro_caller"), embedding)],
+                    Some(0),
+                )
+                .expect("upsert chunks");
+            let fc = FunctionCalls {
+                name: "macro_caller".to_string(),
+                line_start: 9,
+                calls: vec![CallSite {
+                    callee_name: "macro_callee".to_string(),
+                    line_number: 10,
+                    kind: CallEdgeKind::MacroHeuristic,
+                }],
+            };
+            store
+                .upsert_function_calls(Path::new("src/m.rs"), &[fc])
+                .expect("upsert macro edge");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+
+        for kind in [None, Some("macro_heuristic"), Some("call")] {
+            let daemon_args = CallersArgs {
+                name: "macro_callee".into(),
+                cross_project: false,
+                limit_arg: crate::cli::args::LimitArg { limit: 10 },
+                edge_kind: kind.map(String::from),
+            };
+            let daemon =
+                dispatch_callers(&ctx.build_view(None), &daemon_args).expect("dispatch_callers");
+
+            let core_args = CallersCoreArgs {
+                name: "macro_callee".into(),
+                limit: 10,
+                edge_kind: kind.map(|k| crate::cli::commands::parse_edge_kind(k).unwrap()),
+            };
+            let core =
+                serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                    .unwrap();
+
+            assert_eq!(daemon, core, "CLI==daemon parity for edge_kind={kind:?}");
+        }
+    }
+
+    /// `--edge-kind` + `--cross-project` is an honest refusal on the daemon
+    /// surface too — the cross-project path discards edge kinds. Both
+    /// `dispatch_callers` and `dispatch_callees` error with the shared message;
+    /// the parity assertion pins that the CLI constant and the daemon error
+    /// string are the same text on both commands.
+    #[test]
+    fn dispatch_edge_kind_with_cross_project_is_refused() {
+        let (_dir, ctx) = seed_call_graph_ctx();
+        let view = ctx.build_view(None);
+
+        let callers_args = CallersArgs {
+            name: "callee_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: Some("call".to_string()),
+        };
+        let callers_err = dispatch_callers(&view, &callers_args)
+            .expect_err("edge-kind + cross-project must be refused")
+            .to_string();
+        assert_eq!(callers_err, EDGE_KIND_CROSS_PROJECT_ERR);
+
+        let callees_args = CallersArgs {
+            name: "caller_fn".into(),
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: Some("call".to_string()),
+        };
+        let callees_err = dispatch_callees(&view, &callees_args)
+            .expect_err("edge-kind + cross-project must be refused")
+            .to_string();
+        assert_eq!(callees_err, EDGE_KIND_CROSS_PROJECT_ERR);
+
+        // Parity: the same constant the CLI bails with (cmd_callers /
+        // cmd_callees both `bail!(EDGE_KIND_CROSS_PROJECT_ERR)`).
+        assert_eq!(callers_err, callees_err);
     }
 
     #[test]
@@ -628,6 +756,7 @@ mod tests {
                 calls: vec![CallSite {
                     callee_name: "callee_fn".to_string(),
                     line_number: 3,
+                    kind: CallEdgeKind::Call,
                 }],
             };
             store
@@ -709,6 +838,7 @@ mod tests {
                 calls: vec![CallSite {
                     callee_name: "callee_fn".to_string(),
                     line_number: 3,
+                    kind: CallEdgeKind::Call,
                 }],
             };
             store
@@ -748,6 +878,7 @@ mod tests {
             name: "MAX_LEN".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_fallback_shape(&json, "const", "callers", "MAX_LEN");
@@ -761,6 +892,7 @@ mod tests {
             name: "MyConfig".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         assert_fallback_shape(&json, "type", "callees", "MyConfig");
@@ -833,6 +965,7 @@ mod tests {
             name: "MAX_LEN".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_fallback_shape(&json, "const", "callers", "MAX_LEN");
@@ -888,6 +1021,7 @@ mod tests {
             name: "callee_fn".into(),
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
         };
         let json = dispatch_callers(&ctx.build_view(None), &args)
             .expect("kind-detect store error must not fail the request");
@@ -910,6 +1044,7 @@ mod tests {
                 name: name.into(),
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
+                edge_kind: None,
             };
             let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers");
             let core = serde_json::to_value(
@@ -918,6 +1053,7 @@ mod tests {
                     &CallersCoreArgs {
                         name: name.into(),
                         limit: 5,
+                        edge_kind: None,
                     },
                 )
                 .expect("callers_core"),
@@ -955,6 +1091,7 @@ mod tests {
             name: "callee_fn".into(),
             cross_project: true,
             limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            edge_kind: None,
         };
         let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers cross");
 
@@ -966,6 +1103,7 @@ mod tests {
                 &CallersCoreArgs {
                     name: "callee_fn".into(),
                     limit: 5,
+                    edge_kind: None,
                 },
             )
             .expect("callers_cross_core"),
@@ -997,6 +1135,7 @@ mod tests {
                 name: name.into(),
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
+                edge_kind: None,
             };
             let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees");
             let core = serde_json::to_value(
@@ -1005,6 +1144,7 @@ mod tests {
                     &CoreCalleesArgs {
                         name: name.into(),
                         limit: 5,
+                        edge_kind: None,
                     },
                 )
                 .expect("callees_core"),
@@ -1038,6 +1178,7 @@ mod tests {
             name: "caller_fn".into(),
             cross_project: true,
             limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            edge_kind: None,
         };
         let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees cross");
 
@@ -1049,6 +1190,7 @@ mod tests {
                 &CoreCalleesArgs {
                     name: "caller_fn".into(),
                     limit: 5,
+                    edge_kind: None,
                 },
             )
             .expect("callees_cross_core"),

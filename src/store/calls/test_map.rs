@@ -2,7 +2,7 @@
 
 use super::{TEST_CHUNKS_SQL, TEST_CHUNK_NAMES_SQL};
 use crate::store::helpers::{ChunkRow, ChunkSummary, StoreError};
-use crate::store::{ReadWrite, Store};
+use crate::store::Store;
 
 impl<Mode> Store<Mode> {
     /// Async helper for find_test_chunks (reused by find_dead_code)
@@ -62,22 +62,43 @@ impl<Mode> Store<Mode> {
     }
 }
 
-impl Store<ReadWrite> {
-    /// Delete function_calls for files no longer in the chunks table.
-    /// Used by GC to clean up orphaned call graph entries after pruning chunks.
-    pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
-        let _span = tracing::info_span!("prune_stale_calls").entered();
+impl<Mode> Store<Mode> {
+    /// Consistency check: `function_calls.file` values that reference NO file
+    /// present in `chunks` UNION `file_registry`. Read-only — returns the list
+    /// of orphaned origins for `cqs doctor` and the standing invariant test.
+    ///
+    /// This is the STANDING MECHANICAL CHECK for the chunk/call-graph lifecycle
+    /// decouple. The two lifecycles are managed by distinct writers:
+    /// `function_calls` is replaced per file by the single parse-driven writer
+    /// (driven by parse-completion, NEVER by chunk count), while `chunks` is
+    /// pruned by the chunk primitive. The seam between them reopened six times
+    /// because each fix used a chunk-frame signal (`live_ids.is_empty()`) to
+    /// make a call-graph decision. The invariant that catches any future
+    /// reopening: every `function_calls.file` must correspond to a file the
+    /// index knows about — i.e. present in `chunks` OR `file_registry`
+    /// (`file_registry` is the v29 complete shadow, so a zero-chunk
+    /// oversize-function file — zero chunks, NON-empty calls — is still
+    /// "known"). A non-empty result means a writer left orphaned edges: either
+    /// a delete path failed to clear `function_calls`, or a parse-driven write
+    /// referenced a file never stamped into the registry.
+    ///
+    /// Note: this deliberately does NOT gate on `chunks` alone. An
+    /// oversize-function file is legitimately present in `function_calls` with
+    /// ZERO chunks; the `file_registry` arm of the UNION is what keeps it from
+    /// being flagged. Gating on chunks alone is exactly the bug this check
+    /// guards against.
+    pub fn find_orphaned_function_calls(&self) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::info_span!("find_orphaned_function_calls").entered();
         self.rt.block_on(async {
-            let result = sqlx::query(
-                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT file FROM function_calls \
+                 WHERE file NOT IN (SELECT DISTINCT origin FROM chunks) \
+                   AND file NOT IN (SELECT origin FROM file_registry) \
+                 ORDER BY file",
             )
-            .execute(&self.pool)
+            .fetch_all(&self.pool)
             .await?;
-            let count = result.rows_affected();
-            if count > 0 {
-                tracing::info!(pruned = count, "Pruned stale call graph entries");
-            }
-            Ok(count)
+            Ok(rows.into_iter().map(|(f,)| f).collect())
         })
     }
 }

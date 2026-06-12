@@ -6,7 +6,7 @@
 mod common;
 
 use common::{mock_embedding, TestStore};
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
 use cqs::review_diff;
 use cqs::RiskLevel;
 use std::path::{Path, PathBuf};
@@ -81,6 +81,7 @@ fn insert_calls(store: &TestStore, file: &str, calls: &[CallSpec]) {
                 .map(|(callee, cline)| CallSite {
                     callee_name: callee.to_string(),
                     line_number: *cline,
+                    kind: CallEdgeKind::Call,
                 })
                 .collect(),
         })

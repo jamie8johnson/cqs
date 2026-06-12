@@ -4,7 +4,7 @@ mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
 use cqs::compute_hints;
-use cqs::parser::{CallSite, FunctionCalls};
+use cqs::parser::{CallEdgeKind, CallSite, FunctionCalls};
 use std::path::Path;
 
 /// Helper: insert a chunk and its embedding
@@ -30,6 +30,7 @@ fn insert_calls(store: &TestStore, file: &str, calls: &[CallSpec]) {
                 .map(|(callee, cline)| CallSite {
                     callee_name: callee.to_string(),
                     line_number: *cline,
+                    kind: CallEdgeKind::Call,
                 })
                 .collect(),
         })

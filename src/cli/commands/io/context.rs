@@ -825,7 +825,8 @@ mod tests {
 
     use cqs::embedder::Embedding;
     use cqs::parser::{
-        CallSite as PCallSite, Chunk, ChunkType as PChunkType, FunctionCalls, Language as PLanguage,
+        CallEdgeKind as PCallEdgeKind, CallSite as PCallSite, Chunk, ChunkType as PChunkType,
+        FunctionCalls, Language as PLanguage,
     };
     use cqs::store::{ModelInfo, Store};
     use std::path::Path;
@@ -903,10 +904,12 @@ mod tests {
                         PCallSite {
                             callee_name: "chunk_a".to_string(),
                             line_number: 2,
+                            kind: PCallEdgeKind::Call,
                         },
                         PCallSite {
                             callee_name: "chunk_b".to_string(),
                             line_number: 3,
+                            kind: PCallEdgeKind::Call,
                         },
                     ],
                 }],
@@ -923,6 +926,7 @@ mod tests {
                     calls: vec![PCallSite {
                         callee_name: "extern_fn".to_string(),
                         line_number: 5,
+                        kind: PCallEdgeKind::Call,
                     }],
                 }],
             )

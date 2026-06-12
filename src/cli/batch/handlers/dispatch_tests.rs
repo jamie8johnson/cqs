@@ -37,7 +37,7 @@
 
 use super::super::{create_test_context, BatchContext};
 use cqs::embedder::Embedding;
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
 use cqs::store::{ModelInfo, Store};
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -169,10 +169,12 @@ fn seed_ctx() -> (TempDir, BatchContext) {
                             CallSite {
                                 callee_name: "bar".to_string(),
                                 line_number: 2,
+                                kind: CallEdgeKind::Call,
                             },
                             CallSite {
                                 callee_name: "baz".to_string(),
                                 line_number: 3,
+                                kind: CallEdgeKind::Call,
                             },
                         ],
                     },
@@ -182,6 +184,7 @@ fn seed_ctx() -> (TempDir, BatchContext) {
                         calls: vec![CallSite {
                             callee_name: "helper".to_string(),
                             line_number: 11,
+                            kind: CallEdgeKind::Call,
                         }],
                     },
                 ],
@@ -194,6 +197,7 @@ fn seed_ctx() -> (TempDir, BatchContext) {
                     calls: vec![CallSite {
                         callee_name: "foo".to_string(),
                         line_number: 3,
+                        kind: CallEdgeKind::Call,
                     }],
                 }],
             ),

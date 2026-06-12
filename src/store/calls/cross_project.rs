@@ -280,6 +280,10 @@ impl CrossProjectContext {
                             name: caller_name.to_string(),
                             file: std::path::PathBuf::new(),
                             line: 0,
+                            // Cross-project edges come from the in-memory
+                            // CallGraph, which does not track edge_kind; default
+                            // to the syntactic `call`.
+                            edge_kind: crate::parser::CallEdgeKind::Call,
                         },
                     });
                 }

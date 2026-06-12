@@ -1,6 +1,8 @@
 # Design: Result Trust — Edge Provenance, Dead Verdicts, Worktree Overlay, Ranking Provenance
 
-Status: PROPOSED (design only — nothing queued)
+Status: §1 (edge provenance) + §2 (dead verdicts) IMPLEMENTED (schema v30,
+PARSER_VERSION 6). §3 (worktree overlay), §4 (ranking provenance), §5 (docs)
+remain PROPOSED.
 Origin: 2026-06-12 session. The motivating gaps were hit live during the
 v1.43.0 campaign by our own agents. A candidate feature
 (`cqs review --base`) turned out to already exist — see §5.
@@ -93,10 +95,12 @@ Call edges should get the same treatment.
 
 - **Schema (v30):** `ALTER TABLE function_calls ADD COLUMN edge_kind TEXT
   NOT NULL DEFAULT 'call'`. Additive; existing rows default to `'call'`,
-  which is correct for every pre-v30 row except serde/macro edges — those
-  re-extract anyway on the next reindex (PARSER_VERSION is already 4), so no
-  backfill logic is needed. Values: `call`, `serde_callback`,
-  `macro_heuristic`, reserving `fn_pointer`, `dyn_dispatch`.
+  which is correct for every pre-v30 row except serde/macro/fn-pointer/
+  doc-reference edges — those re-extract on the next reindex (PARSER_VERSION
+  bumped 5→6 with this work; the staleness pre-filters treat that version
+  drift as stale, so a plain `cqs index` re-parses and re-tags drifted files —
+  no `--force`, no backfill logic). Values: `call`, `serde_callback`,
+  `macro_heuristic`, `fn_pointer`, `doc_reference`.
 - **Extractor:** `CallSite` gains a `kind` field; the three emit sites tag at
   the source. The serde and macro passes already exist as distinct functions
   (`filter_serde_callbacks`'s emitting sibling, `extract_macro_call_edges`),

@@ -61,6 +61,19 @@ impl DeadConfidence {
     }
 }
 
+/// Heuristic-caller breakdown for a `low-confidence-live` callee: the total
+/// number of heuristic edges reaching it plus the per-kind counts. Lets the
+/// `cqs dead` verdict reason name the heuristic kinds and their counts instead
+/// of asserting a generic "all callers are heuristic" claim. Produced by
+/// [`Store::find_low_confidence_live_names`].
+#[derive(Debug, Clone, Default)]
+pub struct LowConfidenceLiveInfo {
+    /// Total heuristic edges reaching this callee (no trusted edge exists).
+    pub total: u64,
+    /// `(edge_kind string, count)` pairs, sorted for deterministic reasons.
+    pub kind_counts: Vec<(String, u64)>,
+}
+
 impl std::fmt::Display for DeadConfidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

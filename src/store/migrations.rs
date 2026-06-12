@@ -399,6 +399,8 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (26, 27, |c| Box::pin(migrate_v26_to_v27(c))),
     (27, 28, |c| Box::pin(migrate_v27_to_v28(c))),
     (28, 29, |c| Box::pin(migrate_v28_to_v29(c))),
+    (29, 30, |c| Box::pin(migrate_v29_to_v30(c))),
+    (30, 31, |c| Box::pin(migrate_v30_to_v31(c))),
 ];
 
 /// Run a single migration step
@@ -1174,6 +1176,78 @@ async fn migrate_v28_to_v29(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v29 → v30: add `function_calls.edge_kind` column classifying call-graph
+/// edge provenance.
+///
+/// The call-graph extractor emits several edge kinds with very different
+/// evidentiary weight: syntactic `call_expression` (`call`, ground truth),
+/// serde string-callback attributes (`serde_callback`), Rust macro token-tree
+/// heuristics (`macro_heuristic`), bare fn-pointer arguments (`fn_pointer`),
+/// and markdown cross-references (`doc_reference`). Before this column they
+/// flatten into indistinguishable rows, so a consuming agent cannot weight a
+/// direct call differently from a heuristic or a prose mention. Mirrors the
+/// `type_edges.edge_kind` precedent.
+///
+/// Additive `ALTER TABLE ADD COLUMN` with a `'call'` default. Existing rows
+/// take `'call'`, which is correct for the syntactic majority but WRONG for
+/// the pre-existing serde/macro/fn-pointer/doc-reference edges — those
+/// re-extract with the right kind on the next reindex (PARSER_VERSION is
+/// bumped 5→6 alongside this migration). The staleness pre-filters treat
+/// PARSER_VERSION drift as stale (see `origins_with_parser_drift`), so a plain
+/// `cqs index` re-parses every drifted file and re-tags its edges — no
+/// `--force` needed. Pre-reindex, those edges read as `'call'`; the surfaces
+/// document the absence ⇒ `call` convention.
+async fn migrate_v29_to_v30(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v29_to_v30").entered();
+
+    sqlx::query("ALTER TABLE function_calls ADD COLUMN edge_kind TEXT NOT NULL DEFAULT 'call'")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v30: function_calls.edge_kind column (default 'call'). \
+         Pre-v30 serde/macro/fn-pointer/doc-reference edges read as 'call' \
+         until the next reindex re-tags them; PARSER_VERSION drift (bumped \
+         5→6) makes drifted files stale so a plain reindex re-parses them \
+         (no --force needed)."
+    );
+    Ok(())
+}
+
+/// v30 → v31: add `file_registry.parse_failed_parser_version` (nullable INTEGER).
+///
+/// The drift loop-breaker. `origins_with_parser_drift` selects files whose
+/// `chunks.parser_version` differs from the current parser, requeuing them on
+/// every reconcile tick. A successful re-parse advances the stamp and heals the
+/// drift; a file that CANNOT parse (IO/permission failure, tree-sitter
+/// `ParseFailed`) never advances it, so at a `PARSER_VERSION` bump such a file
+/// is re-queued forever. The existing `touch_mtime` loop-breaker heals only the
+/// FINGERPRINT predicate (it touches `source_mtime` so disk == stored), not the
+/// orthogonal drift predicate.
+///
+/// On parse failure both the watch reconcile path and the bulk `cqs index` path
+/// record the parser version they failed at here. `origins_with_parser_drift`
+/// excludes origins whose marker == the current parser version, so a file that
+/// already failed at the current version is not re-queued by drift until its
+/// content changes (any successful re-parse or content edit clears the marker).
+/// Additive `ALTER TABLE ADD COLUMN`; pre-v31 rows read NULL (no recorded
+/// failure ⇒ never suppressed), which is the correct default.
+async fn migrate_v30_to_v31(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v30_to_v31").entered();
+
+    sqlx::query("ALTER TABLE file_registry ADD COLUMN parse_failed_parser_version INTEGER")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v31: file_registry.parse_failed_parser_version column \
+         (nullable). Records the parser version a drifted-but-unparseable file \
+         failed at so origins_with_parser_drift stops re-queuing it every \
+         reconcile tick until its content changes."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,7 +1280,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 29);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
     }
 
     #[test]
@@ -4399,6 +4473,308 @@ mod tests {
             assert!(
                 mig_notes_sql.to_lowercase().contains("check"),
                 "migrated notes table must carry the sentiment CHECK, got: {mig_notes_sql}"
+            );
+        });
+    }
+
+    /// Build a minimal v29 schema (metadata + a v29-shaped `function_calls`
+    /// table WITHOUT the `edge_kind` column, stamped at version 29) at
+    /// `db_path`. Returns the open pool. Shared by the v29→v30 tests.
+    async fn setup_v29_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pre-v30 function_calls: no edge_kind column.
+        sqlx::query(
+            "CREATE TABLE function_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file TEXT NOT NULL,
+                caller_name TEXT NOT NULL,
+                caller_line INTEGER NOT NULL,
+                callee_name TEXT NOT NULL,
+                call_line INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '29')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v29 → v30 adds the `function_calls.edge_kind` column with a `'call'`
+    /// default. A pre-existing row (inserted before the migration without the
+    /// column) must read back `edge_kind = 'call'`, and a fresh insert can
+    /// carry a non-default kind.
+    #[test]
+    fn test_migrate_v29_to_v30_adds_edge_kind_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v29_schema(&db_path).await;
+
+            // Insert a pre-migration row (no edge_kind column yet).
+            sqlx::query(
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) \
+                 VALUES ('src/a.rs', 'caller', 1, 'callee', 2)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let pool = migrate(pool, &db_path, 29, 30).await.unwrap();
+
+            // Pre-migration row defaults to 'call'.
+            let (kind,): (String,) =
+                sqlx::query_as("SELECT edge_kind FROM function_calls WHERE callee_name = 'callee'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                kind, "call",
+                "pre-v30 function_calls row must default to edge_kind = 'call'"
+            );
+
+            // A fresh insert can carry a heuristic kind.
+            sqlx::query(
+                "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line, edge_kind) \
+                 VALUES ('src/b.rs', 'c2', 1, 'cb', 2, 'serde_callback')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (kind2,): (String,) =
+                sqlx::query_as("SELECT edge_kind FROM function_calls WHERE callee_name = 'cb'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(kind2, "serde_callback");
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v29 → v30) must produce the same
+    /// `function_calls` shape: both carry an `edge_kind` column defaulting to
+    /// `'call'`. Compares the `sqlite_master.sql` text for the column presence.
+    #[test]
+    fn test_v30_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Fresh-create: apply schema.sql to an in-memory DB.
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+
+            let (fresh_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'function_calls'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert!(
+                fresh_sql.to_lowercase().contains("edge_kind"),
+                "fresh function_calls must carry edge_kind, got: {fresh_sql}"
+            );
+
+            // Migrated: build v29, migrate to v30.
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v29_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 29, 30).await.unwrap();
+
+            let (mig_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'function_calls'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                mig_sql.to_lowercase().contains("edge_kind"),
+                "migrated function_calls must carry edge_kind, got: {mig_sql}"
+            );
+        });
+    }
+
+    /// Build a v30-shaped DB: a `file_registry` WITHOUT the v31
+    /// `parse_failed_parser_version` column, plus a `chunks` table the drift
+    /// query reads. Schema version stamped 30.
+    async fn setup_v30_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pre-v31 file_registry: no parse_failed_parser_version column.
+        sqlx::query(
+            "CREATE TABLE file_registry (
+                origin TEXT PRIMARY KEY,
+                source_mtime INTEGER,
+                source_size INTEGER,
+                source_content_hash BLOB
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '30')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v30 → v31 adds the nullable `file_registry.parse_failed_parser_version`
+    /// column. A pre-migration row reads back NULL for it; a fresh write can
+    /// carry a version integer.
+    #[test]
+    fn test_migrate_v30_to_v31_adds_parse_failed_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v30_schema(&db_path).await;
+
+            // Pre-migration row (no marker column yet).
+            sqlx::query("INSERT INTO file_registry (origin, source_mtime) VALUES ('src/a.rs', 1)")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let pool = migrate(pool, &db_path, 30, 31).await.unwrap();
+
+            // Pre-migration row reads NULL for the new column.
+            let (marker,): (Option<i64>,) = sqlx::query_as(
+                "SELECT parse_failed_parser_version FROM file_registry WHERE origin = 'src/a.rs'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(marker, None, "pre-v31 row must read NULL marker");
+
+            // A fresh write can carry a version.
+            sqlx::query(
+                "INSERT INTO file_registry (origin, parse_failed_parser_version) \
+                 VALUES ('src/b.rs', 6)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (marker2,): (Option<i64>,) = sqlx::query_as(
+                "SELECT parse_failed_parser_version FROM file_registry WHERE origin = 'src/b.rs'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(marker2, Some(6));
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v30 → v31) must produce the same
+    /// `file_registry` shape: both carry `parse_failed_parser_version`.
+    #[test]
+    fn test_v31_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+            let (fresh_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert!(
+                fresh_sql
+                    .to_lowercase()
+                    .contains("parse_failed_parser_version"),
+                "fresh file_registry must carry parse_failed_parser_version, got: {fresh_sql}"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v30_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 30, 31).await.unwrap();
+            let (mig_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                mig_sql
+                    .to_lowercase()
+                    .contains("parse_failed_parser_version"),
+                "migrated file_registry must carry parse_failed_parser_version, got: {mig_sql}"
             );
         });
     }

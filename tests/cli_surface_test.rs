@@ -363,6 +363,7 @@ fn seed_review_store(dir: &std::path::Path) {
                 calls: vec![::cqs::parser::CallSite {
                     callee_name: "target_fn".to_string(),
                     line_number: 8,
+                    kind: cqs::parser::CallEdgeKind::Call,
                 }],
             }],
         )
@@ -376,6 +377,7 @@ fn seed_review_store(dir: &std::path::Path) {
                 calls: vec![::cqs::parser::CallSite {
                     callee_name: "target_fn".to_string(),
                     line_number: 5,
+                    kind: cqs::parser::CallEdgeKind::Call,
                 }],
             }],
         )
@@ -561,7 +563,7 @@ fn affected_stdin_populated_branch_lists_changed_and_overall_risk() {
 /// the every-session command suite. `producer` (lines 10-30, src/lib.rs)
 /// calls `consumer` and uses the `Config` type; `test_producer` exercises it.
 fn seed_session_project(dir: &std::path::Path) {
-    use ::cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+    use ::cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
 
     // Physical source files so `read`/`context` resolve content.
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -630,6 +632,7 @@ fn seed_session_project(dir: &std::path::Path) {
                 calls: vec![CallSite {
                     callee_name: "consumer".to_string(),
                     line_number: 11,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -643,6 +646,7 @@ fn seed_session_project(dir: &std::path::Path) {
                 calls: vec![CallSite {
                     callee_name: "producer".to_string(),
                     line_number: 3,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -726,6 +730,50 @@ fn session_callees_lists_seeded_callee() {
         parsed.to_string().contains("consumer"),
         "callees producer must list consumer, got: {parsed}"
     );
+}
+
+/// `--edge-kind` + `--cross-project` is an honest refusal on the CLI
+/// surface — the cross-project path discards edge kinds, so the filter would
+/// silently return the unfiltered superset. The guard fires after the store
+/// opens, so the fixture seeds a real index first.
+#[test]
+fn callers_edge_kind_with_cross_project_is_refused() {
+    let dir = TempDir::new().unwrap();
+    seed_session_project(dir.path());
+    cqs()
+        .args([
+            "callers",
+            "consumer",
+            "--cross-project",
+            "--edge-kind",
+            "call",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "edge-kind filtering is not supported with --cross-project",
+        ));
+}
+
+#[test]
+fn callees_edge_kind_with_cross_project_is_refused() {
+    let dir = TempDir::new().unwrap();
+    seed_session_project(dir.path());
+    cqs()
+        .args([
+            "callees",
+            "producer",
+            "--cross-project",
+            "--edge-kind",
+            "call",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "edge-kind filtering is not supported with --cross-project",
+        ));
 }
 
 #[test]

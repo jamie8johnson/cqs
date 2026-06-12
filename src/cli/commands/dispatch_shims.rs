@@ -22,12 +22,36 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::cli::commands;
 use crate::cli::definitions::{Cli, Commands};
 use crate::cli::CommandContext;
+use cqs::parser::CallEdgeKind;
 use cqs::store::ReadOnly;
+
+/// Parse the optional `--edge-kind` clap string into a typed
+/// [`CallEdgeKind`], surfacing an unknown value as a CLI error. Shared by the
+/// callers/callees dispatch shims so both reject bad kinds identically.
+fn parse_edge_kind_arg(s: Option<&str>) -> Result<Option<CallEdgeKind>> {
+    match s {
+        None => Ok(None),
+        Some(s) => commands::parse_edge_kind(s)
+            .map(Some)
+            .map_err(|e| anyhow!(e)),
+    }
+}
+
+/// Parse the optional `--verdict` clap string into a typed
+/// [`commands::DeadVerdict`], surfacing an unknown value as a CLI error.
+fn parse_dead_verdict_arg(s: Option<&str>) -> Result<Option<commands::DeadVerdict>> {
+    match s {
+        None => Ok(None),
+        Some(s) => commands::DeadVerdict::parse(s)
+            .map(Some)
+            .map_err(|e| anyhow!(e)),
+    }
+}
 
 /// Shorthand for "this dispatch shim was called with the wrong variant".
 /// The derive's match arm proves this never fires; the macro-generated
@@ -513,11 +537,13 @@ pub fn cmd_callers_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Callers { args, output } => {
+        let edge_kind = parse_edge_kind_arg(args.edge_kind.as_deref())?;
         commands::cmd_callers(
             ctx,
             &args.name,
             args.limit_arg.limit,
             args.cross_project,
+            edge_kind,
             cli.json || output.json,
         )
     })
@@ -531,11 +557,13 @@ pub fn cmd_callees_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Callees { args, output } => {
+        let edge_kind = parse_edge_kind_arg(args.edge_kind.as_deref())?;
         commands::cmd_callees(
             ctx,
             &args.name,
             args.limit_arg.limit,
             args.cross_project,
+            edge_kind,
             cli.json || output.json,
         )
     })
@@ -777,11 +805,13 @@ pub fn cmd_dead_dispatch(
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
     must_be!(cmd, Commands::Dead { args, output } => {
+        let verdict = parse_dead_verdict_arg(args.verdict.as_deref())?;
         commands::cmd_dead(
             ctx,
             cli.json || output.json,
             args.include_pub,
             args.min_confidence,
+            verdict,
         )
     })
 }

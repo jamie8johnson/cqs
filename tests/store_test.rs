@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 29); // v29: file_registry + notes sentiment CHECK
+    assert_eq!(stats.schema_version, 31); // v31: file_registry.parse_failed_parser_version drift loop-breaker
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -753,7 +753,7 @@ fn test_normalize_for_fts_unicode() {
 
 #[test]
 fn test_get_call_graph() {
-    use cqs::parser::{CallSite, FunctionCalls};
+    use cqs::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
     let store = TestStore::new();
 
@@ -776,10 +776,12 @@ fn test_get_call_graph() {
                 CallSite {
                     callee_name: "func_b".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "func_c".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         },
@@ -789,6 +791,7 @@ fn test_get_call_graph() {
             calls: vec![CallSite {
                 callee_name: "func_c".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -1174,7 +1177,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 29);
+    assert_eq!(stats.schema_version, 31);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 

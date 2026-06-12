@@ -66,6 +66,7 @@ fn insert_chunk_and_call(
         calls: vec![cqs::parser::CallSite {
             callee_name: callee.to_string(),
             line_number: 3,
+            kind: cqs::parser::CallEdgeKind::Call,
         }],
     }];
     store.upsert_function_calls(&PathBuf::from(file), &calls)?;

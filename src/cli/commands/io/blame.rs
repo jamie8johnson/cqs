@@ -497,6 +497,7 @@ mod tests {
                 name: "cmd_explain".to_string(),
                 file: PathBuf::from("src/cli/commands/explain.rs"),
                 line: 52,
+                edge_kind: cqs::parser::CallEdgeKind::Call,
             }],
         };
 

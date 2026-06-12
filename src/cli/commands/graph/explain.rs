@@ -62,10 +62,12 @@ pub(crate) fn build_explain_data<Mode>(
         }
     };
 
-    // Get callees — scope to the resolved chunk's file to avoid ambiguity
+    // Get callees — scope to the resolved chunk's file to avoid ambiguity.
+    // Explain's surface doesn't carry edge_kind, so project CalleeInfo to the
+    // (name, line) tuple shape its CalleeEntry expects.
     let chunk_file = chunk.file.to_string_lossy();
     let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
-        Ok(c) => c,
+        Ok(c) => c.into_iter().map(|ci| (ci.name, ci.line)).collect(),
         Err(e) => {
             tracing::warn!(error = %e, name = chunk.name, "Failed to get callees in explain");
             Vec::new()
@@ -232,6 +234,7 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
             file: rel_display(&c.file, root),
             line_start: c.line,
             project: String::new(),
+            edge_kind: super::callers::edge_kind_field(c.edge_kind),
         })
         .collect();
 
@@ -242,6 +245,9 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
             name: name.clone(),
             line_start: *line,
             project: String::new(),
+            // Explain's callees are projected to (name, line) tuples upstream;
+            // edge_kind is not carried, so default to the omitted `call`.
+            edge_kind: String::new(),
         })
         .collect();
 
@@ -504,11 +510,13 @@ mod output_tests {
                 file: "src/a.rs".into(),
                 line_start: 42,
                 project: String::new(),
+                edge_kind: String::new(),
             }],
             callees: vec![CalleeEntry {
                 name: "callee_b".into(),
                 line_start: 3,
                 project: String::new(),
+                edge_kind: String::new(),
             }],
             similar: vec![SimilarEntry {
                 name: "baz".into(),
@@ -557,6 +565,7 @@ mod output_tests {
                 file: "src/a.rs".into(),
                 line_start: 5,
                 project: String::new(),
+                edge_kind: String::new(),
             }],
             callees: vec![],
             similar: vec![],

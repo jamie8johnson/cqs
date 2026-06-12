@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use sqlx::Row;
 
 use crate::store::helpers::{
-    clamp_line_number, CallGraph, CallerInfo, CallerWithContext, StoreError,
+    clamp_line_number, CallGraph, CalleeInfo, CallerInfo, CallerWithContext, StoreError,
 };
 use crate::store::Store;
 
@@ -16,22 +16,34 @@ impl<Mode> Store<Mode> {
         tracing::debug!(callee_name, "querying callers from full call graph");
 
         self.rt.block_on(async {
-            let rows: Vec<(String, String, i64)> = sqlx::query_as(
-                "SELECT DISTINCT file, caller_name, caller_line
+            // Collapse duplicate (file, caller, line) edges to a single row,
+            // keeping the most-trusted kind. `MIN(rank_case)` over the explicit
+            // trust rank (call < serde < macro < fn-pointer < doc-reference)
+            // replaces the old lexical `MIN(edge_kind)` — alphabetical ordering
+            // was a coincidence and `doc_reference` ('d') breaks it. SQLite's
+            // bare-column rule lets the sibling `edge_kind` take its value from
+            // the same min-rank row, so we read the kind and discard the rank.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
+                "SELECT file, caller_name, caller_line, edge_kind, MIN({rank_case})
                  FROM function_calls
                  WHERE callee_name = ?1
-                 ORDER BY file, caller_line",
-            )
-            .bind(callee_name)
-            .fetch_all(&self.pool)
-            .await?;
+                 GROUP BY file, caller_name, caller_line
+                 ORDER BY file, caller_line"
+            );
+            let rows: Vec<(String, String, i64, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(callee_name)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             let callers: Vec<CallerInfo> = rows
                 .into_iter()
-                .map(|(file, name, line)| CallerInfo {
+                .map(|(file, name, line, kind, _rank)| CallerInfo {
                     file: PathBuf::from(file),
                     name,
                     line: clamp_line_number(line),
+                    edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
                 })
                 .collect();
 
@@ -47,23 +59,34 @@ impl<Mode> Store<Mode> {
         &self,
         caller_name: &str,
         file: Option<&str>,
-    ) -> Result<Vec<(String, u32)>, StoreError> {
+    ) -> Result<Vec<CalleeInfo>, StoreError> {
         let _span = tracing::debug_span!("get_callees_full", function = %caller_name).entered();
         self.rt.block_on(async {
-            let rows: Vec<(String, i64)> = sqlx::query_as(
-                "SELECT DISTINCT callee_name, call_line
+            // MIN over the explicit trust rank per (callee, line) — same
+            // most-trusted-wins collapse as get_callers_full, replacing the old
+            // lexical `MIN(edge_kind)` that `doc_reference` would break.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
+                "SELECT callee_name, call_line, edge_kind, MIN({rank_case})
                  FROM function_calls
                  WHERE caller_name = ?1 AND (?2 IS NULL OR file = ?2)
-                 ORDER BY call_line",
-            )
-            .bind(caller_name)
-            .bind(file)
-            .fetch_all(&self.pool)
-            .await?;
+                 GROUP BY callee_name, call_line
+                 ORDER BY call_line"
+            );
+            let rows: Vec<(String, i64, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(caller_name)
+                    .bind(file)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             Ok(rows
                 .into_iter()
-                .map(|(name, line)| (name, clamp_line_number(line)))
+                .map(|(name, line, kind, _rank)| CalleeInfo {
+                    name,
+                    line: clamp_line_number(line),
+                    edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
+                })
                 .collect())
         })
     }
@@ -154,8 +177,8 @@ impl<Mode> Store<Mode> {
         let _span =
             tracing::debug_span!("get_callers_with_context", function = %callee_name).entered();
         self.rt.block_on(async {
-            let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-                "SELECT file, caller_name, caller_line, call_line
+            let rows: Vec<(String, String, i64, i64, String)> = sqlx::query_as(
+                "SELECT file, caller_name, caller_line, call_line, edge_kind
                  FROM function_calls
                  WHERE callee_name = ?1
                  ORDER BY file, call_line",
@@ -166,12 +189,15 @@ impl<Mode> Store<Mode> {
 
             Ok(rows
                 .into_iter()
-                .map(|(file, name, caller_line, call_line)| CallerWithContext {
-                    file: PathBuf::from(file),
-                    name,
-                    line: clamp_line_number(caller_line),
-                    call_line: clamp_line_number(call_line),
-                })
+                .map(
+                    |(file, name, caller_line, call_line, kind)| CallerWithContext {
+                        file: PathBuf::from(file),
+                        name,
+                        line: clamp_line_number(caller_line),
+                        call_line: clamp_line_number(call_line),
+                        edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
+                    },
+                )
                 .collect())
         })
     }
@@ -203,7 +229,7 @@ impl<Mode> Store<Mode> {
             for batch in callee_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT callee_name, file, caller_name, caller_line, call_line
+                    "SELECT callee_name, file, caller_name, caller_line, call_line, edge_kind
                      FROM function_calls
                      WHERE callee_name IN ({})
                      ORDER BY callee_name, file, call_line",
@@ -221,6 +247,9 @@ impl<Mode> Store<Mode> {
                         name: row.get(2),
                         line: clamp_line_number(row.get::<i64, _>(3)),
                         call_line: clamp_line_number(row.get::<i64, _>(4)),
+                        edge_kind: crate::parser::CallEdgeKind::from_str_or_default(
+                            &row.get::<String, _>(5),
+                        ),
                     };
                     result.entry(callee).or_default().push(caller);
                 }
@@ -253,14 +282,19 @@ impl<Mode> Store<Mode> {
             // on large name sets.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
+            // MIN over the explicit trust rank, with `edge_kind` taking its
+            // value from the same min-rank row (SQLite bare-column rule). Same
+            // most-trusted-wins collapse as `get_callers_full`.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             for batch in callee_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT DISTINCT callee_name, file, caller_name, caller_line
+                    "SELECT callee_name, file, caller_name, caller_line, edge_kind, MIN({})
                      FROM function_calls
                      WHERE callee_name IN ({})
+                     GROUP BY callee_name, file, caller_name, caller_line
                      ORDER BY callee_name, file, caller_line",
-                    placeholders
+                    rank_case, placeholders
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
@@ -273,6 +307,9 @@ impl<Mode> Store<Mode> {
                         file: PathBuf::from(row.get::<String, _>(1)),
                         name: row.get(2),
                         line: clamp_line_number(row.get::<i64, _>(3)),
+                        edge_kind: crate::parser::CallEdgeKind::from_str_or_default(
+                            &row.get::<String, _>(4),
+                        ),
                     };
                     result.entry(callee).or_default().push(caller);
                 }

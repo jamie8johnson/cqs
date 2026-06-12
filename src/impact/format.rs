@@ -207,6 +207,7 @@ mod tests {
                 line: 10,
                 call_line: 15,
                 snippet: Some("target_fn()".to_string()),
+                edge_kind: crate::parser::CallEdgeKind::Call,
             }],
             tests: vec![TestInfo {
                 name: "test_target".to_string(),
@@ -297,6 +298,7 @@ mod tests {
                 line: 20,
                 call_line: 25,
                 snippet: None,
+                edge_kind: crate::parser::CallEdgeKind::Call,
             }],
             all_tests: vec![DiffTestInfo {
                 name: "test_changed".to_string(),

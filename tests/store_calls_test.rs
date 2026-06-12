@@ -5,7 +5,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::CallSite;
+use cqs::parser::{CallEdgeKind, CallSite};
 
 // ===== upsert_calls tests =====
 
@@ -24,10 +24,12 @@ fn test_upsert_calls_batch_insert() {
         CallSite {
             callee_name: "foo".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "bar".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls).unwrap();
@@ -52,6 +54,7 @@ fn test_upsert_calls_replace() {
     let calls1 = vec![CallSite {
         callee_name: "foo".to_string(),
         line_number: 1,
+        kind: CallEdgeKind::Call,
     }];
     store.upsert_calls(&chunk.id, &calls1).unwrap();
 
@@ -64,10 +67,12 @@ fn test_upsert_calls_replace() {
         CallSite {
             callee_name: "bar".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "baz".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls2).unwrap();
@@ -93,6 +98,7 @@ fn test_upsert_calls_empty() {
     let calls = vec![CallSite {
         callee_name: "foo".to_string(),
         line_number: 1,
+        kind: CallEdgeKind::Call,
     }];
     store.upsert_calls(&chunk.id, &calls).unwrap();
 
@@ -122,6 +128,7 @@ fn test_get_callers_full_found() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 5,
+                kind: CallEdgeKind::Call,
             }],
         },
         FunctionCalls {
@@ -130,6 +137,7 @@ fn test_get_callers_full_found() {
             calls: vec![CallSite {
                 callee_name: "target".to_string(),
                 line_number: 15,
+                kind: CallEdgeKind::Call,
             }],
         },
     ];
@@ -273,14 +281,17 @@ fn test_get_callees_found() {
         CallSite {
             callee_name: "a".to_string(),
             line_number: 1,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "b".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         },
         CallSite {
             callee_name: "c".to_string(),
             line_number: 3,
+            kind: CallEdgeKind::Call,
         },
     ];
     store.upsert_calls(&chunk.id, &calls).unwrap();
@@ -334,10 +345,12 @@ fn test_call_stats_populated() {
                 CallSite {
                     callee_name: "foo".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "bar".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         )
@@ -351,10 +364,12 @@ fn test_call_stats_populated() {
                 CallSite {
                     callee_name: "foo".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
                 CallSite {
                     callee_name: "baz".to_string(),
                     line_number: 1,
+                    kind: CallEdgeKind::Call,
                 },
             ],
         )
@@ -386,7 +401,7 @@ fn count_function_calls_for_file(store: &cqs::store::Store, file: &str, callee: 
 
 #[test]
 fn delete_by_origin_purges_function_calls() {
-    use cqs::parser::{CallSite, FunctionCalls};
+    use cqs::parser::{CallEdgeKind, CallSite, FunctionCalls};
 
     let store = TestStore::new();
 
@@ -408,6 +423,7 @@ fn delete_by_origin_purges_function_calls() {
                 calls: vec![CallSite {
                     callee_name: "delete_by_origin_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -471,6 +487,7 @@ fn prune_missing_purges_function_calls_for_removed_files() {
                 calls: vec![CallSite {
                     callee_name: "prune_keeper_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -484,6 +501,7 @@ fn prune_missing_purges_function_calls_for_removed_files() {
                 calls: vec![CallSite {
                     callee_name: "prune_victim_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -556,6 +574,7 @@ fn delete_phantom_chunks_does_not_touch_function_calls() {
                 calls: vec![CallSite {
                     callee_name: "phantom_target_unique".to_string(),
                     line_number: 2,
+                    kind: CallEdgeKind::Call,
                 }],
             }],
         )
@@ -594,6 +613,7 @@ fn test_get_callers_with_context_returns_call_line() {
         calls: vec![CallSite {
             callee_name: "target".to_string(),
             line_number: 25,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store
@@ -621,6 +641,7 @@ fn test_get_callers_full_batch_returns_per_name_results() {
         calls: vec![CallSite {
             callee_name: "real_target".to_string(),
             line_number: 2,
+            kind: CallEdgeKind::Call,
         }],
     }];
     store
@@ -636,4 +657,354 @@ fn test_get_callers_full_batch_returns_per_name_results() {
     // is intentional, not silent. The audit suggested the "empty Vec"
     // shape but that's a contract change for callers.
     assert!(!result.contains_key("missing"));
+}
+
+// ===== edge provenance (§1) =====
+
+/// Edge kind written at the source survives the function_calls round-trip and
+/// surfaces on the CallerInfo / CalleeInfo results.
+#[test]
+fn edge_kind_round_trips_through_function_calls() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("caller_fn", "fn caller_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/x.rs"),
+            &[FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![
+                    CallSite {
+                        callee_name: "syntactic_callee".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "macro_callee".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+    // Caller side: the macro callee's caller carries the heuristic kind.
+    let callers = store.get_callers_full("macro_callee").unwrap();
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].edge_kind, CallEdgeKind::MacroHeuristic);
+
+    let syn_callers = store.get_callers_full("syntactic_callee").unwrap();
+    assert_eq!(syn_callers[0].edge_kind, CallEdgeKind::Call);
+
+    // Callee side: get_callees_full carries the kind too.
+    let callees = store.get_callees_full("caller_fn", None).unwrap();
+    let macro_callee = callees.iter().find(|c| c.name == "macro_callee").unwrap();
+    assert_eq!(macro_callee.edge_kind, CallEdgeKind::MacroHeuristic);
+}
+
+/// A callee reached only by heuristic edges is reported by
+/// `find_low_confidence_live_names`; one with a syntactic (or serde) edge is
+/// not. A doc-reference edge is inert: it neither qualifies nor disqualifies a
+/// callee.
+/// A doc-reference edge is inert: it neither qualifies nor disqualifies.
+#[test]
+fn low_confidence_live_names_finds_heuristic_only_callees() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("caller_fn", "fn caller_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/x.rs"),
+            &[FunctionCalls {
+                name: "caller_fn".to_string(),
+                line_start: 1,
+                calls: vec![
+                    // heuristic-only callee
+                    CallSite {
+                        callee_name: "heuristic_only".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::FnPointer,
+                    },
+                    // has a syntactic edge → NOT low-confidence
+                    CallSite {
+                        callee_name: "has_syntactic".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "has_syntactic".to_string(),
+                        line_number: 4,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                    // A doc reference + a macro edge → still low-confidence
+                    // (the doc edge is inert, does not disqualify).
+                    CallSite {
+                        callee_name: "doc_plus_macro".to_string(),
+                        line_number: 5,
+                        kind: CallEdgeKind::DocReference,
+                    },
+                    CallSite {
+                        callee_name: "doc_plus_macro".to_string(),
+                        line_number: 6,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                    // A serde callback is trusted → NOT low-confidence even with
+                    // a macro edge present.
+                    CallSite {
+                        callee_name: "serde_cb".to_string(),
+                        line_number: 7,
+                        kind: CallEdgeKind::SerdeCallback,
+                    },
+                    CallSite {
+                        callee_name: "serde_cb".to_string(),
+                        line_number: 8,
+                        kind: CallEdgeKind::MacroHeuristic,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+    let names = store.find_low_confidence_live_names().unwrap();
+    assert!(
+        names.contains_key("heuristic_only"),
+        "heuristic-only callee must be low-confidence-live: {names:?}"
+    );
+    assert!(
+        !names.contains_key("has_syntactic"),
+        "a callee with even one syntactic edge is not low-confidence-live: {names:?}"
+    );
+    assert!(
+        names.contains_key("doc_plus_macro"),
+        "a doc reference must not disqualify a heuristic-only callee (F5): {names:?}"
+    );
+    assert!(
+        !names.contains_key("serde_cb"),
+        "a serde callback is trusted, so it is not low-confidence-live: {names:?}"
+    );
+    // The reason carries per-kind counts.
+    let info = &names["heuristic_only"];
+    assert_eq!(info.total, 1);
+    assert_eq!(info.kind_counts, vec![("fn_pointer".to_string(), 1)]);
+}
+
+/// Seam-audit Finding 1 regression. A function `cb` whose ONLY caller edge is a
+/// macro-shape heuristic must NOT be reported by `find_dead_code` (the strict
+/// zero-edge contract that `health`/`ci`/`suggest` consume) — it has an edge, so
+/// it is not dead. It MUST instead surface in
+/// `find_low_confidence_live_functions`, the additive `cqs dead`-only overlay
+/// that `dead_core` relabels `low-confidence-live`. The two populations are
+/// disjoint. Adding a real syntactic caller removes `cb` from both sets.
+///
+/// Fails before the fix: the dead-candidate query gated on absence of a TRUSTED
+/// edge (not absence of ALL edges), so `cb` leaked into `find_dead_code` and the
+/// three non-relabelling consumers reported live code as dead.
+#[test]
+fn heuristic_only_callee_is_low_conf_live_not_dead() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    // Define `cb` as a function chunk. Unique id/origin so it isn't a
+    // windowed/parented chunk.
+    let mut cb = test_chunk("cb", "fn cb() {}");
+    cb.id = "src/app.rs:10:cb".to_string();
+    cb.file = std::path::PathBuf::from("src/app.rs");
+    store
+        .upsert_chunk(&cb, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    // A macro-shape-only caller edge to `cb` (no trusted edge).
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/caller.rs"),
+            &[FunctionCalls {
+                name: "some_macro_site".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "cb".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::MacroHeuristic,
+                }],
+            }],
+        )
+        .unwrap();
+
+    // find_dead_code (strict zero-edge): cb has an edge → NOT reported dead.
+    // This is the failing-before assertion: health/ci/suggest call this method
+    // directly and must never see cb.
+    let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+    let in_dead = confident
+        .iter()
+        .chain(possibly_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        !in_dead,
+        "cb (macro-only caller) must NOT be in find_dead_code — it has an edge, \
+         so health/ci/suggest must not report it dead (Finding 1)"
+    );
+
+    // find_low_confidence_live_functions: cb surfaces here, the additive overlay.
+    let (lc_conf, lc_pub) = store.find_low_confidence_live_functions(true).unwrap();
+    let in_low_conf = lc_conf
+        .iter()
+        .chain(lc_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        in_low_conf,
+        "cb (macro-only caller) must surface in find_low_confidence_live_functions \
+         so dead_core can relabel it low-confidence-live (Finding 1)"
+    );
+
+    // Add a real syntactic caller → cb now has a trusted edge: out of BOTH sets.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/caller2.rs"),
+            &[FunctionCalls {
+                name: "real_caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "cb".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+    let still_dead = confident
+        .iter()
+        .chain(possibly_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        !still_dead,
+        "cb with a syntactic caller is genuinely live, not dead"
+    );
+    let (lc_conf, lc_pub) = store.find_low_confidence_live_functions(true).unwrap();
+    let still_low_conf = lc_conf
+        .iter()
+        .chain(lc_pub.iter())
+        .any(|d| d.chunk.name == "cb");
+    assert!(
+        !still_low_conf,
+        "cb with a trusted edge has graduated out of the low-confidence-live overlay"
+    );
+}
+
+/// A doc-mention-only caller renders with edge_kind "doc_reference".
+#[test]
+fn doc_reference_edge_kind_round_trips() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("doc_caller", "fn doc_caller() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("README.md"),
+            &[FunctionCalls {
+                name: "doc_caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "mentioned_symbol".to_string(),
+                    line_number: 1,
+                    kind: CallEdgeKind::DocReference,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let callers = store.get_callers_full("mentioned_symbol").unwrap();
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].edge_kind, CallEdgeKind::DocReference);
+}
+
+/// The MIN-collapse keeps the MOST-TRUSTED kind by explicit trust rank, not
+/// lexical order. With all five kinds reaching the same callee from the same
+/// (file, caller, line), the collapsed caller reports `call` (rank 0). A
+/// separate group with only doc + serde reports `serde_callback` — proving the
+/// rank (serde=1 < doc=4) beats the lexical order (`doc_reference` < `serde`).
+#[test]
+fn min_collapse_uses_trust_rank_not_lexical() {
+    use cqs::parser::FunctionCalls;
+
+    let store = TestStore::new();
+    let chunk = test_chunk("multi", "fn multi() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(1))
+        .unwrap();
+
+    let all_kinds = [
+        CallEdgeKind::DocReference,
+        CallEdgeKind::FnPointer,
+        CallEdgeKind::MacroHeuristic,
+        CallEdgeKind::SerdeCallback,
+        CallEdgeKind::Call,
+    ];
+    // Group A: all five kinds at the SAME (file, caller, line) → collapse picks
+    // `call`.
+    let group_a: Vec<CallSite> = all_kinds
+        .iter()
+        .map(|&k| CallSite {
+            callee_name: "callee_a".to_string(),
+            line_number: 2,
+            kind: k,
+        })
+        .collect();
+    // Group B: doc + serde only, same (caller, line) → collapse picks serde
+    // (rank 1) even though "doc_reference" sorts before "serde_callback".
+    let group_b = vec![
+        CallSite {
+            callee_name: "callee_b".to_string(),
+            line_number: 2,
+            kind: CallEdgeKind::DocReference,
+        },
+        CallSite {
+            callee_name: "callee_b".to_string(),
+            line_number: 2,
+            kind: CallEdgeKind::SerdeCallback,
+        },
+    ];
+
+    store
+        .upsert_function_calls(
+            std::path::Path::new("src/x.rs"),
+            &[FunctionCalls {
+                name: "caller".to_string(),
+                line_start: 1,
+                calls: group_a.into_iter().chain(group_b).collect(),
+            }],
+        )
+        .unwrap();
+
+    let a = store.get_callers_full("callee_a").unwrap();
+    assert_eq!(a.len(), 1, "five edges at one site collapse to one row");
+    assert_eq!(
+        a[0].edge_kind,
+        CallEdgeKind::Call,
+        "collapse must keep the most-trusted kind (call)"
+    );
+
+    let b = store.get_callers_full("callee_b").unwrap();
+    assert_eq!(b.len(), 1);
+    assert_eq!(
+        b[0].edge_kind,
+        CallEdgeKind::SerdeCallback,
+        "serde (rank 1) beats doc_reference (rank 4) despite lexical order"
+    );
 }

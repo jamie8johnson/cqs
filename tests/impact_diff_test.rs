@@ -3,7 +3,7 @@
 mod common;
 
 use common::{mock_embedding, TestStore};
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
 use cqs::{analyze_diff_impact, map_hunks_to_functions, ChangedFunction};
 use cqs::{parse_unified_diff, DiffHunk};
 use std::path::{Path, PathBuf};
@@ -54,6 +54,7 @@ fn insert_calls(store: &TestStore, file: &str, calls: &[CallSpec]) {
                 .map(|(callee, cline)| CallSite {
                     callee_name: callee.to_string(),
                     line_number: *cline,
+                    kind: CallEdgeKind::Call,
                 })
                 .collect(),
         })
