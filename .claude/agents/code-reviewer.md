@@ -14,7 +14,7 @@ You review uncommitted changes for risk and correctness. Your output is a review
 ## Process
 
 1. Run `git diff --stat` to see what changed
-2. Run `cqs review --json` for diff-aware impact analysis + risk scoring (single command, fastest first signal)
+2. Run `cqs review --json` for diff-aware impact analysis + risk scoring (single command, fastest first signal). Default diffs unstaged changes; for committed branch work use `cqs review --base <ref>` (e.g. `--base main`) — don't fall back to raw git plumbing.
 3. Optionally run `cqs ci --json` for the fuller pipeline view (impact + risk + dead-code + gate). Use this when the diff is large or touches multiple modules.
 4. For each high-risk function (risk > 0.5), run `cqs test-map FUNCTION --json` to check coverage
 5. For any function with 0 test coverage, flag it

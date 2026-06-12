@@ -13,7 +13,7 @@ None — operates on the current git diff.
 
 ## Process
 
-1. Run `cqs review --json` via Bash (analyzes current diff)
+1. Run `cqs review --json` via Bash (analyzes current diff). Default covers unstaged changes; if the work is already committed on a branch, use `cqs review --base <ref>` (e.g. `--base main`) to diff against the base instead of raw git plumbing.
 2. If no diff, say "No changes to review" and stop
 3. Present results as a review checklist
 
