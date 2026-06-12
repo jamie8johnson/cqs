@@ -310,13 +310,24 @@ pub(super) fn parser_stage(
                                     .or_default()
                                     .extend(chunk_type_refs);
                             }
-                            if !function_calls.is_empty() {
-                                all_rels
-                                    .function_calls
-                                    .entry(rel_path.clone())
-                                    .or_default()
-                                    .extend(function_calls);
-                            }
+                            // Stash EVERY parsed file's call set, keyed on
+                            // "file was parsed" — empty sets included. This is
+                            // the parse-completion signal that drives the single
+                            // function_calls writer (`upsert_function_calls_for_files`
+                            // in store_stage), decoupled from chunk count. A file
+                            // that went has-calls → no-calls (or had only
+                            // oversize functions whose chunks were dropped) MUST
+                            // ride here so its old rows are DELETE-then-INSERT
+                            // replaced (empty → cleared; non-empty → refreshed).
+                            // Gating on non-empty here was the orphan-edge leak:
+                            // the chunk prune cannot — and must not — clean
+                            // function_calls (an oversize-function file is
+                            // zero-chunk but non-empty-calls).
+                            all_rels
+                                .function_calls
+                                .entry(rel_path.clone())
+                                .or_default()
+                                .extend(function_calls);
                         }
                         Err(e) => {
                             // Structured fields so a hot-path parse failure

@@ -337,6 +337,53 @@ pub(crate) fn cmd_doctor(
                     any_failed = true;
                 }
 
+                // Call-graph coherence: no `function_calls.file` may reference
+                // a file absent from BOTH `chunks` and `file_registry`. This is
+                // the standing mechanical check for the chunk/call-graph
+                // lifecycle decouple — `function_calls` is parse-driven, never
+                // gated on chunk count, so an oversize-function file (zero
+                // chunks, non-empty calls) is legitimately present and the
+                // `file_registry` shadow keeps it from being flagged. A non-empty
+                // result means a writer left orphaned edges (a delete path that
+                // failed to clear function_calls, or a parse-write referencing an
+                // unstamped file) — ghost `cqs callers` rows and false-DEAD
+                // verdicts. Reported but not auto-fixable (a `cqs index --force`
+                // re-derives the call graph from a clean parse).
+                match store.find_orphaned_function_calls() {
+                    Ok(orphans) if orphans.is_empty() => {
+                        out(json, &format!("  {} Call graph: coherent", "[✓]".green()));
+                        check_records.push(CheckRecord::ok(
+                            "index",
+                            "call_graph_coherence",
+                            "no orphaned function_calls".to_string(),
+                        ));
+                    }
+                    Ok(orphans) => {
+                        let sample: Vec<&str> =
+                            orphans.iter().take(5).map(|s| s.as_str()).collect();
+                        let msg = format!(
+                            "{} file(s) in function_calls absent from chunks+file_registry (e.g. {}); run `cqs index --force`",
+                            orphans.len(),
+                            sample.join(", ")
+                        );
+                        out(json, &format!("  {} Call graph: {}", "[!]".yellow(), msg));
+                        check_records.push(CheckRecord::warn("index", "call_graph_coherence", msg));
+                        any_failed = true;
+                    }
+                    Err(e) => {
+                        out(
+                            json,
+                            &format!("  {} Call graph coherence check failed: {}", "[✗]".red(), e),
+                        );
+                        check_records.push(CheckRecord::err(
+                            "index",
+                            "call_graph_coherence",
+                            e.to_string(),
+                        ));
+                        any_failed = true;
+                    }
+                }
+
                 // Check model mismatch between index and configured model
                 let stored = store.stored_model_name();
                 let configured = &model_config.name;
