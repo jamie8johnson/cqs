@@ -191,6 +191,77 @@ pub enum MainIndexLookup {
     },
 }
 
+/// Walk up from `start` to the nearest enclosing git repository or
+/// worktree root — the directory containing a `.git` entry, whether
+/// that entry is a *directory* (a regular checkout) or a *file* (a
+/// linked worktree, per `git worktree add`). This mirrors
+/// `git rev-parse --show-toplevel` semantics without shelling out.
+///
+/// Returns `None` when no `.git` is found within the depth cap (a tree
+/// with no VCS root, or a deeper layout than we walk). The returned
+/// path is canonicalized so callers can byte-compare it against
+/// [`crate::cli::config::find_project_root`] output (which is
+/// canonicalized via `dunce`).
+pub fn enclosing_git_root(start: &Path) -> Option<PathBuf> {
+    // Match `find_project_root`'s depth cap so the two walks agree on
+    // how far up they look — a guard that fires for a root the resolver
+    // would never have reached is a false positive.
+    const MAX_WALK_DEPTH: usize = 20;
+    let start = dunce::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let mut current: &Path = &start;
+    for _ in 0..MAX_WALK_DEPTH {
+        // `.git` may be a directory (regular repo) OR a file (linked
+        // worktree). `exists()` covers both; we don't care which here —
+        // either marks a VCS toplevel for boundary-crossing detection.
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+    None
+}
+
+/// Decide whether a WRITE command's resolved project root crossed a
+/// git-worktree (or Cargo-workspace) boundary *upward* relative to the
+/// invocation's own enclosing git root.
+///
+/// The hazard: from a worktree under a parent workspace,
+/// `find_project_root()` walks up past the worktree's own `.git` to the
+/// parent's `Cargo.toml [workspace]` (or, for an out-of-tree worktree,
+/// `resolve_index_dir` redirects to main's `.cqs/`). Reads are meant to
+/// see main's snapshot; writes silently mutating an index outside the
+/// current worktree defeat isolation.
+///
+/// Returns `Some(worktree_root)` when:
+///   1. CWD has an enclosing git root (a checkout or worktree), AND
+///   2. the resolved `project_root` differs from that enclosing root, AND
+///   3. the resolved root is an *ancestor* of the enclosing root
+///      (the walk crossed the boundary upward — the parent index case).
+///
+/// Returns `None` for the safe cases: a regular repo where CWD's git
+/// root equals the resolved root, or any layout where the resolved root
+/// is not an ancestor of CWD's git root (so no upward boundary crossing
+/// happened). On filesystem-canonicalization failure it returns `None`
+/// (fail-open: never block a write on a path-resolution quirk).
+pub fn parent_index_boundary_crossed(cwd: &Path, project_root: &Path) -> Option<PathBuf> {
+    let worktree_root = enclosing_git_root(cwd)?;
+    let project_root =
+        dunce::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    if worktree_root == project_root {
+        // Regular repo / non-worktree: resolver landed on the same root
+        // the invocation lives in. No boundary crossed.
+        return None;
+    }
+    // Upward crossing only: the resolved root must be a strict ancestor
+    // of the enclosing git root. A sibling or descendant resolution is
+    // not the parent-index hazard and stays silent.
+    if worktree_root.starts_with(&project_root) {
+        Some(worktree_root)
+    } else {
+        None
+    }
+}
+
 /// Read the worktree's name (the directory under
 /// `<main>/.git/worktrees/<name>/`) for `_meta.worktree_name` in
 /// JSON envelopes. Falls back to the worktree dir's basename when
@@ -487,5 +558,116 @@ mod tests {
         )
         .unwrap();
         assert_eq!(worktree_name(&wt_root).as_deref(), Some("hotfix-9"));
+    }
+
+    /// `enclosing_git_root` finds the nearest dir with a `.git` *directory*
+    /// (regular repo) walking up from a nested subdir.
+    #[test]
+    fn enclosing_git_root_finds_dir_marker_from_subdir() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let nested = repo.join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let canon_repo = dunce::canonicalize(&repo).unwrap();
+        assert_eq!(enclosing_git_root(&nested), Some(canon_repo));
+    }
+
+    /// `enclosing_git_root` also accepts a `.git` *file* (a linked
+    /// worktree), returning the worktree root rather than walking past it.
+    #[test]
+    fn enclosing_git_root_accepts_git_file_worktree() {
+        let dir = TempDir::new().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /somewhere/.git/worktrees/x\n").unwrap();
+
+        let canon_wt = dunce::canonicalize(&wt).unwrap();
+        assert_eq!(enclosing_git_root(&wt), Some(canon_wt));
+    }
+
+    /// No `.git` anywhere in the walk → `None` (no panic).
+    #[test]
+    fn enclosing_git_root_none_without_git() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(enclosing_git_root(&sub), None);
+    }
+
+    /// The worktree-under-workspace fixture: a worktree (`.git` *file*)
+    /// nested UNDER a parent workspace (`.git` *directory*). A write
+    /// resolving to the parent root crossed the boundary upward →
+    /// `Some(worktree_root)`.
+    #[test]
+    fn boundary_crossed_when_write_resolves_to_parent_of_worktree() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("workspace");
+        // Parent is a real repo with a `.git/` dir AND a `.cqs/` index.
+        std::fs::create_dir_all(parent.join(".git")).unwrap();
+        std::fs::create_dir_all(parent.join(crate::INDEX_DIR)).unwrap();
+        // Worktree nested under the parent, with a `.git` *file* and no
+        // `.cqs/` of its own — exactly the `.claude/worktrees/<agent>/` shape.
+        let wt = parent.join(".claude").join("worktrees").join("agent-x");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /abs/.git/worktrees/agent-x\n").unwrap();
+
+        let canon_parent = dunce::canonicalize(&parent).unwrap();
+        let canon_wt = dunce::canonicalize(&wt).unwrap();
+
+        // A write command resolved its project root to the PARENT (what
+        // `find_cargo_workspace_root` does). The guard must flag it.
+        let crossed = parent_index_boundary_crossed(&wt, &canon_parent);
+        assert_eq!(
+            crossed,
+            Some(canon_wt),
+            "writing to the parent workspace from a nested worktree must be flagged"
+        );
+    }
+
+    /// A regular repo where the write resolves to the SAME root the
+    /// invocation lives in → no boundary crossing, guard stays silent.
+    #[test]
+    fn boundary_not_crossed_for_regular_repo() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join(crate::INDEX_DIR)).unwrap();
+        let canon_repo = dunce::canonicalize(&repo).unwrap();
+
+        // cwd inside the repo, resolved root = the repo itself.
+        assert_eq!(parent_index_boundary_crossed(&repo, &canon_repo), None);
+        // From a subdir of the repo: still the same root, still no crossing.
+        let sub = repo.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(parent_index_boundary_crossed(&sub, &canon_repo), None);
+    }
+
+    /// A sibling/unrelated resolved root (not an ancestor of CWD's git
+    /// root) is not the parent-index hazard → `None`. Guards against a
+    /// guard that fires on any path mismatch.
+    #[test]
+    fn boundary_not_crossed_for_non_ancestor_root() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let other = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&other).unwrap();
+        let canon_other = dunce::canonicalize(&other).unwrap();
+
+        // CWD's git root is `repo`, but the resolved root is a sibling
+        // dir — not an ancestor, so no upward crossing.
+        assert_eq!(parent_index_boundary_crossed(&repo, &canon_other), None);
+    }
+
+    /// CWD with no enclosing git root at all → `None` (the guard can't
+    /// detect a worktree boundary, so it stays out of the way).
+    #[test]
+    fn boundary_not_crossed_without_enclosing_git() {
+        let dir = TempDir::new().unwrap();
+        let loose = dir.path().join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert_eq!(parent_index_boundary_crossed(&loose, dir.path()), None);
     }
 }
