@@ -393,12 +393,21 @@ fn multi_def_candidates(store: &Store<ReadOnly>, name: &str) -> Result<Vec<DefCa
 /// unproven receivers flagged `ambiguous`. The count of excluded callers is
 /// surfaced (`excluded_other_owner`) so the narrowing is visible.
 ///
-/// Existence check: when `qual_type` does NOT define `method` — a typo
-/// (`Banana::search`) or a `module::function` path mistaken for a type — the
-/// query resolves no definition. Rather than silently returning bare-method
-/// callers under the bogus qualifier, the output is empty with the real
-/// `Type::method` candidates for that method name listed, so the user sees the
-/// truth.
+/// Local-definition gate and the unknown-qualifier fallback compose carefully
+/// (see the order below): the exact-qualified arm must run even when
+/// `qual_type` has no local definition, because external / module qualifiers
+/// (`std::fs::read_to_string`, `serde_json::to_value`) exist ONLY as
+/// exact-qualified doc edges with no local type to attribute against.
+///
+/// 1. When `qual_type` has a local def → run the full attributed query
+///    (bare + exact arms), with the other-owner exclusion set.
+/// 2. When it does not → run the EXACT-ONLY query (no bare arm, so local
+///    same-named call sites aren't mis-attributed under a fabricated type).
+///    If that returns any rows, they are real doc edges naming this receiver —
+///    surface them.
+/// 3. Only when BOTH the local def is absent AND the exact arm is empty is it a
+///    genuine typo (`Banana::search`) or a misused path: return empty with the
+///    real `Type::method` candidates listed so the user sees the truth.
 fn callers_qualified(
     store: &Store<ReadOnly>,
     qual_type: &str,
@@ -406,14 +415,34 @@ fn callers_qualified(
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
 ) -> Result<CallersCoreOutput> {
-    // Single scan of the method's definitions feeds both the existence check
-    // and the other-owner-types exclusion set.
+    // Single scan of the method's definitions feeds the local-def gate and the
+    // other-owner-types exclusion set.
     let defs = store
         .count_method_defs_by_type(method)
         .context("Failed to enumerate method definitions")?;
     let qual_defines = defs.iter().any(|(ty, _)| ty.as_deref() == Some(qual_type));
-    if !qual_defines {
-        // Unknown qualifier: empty result + the real owners as candidates.
+
+    // The bare-method arm runs only when the qualifier has a local def; the
+    // exact-qualified arm always runs (see `get_callers_attributed`).
+    let other_owner_types: std::collections::HashSet<String> = if qual_defines {
+        defs.iter()
+            .filter_map(|(ty, _)| ty.clone())
+            .filter(|t| t != qual_type)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let (mut attributed, excluded) = store
+        .get_callers_attributed(method, qual_type, &other_owner_types, qual_defines)
+        .context("Failed to load attributed callers")?;
+    if let Some(want) = edge_kind {
+        attributed.retain(|a| a.caller.edge_kind == want);
+    }
+
+    // Genuine unknown qualifier: no local def AND no exact-qualified edges.
+    // Surface the real owners as candidates instead of an empty result that
+    // looks like "no callers".
+    if !qual_defines && attributed.is_empty() {
         return Ok(CallersCoreOutput::Callers(CallersOutput {
             name: format!("{qual_type}::{method}"),
             callers: Vec::new(),
@@ -423,17 +452,7 @@ fn callers_qualified(
             excluded_other_owner: 0,
         }));
     }
-    let other_owner_types: std::collections::HashSet<String> = defs
-        .iter()
-        .filter_map(|(ty, _)| ty.clone())
-        .filter(|t| t != qual_type)
-        .collect();
-    let (mut attributed, excluded) = store
-        .get_callers_attributed(method, qual_type, &other_owner_types)
-        .context("Failed to load attributed callers")?;
-    if let Some(want) = edge_kind {
-        attributed.retain(|a| a.caller.edge_kind == want);
-    }
+
     let total = attributed.len();
     attributed.truncate(limit);
     let entries: Vec<CallerEntry> = attributed

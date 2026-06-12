@@ -1208,8 +1208,9 @@ fn attributed_callers_pick_right_type() {
     // other_owner_types for Store::search = {Index} (Index also owns `search`).
     let mut others = std::collections::HashSet::new();
     others.insert("Index".to_string());
+    // Store has a local def → bare arm participates.
     let (attributed, excluded) = store
-        .get_callers_attributed("search", "Store", &others)
+        .get_callers_attributed("search", "Store", &others, true)
         .unwrap();
     let names: Vec<_> = attributed
         .iter()
@@ -1286,8 +1287,9 @@ fn attributed_callers_include_exact_qualified_doc_edge() {
         .unwrap();
 
     let others = std::collections::HashSet::new();
+    // Store::open has a local def → bare arm participates.
     let (attributed, _excluded) = store
-        .get_callers_attributed("open", "Store", &others)
+        .get_callers_attributed("open", "Store", &others, true)
         .unwrap();
     let names: Vec<&str> = attributed.iter().map(|a| a.caller.name.as_str()).collect();
     // Both the bare code self-call and the exact-qualified doc edge are present.
@@ -1306,6 +1308,70 @@ fn attributed_callers_include_exact_qualified_doc_edge() {
         .unwrap();
     assert_eq!(doc.attribution, CallerAttribution::SelfType);
     assert_eq!(doc.caller.edge_kind, CallEdgeKind::DocReference);
+}
+
+/// Exact-only path (`include_bare = false`): an external / module qualifier
+/// like `std::fs::read_to_string` has no local def, so the bare arm is gated
+/// off. Its doc edges (callee_name "std::fs::read_to_string") must still be
+/// reached, while a LOCAL bare `read_to_string` call site must NOT be
+/// mis-attributed under the fabricated `std::fs` type.
+#[test]
+fn attributed_callers_exact_only_skips_bare_arm() {
+    let store = TestStore::new();
+    // A local caller making a BARE `read_to_string()` call — must be ignored on
+    // the exact-only path (no `std::fs` type to attribute it to).
+    store
+        .upsert_chunk(
+            &method_chunk("local.rs", "local_reader", 10, Some("Helper")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_function_calls(
+            std::path::Path::new("local.rs"),
+            &[FunctionCalls {
+                name: "local_reader".to_string(),
+                line_start: 10,
+                calls: vec![CallSite {
+                    callee_name: "read_to_string".to_string(),
+                    line_number: 11,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+    // A doc reference to `std::fs::read_to_string()` — stored verbatim.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("docs.md"),
+            &[FunctionCalls {
+                name: "IoNotes".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "std::fs::read_to_string".to_string(),
+                    line_number: 3,
+                    kind: CallEdgeKind::DocReference,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let others = std::collections::HashSet::new();
+    // include_bare = false: external qualifier, no local def.
+    let (attributed, excluded) = store
+        .get_callers_attributed("read_to_string", "std::fs", &others, false)
+        .unwrap();
+    let names: Vec<&str> = attributed.iter().map(|a| a.caller.name.as_str()).collect();
+    assert!(
+        names.contains(&"IoNotes"),
+        "exact-qualified doc edge must be reached on the exact-only path: {names:?}"
+    );
+    assert!(
+        !names.contains(&"local_reader"),
+        "a local bare read_to_string call must NOT be attributed under std::fs: {names:?}"
+    );
+    assert_eq!(excluded, 0);
 }
 
 /// `count_method_defs_by_type` groups a name's callable definitions by

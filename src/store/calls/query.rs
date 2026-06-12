@@ -131,13 +131,15 @@ impl<Mode> Store<Mode> {
     /// different owning type (`other_owner_types`).
     ///
     /// Resolution is read-side from `chunks.parent_type_name` — no new
-    /// columns, no parser changes. Two edge populations are merged:
+    /// columns, no parser changes. Up to two edge populations are matched,
+    /// gated by `include_bare`:
     ///
-    /// 1. **Bare-method edges** (`callee_name = method`): code call sites
-    ///    extracted with the receiver stripped (`store.search()` records
-    ///    callee `search`). The caller's own enclosing type is looked up by
-    ///    joining `function_calls` back to `chunks` on `(file=origin,
-    ///    caller_name=name, caller_line=line_start)`, then attributed:
+    /// 1. **Bare-method edges** (`callee_name = method`, only when
+    ///    `include_bare` is true): code call sites extracted with the receiver
+    ///    stripped (`store.search()` records callee `search`). The caller's own
+    ///    enclosing type is looked up by joining `function_calls` back to
+    ///    `chunks` on `(file=origin, caller_name=name, caller_line=line_start)`,
+    ///    then attributed:
     ///    - enclosing type == `qualifier_type` → self-call,
     ///      [`CallerAttribution::SelfType`];
     ///    - enclosing type is a *different* type that itself defines a
@@ -150,46 +152,63 @@ impl<Mode> Store<Mode> {
     ///    - no enclosing type / enclosing type without a same-named method /
     ///      unresolved chunk → [`CallerAttribution::Ambiguous`] (over-report
     ///      with a flag, never a silent drop).
-    /// 2. **Exact-qualified edges** (`callee_name = 'Type::method'`): doc
-    ///    references store the full backticked string verbatim (markdown
-    ///    `` `Store::open()` `` records callee `Store::open`). These name the
-    ///    receiver explicitly, so they are unambiguously this method's edges —
-    ///    included at [`CallerAttribution::SelfType`]. Without this merge a
-    ///    `Type::method` query would never reach them (the bare-method query
+    /// 2. **Exact-qualified edges** (`callee_name = 'Type::method'`, always
+    ///    matched): doc references store the full backticked string verbatim
+    ///    (markdown `` `Store::open()` `` records callee `Store::open`). These
+    ///    name the receiver explicitly, so they are unambiguously this method's
+    ///    edges — included at [`CallerAttribution::SelfType`]. Without this arm
+    ///    a `Type::method` query would never reach them (the bare-method query
     ///    can't match a qualified callee), making them unreachable.
     ///
-    /// Rows are de-duplicated by `(file, caller_name, caller_line)` so a
-    /// caller that appears in both populations is reported once (the exact
-    /// edge, being proven, wins).
+    /// `include_bare` is set false when `qualifier_type` has no local
+    /// definition of `method` — an external / module qualifier like
+    /// `std::fs::read_to_string`, whose only edges are the exact-qualified doc
+    /// references. Running the bare arm there would mis-attribute every local
+    /// `read_to_string` call site as an ambiguous caller under a fabricated
+    /// `std::fs` type, so the bare arm is gated off and only the exact arm runs.
+    ///
+    /// The GROUP BY on `(file, caller_name, caller_line)` collapses a co-located
+    /// bare code edge and exact doc edge to one row (the most-trusted kind), so
+    /// a caller present in both populations is reported once.
     ///
     /// `other_owner_types` is the set of enclosing types (other than
     /// `qualifier_type`) that define a same-named method, derived once by the
     /// caller from [`count_method_defs_by_type`] so this method stays few
-    /// scans.
+    /// scans. It is unused (and typically empty) when `include_bare` is false.
     pub fn get_callers_attributed(
         &self,
         method: &str,
         qualifier_type: &str,
         other_owner_types: &std::collections::HashSet<String>,
+        include_bare: bool,
     ) -> Result<(Vec<crate::store::AttributedCaller>, usize), StoreError> {
         use crate::store::{AttributedCaller, CallerAttribution, CallerInfo};
         let _span = tracing::debug_span!(
             "get_callers_attributed",
             method = %method,
-            qualifier_type = %qualifier_type
+            qualifier_type = %qualifier_type,
+            include_bare
         )
         .entered();
         let qualified = format!("{qualifier_type}::{method}");
         self.rt.block_on(async {
             let rank_case = crate::parser::CallEdgeKind::rank_case_sql("fc.edge_kind");
-            // Both populations in one scan: `callee_name = bare` (code sites,
-            // attributed via the LEFT JOIN to the caller's enclosing type) OR
-            // `callee_name = 'Type::method'` (exact-qualified doc edges, always
-            // this method's). A NULL `parent_type_name` either means the caller
-            // chunk didn't resolve (>100-line skip) or the row is an exact edge.
-            // LEFT JOIN keeps unresolved callers rather than dropping them.
-            // Trust rank leads the collapse + ordering exactly as
-            // `get_callers_full`.
+            // The exact-qualified arm always runs. The bare-method arm is gated
+            // by `include_bare` — off for external/module qualifiers with no
+            // local def, so their local same-named call sites aren't
+            // mis-attributed. A NULL `parent_type_name` means the caller chunk
+            // didn't resolve (>100-line skip) or the row is an exact edge. LEFT
+            // JOIN keeps unresolved callers rather than dropping them. Trust rank
+            // leads the collapse + ordering exactly as `get_callers_full`.
+            //
+            // `?1` binds the bare name only when `include_bare`; otherwise it is
+            // bound to the exact-qualified string too, so the predicate reduces
+            // to the exact arm (no extra placeholder shape to manage).
+            let bare_bind = if include_bare {
+                method
+            } else {
+                qualified.as_str()
+            };
             let sql = format!(
                 "SELECT fc.file, fc.caller_name, fc.caller_line, fc.edge_kind,
                         MIN({rank_case}) AS trust_rank, c.parent_type_name,
@@ -204,7 +223,7 @@ impl<Mode> Store<Mode> {
                  ORDER BY trust_rank, fc.file, fc.caller_line"
             );
             let rows: Vec<AttributedCallerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-                .bind(method)
+                .bind(bare_bind)
                 .bind(&qualified)
                 .fetch_all(&self.pool)
                 .await?;

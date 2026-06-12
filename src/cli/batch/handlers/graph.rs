@@ -1854,6 +1854,107 @@ mod tests {
         );
     }
 
+    /// An external / module qualifier (`std::fs::read_to_string`) has NO local
+    /// definition, so the local-def gate would have short-circuited to the
+    /// candidates hint — but its only edges are exact-qualified doc references,
+    /// which the exact-only arm reaches. The result lists those doc edges, not a
+    /// did-you-mean. A co-located LOCAL bare `read_to_string` call must NOT be
+    /// mis-attributed under the fabricated `std::fs` type. CLI==daemon agree.
+    #[test]
+    fn callers_external_qualifier_reaches_doc_only_edges_and_parity() {
+        use crate::cli::commands::{callers_core, CallersCoreArgs};
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            // A local caller making a BARE read_to_string() call. No std::fs
+            // type exists — it must not be attributed under the qualifier.
+            store
+                .upsert_chunks_batch(
+                    &[(
+                        type_method_chunk("local.rs", "local_reader", 10, Some("Helper")),
+                        embedding.clone(),
+                    )],
+                    Some(0),
+                )
+                .expect("upsert chunks");
+            store
+                .upsert_function_calls(
+                    Path::new("local.rs"),
+                    &[FunctionCalls {
+                        name: "local_reader".to_string(),
+                        line_start: 10,
+                        calls: vec![CallSite {
+                            callee_name: "read_to_string".to_string(),
+                            line_number: 11,
+                            kind: CallEdgeKind::Call,
+                        }],
+                    }],
+                )
+                .expect("upsert bare code edge");
+            store
+                .upsert_function_calls(
+                    Path::new("docs.md"),
+                    &[FunctionCalls {
+                        name: "IoNotes".to_string(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "std::fs::read_to_string".to_string(),
+                            line_number: 3,
+                            kind: CallEdgeKind::DocReference,
+                        }],
+                    }],
+                )
+                .expect("upsert doc edge");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        let args = CallersArgs {
+            name: "std::fs::read_to_string".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        let names: Vec<&str> = daemon["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"IoNotes"),
+            "doc-only external qualifier edge reachable: {daemon}"
+        );
+        assert!(
+            !names.contains(&"local_reader"),
+            "local bare call must not be attributed under std::fs: {daemon}"
+        );
+        // Not the did-you-mean path: real edges were found, so no candidates.
+        assert!(
+            daemon.get("candidates").is_none(),
+            "doc-only hit is not the unknown-qualifier path: {daemon}"
+        );
+
+        let core_args = CallersCoreArgs {
+            name: "std::fs::read_to_string".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &core_args).expect("callers_core"))
+                .unwrap();
+        assert_eq!(
+            daemon, core,
+            "CLI==daemon parity for external-qualifier doc edge"
+        );
+    }
+
     /// A bare name with more than one definition lists the `Type::method`
     /// candidate forms + per-type counts, and CLI==daemon agree.
     #[test]
