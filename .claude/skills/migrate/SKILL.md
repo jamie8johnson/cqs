@@ -85,7 +85,8 @@ rm -rf .cq.backup/
 
 ## Notes
 
-- `.cqs/` is gitignored — rebuilding only costs time, not data
+- `.cqs/` is gitignored — rebuilding only costs time, not data. But it now holds named slots (`.cqs/slots/<name>/index.db`) and the embeddings cache (`.cqs/embeddings_cache.db`) — `rm -rf .cqs/` nukes ALL slots and the cache. Prefer removing just the broken slot dir if only one slot is affected.
 - Notes (`docs/notes.toml`) are never lost — they're separate from the index
 - Schema version is stored in `metadata` table: `SELECT value FROM metadata WHERE key = 'schema_version'`
-- Current version: v10 (check `src/store/helpers.rs:CURRENT_SCHEMA_VERSION`)
+- Current version: v28 (always confirm against `src/store/helpers/mod.rs:CURRENT_SCHEMA_VERSION`)
+- Stop the daemon before destructive steps: `systemctl --user stop cqs-watch` (restart after)

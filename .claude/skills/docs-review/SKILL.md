@@ -25,7 +25,7 @@ Check all project documentation for staleness and fix what's drifted.
    | `CONTRIBUTING.md` | Architecture Overview matches current file layout — any files added/moved/renamed? |
    | `SECURITY.md` | Threat model current, dependency notes, any new attack surfaces? |
    | `PRIVACY.md` | Data handling claims still accurate? |
-   | `CLAUDE.md` | Quick Reference (version, schema, test count, language count) |
+   | `CLAUDE.md` | Skills list matches `.claude/skills/`; Project Conventions accurate (MSRV, feature names); WSL/CI guidance not contradicting current practice |
    | GitHub repo | Description and topics — `gh repo view`, update with `gh repo edit` if needed |
 
 3. **Fix and report**:

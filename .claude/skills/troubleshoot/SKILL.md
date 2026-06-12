@@ -22,10 +22,11 @@ If not found: `cargo install --path .` (from source) or check `~/.cargo/bin/` is
 ### 2. Is the project initialized?
 
 ```bash
-ls -la .cqs/
+ls -la .cqs/ && cat .cqs/active_slot 2>/dev/null
+ls -la .cqs/slots/$(cat .cqs/active_slot 2>/dev/null || echo default)/ 2>/dev/null
 ```
 
-Should contain `index.db` and `hnsw.bin`. If missing: `cqs init && cqs index`.
+The index lives in the active slot: `.cqs/slots/<name>/index.db` plus HNSW sidecars (`index.hnsw*`; legacy pre-slot layouts kept files at `.cqs/` top level). If missing: `cqs init && cqs index`.
 
 ### 3. Is the index populated?
 
@@ -51,10 +52,11 @@ Current schema version: check `src/store/helpers/mod.rs` for `CURRENT_SCHEMA_VER
 ### 5. Model downloaded?
 
 ```bash
-ls -la ~/.cache/huggingface/hub/models--intfloat--e5-base-v2/
+cqs doctor   # checks model, index, hardware in one pass
+ls -la ~/.cache/huggingface/hub/models--onnx-community--embeddinggemma-300m-ONNX/
 ```
 
-If missing or incomplete, cqs downloads on first use. Check network access to huggingface.co.
+Default model is EmbeddingGemma-300m (since v1.35.0); alternative presets via `CQS_EMBEDDING_MODEL` / `--model` live under their own `models--*` dirs. If missing or incomplete, cqs downloads on first use. Check network access to huggingface.co.
 If corrupted: delete the directory and let cqs re-download (blake3 checksums verify integrity).
 
 ### 6. Daemon mode working?

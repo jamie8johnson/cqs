@@ -61,6 +61,10 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/before-edit` -- impact + tests + callers before modifying a function
 - `/check-my-work` -- review current diff, risk assessment
 - `/investigate` -- scout + gather before starting a task
+- `/land <branch>` -- land a ready branch: push, PR, pinned CI watch, merge, issue verification, cleanup. Use for EVERY PR landing.
+- `/idle` -- the idle work loop: enumerate issues + triage, classify, pick, dispatch. Invoke whenever otherwise idle (standing directive).
+- `/archeo` -- comment-archaeology sweep: TODO/FIXME/deferral language → issues or trivial fixes. Idle-loop refill.
+- `/recall-gate` -- retrieval gate with dead-gold triage + binary A/B. Required before release tags; use after retrieval-adjacent merges.
 
 ## Code Intelligence — When to Use What
 
@@ -159,7 +163,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Conventions:**
 - Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
-- Use `fable` for all agent dispatches (opus is an acceptable alternative)
+- Model split: `opus` implements, `fable` orchestrates/reviews/audits. EXCEPTION: security lanes (audit Security category, /red-team, security reviews) stay `opus`. Sonnet only for mechanical test-only tasks; haiku for doc-only edits.
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
 
@@ -181,10 +185,11 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 - **code-reviewer** — dispatch before commit/PR: runs `cqs review` + `cqs impact`, flags risk
 - **test-finder** — dispatch before modifying a function: runs `cqs test-map` + `cqs impact`
 - **implementer** — implementation with cqs checkpoints: scout before, review after
+- **lane-implementer** — implementation lane with the full gate battery baked in (private CARGO_TARGET_DIR, clippy --all-targets, targeted tests, provenance lint, commit-don't-push, ISSUE-WORTHY residual reporting). Dispatch prompts carry ONLY the task; the contract lives in the def. Default for fix/feature lanes.
 - **explorer** — codebase exploration via cqs (replaces raw grep/glob for conceptual queries)
 - **auditor** — code audit for a single category, appends to audit-findings.md
 
-**Use these agents.** Dispatch `investigator` before starting any non-trivial implementation. Dispatch `code-reviewer` before any commit or PR. These replace the need to manually include cqs instructions in every agent prompt.
+**Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` (fable) before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
 
 ## Code Audit
 
@@ -230,14 +235,14 @@ When updating docs, keep these in sync:
 
 ## WSL Workarounds
 
-Git/GitHub operations need PowerShell (Windows has credentials):
+Direct `git push` from WSL usually works (credential helper wired); on "could not read Username" (GCM crash) fall back to PowerShell. All `gh` commands go through PowerShell (Windows has the credentials):
 ```bash
-powershell.exe -Command "cd C:\Projects\cqs; git push"
-powershell.exe -Command 'gh pr create --title "..." --body "..."'
-powershell.exe -Command 'gh pr merge N --squash --delete-branch'
+git push origin <branch> || powershell.exe -Command "cd C:\Projects\cqs; git push origin <branch>"
+powershell.exe -Command 'gh pr create --head <branch> --title "..." --body-file pr_body.md'
+powershell.exe -Command 'gh pr merge N -R jamie8johnson/cqs --squash --delete-branch'
 ```
 
-**Use `gh pr checks --watch`** to wait for CI. Don't use `sleep` + poll.
+**CI watching: pin the run ID** — `gh pr checks --watch` latches onto the previous commit's completed run. Use /land, which encodes the correct pattern (sleep ~45s after push, resolve via `gh run list --branch X --workflow CI --limit 1`, then `gh run watch $id --exit-status`, backgrounded). Don't use `sleep` + poll loops.
 
 **ALWAYS use `--body-file` for PR/issue bodies.** Never inline heredocs or multiline strings in `gh pr create --body` or `gh issue create --body`. Two reasons: (1) PowerShell mangles complex strings, (2) Claude Code captures the entire multiline command as a permission entry in `settings.local.json`, corrupting the file and breaking startup. Write body to `/mnt/c/Projects/cqs/pr_body.md`, use `--body-file`, delete after.
 

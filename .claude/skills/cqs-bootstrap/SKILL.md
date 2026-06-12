@@ -113,17 +113,17 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
 
 ### Phase 3: cqs Init & Index
 
-6. Run `cqs init` (creates `.cqs/` directory with database)
-7. Run `cqs index` (indexes all source files + notes)
-8. Verify with `cqs stats` — should show chunk count > 0
+8. Run `cqs init` (creates `.cqs/` directory with database)
+9. Run `cqs index` (indexes all source files + notes)
+10. Verify with `cqs stats` — should show chunk count > 0
 
 ### Phase 4: .gitignore
 
-9. Add `.cqs/` to `.gitignore` if not already present (the index database is local, not shared)
+11. Add `.cqs/` to `.gitignore` if not already present (the index database is local, not shared)
 
 ### Phase 5: CLAUDE.md Integration
 
-10. If CLAUDE.md exists, **append** the cqs sections below. If it doesn't exist, create it with these sections plus a basic header.
+12. If CLAUDE.md exists, **append** the cqs sections below. If it doesn't exist, create it with these sections plus a basic header.
 
 **Check for existing sections first** — don't duplicate if the user already has cqs config in their CLAUDE.md.
 
@@ -173,7 +173,7 @@ cqs gather "query" --json
 ```bash
 cqs "search query" --json
 cqs "function_name" --name-only --json
-cqs "query" --include-type function --json   # filter by chunk type (29 types)
+cqs "query" --include-type function --json   # filter by chunk type
 cqs "query" --exclude-type test --json       # exclude chunk types
 cqs read <path>
 cqs read --focus <function>
@@ -211,7 +211,7 @@ cqs read --focus <function>
 - `cqs audit-mode on/off` — toggle audit mode
 - `cqs gc` — clean stale index entries
 
-Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
+Run `cqs watch --serve` in a separate terminal (or a systemd user service) to keep the index fresh AND serve fast daemon queries; `cqs index` for one-time refresh. `CQS_NO_DAEMON=1` forces CLI mode.
 
 ## Audit Mode
 
@@ -234,9 +234,9 @@ After: `cqs audit-mode off` or let it auto-expire (30 min default).
 
 ### Phase 6: Verify
 
-11. Run `cqs stats` to confirm indexing worked
-12. Test a search: `cqs "main entry point" --json` (should return results)
-13. Report summary: files created, chunks indexed, skills installed
+13. Run `cqs stats` to confirm indexing worked
+14. Test a search: `cqs "main entry point" --json` (should return results)
+15. Report summary: files created, chunks indexed, skills installed
 
 ## Rules
 

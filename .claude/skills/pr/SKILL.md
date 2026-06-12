@@ -18,7 +18,7 @@ Create a PR from the current branch using WSL-safe patterns.
 
 2. **Prepare**:
    - If uncommitted changes exist, ask user whether to commit first
-   - Ensure branch is pushed: `powershell.exe -Command 'cd C:\Projects\cqs; git push -u origin BRANCH'`
+   - Push the branch directly from WSL: `git push -u origin BRANCH` (the Windows credential manager is wired into WSL git). Fallback ONLY if GCM crashes ("could not read Username"): `powershell.exe -Command 'cd C:\Projects\cqs; git push -u origin BRANCH'`
 
 3. **Write PR body** to `/mnt/c/Projects/cqs/pr_body.md`:
    ```markdown
@@ -38,7 +38,12 @@ Create a PR from the current branch using WSL-safe patterns.
 
 5. **Clean up**: Delete `pr_body.md`
 
-6. **Wait for CI**: `powershell.exe -Command 'cd C:\Projects\cqs; gh pr checks N --watch'`
+6. **Wait for CI — pin the run ID** (`gh pr checks --watch` latches onto the previous commit's completed run after a push; do not use it):
+   ```
+   sleep 45   # new run needs ~45s to register after the push
+   powershell.exe -Command 'cd C:\Projects\cqs; gh run list --branch BRANCH --workflow CI --limit 1'
+   powershell.exe -Command 'cd C:\Projects\cqs; gh run watch RUN_ID --exit-status'
+   ```
 
 7. **Report**: Show PR URL
 
@@ -46,5 +51,5 @@ Create a PR from the current branch using WSL-safe patterns.
 
 - **ALWAYS use `--body-file`** — never inline heredocs in `gh pr create --body`
 - Heredocs get captured as permission entries in `settings.local.json`, corrupting startup
-- All `git push` and `gh` commands go through PowerShell (Windows has git credentials)
+- `git push` works directly from WSL (credential helper wired); PowerShell is the fallback when GCM crashes. All `gh` commands still go through PowerShell (with `cd C:\Projects\cqs` or `-R jamie8johnson/cqs`)
 - main is protected — all changes require PR

@@ -1,3 +1,9 @@
+---
+name: red-team
+description: Adversarial security audit of cqs — 4 parallel opus agents (RT-INJ/RT-FS/RT-RES/RT-DATA), attacker mindset, PoC-required findings.
+disable-model-invocation: true
+---
+
 # Red Team Audit
 
 Adversarial security audit — attacker mindset, PoC-required, end-to-end attack chains.
@@ -13,7 +19,7 @@ Adversarial security audit — attacker mindset, PoC-required, end-to-end attack
 1. **Read `SECURITY.md`** — extract current threat model, trust boundaries, stated protections
 2. **Read prior triage files** (`docs/audit-triage-v*.md`) — skip anything already triaged
 3. **Read current findings** (`docs/audit-findings.md`) — skip anything already reported
-4. **Enable audit mode**: `cqs audit-mode on --expires 4h -q`
+4. **Enable audit mode**: `cqs audit-mode on --expires 4h` (no `-q` flag on this subcommand)
 
 ### Execution
 
@@ -32,7 +38,7 @@ Adversarial security audit — attacker mindset, PoC-required, end-to-end attack
 
 8. **Shutdown team** after all agents complete
 9. **Incorporate findings** into main triage (`docs/audit-triage.md`)
-10. **Disable audit mode**: `cqs audit-mode off -q`
+10. **Disable audit mode**: `cqs audit-mode off`
 
 ## Threat Model Calibration
 
@@ -81,7 +87,7 @@ Read `SECURITY.md` at the start of each run. Extract:
 - `CQS_PDF_SCRIPT` env var — any validation of script path before spawn?
 - `--path` glob patterns via `globset` — ReDoS with pathological patterns
 
-**Files:** `src/cli/batch/mod.rs`, `src/notes.rs`, `src/search.rs`, `src/project.rs`, `src/convert.rs`, `src/cli/batch/handlers.rs`
+**Files:** `src/cli/batch/` (mod.rs, context.rs, session.rs, pipeline.rs), `src/note.rs` + `src/store/notes.rs`, `src/nl/fts.rs` (`normalize_for_fts`), `src/search/`, `src/project.rs`, `src/convert/` (pdf.rs for `CQS_PDF_SCRIPT`), `src/cli/batch/handlers/`
 
 ### RT-FS: Filesystem Boundary Violations
 
@@ -98,7 +104,7 @@ Read `SECURITY.md` at the start of each run. Extract:
 - Function name as path component — path separators in function names used in fs ops
 - Index entries as indirect reads — stale paths serving wrong content
 
-**Files:** `src/cli/commands/read.rs`, `src/project.rs`, `src/convert.rs`, `src/store/mod.rs`, `src/cli/batch/handlers.rs`
+**Files:** `src/cli/commands/io/read.rs`, `src/project.rs`, `src/convert/`, `src/store/mod.rs`, `src/cli/batch/handlers/`
 
 ### RT-RES: Adversarial Robustness
 
@@ -124,7 +130,7 @@ Read `SECURITY.md` at the start of each run. Extract:
 - Malformed data (corrupted HNSW, invalid embeddings, bad notes.toml)
 - Integer overflow (extreme caller_count, score overflow)
 
-**Files:** `src/cli/batch/mod.rs`, `src/gather.rs`, `src/impact/mod.rs`, `src/cli/commands/task.rs`, `src/hnsw/mod.rs`, `src/watcher.rs`, `src/embedder.rs`, `src/task.rs`, `src/scout.rs`
+**Files:** `src/cli/batch/` (mod.rs, pipeline.rs), `src/gather.rs`, `src/impact/mod.rs`, `src/task.rs`, `src/hnsw/`, `src/cli/watch/` (daemon, events, socket), `src/embedder/`, `src/scout.rs`
 
 ### RT-DATA: Silent Data Corruption
 
@@ -141,7 +147,7 @@ Read `SECURITY.md` at the start of each run. Extract:
 - Batch OnceLock stale cache (index mutation invalidation)
 - Score ordering inconsistency (NaN breaking sort)
 
-**Files:** `src/store/mod.rs`, `src/hnsw/mod.rs`, `src/notes.rs`, `src/indexer.rs`, `src/cli/batch/mod.rs`, `src/embedder.rs`
+**Files:** `src/store/` (mod.rs, migrations.rs, metadata.rs), `src/hnsw/`, `src/note.rs` + `src/store/notes.rs`, `src/index.rs`, `src/cli/batch/mod.rs`, `src/embedder/`
 
 ## Finding Format
 

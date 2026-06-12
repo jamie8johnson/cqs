@@ -1,3 +1,8 @@
+---
+name: check-my-work
+description: Run after making changes, before committing — reviews the current git diff for impact and risk via cqs review.
+---
+
 # Check My Work
 
 Run after making changes, before committing. Reviews your diff for impact and risk.
@@ -32,7 +37,7 @@ None — operates on the current git diff.
 ### Checklist
 - [ ] All affected callers still work with your changes
 - [ ] Tests listed above pass: `cargo test --features cuda-index -- <test_names>`
-- [ ] No new warnings from `cargo clippy --features cuda-index`
+- [ ] No new warnings from `cargo clippy --all-targets --features cuda-index`
 - [ ] Changes formatted: `cargo fmt`
 ```
 
