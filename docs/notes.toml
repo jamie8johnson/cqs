@@ -1935,8 +1935,8 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "cqs callers reports zero direct callers for name-ambiguous functions (two defs sharing a name, e.g. search_filtered = hnsw method + store method): the name-based resolver drops the edge rather than guess, so a fn with 23 call sites shows 0 direct (only doc_reference). False-absence — verify callers of overloaded names by grep. Tracked #1837."
+sentiment = 0.0
+text = "cqs callers default --limit 5 window can be misleading for heavily doc-referenced names; fixed by trust-rank ordering + 'Showing N of M' totals. Type::method qualified queries disambiguate same-named methods (attribution markers, excluded_other_owner count). The original 'resolver drops ambiguous edges' diagnosis was WRONG — edges were always present, the window ordering hid them."
 mentions = [
     "src/impact",
     "callers",

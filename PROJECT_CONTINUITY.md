@@ -2,7 +2,23 @@
 
 ## Right Now
 
-**IDLE-LOOP NIGHT, deep (2026-06-12). main clean; v1.43.0 long shipped. trust-v30 MERGED + verified.**
+**#1821 PROGRAM DAY (2026-06-12 evening). main clean at 291209f9. §1+§2+§5 LANDED; §4 under review; §3 planned.**
+
+**#1837 RESOLVED via #1844 (merged, binary installed, verified live).** My original diagnosis was WRONG — the edges were never dropped; the investigator disproved it and I verified: 67 edges existed (50 direct + 17 doc_reference), and the default `--limit 5` window ordered by `(file, line)` filled entirely with #1836's new doc_reference edges (CHANGELOG/docs sort before src/). Real fix shipped: (1) trust-rank ORDER BY via `rank_case_sql` on all callers/callees reads, (2) `total` + "Showing N of M" honest truncation, (3) `Type::method` receiver disambiguation from `parent_type_name` (attribution markers, `excluded_other_owner` count, did-you-mean candidates). TWO fable review rounds caught TWO composition blockers the green suite missed: F1 (qualified path orphaned 1,425 exact-qualified doc edges) then R1 (the F3 existence gate pre-empted the F1 exact arm — 72% of qualified edges dark; two individually-correct fixes composed in the wrong order). Residual issues: #1842 (callees same-file merge), #1843 (label/cap-hint/callees parity), #1845 (SPLADE sparse leg invisible to rank_signals).
+
+**§4 RANK PROVENANCE — implemented on `lane-rank-provenance` (7d78e393, not pushed), fable review IN FLIGHT.** Design: pure post-pass in `finalize_results` (scoring fold untouched → bit-identical structurally, to_bits() pinned); discriminative-by-default (dense-only records nothing — cry-wolf rule); `--no-rank-signals` opt-out; search/scout/gather(seed-only) surfaces. **LANE FINDING (pending reviewer confirmation): audit-mode does NOT zero note boosts at store-level scoring** — only forces hybrid retrieval + suppresses note display. Prior opinions steer rankings invisibly under audit-mode = the exact failure audit-mode exists to prevent. If confirmed → file P2 against audit-mode. Branch may conflict with #1844 in src/store/helpers/types.rs — rebase at landing.
+
+**§3 WORKTREE OVERLAY — implementation plan MERGED (#1841)**, `docs/plans/2026-06-12-worktree-overlay-implementation.md`. The fable design pass corrected FOUR program-doc flaws: origin-level shadowing (NOT `(origin,name)` — that key shows agents deleted code), parent-HEAD diff base (not merge-base), dedicated pinned-connection `:memory:` Store constructor (pooled open destroys in-memory DBs via idle reaper), refs-LRU cache pattern (not #1739 epochs). 3-PR slicing: plumbing → query path → daemon. Implementation NOT started — lands after §4.
+
+**§5 DONE (#1840):** `cqs review --base` surfaced in code-reviewer def + /check-my-work skill.
+
+**#1834 (nightly CI failure) DIAGNOSED — deterministic bug, NOT flake:** #1796's banner token redaction made the serve token unrecoverable from non-TTY output; `cqs_serve_full_layer_stack_round_trip` (slow-tests gated, nightly-only) still parses `/?token=` from the banner → fails every run. PR CI skips slow suite, so #1796 merged green. Fix options on the issue; recommended `--token-file` (also restores headless token recovery #1796 removed). Security-adjacent — flagged for Director decision, not picked unilaterally.
+
+**HOUSEKEEPING:** local+remote branches cleaned to main (36 local deleted, 47 remote — all merged PRs). Build artifacts: 293G freed (20 dead lane target dirs + the landed lane's 32G). notes.toml gained the #1837 gotcha note (via #1839, premise corrected by #1844 — note text still describes the old wrong diagnosis; FIX THE NOTE next tears pass).
+
+---
+
+**EARLIER TODAY (morning): trust-v30 MERGED + verified.**
 
 **trust-v30 (#1821 §1+§2) LANDED — #1836, squash, HEAD b057031b.** Schema v30 `function_calls.edge_kind` (call/serde_callback/macro_heuristic/fn_pointer/doc_reference) + `cqs dead` verdicts (test-only/low-confidence-live/known-gap/dead) + trust-rank MIN-collapse + schema v31 (parse_failed marker). PARSER_VERSION 6. Binary 1.43.0 installed, daemon active, `cqs index --force` done (schema 31, 15890 chunks, 713s re-embed).
 
