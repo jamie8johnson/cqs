@@ -104,6 +104,11 @@ use reindex::{
     reindex_files, reindex_notes,
 };
 
+// Re-export the incremental pipeline entry so the worktree overlay builder
+// (`src/cli/worktree_overlay_build.rs`) can reach it without the private
+// `reindex` submodule being visible cli-wide.
+pub(crate) use reindex::reindex_files as overlay_reindex_files;
+
 #[cfg(unix)]
 mod daemon;
 

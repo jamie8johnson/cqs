@@ -1002,6 +1002,104 @@ impl Store<ReadWrite> {
         Self::open_with_config(path, Self::default_open_config(path, Some(runtime)))
     }
 
+    /// Open a fresh in-memory store (`:memory:`) with a single pinned
+    /// connection. Schema is NOT created here — the caller runs
+    /// [`Store::init`] afterward (mirrors the on-disk fresh-open contract).
+    ///
+    /// Why a dedicated constructor instead of `open(":memory:")`:
+    ///
+    /// The pooled open path ([`open_with_config_impl`]) is hostile to
+    /// `:memory:` on two fronts. First, every pooled connection to
+    /// `:memory:` is a **separate empty database** — a 2nd connection sees
+    /// none of the 1st's tables. Second, the pool's idle reaper
+    /// (`idle_timeout` 30s) closes the last connection when the store goes
+    /// quiet, and SQLite **destroys** an in-memory database when its final
+    /// connection closes. So the on-disk defaults would yield an empty or
+    /// vanishing store.
+    ///
+    /// The fix is `max_connections = 1` (one database, never a second empty
+    /// one), `min_connections = 1` and `idle_timeout = None` (the pool holds
+    /// that one connection alive for the store's whole lifetime). The
+    /// file-specific setup (WAL journal mode, umask tightening, on-disk
+    /// permission fixups, integrity check, schema migration) is all skipped:
+    /// there is no file, SQLite uses an in-memory journal regardless, and a
+    /// fresh `:memory:` has no schema to migrate.
+    ///
+    /// Intended for the worktree overlay (`src/worktree_overlay.rs`): a
+    /// short-lived store holding a parsed+embedded dirty delta, never
+    /// persisted.
+    pub fn open_memory() -> Result<Self, StoreError> {
+        let _span = tracing::info_span!("store_open_memory").entered();
+
+        // Single-threaded runtime: one connection means no benefit from a
+        // multi-thread worker pool, and the overlay corpus is tiny.
+        let rt: Arc<Runtime> = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        );
+
+        let connect_opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true)
+            .busy_timeout(helpers::sql::busy_timeout_from_env(30_000))
+            .synchronous(SqliteSynchronous::Normal)
+            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
+
+        let cache_pragma = format!("PRAGMA cache_size = {}", cache_size_from_env("-16384"));
+
+        let pool = rt.block_on(async {
+            SqlitePoolOptions::new()
+                // One connection IS the database for `:memory:`. A second
+                // would be a separate empty DB.
+                .max_connections(1)
+                // Pin that connection open for the store's lifetime so the
+                // in-memory database survives idle periods.
+                .min_connections(1)
+                .idle_timeout(None)
+                .after_connect(move |conn, _meta| {
+                    let pragma = cache_pragma.clone();
+                    Box::pin(async move {
+                        sqlx::query(sqlx::AssertSqlSafe(pragma.as_str()))
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA temp_store = MEMORY")
+                            .execute(&mut *conn)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .connect_with(connect_opts)
+                .await
+        })?;
+
+        let summary_queue = Arc::new(summary_queue::PendingSummaryQueue::new(
+            pool.clone(),
+            Arc::clone(&rt),
+        ));
+
+        // Fresh DB: no metadata table yet, so `dim` defaults to
+        // `EMBEDDING_DIM`. The caller runs `init(&ModelInfo)` and then
+        // `set_dim(model_info.dimensions)` to sync the real dimension.
+        let store: Store<ReadWrite> = Store {
+            pool,
+            rt,
+            dim: crate::EMBEDDING_DIM,
+            closed: AtomicBool::new(false),
+            notes_summaries_cache: RwLock::new(None),
+            note_boost_cache: crate::search::scoring::NoteBoostCache::default(),
+            call_graph_cache: std::sync::OnceLock::new(),
+            test_chunks_cache: std::sync::OnceLock::new(),
+            chunk_type_map_cache: std::sync::OnceLock::new(),
+            summary_queue,
+            vendored_prefixes: std::sync::OnceLock::new(),
+            _mode: PhantomData,
+        };
+
+        tracing::info!("In-memory store connected");
+        Ok(store)
+    }
+
     /// Shared config builder for `open` / `open_with_runtime`. Keeping the
     /// defaults in one place guarantees the runtime-sharing variant stays in
     /// lockstep with the standalone version as pool / mmap / cache defaults
@@ -2339,5 +2437,49 @@ mod tests {
             pages, 1000,
             "expected default wal_autocheckpoint=1000 from after_connect hook"
         );
+    }
+
+    /// `open_memory` must build the pool with exactly the three settings that
+    /// keep a SQLite `:memory:` database alive and singular:
+    /// `max_connections == 1` (one connection IS the database — a second is a
+    /// separate empty one), `min_connections == 1` and `idle_timeout == None`
+    /// (the reaper never closes the last connection, which would destroy the
+    /// DB). A refactor that drops any of these silently reintroduces the
+    /// empty-or-vanishing-store hazard, so pin all three.
+    #[test]
+    fn open_memory_pool_config_is_pinned() {
+        let store = Store::open_memory().expect("open_memory should succeed");
+        let opts = store.pool.options();
+        assert_eq!(
+            opts.get_max_connections(),
+            1,
+            "max_connections must be 1 for :memory:"
+        );
+        assert_eq!(
+            opts.get_min_connections(),
+            1,
+            "min_connections must be 1 to pin one connection alive"
+        );
+        assert_eq!(
+            opts.get_idle_timeout(),
+            None,
+            "idle_timeout must be None so the reaper never destroys the in-memory DB"
+        );
+    }
+
+    /// Functional roundtrip: a fresh in-memory store accepts `init` (schema
+    /// creation works on `:memory:`) and survives repeated reads through the
+    /// pinned connection — proving the single connection is the same database
+    /// across calls, not a fresh empty one each time.
+    #[test]
+    fn open_memory_init_and_roundtrip() {
+        let store = Store::open_memory().expect("open_memory should succeed");
+        store
+            .init(&ModelInfo::default())
+            .expect("init should create schema on :memory:");
+        // Two independent reads: if each pool checkout were a separate empty
+        // DB, the schema from init() would be invisible to the second query.
+        assert_eq!(store.chunk_count().expect("first chunk_count"), 0);
+        assert_eq!(store.chunk_count().expect("second chunk_count"), 0);
     }
 }

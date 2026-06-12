@@ -369,3 +369,82 @@ impl Default for InProcessFixture {
         Self::new()
     }
 }
+
+// ===== Worktree overlay fixtures =====
+
+use std::process::Command as StdCommand;
+
+/// Run a `git` subcommand in `dir`, panicking with stderr on failure.
+/// Test-only helper for the worktree fixtures below.
+pub fn git_in(dir: &Path, args: &[&str]) -> std::process::Output {
+    let out = StdCommand::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn in {}: {e}", dir.display()));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// A real-git parent + linked worktree, for overlay delta-discovery tests.
+///
+/// Layout produced:
+/// - `parent/` — a `git init`'d repo with a committed corpus
+///   (`src/lib.rs`, `src/util.rs`) on the default branch.
+/// - `wt/` — a linked worktree (`git worktree add ../wt -b lane`) checked
+///   out at the same commit. Edits in `wt/` form the dirty delta.
+///
+/// Pure git + FS — no `cqs init`/`index` and **no embedder**, so the
+/// delta-discovery and fingerprint tests run fast and unconditionally. The
+/// embedder-dependent `build_overlay` test gates itself behind `slow-tests`
+/// separately.
+///
+/// Returns `(holder, parent_root, worktree_root)`. `holder` owns the
+/// `TempDir`; keep it alive for the test's duration.
+pub fn worktree_fixture() -> (TempDir, PathBuf, PathBuf) {
+    let tmp = TempDir::new().expect("tempdir");
+    let parent = tmp.path().join("parent");
+    std::fs::create_dir_all(parent.join("src")).expect("mkdir parent/src");
+
+    std::fs::write(
+        parent.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 1 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("write lib.rs");
+    std::fs::write(
+        parent.join("src/util.rs"),
+        "pub fn helper() -> i32 { 42 }\n",
+    )
+    .expect("write util.rs");
+
+    git_in(&parent, &["init", "-q", "-b", "main"]);
+    git_in(&parent, &["config", "user.email", "test@example.com"]);
+    git_in(&parent, &["config", "user.name", "Test"]);
+    git_in(&parent, &["add", "-A"]);
+    git_in(&parent, &["commit", "-q", "-m", "initial corpus"]);
+
+    // Linked worktree at the same commit, on a new branch.
+    let wt = tmp.path().join("wt");
+    git_in(
+        &parent,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "lane",
+            wt.to_str().expect("utf-8 wt path"),
+        ],
+    );
+
+    // Canonicalize so paths match what `discover_delta` / `git -C` produce
+    // (symlinked TempDir prefixes on macOS, etc.).
+    let parent = dunce::canonicalize(&parent).unwrap_or(parent);
+    let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+    (tmp, parent, wt)
+}

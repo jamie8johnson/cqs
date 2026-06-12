@@ -489,7 +489,13 @@ fn finalize_zero_chunk_files(
 /// matching the bulk pipeline's `prepare_for_embedding` shape. `None` is the
 /// store-cache-only path used by tests and the `CQS_CACHE_ENABLED=0` operator
 /// override.
-pub(super) fn reindex_files(
+// `pub(crate)` (was `pub(super)`): the worktree overlay builder
+// (`src/cli/worktree_overlay_build.rs`) calls this to parse+embed the dirty
+// delta into the overlay's in-memory store. Both live in the bin crate, so
+// `pub(crate)` is the minimal-churn promotion — the lib-side overlay module
+// (`src/worktree_overlay.rs`) holds the crate-portable pieces (struct, delta
+// discovery, fingerprint) and the bin-side builder owns the pipeline call.
+pub(crate) fn reindex_files(
     root: &Path,
     store: &Store,
     files: &[PathBuf],

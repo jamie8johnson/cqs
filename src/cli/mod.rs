@@ -18,6 +18,7 @@ pub(crate) mod staleness;
 mod store;
 pub(crate) mod telemetry;
 mod watch;
+mod worktree_overlay_build;
 
 // Re-export definitions (clap structs, enums, helpers) for external use
 pub(crate) use definitions::{
