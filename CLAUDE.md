@@ -188,6 +188,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 - **lane-implementer** — implementation lane with the full gate battery baked in (private CARGO_TARGET_DIR, clippy --all-targets, targeted tests, provenance lint, commit-don't-push, ISSUE-WORTHY residual reporting). Dispatch prompts carry ONLY the task; the contract lives in the def. Default for fix/feature lanes.
 - **explorer** — codebase exploration via cqs (replaces raw grep/glob for conceptual queries)
 - **auditor** — code audit for a single category, appends to audit-findings.md
+- **seam-auditor** — composition adversary: finds two correct units whose join lies. Orthogonal to the house happy/sad signature; dispatch during audits, after multi-lane merges, or from /idle. Read-only; the find is the deliverable. (#1826)
 
 **Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` (fable) before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
 
