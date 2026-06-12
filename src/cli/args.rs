@@ -340,6 +340,18 @@ pub(crate) struct SimilarArgs {
     /// Min similarity threshold
     #[arg(short = 't', long, default_value = "0.3", value_parser = parse_finite_f32)]
     pub threshold: f32,
+    /// Filter by language.
+    ///
+    /// On the CLI these scope flags reach `cmd_similar` via the top-level
+    /// `Cli::lang`/`Cli::path`; carrying them on the shared `SimilarArgs` is
+    /// what lets the daemon `dispatch_similar` honor the same scoping (the
+    /// daemon translator forwards the top-level values onto this subcommand
+    /// tail). Spellings mirror `SearchArgs` (`-l`/`--lang`, `-p`/`--path`).
+    #[arg(short = 'l', long)]
+    pub lang: Option<String>,
+    /// Filter by path pattern (glob).
+    #[arg(short = 'p', long)]
+    pub path: Option<String>,
 }
 
 /// Arguments shared between CLI `blame` and batch `blame`.
