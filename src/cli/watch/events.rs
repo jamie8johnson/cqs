@@ -412,8 +412,19 @@ pub(super) fn process_file_changes(
             );
 
             let rebuild_in_flight = state.pending_rebuild.is_some();
-            let needs_owned =
-                state.hnsw_index.is_none() || state.incremental_count >= hnsw_rebuild_threshold();
+            // The periodic threshold rebuild exists to clean orphaned HNSW
+            // vectors and absorb accumulated deltas. When the tiered backend
+            // serves queries, that compaction happens inside cuVS (the
+            // brute-force tier absorbs adds; the CAGRA tier rebuilds
+            // internally), so the expensive periodic full HNSW rebuild is
+            // redundant — skip it. The first-build case (`hnsw_index.is_none()`)
+            // still proceeds so the cheap CPU-side fallback / base-index router
+            // stays fed. `tiered_index_active()` is always false without the
+            // `tiered-index` feature, so default and CAGRA builds keep the
+            // original threshold behavior unchanged.
+            let threshold_rebuild_due =
+                !tiered_index_active() && state.incremental_count >= hnsw_rebuild_threshold();
+            let needs_owned = state.hnsw_index.is_none() || threshold_rebuild_due;
 
             // 3. Start a new rebuild, if appropriate.
             if needs_owned && !rebuild_in_flight {

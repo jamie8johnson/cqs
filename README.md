@@ -758,7 +758,7 @@ Quick index by domain (everything is searchable in the table below):
 
 - **Trust / injection defence** — `CQS_TRUST_DELIMITERS`, `CQS_SUMMARY_VALIDATION`, `CQS_NO_ANSI_STRIP`, `CQS_HF_CACHE_TRUSTED`
 - **Retrieval & search** — `CQS_RRF_K`, `CQS_TYPE_BOOST`, `CQS_SPLADE_ALPHA*`, `CQS_RERANK*`, `CQS_RERANKER_*`, `CQS_CENTROID_*`, `CQS_MMR_LAMBDA`, `CQS_FORCE_BASE_INDEX`, `CQS_DISABLE_BASE_INDEX`, `CQS_QUERY_CACHE_*`
-- **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_TRT_ENGINE_CACHE`, `CQS_DISABLE_TENSORRT`, `CQS_FORCE_TENSORRT`, `CQS_DISABLE_CPU_WARM`, `CQS_SPARSE_CHUNKS_PER_TX`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_INTERVAL`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
+- **Indexing & embedding** — `CQS_EMBEDDING_*`, `CQS_EMBED_*`, `CQS_ONNX_DIR`, `CQS_HNSW_*`, `CQS_CAGRA_*`, `CQS_TRT_ENGINE_CACHE`, `CQS_DISABLE_TENSORRT`, `CQS_FORCE_TENSORRT`, `CQS_DISABLE_CPU_WARM`, `CQS_SPARSE_CHUNKS_PER_TX`, `CQS_SPLADE_BATCH/MAX_*/MODEL/THRESHOLD/RESET_EVERY`, `CQS_PARSER_MAX_*`, `CQS_PARSE_CHANNEL_DEPTH`, `CQS_FILE_BATCH_SIZE`, `CQS_DEFERRED_FLUSH_BATCHES`, `CQS_FTS_NORMALIZE_MAX`, `CQS_MAX_FILE_SIZE`, `CQS_MAX_QUERY_BYTES`, `CQS_MAX_SEQ_LENGTH`, `CQS_MAX_CONTRASTIVE_CHUNKS`, `CQS_MD_*`, `CQS_SKIP_ENRICHMENT`, `CQS_HYDE_MAX_TOKENS`, `CQS_RAYON_THREADS`
 - **Daemon, watch, batch** — `CQS_NO_DAEMON`, `CQS_DAEMON_*`, `CQS_MAX_DAEMON_CLIENTS`, `CQS_BATCH_*IDLE_MINUTES`, `CQS_REFS_LRU_SIZE`, `CQS_WATCH_*`, `CQS_CHAT_HISTORY`
 - **Graph & impact** — `CQS_CALL_GRAPH_MAX_EDGES`, `CQS_TYPE_GRAPH_MAX_EDGES`, `CQS_GATHER_MAX_NODES`, `CQS_IMPACT_MAX_*`, `CQS_TRACE_MAX_NODES`, `CQS_TEST_MAP_MAX_NODES`
 - **SQLite storage** — `CQS_BUSY_TIMEOUT_MS`, `CQS_IDLE_TIMEOUT_SECS`, `CQS_MAX_CONNECTIONS`, `CQS_MMAP_SIZE`, `CQS_SQLITE_CACHE_SIZE`, `CQS_CACHE_MAX_SIZE`, `CQS_INTEGRITY_CHECK`, `CQS_SKIP_INTEGRITY_CHECK`, `CQS_MIGRATE_REQUIRE_BACKUP`
@@ -791,6 +791,9 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_CAGRA_PERSIST` | `1` | Persist the CAGRA graph to `{cqs_dir}/index.cagra` after build and reload it on restart. Set to `0` to disable (daemon rebuilds from scratch every startup). |
 | `CQS_CAGRA_STREAM_BATCH_SIZE` | `10000` | Embedding rows streamed per batch during CAGRA index construction. At dim=1024 this is ~40 MB/batch; raise/lower to fit a per-batch byte budget for non-default-dim models. (P3-15 / SHL-V1.33-9) |
 | `CQS_CAGRA_THRESHOLD` | `5000` | Min chunks to trigger CAGRA over HNSW |
+| `CQS_TIERED_INDEX` | `0` | Opt into the cuVS tiered index backend (requires the `tiered-index` build feature). When `1` and eligible, it shadows CAGRA and retires the periodic HNSW rebuild. Unset/`0` → CAGRA/HNSW as before. |
+| `CQS_TIERED_THRESHOLD` | `5000` | Min chunks to trigger the tiered backend over HNSW (falls back to `CQS_CAGRA_THRESHOLD` then the policy table). |
+| `CQS_TIERED_MIN_ANN_ROWS` | `5000` | Rows the tiered brute-force tier accumulates before cuVS builds the CAGRA ANN tier. Below it, search is pure brute-force. |
 | `CQS_CENTROID_ALPHA_FLOOR` | `0.7` | Minimum α when the centroid classifier overrides the rule-based classifier. Caps downside of wrong-category alpha routing. |
 | `CQS_CENTROID_CLASSIFIER` | `1` | Embedding-centroid query classifier — fills `Unknown` gaps from the rule-based classifier with embedding-space matching. Enabled by default; set to `0` to opt out. |
 | `CQS_CAGRA_MAX_GPU_BYTES` | (unset) | Hard cap (bytes) on GPU memory the CAGRA index is allowed to allocate. When set, exceeding the cap aborts the build with a clear error rather than OOM-ing the GPU. P2.42. |
@@ -808,7 +811,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_DAEMON_STARTUP_GC` | `1` | Set to `0` to skip the daemon's startup GC pass (#1024). The startup pass drops chunks for files no longer on disk and chunks whose path is now matched by `.gitignore`. Synchronous, runs once when `cqs watch --serve` starts. |
 | `CQS_DAEMON_TIMEOUT_MS` | `2000` | Daemon client connect/read timeout in milliseconds (CLI → daemon) |
 | `CQS_DAEMON_WORKER_THREADS` | `min(num_cpus, 4)` | Worker threads for the daemon's shared tokio runtime (replaces three per-struct runtimes). Bump on large hosts where the default cap leaves cores idle under heavy concurrent client load. |
-| `CQS_DEFERRED_FLUSH_INTERVAL` | `50` | Chunks between deferred flushes during indexing |
+| `CQS_DEFERRED_FLUSH_BATCHES` | `50` | Batches between deferred-call flushes during indexing |
 | `CQS_DIFF_EMBEDDING_BATCH_SIZE` | `64` | Batch size for embedding `cqs review --diff` / `cqs impact --diff` chunks. Default scales to ~12 MB at 1024-dim; override for larger models or tight memory budgets. |
 | `CQS_DISABLE_BASE_INDEX` | (none) | Set to `1` to force queries through the enriched HNSW only, skipping the base (non-enriched) HNSW. Used to A/B the dual-index router during config testing. |
 | `CQS_DISABLE_CPU_WARM` | (none) | Set to `1` to keep the CPU embedder thread from competing with GPU for fresh batches. CPU still drains GPU-failed batches as fault-tolerance, but if GPU handles every batch the CPU ONNX session never lazy-inits — saves the per-session mmap (~30 GB for 8B FP32 models). Trade-off: if a transient GPU failure does occur, the first failed batch pays the CPU session-init latency. Useful when running large (>2 GB) models on host-RAM-constrained setups, e.g. WSL2 with default memory caps. Surfaced 2026-05-03 by the Qwen3-Embedding-8B ceiling probe (#1392). |
@@ -1070,18 +1073,29 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search, with native bitset filtering for type/language queries. Requires the `cuda-index` feature flag (the legacy `gpu-index` name is preserved as an alias) and matching libcuvs from conda:
 
 ```bash
-conda install -c rapidsai libcuvs=26.04 libcuvs-headers=26.04
+conda install -c rapidsai libcuvs=26.06 libcuvs-headers=26.06
 cargo install cqs --features cuda-index
 ```
 
-`cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.4`).
+`cuvs-sys` does strict version matching — the conda `libcuvs` version must match the Rust `cuvs` crate version (currently `=26.6`). The `cuda-index` feature depends on the **official** `cuvs` crate from crates.io; no fork or `[patch]` is involved.
 
 Building from source:
 ```bash
 cargo build --release --features cuda-index
 ```
 
-> **Note:** cqs uses a patched cuvs crate that exposes `search_with_filter` for GPU-native bitset filtering. This is applied transparently via `[patch.crates-io]`. Once upstream rapidsai/cuvs#2019 merges, the patch will be removed.
+> **Tiered index (opt-in, build-from-source only):** an experimental
+> `--features tiered-index` builds the cuVS *tiered index* backend, which
+> retires the watch loop's periodic HNSW rebuild — incremental adds flow into a
+> brute-force tier and stay searchable immediately, while the CAGRA ANN tier
+> compacts inside cuVS. Its Rust bindings are not in an official cuvs release
+> yet (upstream PR [rapidsai/cuvs#2235](https://github.com/rapidsai/cuvs/pull/2235)),
+> so this feature requires uncommenting a `[patch.crates-io]` block in the
+> root `Cargo.toml` that points at our fork branch. **That patch is commented
+> out by default and only affects `--features tiered-index` builds from this
+> repo** — it never touches a `cuda-index` build or anything installed from
+> crates.io (where `[patch]` is stripped). Enable the backend at runtime with
+> `CQS_TIERED_INDEX=1`. See CONTRIBUTING.md "Tiered-index fork pin" for details.
 
 ### WSL2
 

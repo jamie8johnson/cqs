@@ -864,7 +864,7 @@ mod tests {
 
         // Rename the chunks table out from under the open read connection.
         // Reads see the committed schema change on their next query: the
-        // kind-detect `lookup_by_name` ("no such table: chunks") fails
+        // kind-detect `get_chunks_by_name` ("no such table: chunks") fails
         // while `get_callers_full` (function_calls) keeps working.
         let mut writer = ctx
             .runtime

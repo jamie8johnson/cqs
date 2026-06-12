@@ -70,8 +70,8 @@ use runtime::{daemon_should_exit, install_sigterm_handler, is_shutdown_requested
 mod rebuild;
 use rebuild::{
     clear_hnsw_dirty_with_retry, drain_pending_rebuild, hnsw_rebuild_threshold,
-    resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, try_init_embedder, EmbedderBackoff,
-    PendingRebuild,
+    resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, tiered_index_active,
+    try_init_embedder, EmbedderBackoff, PendingRebuild,
 };
 #[cfg(test)]
 use rebuild::{DrainOutcome, RebuildOutcome, RebuildResult};

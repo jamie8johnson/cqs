@@ -37,12 +37,25 @@ impl std::fmt::Display for OutputFormat {
 }
 
 /// Common output format arguments shared across commands that support text/json/mermaid.
+///
+/// **`--json` vs `--format`:** the two flags are
+/// intentionally mutually exclusive (`conflicts_with = "format"`), not an
+/// accidental shadow. `--json` is the universal spelling every command
+/// accepts (via `TextJsonArgs` elsewhere) and every agent/test invokes;
+/// `--format text|json|mermaid` is the multi-format escape hatch the handful
+/// of commands with a third rendering (impact / trace → mermaid) expose. A
+/// caller picks one axis: the `--json` shorthand, or the explicit `--format`
+/// when they need `mermaid`. Combining them (`--json --format mermaid`) is a
+/// parse-time error rather than a silent precedence surprise — pinned by
+/// `test_{impact,trace}_json_conflicts_with_format`. Keeping `--json` (vs the
+/// audit's "drop it" option) is deliberate: dropping it would break every
+/// `cqs impact <fn> --json` agent call and force `--format json` everywhere.
 #[derive(Clone, Debug, clap::Args)]
 pub struct OutputArgs {
     /// Output format: text, json, mermaid (use --json as shorthand for --format json)
     #[arg(long, default_value = "text")]
     pub format: OutputFormat,
-    /// Shorthand for --format json
+    /// Shorthand for --format json. Mutually exclusive with --format (pick one).
     #[arg(long, conflicts_with = "format")]
     pub json: bool,
 }

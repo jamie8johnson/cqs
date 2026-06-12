@@ -177,6 +177,12 @@ pub static ONNX_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(feature = "cuda-index")]
 pub mod cagra;
 
+// Tiered ANN backend (cuVS tiered index). Behind its own feature + a fork pin
+// because `cuvs::tiered_index` exists only on the pinned fork branch; the
+// module itself enforces `#![cfg(feature = "tiered-index")]`.
+#[cfg(feature = "tiered-index")]
+pub mod tiered;
+
 pub use audit::parse_duration;
 pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;

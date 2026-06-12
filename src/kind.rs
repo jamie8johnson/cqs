@@ -25,17 +25,31 @@
 //! - `Other`: chunk types that don't fit the routing matrix yet
 //!   (Macro, Impl, ConfigKey, StoredProc, etc.) — treated as
 //!   freeform-shaped today; future expansion happens here.
+//!
+//! ## Kind vs. KindResolution
+//!
+//! `Kind` classifies a *single* chunk. Resolving a *set* of name-match
+//! hits also has aggregate outcomes (zero matches, several of one kind,
+//! several mixed kinds) that aren't groupings of any one chunk. Those live
+//! in [`KindResolution`] — `Resolved(Kind)` for the single-kind case plus
+//! `Multiple` / `Ambiguous` / `NotFound`. Keeping them in separate types
+//! means `classify_chunk_type`'s callers (`routing_priority`, the store's
+//! ORDER BY) match over five honest routing arms instead of carrying dead
+//! aggregate cases an individual chunk can never reach.
 
 use crate::language::{ChunkType, Language};
 use crate::store::{ChunkSummary, Store, StoreError};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Routing-level grouping for a name's classification.
+/// Routing-level grouping for a single chunk's classification.
 ///
-/// `NotFound`, `Ambiguous`, and `Multiple` are dispatch decisions
-/// rather than chunk-type groupings — the polymorphic-routing doc
-/// uses them to drive per-command fallback behavior.
+/// These are the kinds a *single* `ChunkType` maps to — the groupings the
+/// per-(command × kind) routing matrix dispatches on. Aggregate outcomes
+/// (a name matching zero, several same-kind, or several mixed-kind chunks)
+/// live in [`KindResolution`], not here: this enum only ever describes one
+/// concrete definition, so an exhaustive `match Kind` downstream sees five
+/// honest routing arms with no dead aggregate cases to enumerate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// Callable — `ChunkType::{Function, Method, Constructor, Test, Endpoint, Middleware}`.
@@ -51,6 +65,25 @@ pub enum Kind {
     /// treat these as freeform results today; future fallback rules
     /// land here as the design matrix expands.
     Other,
+}
+
+/// Outcome of resolving a *set* of name-match hits to a routing decision.
+///
+/// Split out from [`Kind`]: the old combined enum mixed the
+/// five single-chunk routing kinds with three set-level dispatch outcomes,
+/// so every exhaustive `match` downstream had to enumerate aggregate arms
+/// that `classify_chunk_type` could never produce. This type owns the
+/// aggregate decisions; [`Kind`] owns the per-chunk grouping.
+///
+/// - [`Resolved`](Self::Resolved) wraps the single [`Kind`] when exactly one
+///   hit matched. The happy path: the command either runs its normal flow
+///   or a single-kind fallback.
+/// - The three remaining variants are the set-level outcomes the
+///   polymorphic-routing doc drives fallback behavior from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KindResolution {
+    /// Exactly one hit matched, surfaced as its single routing [`Kind`].
+    Resolved(Kind),
     /// Multiple kinds match the same name (e.g. `len` is both a method
     /// AND a const in some codebases). Caller should surface all
     /// candidates with kind labels.
@@ -129,7 +162,7 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
 }
 
 /// Routing priority for a [`Kind`]: lower values sort first in
-/// `Store::lookup_by_name`'s ORDER BY.
+/// `Store::get_chunks_by_name`'s ORDER BY.
 ///
 /// The classifier ([`classify_hits`]) reduces over the *set* of kinds it
 /// sees, so ordering only becomes load-bearing once the lookup is bounded:
@@ -142,24 +175,30 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
 /// wrong-kind fallback. Types outrank consts (deps runs its normal flow
 /// for types), and modules come last among the routed kinds.
 pub fn routing_priority(kind: Kind) -> u8 {
+    // Exhaustive over the five routing kinds — the aggregate dispatch
+    // outcomes live in `KindResolution` now, so there are no dead arms to
+    // enumerate here. A new `Kind` variant is a compile error until it
+    // picks a rank.
     match kind {
         Kind::Function => 0,
         Kind::Type => 1,
         Kind::Const => 2,
         Kind::Module => 3,
         Kind::Other => 4,
-        // Aggregate dispatch decisions — never produced by
-        // `classify_chunk_type` for a single chunk_type. Listed to keep
-        // the match exhaustive (a new Kind variant must pick a rank).
-        Kind::Ambiguous | Kind::Multiple | Kind::NotFound => 5,
     }
 }
 
-/// One-shot kind detection: query the store for exact-name matches,
-/// build hits, and reduce to a [`Kind`]. Returns the classified kind
-/// alongside the underlying hits (the per-(command × kind) routing
-/// matrix uses both — the kind drives dispatch, the hits carry the
-/// location info the chosen handler needs).
+/// One-shot kind detection: query the store for exact-name matches **once**,
+/// classify them, and return the [`KindResolution`] alongside the full
+/// [`ChunkSummary`] rows that produced it.
+///
+/// Returning the summaries (not the lossy [`KindHit`] projection) is the
+/// Invariant: a dispatcher that decides to render a kind-mismatch
+/// fallback reuses *these* rows for its `definitions[]` rather than issuing
+/// a second `WHERE name = ?` query. One read feeds both the routing
+/// decision and the rendering, so the two can't disagree under a concurrent
+/// reindex (no snapshot drift between "what kind is this" and "what are its
+/// definitions").
 ///
 /// A command dispatcher calls this to decide whether to run the original
 /// handler (kind matches the command) or fall back to a kind-labeled
@@ -170,43 +209,43 @@ pub fn routing_priority(kind: Kind) -> u8 {
 pub fn detect_kind_for_store<Mode>(
     store: &Store<Mode>,
     name: &str,
-) -> Result<(Kind, Vec<KindHit>), StoreError> {
+) -> Result<(KindResolution, Vec<ChunkSummary>), StoreError> {
     let _span = tracing::info_span!("detect_kind_for_store", %name).entered();
-    let chunks = store.lookup_by_name(name)?;
+    let chunks = store.get_chunks_by_name(name)?;
     let hits: Vec<KindHit> = chunks.iter().map(KindHit::from).collect();
-    let kind = classify_hits(&hits);
-    Ok((kind, hits))
+    let resolution = classify_hits(&hits);
+    Ok((resolution, chunks))
 }
 
-/// Reduce a sequence of hits to a single `Kind` decision.
+/// Reduce a sequence of hits to a single [`KindResolution`] decision.
 ///
 /// `hits` should be the exact-name-match results from the chunks
 /// table. The classifier:
 /// - 0 hits → `NotFound`
-/// - 1 hit  → its `Kind` (Function / Type / Const / Module / Other)
+/// - 1 hit  → `Resolved(kind)` (Function / Type / Const / Module / Other)
 /// - N hits, all same Kind → `Multiple`
 /// - N hits, mixed Kinds → `Ambiguous`
-pub fn classify_hits(hits: &[KindHit]) -> Kind {
+pub fn classify_hits(hits: &[KindHit]) -> KindResolution {
     let _span = tracing::info_span!("classify_hits", hits = hits.len()).entered();
     if hits.is_empty() {
-        return Kind::NotFound;
+        return KindResolution::NotFound;
     }
     let kinds: HashSet<Kind> = hits
         .iter()
         .map(|h| classify_chunk_type(h.chunk_type))
         .collect();
     if kinds.len() > 1 {
-        return Kind::Ambiguous;
+        return KindResolution::Ambiguous;
     }
     if hits.len() > 1 {
-        return Kind::Multiple;
+        return KindResolution::Multiple;
     }
     // Logically `kinds.len() == 1` here (the early-returns above
     // ensure non-empty + non-mixed). `unwrap_or` keeps the function
     // panic-free per the project's "no unwrap outside tests" rule —
     // a future refactor that breaks the invariant will route to
     // `Kind::Other` (the routing-level catch-all) rather than crash.
-    kinds.into_iter().next().unwrap_or(Kind::Other)
+    KindResolution::Resolved(kinds.into_iter().next().unwrap_or(Kind::Other))
 }
 
 #[cfg(test)]
@@ -314,11 +353,10 @@ mod tests {
                 expected(ct),
                 "classify_chunk_type({ct:?}) routing intent drifted"
             );
-            // A single chunk_type never reduces to an aggregate decision.
-            assert!(
-                !matches!(got, Kind::Ambiguous | Kind::Multiple | Kind::NotFound),
-                "{ct:?} classified to an aggregate-only Kind ({got:?})"
-            );
+            // `classify_chunk_type` returns a routing `Kind`, never an
+            // aggregate outcome — those live in `KindResolution` now, so
+            // the type system already rules them out here. (The aggregate
+            // path is exercised by the `classify_hits_*` tests below.)
         }
 
         // Sanity: the previously-undertested variants are present in ALL and
@@ -338,19 +376,22 @@ mod tests {
 
     #[test]
     fn classify_hits_empty_is_not_found() {
-        assert_eq!(classify_hits(&[]), Kind::NotFound);
+        assert_eq!(classify_hits(&[]), KindResolution::NotFound);
     }
 
     #[test]
     fn classify_hits_single_function_returns_function() {
         let hits = vec![hit(ChunkType::Function, "foo", "src/a.rs", 10)];
-        assert_eq!(classify_hits(&hits), Kind::Function);
+        assert_eq!(
+            classify_hits(&hits),
+            KindResolution::Resolved(Kind::Function)
+        );
     }
 
     #[test]
     fn classify_hits_single_const_returns_const() {
         let hits = vec![hit(ChunkType::Constant, "FOO", "src/a.rs", 5)];
-        assert_eq!(classify_hits(&hits), Kind::Const);
+        assert_eq!(classify_hits(&hits), KindResolution::Resolved(Kind::Const));
     }
 
     #[test]
@@ -359,7 +400,7 @@ mod tests {
             hit(ChunkType::Function, "foo", "src/a.rs", 10),
             hit(ChunkType::Function, "foo", "src/b.rs", 20),
         ];
-        assert_eq!(classify_hits(&hits), Kind::Multiple);
+        assert_eq!(classify_hits(&hits), KindResolution::Multiple);
     }
 
     #[test]
@@ -368,7 +409,7 @@ mod tests {
             hit(ChunkType::Method, "len", "src/a.rs", 10),
             hit(ChunkType::Constant, "len", "src/b.rs", 5),
         ];
-        assert_eq!(classify_hits(&hits), Kind::Ambiguous);
+        assert_eq!(classify_hits(&hits), KindResolution::Ambiguous);
     }
 
     #[test]
@@ -380,7 +421,7 @@ mod tests {
             hit(ChunkType::Function, "process", "src/a.rs", 10),
             hit(ChunkType::Method, "process", "src/b.rs", 20),
         ];
-        assert_eq!(classify_hits(&hits), Kind::Multiple);
+        assert_eq!(classify_hits(&hits), KindResolution::Multiple);
     }
 
     fn build_test_chunk(name: &str, file: &str) -> crate::parser::Chunk {
@@ -423,8 +464,8 @@ mod tests {
             .upsert_chunks_batch(&[(chunk, mock_embedding(1.0))], Some(100))
             .unwrap();
 
-        let (kind, hits) = detect_kind_for_store(&store, "foo").unwrap();
-        assert_eq!(kind, Kind::Function);
+        let (resolution, hits) = detect_kind_for_store(&store, "foo").unwrap();
+        assert_eq!(resolution, KindResolution::Resolved(Kind::Function));
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "foo");
     }
@@ -440,8 +481,8 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.init(&crate::store::ModelInfo::default()).unwrap();
 
-        let (kind, hits) = detect_kind_for_store(&store, "missing_name").unwrap();
-        assert_eq!(kind, Kind::NotFound);
+        let (resolution, hits) = detect_kind_for_store(&store, "missing_name").unwrap();
+        assert_eq!(resolution, KindResolution::NotFound);
         assert!(hits.is_empty());
     }
 
@@ -473,8 +514,8 @@ mod tests {
             )
             .unwrap();
 
-        let (kind, hits) = detect_kind_for_store(&store, "len").unwrap();
-        assert_eq!(kind, Kind::Ambiguous);
+        let (resolution, hits) = detect_kind_for_store(&store, "len").unwrap();
+        assert_eq!(resolution, KindResolution::Ambiguous);
         assert_eq!(hits.len(), 2);
         // Priority order: the callable hit ranks first.
         assert_eq!(hits[0].chunk_type, ChunkType::Function);

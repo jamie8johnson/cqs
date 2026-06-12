@@ -24,6 +24,7 @@ mod metadata;
 mod migrations;
 mod notes;
 mod search;
+pub(crate) mod serve_queries;
 mod sparse;
 mod summary_queue;
 mod types;
@@ -145,8 +146,8 @@ pub use helpers::score_name_match_pre_lower;
 /// Result of atomic GC prune (all 4 operations in one transaction).
 pub use chunks::PruneAllResult;
 
-/// Row cap for `Store::lookup_by_name` (kind-detection lookup).
-pub use chunks::LOOKUP_BY_NAME_LIMIT;
+/// Row cap for `Store::get_chunks_by_name` (kind-detection lookup).
+pub use chunks::GET_CHUNKS_BY_NAME_LIMIT;
 
 /// Per-file reconcile fingerprint stored alongside each chunk.
 /// `mtime + size + content_hash`, used by `run_daemon_reconcile` to detect
@@ -176,7 +177,7 @@ pub use types::TypeGraph;
 pub use types::TypeUsage;
 
 /// Set RRF K override from config scoring overrides.
-pub use search::set_rrf_k_from_config;
+pub use crate::search::scoring::set_rrf_k_from_config;
 
 /// Defense-in-depth sanitization for FTS5 query strings.
 /// Strips or escapes FTS5 special characters that could alter query semantics.

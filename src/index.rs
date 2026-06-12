@@ -337,6 +337,10 @@ macro_rules! register_index_backends {
 register_index_backends! {
     crate::hnsw::HnswBackend;
     crate::cagra::CagraBackend, cfg(feature = "cuda-index");
+    // Tiered backend sits above CAGRA (priority 150 > 100) so, when opted in
+    // via CQS_TIERED_INDEX=1, it shadows CAGRA. The env gate lives in its
+    // `try_open`, so default behavior is unchanged even with the feature on.
+    crate::tiered::TieredBackend, cfg(feature = "tiered-index");
 }
 
 #[cfg(test)]
@@ -481,11 +485,24 @@ mod tests {
         assert_eq!(last.name(), "hnsw");
         assert_eq!(last.priority(), 0);
 
-        #[cfg(feature = "cuda-index")]
+        #[cfg(all(feature = "cuda-index", not(feature = "tiered-index")))]
         {
             assert_eq!(backends.len(), 2);
             assert_eq!(backends[0].name(), "cagra");
             assert_eq!(backends[0].priority(), 100);
+            // Sort puts higher priority first.
+            assert!(backends[0].priority() > backends[1].priority());
+        }
+
+        // With the tiered backend compiled in, it leads at priority 150,
+        // CAGRA follows at 100, HNSW remains the priority-0 fallback.
+        #[cfg(feature = "tiered-index")]
+        {
+            assert_eq!(backends.len(), 3);
+            assert_eq!(backends[0].name(), "tiered");
+            assert_eq!(backends[0].priority(), 150);
+            assert_eq!(backends[1].name(), "cagra");
+            assert_eq!(backends[1].priority(), 100);
             // Sort puts higher priority first.
             assert!(backends[0].priority() > backends[1].priority());
         }
@@ -504,8 +521,10 @@ mod tests {
         use crate::store::ReadOnly;
         let backends = backends::<ReadOnly>();
         assert_eq!(backends.last().unwrap().name(), "hnsw");
-        #[cfg(feature = "cuda-index")]
+        #[cfg(all(feature = "cuda-index", not(feature = "tiered-index")))]
         assert_eq!(backends[0].name(), "cagra");
+        #[cfg(feature = "tiered-index")]
+        assert_eq!(backends[0].name(), "tiered");
     }
 
     // ===== DistanceMetric =====
