@@ -452,6 +452,55 @@ fn dispatch_similar_returns_envelope_with_results() {
 }
 
 #[test]
+fn parity_similar_daemon_matches_core() {
+    // The structural payoff of the command-core split: the daemon
+    // `dispatch_similar` adapter and a direct `similar_core` +
+    // `build_similar_output` produce a byte-identical `serde_json::Value` for
+    // the same input. Parity-BY-CONSTRUCTION — the handler is a thin wrapper
+    // over the very core compared against — plus a fixture-grounded value
+    // assert so a both-sides-empty regression still fails.
+    use super::info::dispatch_similar;
+    use crate::cli::commands::search::similar::{build_similar_output, similar_core, SimilarArgs};
+
+    let (_dir, ctx) = seed_ctx();
+    let view = ctx.build_view(None);
+
+    // The seed corpus stores a unit embedding on every chunk, so cosine
+    // similarity is 1.0 across the board; threshold 0.0 keeps them all.
+    let wire = crate::cli::args::SimilarArgs {
+        name: "foo".into(),
+        limit_arg: crate::cli::args::LimitArg { limit: 3 },
+        threshold: 0.0,
+    };
+    let daemon = dispatch_similar(&view, &wire).expect("dispatch_similar");
+
+    let store = view.store();
+    let index = view.vector_index().expect("vector_index");
+    let filter = cqs::SearchFilter::default();
+    let core_args = SimilarArgs {
+        name: "foo".into(),
+        limit: 3,
+        threshold: 0.0,
+    };
+    let matches =
+        similar_core(&store, index.as_deref(), &filter, &core_args).expect("similar_core");
+    let core = serde_json::to_value(build_similar_output(&matches)).expect("serialize output");
+
+    // Fixture-grounded: `foo` resolves and its peers (bar/baz/helper) are all
+    // unit-embedding matches, so the core output must be non-empty before the
+    // byte-equality check below can mean anything.
+    assert_eq!(core["target"], "foo");
+    let results = core["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("similar core must carry a results array: {core}"));
+    assert!(
+        !results.is_empty(),
+        "seeded corpus must yield at least one similar result: {core}"
+    );
+    assert_eq!(daemon, core, "similar parity mismatch");
+}
+
+#[test]
 fn dispatch_explain_returns_envelope_without_tokens() {
     let (_dir, ctx) = seed_ctx();
     // Without --tokens, `dispatch_explain` skips the `ctx.embedder()?` path.

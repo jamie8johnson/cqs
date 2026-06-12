@@ -7,7 +7,6 @@ use anyhow::Result;
 
 use super::super::BatchView;
 use crate::cli::args::{BlameArgs, ContextArgs, ExplainArgs, OnboardArgs, ReadArgs, SimilarArgs};
-use crate::cli::validate_finite_f32;
 
 /// Dispatches a blame analysis request for a specified target and returns the results as JSON.
 /// This function orchestrates the blame operation by building blame data for the given target and converting it to JSON format. It uses tracing instrumentation to log the operation.
@@ -107,46 +106,28 @@ pub(in crate::cli::batch) fn dispatch_similar(
 ) -> Result<serde_json::Value> {
     let name = args.name.as_str();
     let _span = tracing::info_span!("batch_similar", name).entered();
-    let threshold = validate_finite_f32(args.threshold, "threshold")?;
-    // Shared with CLI's cmd_similar, which does not clamp — keep parity here
-    // rather than diverging.
-    let limit = args.limit_arg.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
-    let resolved = cqs::resolve_target(&ctx.store(), name)?;
-    let chunk = &resolved.chunk;
-
-    let (source_chunk, embedding) = ctx
-        .store()
-        .get_chunk_with_embedding(&chunk.id)?
-        .ok_or_else(|| anyhow::anyhow!("Could not load embedding for '{}'", chunk.name))?;
-
+    // Thin adapter over the shared `similar_core`. The daemon path uses a
+    // default filter (no `--lang` / `--path` scoping) and its cached
+    // `dyn VectorIndex`; the core resolves, retrieves, and self-excludes.
     let filter = cqs::SearchFilter::default();
-
     let index = ctx.vector_index()?;
-    let index = index.as_deref();
-    let results = ctx.store().search_filtered_with_index(
-        &embedding,
+    let store = ctx.store();
+    let core_args = crate::cli::commands::search::similar::SimilarArgs {
+        name: name.to_string(),
+        limit: args.limit_arg.limit,
+        threshold: args.threshold,
+    };
+    let matches = crate::cli::commands::search::similar::similar_core(
+        &store,
+        index.as_deref(),
         &filter,
-        limit.saturating_add(1),
-        threshold,
-        index,
+        &core_args,
     )?;
 
-    let filtered: Vec<_> = results
-        .into_iter()
-        .filter(|r| r.chunk.id != source_chunk.id)
-        .take(limit)
-        .collect();
-
-    // Emit the canonical 9-field SearchResult shape so daemon/CLI parity
-    // holds — same schema as the CLI's `r.to_json()`.
-    let json_results: Vec<serde_json::Value> = filtered.iter().map(|r| r.to_json()).collect();
-
-    Ok(serde_json::json!({
-        "results": json_results,
-        "target": chunk.name,
-        "total": json_results.len(),
-    }))
+    Ok(serde_json::to_value(
+        crate::cli::commands::search::similar::build_similar_output(&matches),
+    )?)
 }
 
 /// Dispatches a context query for a given file path in batch mode, returning JSON data.
