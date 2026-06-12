@@ -430,8 +430,13 @@ fn resolve_mmap_size(default_bytes: &str, db_path: &Path) -> String {
 /// I/O), so the detection is shared.
 ///
 /// Implementation: on Unix, parses `/proc/self/mountinfo` and looks up the
-/// fstype of the mount containing `path`. On non-Unix, returns `false` (mmap
-/// behavior on Windows native / macOS APFS is fine).
+/// fstype of the mount containing `path`. On Windows, classifies the path's
+/// drive root via `GetDriveTypeW` (`DRIVE_REMOTE` => slow), treats UNC paths
+/// (`\\server\share`, `\\?\UNC\...`) as slow, and treats a reparse point on
+/// any ancestor between `path` and the drive root as slow (cloud-sync
+/// placeholders — OneDrive/Dropbox — surface as reparse points; a page fault
+/// can trigger network hydration). On other targets (e.g. macOS APFS) returns
+/// `false` (native mmap is fine).
 ///
 /// Canonicalizes `path` first; if canonicalization fails (e.g., the file
 /// doesn't exist yet on first open), tries the parent directory.
@@ -474,11 +479,164 @@ pub(crate) fn is_slow_mmap_fs(path: &Path) -> bool {
             None => false,
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Resolve to an absolute path. On fresh opens the DB file may not
+        // exist yet (create_if_missing=true), so fall back to the parent dir.
+        let abs = dunce::canonicalize(path)
+            .or_else(|_| {
+                path.parent()
+                    .map_or(Ok(path.to_path_buf()), dunce::canonicalize)
+            })
+            .unwrap_or_else(|_| path.to_path_buf());
+
+        // 1. UNC paths (`\\server\share`, `\\?\UNC\...`) are network shares —
+        //    slow without needing a syscall. dunce strips the `\\?\` verbatim
+        //    prefix from drive-letter paths but keeps the `\\?\UNC\` form for
+        //    UNC, so check the original string too.
+        if is_unc_path(&abs) || is_unc_path(path) {
+            return true;
+        }
+
+        // 2. Drive-type: map the path's drive root to a `GetDriveTypeW` code.
+        if let Some(root) = windows_drive_root(&abs) {
+            if classify_drive_type(get_drive_type_w(&root)) {
+                return true;
+            }
+        }
+
+        // 3. Reparse points on any ancestor between `path` and the drive root.
+        //    Cloud-sync folders (OneDrive/Dropbox) present as reparse points;
+        //    a page fault on a placeholder triggers network hydration. Walk the
+        //    ORIGINAL `path`, not the canonicalized `abs`: canonicalization
+        //    resolves reparse points, which would hide the very attribute we
+        //    want to detect.
+        has_reparse_ancestor(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         false
     }
+}
+
+/// Classify a `GetDriveTypeW` result code as slow (`true`) or fine (`false`).
+///
+/// `DRIVE_REMOTE` (4) is a network drive (mapped SMB / NFS share) — mmap page
+/// faults become network round trips. All other codes (fixed, removable,
+/// CD-ROM, RAM disk, unknown, no-root-dir) are treated as local-speed.
+///
+/// Pure function over the raw `u32` so it is unit-testable on every platform.
+#[cfg(any(windows, test))]
+fn classify_drive_type(drive_type: u32) -> bool {
+    // winbase.h: DRIVE_REMOTE = 4.
+    const DRIVE_REMOTE: u32 = 4;
+    drive_type == DRIVE_REMOTE
+}
+
+/// Return `true` if `path` is a UNC path (`\\server\share\...` or the
+/// `\\?\UNC\server\share\...` extended form). UNC paths always target a
+/// network share, so they are slow regardless of drive-type classification.
+///
+/// Drive-letter verbatim paths (`\\?\C:\...`) are NOT UNC and return `false`.
+///
+/// Pure function over the path string so it is unit-testable on every platform.
+#[cfg(any(windows, test))]
+fn is_unc_path(path: &Path) -> bool {
+    let Some(s) = path.to_str() else {
+        return false;
+    };
+    let upper = s.to_ascii_uppercase();
+    if let Some(rest) = upper.strip_prefix(r"\\?\") {
+        // Extended-length prefix: UNC form is `\\?\UNC\server\share`.
+        // `\\?\C:\...` is a verbatim drive path, not UNC.
+        return rest.starts_with(r"UNC\");
+    }
+    if let Some(rest) = upper.strip_prefix(r"\\.\") {
+        // Device namespace (`\\.\`) is local hardware, not a share.
+        let _ = rest;
+        return false;
+    }
+    // Plain UNC: starts with `\\` but not the special `\\?\` / `\\.\` prefixes.
+    upper.starts_with(r"\\")
+}
+
+/// Extract the drive root (e.g. `C:\`) from a Windows path, suitable for
+/// passing to `GetDriveTypeW`. Returns `None` for paths without a drive letter
+/// (UNC paths, which are handled separately, or malformed input).
+///
+/// Strips a `\\?\` extended-length prefix first so `\\?\C:\dir` yields `C:\`.
+///
+/// Pure function over the path string so it is unit-testable on every platform.
+#[cfg(any(windows, test))]
+fn windows_drive_root(path: &Path) -> Option<String> {
+    let s = path.to_str()?;
+    // Strip the verbatim prefix if present (case-insensitively the literal `\\?\`).
+    let stripped = s.strip_prefix(r"\\?\").unwrap_or(s);
+    let bytes = stripped.as_bytes();
+    // Need at least `X:` — a drive letter followed by a colon.
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        // GetDriveTypeW wants a trailing backslash on the root (`C:\`).
+        return Some(format!("{}:\\", (bytes[0] as char).to_ascii_uppercase()));
+    }
+    None
+}
+
+/// Call `GetDriveTypeW` on a drive root (`C:\`) and return the raw drive-type
+/// code. An unrecognized or unrooted path yields `0`/`1` (`DRIVE_UNKNOWN` /
+/// `DRIVE_NO_ROOT_DIR`), which `classify_drive_type` treats as non-slow.
+///
+/// FFI declared inline to avoid pulling in `windows-sys`/`winapi` as a direct
+/// dependency; `GetDriveTypeW` is a stable `kernel32` export.
+#[cfg(windows)]
+fn get_drive_type_w(root: &str) -> u32 {
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
+    }
+
+    // Wide, NUL-terminated.
+    let wide: Vec<u16> = std::ffi::OsStr::new(root)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is a valid NUL-terminated UTF-16 buffer that outlives the
+    // call; `GetDriveTypeW` only reads from the pointer.
+    unsafe { GetDriveTypeW(wide.as_ptr()) }
+}
+
+/// Return `true` if `path` or any of its ancestors up to (but excluding) the
+/// drive root carries the `FILE_ATTRIBUTE_REPARSE_POINT` attribute.
+///
+/// Conservative bias: distinguishing a benign junction/symlink to local disk
+/// from a cloud-sync placeholder (OneDrive/Dropbox) requires `FSCTL_GET_REPARSE_POINT`
+/// and tag inspection, which is too deep for this hot path. Instead, ANY reparse
+/// point on an ancestor is treated as slow. A false positive (disabling mmap on
+/// a fast local junction) is a safe degradation; a false negative (mmap over a
+/// cloud placeholder) is a performance collapse — every page fault hydrates.
+#[cfg(windows)]
+fn has_reparse_ancestor(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    // winnt.h: FILE_ATTRIBUTE_REPARSE_POINT = 0x400.
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    let mut current: Option<&Path> = Some(path);
+    while let Some(p) = current {
+        // Stop once we reach a bare drive root (`C:\`) or a prefix-only path —
+        // those have no parent below the root to carry a meaningful reparse tag.
+        if p.parent().is_none() {
+            break;
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(p) {
+            if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return true;
+            }
+        }
+        current = p.parent();
+    }
+    false
 }
 
 /// Parse `/proc/self/mountinfo` content and return the fstype of the mount
@@ -684,6 +842,89 @@ mod slow_fs_tests {
             Some(v) => std::env::set_var("CQS_MMAP_SIZE", v),
             None => std::env::remove_var("CQS_MMAP_SIZE"),
         }
+    }
+
+    // --- Windows slow-FS classification (pure helpers, tested cross-platform) ---
+    // These exercise the classification logic without live syscalls so they
+    // compile and run on the Linux/WSL dev box and CI. The syscall wrappers
+    // (`get_drive_type_w`, `has_reparse_ancestor`) are `#[cfg(windows)]` and
+    // gated to the release Windows build.
+
+    use super::{classify_drive_type, is_unc_path, windows_drive_root};
+
+    #[test]
+    fn drive_remote_is_slow() {
+        // DRIVE_REMOTE = 4 → slow.
+        assert!(classify_drive_type(4));
+    }
+
+    #[test]
+    fn local_drive_types_are_not_slow() {
+        // 0 DRIVE_UNKNOWN, 1 DRIVE_NO_ROOT_DIR, 2 DRIVE_REMOVABLE,
+        // 3 DRIVE_FIXED, 5 DRIVE_CDROM, 6 DRIVE_RAMDISK.
+        for code in [0u32, 1, 2, 3, 5, 6] {
+            assert!(!classify_drive_type(code), "code {code} should be local");
+        }
+    }
+
+    #[test]
+    fn plain_unc_path_is_unc() {
+        assert!(is_unc_path(Path::new(r"\\server\share\file.db")));
+        assert!(is_unc_path(Path::new(r"\\NAS\projects\cqs\.cqs\index.db")));
+    }
+
+    #[test]
+    fn extended_unc_path_is_unc() {
+        assert!(is_unc_path(Path::new(r"\\?\UNC\server\share\file.db")));
+        // Case-insensitive on the UNC token.
+        assert!(is_unc_path(Path::new(r"\\?\unc\server\share\file.db")));
+    }
+
+    #[test]
+    fn verbatim_drive_path_is_not_unc() {
+        // `\\?\C:\...` is an extended-length drive path, not a network share.
+        assert!(!is_unc_path(Path::new(r"\\?\C:\Projects\cqs\index.db")));
+    }
+
+    #[test]
+    fn device_namespace_is_not_unc() {
+        assert!(!is_unc_path(Path::new(r"\\.\PhysicalDrive0")));
+    }
+
+    #[test]
+    fn local_drive_letter_is_not_unc() {
+        assert!(!is_unc_path(Path::new(r"C:\Projects\cqs\index.db")));
+    }
+
+    #[test]
+    fn drive_root_extracted_from_plain_path() {
+        assert_eq!(
+            windows_drive_root(Path::new(r"C:\Projects\cqs\index.db")).as_deref(),
+            Some(r"C:\")
+        );
+        // Lowercase drive letter is normalized to uppercase root.
+        assert_eq!(
+            windows_drive_root(Path::new(r"z:\maps\share")).as_deref(),
+            Some(r"Z:\")
+        );
+    }
+
+    #[test]
+    fn drive_root_extracted_from_verbatim_path() {
+        assert_eq!(
+            windows_drive_root(Path::new(r"\\?\D:\data\index.db")).as_deref(),
+            Some(r"D:\")
+        );
+    }
+
+    #[test]
+    fn drive_root_none_for_unc_and_relative() {
+        // UNC has no drive letter (handled by is_unc_path instead).
+        assert_eq!(windows_drive_root(Path::new(r"\\server\share\f")), None);
+        // Relative path, no drive.
+        assert_eq!(windows_drive_root(Path::new(r"relative\path")), None);
+        // Too short to carry `X:`.
+        assert_eq!(windows_drive_root(Path::new("C")), None);
     }
 }
 
