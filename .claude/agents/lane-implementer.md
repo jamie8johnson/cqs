@@ -23,6 +23,7 @@ Run `pwd` first. Work ONLY inside your worktree; never use absolute paths into /
 - `cargo fmt`
 - `cargo clippy --all-targets --features cuda-index` clean (CI gates --all-targets; --lib --bins is a false pass)
 - Targeted tests ONLY: `cargo test --features cuda-index --lib <filter>` per touched module, plus parity/integration filters where relevant. Never the bare full suite (holds the lock, wastes GPU).
+- **EXCEPTION — global-state changes run one full `--tests` sweep** (`cargo test --features cuda-index --tests`, your private target dir): schema version bumps, PARSER_VERSION bumps, env-var semantics, output-envelope shapes. These leak into integration fixtures far from your diff — targeted filters missed two schema-assertion classes on the v29 lane and cost two CI round trips.
 - `git diff origin/main...HEAD -- '*.rs' | python3 scripts/check_comment_provenance.py` passes.
 
 ## Contract
