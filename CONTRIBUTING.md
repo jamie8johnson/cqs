@@ -309,7 +309,8 @@ src/
   store/        - SQLite storage layer (Schema v28, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
-    search.rs   - RRF fusion, search_filtered, search_unified_with_index
+    search.rs   - Store-owned SQL search: search_fts, fts_match_ids (v27 needs_embedding gate), search_by_name (imports nothing from search/ — scoring lives there)
+    serve_queries.rs - Typed-row SQL for the `cqs serve` `/api/*` endpoints; serve/data.rs wire builders call these instead of running raw sqlx against the pool
     sparse.rs   - Sparse vector CRUD (SPLADE), upsert_sparse_vectors, prune_orphan,
                   bump_splade_generation_tx, splade_generation()
     chunks/     - Chunk storage and retrieval
@@ -345,6 +346,7 @@ src/
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
       mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
+      fusion.rs - RRF reciprocal-rank fusion (rrf_fuse, rrf_fuse_n, rrf_k, set_rrf_k_from_config); search owns fusion (moved out of store/search.rs)
       knob.rs   - Shared resolver for f32 scoring knobs (SCORING_KNOBS table: name, env var, default, range, cache contract — one row per knob)
     mmr.rs      - Maximum Marginal Relevance re-ranking: diversifies the top-K pool to break near-duplicate crowding (same-file/same-name) surfaced by the R@5 audit
     query.rs    - Query parsing, filter extraction
@@ -439,7 +441,7 @@ src/
   serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
     mod.rs      - run_server, build_router, server wiring
     handlers.rs - axum route handlers (search, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
-    data.rs     - Wire-format types for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention)
+    data.rs     - Wire-format types + builders for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention); wire-shaping only — SQL lives in store/serve_queries.rs
     error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses
     assets.rs   - Static assets baked into the binary via `include_str!` (index.html + app.css + app.js; no request-time filesystem reads)
     auth.rs     - Per-launch auth token: 256-bit URL-safe base64, constant-time compare, Bearer/cookie/?token= surfaces (#1118 / SEC-7)
