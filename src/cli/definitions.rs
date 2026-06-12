@@ -277,7 +277,12 @@ pub struct Cli {
     pub tokens: Option<usize>,
 
     /// Suppress progress output
-    #[arg(short, long)]
+    ///
+    /// `global = true` so `-q`/`--quiet` works after a subcommand
+    /// (`cqs index -q`), matching how the skill docs already assumed it
+    /// behaved. No subcommand defines its own `-q` short flag, so
+    /// globalizing introduces no collision.
+    #[arg(short, long, global = true)]
     pub quiet: bool,
 
     /// Disable staleness checks (skip per-file mtime comparison)
@@ -316,6 +321,23 @@ pub struct Cli {
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Acknowledge writing to a parent index from inside a git worktree.
+    ///
+    /// From a worktree under a parent Cargo workspace (e.g.
+    /// `.claude/worktrees/<agent>/`), cqs's project-root discovery walks
+    /// up past the worktree's own `.git` to the parent's index — deliberate
+    /// for *reads*. A WRITE command
+    /// (`init`/`index`/`notes add`/`cache prune`/`slot create`/…) that
+    /// resolves to a parent index outside the current worktree would
+    /// silently mutate it, defeating worktree isolation. Such a write is
+    /// refused unless this flag — or `CQS_PARENT_INDEX_OK=1` —
+    /// acknowledges it. Reads are never gated.
+    ///
+    /// `global = true` so it can sit after the subcommand
+    /// (`cqs index --parent-index`).
+    #[arg(long, global = true)]
+    pub parent_index: bool,
 
     /// Resolved model config (set by dispatch, not CLI).
     ///
@@ -1096,6 +1118,67 @@ impl Commands {
             _ => false,
         }
     }
+
+    /// `true` when this invocation mutates the resolved `.cqs/` index
+    /// (or its slots / cache / refs) — the set the parent-index write
+    /// guard gates. Pure reads and daemon-forwarded queries return
+    /// `false` so the guard never fires on the worktree→main read path.
+    ///
+    /// Subcommand-bearing variants (`notes` / `cache` / `slot` / `ref` /
+    /// `model`) classify per inner subcommand: `list` / `stats` /
+    /// `active` / `show` are reads; `add` / `update` / `remove` /
+    /// `prune` / `clear` / `compact` / `create` / `promote` / `swap`
+    /// mutate. The match is intentionally explicit (no `..` wildcard on
+    /// the inner enums) so a new mutating subcommand fails to compile
+    /// here rather than silently escaping the guard.
+    pub(crate) fn mutates_index(&self) -> bool {
+        use crate::cli::commands::{
+            CacheCommand, ModelCommand, NotesCommand, RefCommand, SlotCommand,
+        };
+        match self {
+            // Always-mutating top-level commands.
+            Commands::Init { .. }
+            | Commands::Index { .. }
+            | Commands::Watch { .. }
+            | Commands::Gc { .. } => true,
+            // `notes add|update|remove` write notes.toml + reindex; `list` reads.
+            Commands::Notes { subcmd } => match subcmd {
+                NotesCommand::Add { .. }
+                | NotesCommand::Update { .. }
+                | NotesCommand::Remove { .. } => true,
+                NotesCommand::List { .. } => false,
+            },
+            // `cache clear|prune|compact` mutate the cache DB; `stats` reads.
+            Commands::Cache { subcmd } => match subcmd {
+                CacheCommand::Clear { .. }
+                | CacheCommand::Prune { .. }
+                | CacheCommand::Compact { .. } => true,
+                CacheCommand::Stats { .. } => false,
+            },
+            // `slot create|promote|remove` mutate the slot tree; `list`/`active` read.
+            Commands::Slot { subcmd } => match subcmd {
+                SlotCommand::Create { .. }
+                | SlotCommand::Promote { .. }
+                | SlotCommand::Remove { .. } => true,
+                SlotCommand::List { .. } | SlotCommand::Active { .. } => false,
+            },
+            // `ref add|update|remove` write the reference registry / dirs; `list` reads.
+            Commands::Ref { subcmd } => match subcmd {
+                RefCommand::Add { .. } | RefCommand::Update { .. } | RefCommand::Remove { .. } => {
+                    true
+                }
+                RefCommand::List { .. } => false,
+            },
+            // `model swap` backs up + reindexes; `show`/`list` read.
+            Commands::Model { subcmd } => match subcmd {
+                ModelCommand::Swap { .. } => true,
+                ModelCommand::Show { .. } | ModelCommand::List { .. } => false,
+            },
+            // Everything else is a read, a daemon-forwarded query, or a
+            // non-index-mutating utility (doctor, completions, eval, …).
+            _ => false,
+        }
+    }
 }
 
 /// Classifier used by `try_daemon_query` to decide whether a CLI command can
@@ -1319,6 +1402,96 @@ mod tests {
 
         let cli = Cli::try_parse_from(["cqs", "stale"]).unwrap();
         assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+    }
+
+    /// `mutates_index()` gates the parent-index write guard. Pin the
+    /// policy for the destructive set and a few read-only neighbors so an
+    /// accidental flip (e.g. classifying `notes list` as a write, or
+    /// dropping `index`) fails here rather than silently changing which
+    /// commands the worktree guard fires for.
+    #[test]
+    fn mutates_index_classifies_writes_vs_reads() {
+        use clap::Parser;
+        let parse = |argv: &[&str]| {
+            let mut full = vec!["cqs"];
+            full.extend_from_slice(argv);
+            Cli::try_parse_from(full)
+                .unwrap_or_else(|e| panic!("argv {argv:?} must parse: {e}"))
+                .command
+                .expect("argv must produce a subcommand")
+        };
+
+        // Writes — must be guarded.
+        for argv in [
+            &["init"][..],
+            &["index"][..],
+            &["gc"][..],
+            &["watch"][..],
+            &["notes", "add", "n"][..],
+            &["notes", "update", "n"][..],
+            &["notes", "remove", "n"][..],
+            &["cache", "prune"][..],
+            &["cache", "clear"][..],
+            &["cache", "compact"][..],
+            &["slot", "create", "s"][..],
+            &["slot", "promote", "s"][..],
+            &["slot", "remove", "s"][..],
+            &["ref", "add", "name", "/src"][..],
+            &["ref", "remove", "name"][..],
+            &["model", "swap", "bge-large"][..],
+        ] {
+            assert!(
+                parse(argv).mutates_index(),
+                "{argv:?} must be classified as an index mutation"
+            );
+        }
+
+        // Reads / non-mutating — must NOT be guarded (the worktree→main
+        // read path stays silent).
+        for argv in [
+            &["notes", "list"][..],
+            &["cache", "stats"][..],
+            &["slot", "list"][..],
+            &["slot", "active"][..],
+            &["ref", "list"][..],
+            &["model", "show"][..],
+            &["model", "list"][..],
+            &["scout", "foo"][..],
+            &["impact", "foo"][..],
+            &["read", "src/lib.rs"][..],
+            &["doctor"][..],
+            &["stats"][..],
+        ] {
+            assert!(
+                !parse(argv).mutates_index(),
+                "{argv:?} must NOT be classified as an index mutation"
+            );
+        }
+    }
+
+    /// `--parent-index` and `-q`/`--quiet` are `global = true`: they parse
+    /// after a subcommand. Pins the globalization so a regression
+    /// (dropping `global = true`) fails here rather than at agent runtime.
+    #[test]
+    fn quiet_and_parent_index_are_global_flags() {
+        use clap::Parser;
+        // `-q` after the subcommand.
+        let cli = Cli::try_parse_from(["cqs", "index", "-q"]).expect("`index -q` must parse");
+        assert!(
+            cli.quiet,
+            "-q must set quiet when placed after the subcommand"
+        );
+        // `--parent-index` after the subcommand.
+        let cli = Cli::try_parse_from(["cqs", "index", "--parent-index"])
+            .expect("`index --parent-index` must parse");
+        assert!(
+            cli.parent_index,
+            "--parent-index must parse after the subcommand"
+        );
+        // Both still parse before the subcommand too.
+        let cli =
+            Cli::try_parse_from(["cqs", "--quiet", "init"]).expect("`--quiet init` must parse");
+        assert!(cli.quiet);
     }
 
     /// Top-level `--expand-parent` (bool, parent context) and

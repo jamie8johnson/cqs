@@ -73,6 +73,20 @@ fn run_with_dispatch(
         std::env::set_var("CQS_SLOT", slot_name);
     }
 
+    // Parent-index write guard. A WRITE command whose resolved
+    // project root crossed a git-worktree / Cargo-workspace boundary
+    // *upward* would silently mutate an index outside the current
+    // worktree. Refuse it unless explicitly acknowledged. Runs before any
+    // dispatch (and before daemon forwarding, which never carries write
+    // commands anyway — they're all `BatchSupport::Cli`), so the
+    // mutation is blocked at the boundary, not by call-site discipline.
+    // Reads never reach this gate.
+    if let Some(cmd) = cli.command.as_ref() {
+        if cmd.mutates_index() {
+            guard_parent_index_write(cli.parent_index)?;
+        }
+    }
+
     // Load config and apply defaults (CLI flags override config)
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
@@ -255,6 +269,80 @@ fn run_with_dispatch(
     dispatch_group_b(&cli, &ctx, project_cqs_dir)
 }
 
+/// Environment-variable acknowledgment for a parent-index write.
+/// Mirrors the `--parent-index` flag — either suffices. Set to `1` to
+/// permit a WRITE command to mutate the parent index from inside a
+/// worktree.
+const PARENT_INDEX_OK_ENV: &str = "CQS_PARENT_INDEX_OK";
+
+/// Refuse a WRITE command whose resolved project root crossed a
+/// git-worktree / Cargo-workspace boundary upward, unless the caller
+/// acknowledged it via `--parent-index` or `CQS_PARENT_INDEX_OK=1`.
+///
+/// The guard lives on the CLI resolution path: every write command is
+/// `BatchSupport::Cli` and runs inline (the daemon forwards reads only),
+/// so blocking here covers both surfaces — a daemon-forwarded write
+/// cannot exist. Reads never call this.
+///
+/// `acknowledged` is the parsed `--parent-index` flag; the env var is an
+/// equivalent acknowledgment for scripted / agent contexts that prefer a
+/// process-env opt-in over a per-invocation flag.
+fn guard_parent_index_write(acknowledged: bool) -> Result<()> {
+    let _span = tracing::info_span!("guard_parent_index_write").entered();
+
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            // Can't resolve CWD → can't detect a boundary crossing.
+            // Fail-open: never block a write on a CWD-resolution quirk.
+            tracing::warn!(error = %e, "parent-index guard: current_dir() failed; skipping check");
+            return Ok(());
+        }
+    };
+    let resolved_root = find_project_root();
+
+    let Some(worktree_root) = cqs::worktree::parent_index_boundary_crossed(&cwd, &resolved_root)
+    else {
+        // No upward boundary crossing — regular repo or non-worktree.
+        return Ok(());
+    };
+
+    let env_ok = std::env::var(PARENT_INDEX_OK_ENV)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+
+    if acknowledged || env_ok {
+        tracing::warn!(
+            worktree = %worktree_root.display(),
+            parent_index = %resolved_root.display(),
+            via = if acknowledged { "--parent-index" } else { PARENT_INDEX_OK_ENV },
+            "Writing to the PARENT index from inside a worktree (acknowledged). \
+             This mutates an index outside the current worktree."
+        );
+        return Ok(());
+    }
+
+    tracing::warn!(
+        worktree = %worktree_root.display(),
+        parent_index = %resolved_root.display(),
+        "Refusing to write to the PARENT index from inside a worktree"
+    );
+    Err(anyhow::anyhow!(
+        "refusing to write to the parent index from inside a git worktree\n  \
+         worktree root: {worktree}\n  \
+         resolved index: {parent}\n\n\
+         This WRITE command's project-root discovery walked up past the worktree's \
+         own .git to the parent index (Cargo-workspace / worktree boundary). \
+         Mutating it would defeat worktree isolation.\n\n\
+         If this is intentional, re-run with `--parent-index` or set \
+         `{env}=1`. To write a worktree-local index instead, run `cqs init` \
+         in the worktree first (creates its own .cqs/).",
+        worktree = worktree_root.display(),
+        parent = resolved_root.display(),
+        env = PARENT_INDEX_OK_ENV,
+    ))
+}
+
 /// Generate shell completion scripts for the specified shell
 pub(crate) fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
@@ -312,7 +400,8 @@ fn cqs_slot_env_pins_slot() -> bool {
 /// top-level flag without classifying it here or there fails that test
 /// instead of failing daemon-up at runtime.
 #[cfg(unix)]
-const PROCESS_LOCAL_ARG_IDS: &[&str] = &["json", "quiet", "model", "slot", "verbose"];
+const PROCESS_LOCAL_ARG_IDS: &[&str] =
+    &["json", "quiet", "model", "slot", "verbose", "parent_index"];
 
 /// Top-level `Cli` arg IDs that are search knobs, mirrored spelling-for-
 /// spelling by `args::SearchArgs` (plus `LimitArg` for `limit`). Forwarded
