@@ -9,6 +9,12 @@ use crate::store::helpers::{
 };
 use crate::store::Store;
 
+/// One attributed-caller row from `get_callers_attributed`'s merged scan:
+/// `(file, caller_name, caller_line, edge_kind, trust_rank,
+/// caller_parent_type, callee_name)`. Aliased to keep the query under
+/// `clippy::type_complexity`.
+type AttributedCallerRow = (String, String, i64, String, i64, Option<String>, String);
+
 impl<Mode> Store<Mode> {
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
@@ -19,17 +25,20 @@ impl<Mode> Store<Mode> {
             // Collapse duplicate (file, caller, line) edges to a single row,
             // keeping the most-trusted kind. `MIN(rank_case)` over the explicit
             // trust rank (call < serde < macro < fn-pointer < doc-reference)
-            // replaces the old lexical `MIN(edge_kind)` — alphabetical ordering
-            // was a coincidence and `doc_reference` ('d') breaks it. SQLite's
+            // replaces a lexical `MIN(edge_kind)` — alphabetical ordering was a
+            // coincidence and `doc_reference` ('d') breaks it. SQLite's
             // bare-column rule lets the sibling `edge_kind` take its value from
             // the same min-rank row, so we read the kind and discard the rank.
+            // Trust rank also leads the ORDER BY so a limited window can never
+            // be filled by low-trust `doc_reference` edges while direct `call`
+            // edges sit below it.
             let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             let sql = format!(
-                "SELECT file, caller_name, caller_line, edge_kind, MIN({rank_case})
+                "SELECT file, caller_name, caller_line, edge_kind, MIN({rank_case}) AS trust_rank
                  FROM function_calls
                  WHERE callee_name = ?1
                  GROUP BY file, caller_name, caller_line
-                 ORDER BY file, caller_line"
+                 ORDER BY trust_rank, file, caller_line"
             );
             let rows: Vec<(String, String, i64, String, i64)> =
                 sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
@@ -51,6 +60,215 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Group a method name's definitions by enclosing type. Returns
+    /// `(parent_type_name, count)` rows — `None` covers free functions and any
+    /// def with no enclosing type. Used to (a) detect that a bare name has
+    /// more than one definition so `cqs callers`/`callees` can advertise the
+    /// `Type::method` disambiguation, and (b) decide, during `Type::method`
+    /// resolution, which *other* types own a same-named method (so callers
+    /// parented to those types are excluded rather than over-reported).
+    ///
+    /// Only callable chunk kinds are counted — a same-named struct/const is
+    /// not a method definition and must not inflate the candidate list.
+    pub fn count_method_defs_by_type(
+        &self,
+        method: &str,
+    ) -> Result<Vec<(Option<String>, usize)>, StoreError> {
+        let _span = tracing::debug_span!("count_method_defs_by_type", method = %method).entered();
+        self.rt.block_on(async {
+            let callable = crate::parser::ChunkType::callable_sql_list();
+            let sql = format!(
+                "SELECT parent_type_name, COUNT(*) AS n
+                 FROM chunks
+                 WHERE name = ?1 AND chunk_type IN ({callable})
+                 GROUP BY parent_type_name
+                 ORDER BY n DESC, parent_type_name"
+            );
+            let rows: Vec<(Option<String>, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(method)
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows
+                .into_iter()
+                .map(|(ty, n)| (ty, n.max(0) as usize))
+                .collect())
+        })
+    }
+
+    /// Origins (file paths) where a `Type::method` is defined. Used by
+    /// the callees `Type::method` path to scope `get_callees_full` to the
+    /// right definition. Only callable chunk kinds qualify.
+    pub fn get_type_method_origins(
+        &self,
+        qualifier_type: &str,
+        method: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::debug_span!(
+            "get_type_method_origins",
+            qualifier_type = %qualifier_type,
+            method = %method
+        )
+        .entered();
+        self.rt.block_on(async {
+            let callable = crate::parser::ChunkType::callable_sql_list();
+            let sql = format!(
+                "SELECT DISTINCT origin
+                 FROM chunks
+                 WHERE name = ?1 AND parent_type_name = ?2 AND chunk_type IN ({callable})"
+            );
+            let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(method)
+                .bind(qualifier_type)
+                .fetch_all(&self.pool)
+                .await?;
+            Ok(rows.into_iter().map(|(o,)| o).collect())
+        })
+    }
+
+    /// Callers of `Type::method`, attributed by receiver type. Returns the
+    /// attributed callers plus the count of callers excluded as belonging to a
+    /// different owning type (`other_owner_types`).
+    ///
+    /// Resolution is read-side from `chunks.parent_type_name` — no new
+    /// columns, no parser changes. Up to two edge populations are matched,
+    /// gated by `include_bare`:
+    ///
+    /// 1. **Bare-method edges** (`callee_name = method`, only when
+    ///    `include_bare` is true): code call sites extracted with the receiver
+    ///    stripped (`store.search()` records callee `search`). The caller's own
+    ///    enclosing type is looked up by joining `function_calls` back to
+    ///    `chunks` on `(file=origin, caller_name=name, caller_line=line_start)`,
+    ///    then attributed:
+    ///    - enclosing type == `qualifier_type` → self-call,
+    ///      [`CallerAttribution::SelfType`];
+    ///    - enclosing type is a *different* type that itself defines a
+    ///      same-named method (per `other_owner_types`) → **heuristically**
+    ///      excluded and counted. This is a heuristic, not a proof: a method
+    ///      on `Index` that calls `store.search()` genuinely targets
+    ///      `Store::search`, yet is excluded because `Index` also defines
+    ///      `search`. The exclusion count is surfaced so the narrowing is
+    ///      visible.
+    ///    - no enclosing type / enclosing type without a same-named method /
+    ///      unresolved chunk → [`CallerAttribution::Ambiguous`] (over-report
+    ///      with a flag, never a silent drop).
+    /// 2. **Exact-qualified edges** (`callee_name = 'Type::method'`, always
+    ///    matched): doc references store the full backticked string verbatim
+    ///    (markdown `` `Store::open()` `` records callee `Store::open`). These
+    ///    name the receiver explicitly, so they are unambiguously this method's
+    ///    edges — included at [`CallerAttribution::SelfType`]. Without this arm
+    ///    a `Type::method` query would never reach them (the bare-method query
+    ///    can't match a qualified callee), making them unreachable.
+    ///
+    /// `include_bare` is set false when `qualifier_type` has no local
+    /// definition of `method` — an external / module qualifier like
+    /// `std::fs::read_to_string`, whose only edges are the exact-qualified doc
+    /// references. Running the bare arm there would mis-attribute every local
+    /// `read_to_string` call site as an ambiguous caller under a fabricated
+    /// `std::fs` type, so the bare arm is gated off and only the exact arm runs.
+    ///
+    /// The GROUP BY on `(file, caller_name, caller_line)` collapses a co-located
+    /// bare code edge and exact doc edge to one row (the most-trusted kind), so
+    /// a caller present in both populations is reported once.
+    ///
+    /// `other_owner_types` is the set of enclosing types (other than
+    /// `qualifier_type`) that define a same-named method, derived once by the
+    /// caller from [`count_method_defs_by_type`] so this method stays few
+    /// scans. It is unused (and typically empty) when `include_bare` is false.
+    pub fn get_callers_attributed(
+        &self,
+        method: &str,
+        qualifier_type: &str,
+        other_owner_types: &std::collections::HashSet<String>,
+        include_bare: bool,
+    ) -> Result<(Vec<crate::store::AttributedCaller>, usize), StoreError> {
+        use crate::store::{AttributedCaller, CallerAttribution, CallerInfo};
+        let _span = tracing::debug_span!(
+            "get_callers_attributed",
+            method = %method,
+            qualifier_type = %qualifier_type,
+            include_bare
+        )
+        .entered();
+        let qualified = format!("{qualifier_type}::{method}");
+        self.rt.block_on(async {
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("fc.edge_kind");
+            // The exact-qualified arm always runs. The bare-method arm is gated
+            // by `include_bare` — off for external/module qualifiers with no
+            // local def, so their local same-named call sites aren't
+            // mis-attributed. A NULL `parent_type_name` means the caller chunk
+            // didn't resolve (>100-line skip) or the row is an exact edge. LEFT
+            // JOIN keeps unresolved callers rather than dropping them. Trust rank
+            // leads the collapse + ordering exactly as `get_callers_full`.
+            //
+            // `?1` binds the bare name only when `include_bare`; otherwise it is
+            // bound to the exact-qualified string too, so the predicate reduces
+            // to the exact arm (no extra placeholder shape to manage).
+            let bare_bind = if include_bare {
+                method
+            } else {
+                qualified.as_str()
+            };
+            let sql = format!(
+                "SELECT fc.file, fc.caller_name, fc.caller_line, fc.edge_kind,
+                        MIN({rank_case}) AS trust_rank, c.parent_type_name,
+                        fc.callee_name
+                 FROM function_calls fc
+                 LEFT JOIN chunks c
+                   ON c.origin = fc.file
+                  AND c.name = fc.caller_name
+                  AND c.line_start = fc.caller_line
+                 WHERE fc.callee_name = ?1 OR fc.callee_name = ?2
+                 GROUP BY fc.file, fc.caller_name, fc.caller_line
+                 ORDER BY trust_rank, fc.file, fc.caller_line"
+            );
+            let rows: Vec<AttributedCallerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(bare_bind)
+                .bind(&qualified)
+                .fetch_all(&self.pool)
+                .await?;
+
+            let mut out = Vec::new();
+            let mut excluded = 0usize;
+            // The GROUP BY (file, caller_name, caller_line) already yields one
+            // row per call site, collapsing a co-located bare code edge and
+            // exact doc edge into a single min-trust-rank row — so the Call
+            // edge (rank 0) wins over the doc edge (rank 4) and the site is
+            // attributed via its enclosing type. No further de-dupe needed.
+            for (file, name, line, kind, _rank, parent_type, callee) in rows {
+                // An exact-qualified edge names the receiver — proven self.
+                let is_exact = callee == qualified;
+                let attribution = if is_exact {
+                    CallerAttribution::SelfType
+                } else {
+                    match parent_type.as_deref() {
+                        Some(t) if t == qualifier_type => CallerAttribution::SelfType,
+                        // Parented to a different type that owns its own
+                        // same-named method — heuristically excluded (the
+                        // receiver could still be ours; the count surfaces it).
+                        Some(t) if other_owner_types.contains(t) => {
+                            excluded += 1;
+                            continue;
+                        }
+                        // No enclosing type, enclosing type without a same-named
+                        // method, or an unresolved chunk: receiver unproven.
+                        _ => CallerAttribution::Ambiguous,
+                    }
+                };
+                out.push(AttributedCaller {
+                    caller: CallerInfo {
+                        file: PathBuf::from(file),
+                        name,
+                        line: clamp_line_number(line),
+                        edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
+                    },
+                    attribution,
+                });
+            }
+            Ok((out, excluded))
+        })
+    }
+
     /// Get all callees of a function (from full call graph)
     /// When `file` is provided, scopes to callees of that function in that specific file.
     /// When `None`, returns callees across all files (backwards compatible, but ambiguous
@@ -65,13 +283,15 @@ impl<Mode> Store<Mode> {
             // MIN over the explicit trust rank per (callee, line) — same
             // most-trusted-wins collapse as get_callers_full, replacing the old
             // lexical `MIN(edge_kind)` that `doc_reference` would break.
+            // Trust rank leads the ORDER BY so direct call edges
+            // outrank doc_reference within any `--limit` window.
             let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             let sql = format!(
-                "SELECT callee_name, call_line, edge_kind, MIN({rank_case})
+                "SELECT callee_name, call_line, edge_kind, MIN({rank_case}) AS trust_rank
                  FROM function_calls
                  WHERE caller_name = ?1 AND (?2 IS NULL OR file = ?2)
                  GROUP BY callee_name, call_line
-                 ORDER BY call_line"
+                 ORDER BY trust_rank, call_line"
             );
             let rows: Vec<(String, i64, String, i64)> =
                 sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
@@ -177,15 +397,21 @@ impl<Mode> Store<Mode> {
         let _span =
             tracing::debug_span!("get_callers_with_context", function = %callee_name).entered();
         self.rt.block_on(async {
-            let rows: Vec<(String, String, i64, i64, String)> = sqlx::query_as(
+            // Trust rank leads the ORDER BY: `cqs impact` flows through
+            // here, so doc_reference edges must never displace direct call
+            // edges in a capped impact window.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
                 "SELECT file, caller_name, caller_line, call_line, edge_kind
                  FROM function_calls
                  WHERE callee_name = ?1
-                 ORDER BY file, call_line",
-            )
-            .bind(callee_name)
-            .fetch_all(&self.pool)
-            .await?;
+                 ORDER BY {rank_case}, file, call_line"
+            );
+            let rows: Vec<(String, String, i64, i64, String)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(callee_name)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             Ok(rows
                 .into_iter()
@@ -226,14 +452,17 @@ impl<Mode> Store<Mode> {
             // name), so a 5k-name batch runs as a single statement.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
+            // Trust rank leads the per-callee ORDER BY, matching the
+            // single-name `get_callers_with_context`.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             for batch in callee_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT callee_name, file, caller_name, caller_line, call_line, edge_kind
                      FROM function_calls
                      WHERE callee_name IN ({})
-                     ORDER BY callee_name, file, call_line",
-                    placeholders
+                     ORDER BY callee_name, {}, file, call_line",
+                    placeholders, rank_case
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
@@ -289,12 +518,14 @@ impl<Mode> Store<Mode> {
             for batch in callee_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT callee_name, file, caller_name, caller_line, edge_kind, MIN({})
+                    "SELECT callee_name, file, caller_name, caller_line, edge_kind, \
+                            MIN({rank_case}) AS trust_rank
                      FROM function_calls
-                     WHERE callee_name IN ({})
+                     WHERE callee_name IN ({placeholders})
                      GROUP BY callee_name, file, caller_name, caller_line
-                     ORDER BY callee_name, file, caller_line",
-                    rank_case, placeholders
+                     ORDER BY callee_name, trust_rank, file, caller_line",
+                    rank_case = rank_case,
+                    placeholders = placeholders
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {
@@ -345,14 +576,21 @@ impl<Mode> Store<Mode> {
             // 32466-slot budget.
             use crate::store::helpers::sql::max_rows_per_statement;
             let batch_size = max_rows_per_statement(1);
+            // Trust rank leads the per-caller ORDER BY. GROUP BY
+            // collapses a (callee, line) pair appearing as both a call and a
+            // doc_reference edge to a single row at its most-trusted rank,
+            // replacing the old DISTINCT.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
             for batch in caller_names.chunks(batch_size) {
                 let placeholders = super::super::helpers::make_placeholders(batch.len());
                 let sql = format!(
-                    "SELECT DISTINCT caller_name, callee_name, call_line
+                    "SELECT caller_name, callee_name, call_line, MIN({rank_case}) AS trust_rank
                      FROM function_calls
-                     WHERE caller_name IN ({})
-                     ORDER BY caller_name, call_line",
-                    placeholders
+                     WHERE caller_name IN ({placeholders})
+                     GROUP BY caller_name, callee_name, call_line
+                     ORDER BY caller_name, trust_rank, call_line",
+                    rank_case = rank_case,
+                    placeholders = placeholders
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
                 for name in batch {

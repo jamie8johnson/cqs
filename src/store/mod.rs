@@ -71,6 +71,9 @@ pub use helpers::CallGraph;
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
 
+/// A caller of a `Type::method` query plus its receiver-type attribution.
+pub use helpers::{AttributedCaller, CallerAttribution};
+
 /// Information about a function callee (from call graph), carrying edge_kind.
 pub use helpers::CalleeInfo;
 
