@@ -1899,3 +1899,37 @@ mentions = [
     "agents",
     "cargo",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "B6000 wattage in natural-resource terms: 600W continuous is four-fifths of a horse (1 hp = 746W), or six grown adults pedaling in shifts without complaint or breaks. Run a full day it drinks 14.4 kWh — roughly the chemical energy of 3 kg of seasoned firewood burned at impossible perfect efficiency, or one gallon of gasoline every 2.3 days. The A6000 at 300W is two-fifths of a horse: we currently compute with the front half. Justifying the upgrade means justifying the hindquarters."
+mentions = [
+    "hardware",
+    "gpu",
+]
+
+[[note]]
+sentiment = 1.0
+text = "Seam-auditor (Atropos persona, .claude/agents/seam-auditor.md) earns its keep dramatically: on trust-v30 (schema v30/v31 edge-provenance + dead-verdicts) it found 7+ real composition bugs across 3 rounds that a GREEN full --tests sweep (4381 pass) missed entirely — worst: cqs suggest recommending deletion of LIVE code to an agent that acts on it. The house happy/sad-path unit signature is structurally blind to seams (two correct units whose join lies). Dispatch it on every schema change and multi-lane merge."
+mentions = [
+    "seam-auditor",
+    "testing",
+    "trust-v30",
+]
+
+[[note]]
+sentiment = -0.5
+text = "The patch is a fresh join: re-audit fixes, not just original code. trust-v30's watch zero-chunk path was a seam-MAGNET — 4 consecutive audit rounds, each fix exposing the next (drift-never-retags -> drift-loops-unparseable -> drift-loops-zero-chunk -> prune-orphans-function_calls). Signal that an area needs coherent unit-redesign, not a 5th patch. Root cause: delete_phantom_chunks_batch has an UNSTATED precondition (calls already cleared) that different call sites satisfy differently."
+mentions = [
+    "reindex.rs",
+    "watch",
+    "seam-auditor",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Convergent audit reading: round findings shrinking (5->2->1) AND each round's finding more peripheral/closer-to-root = healthy converging audit that found bottom, NOT thrash. A 'final' audit returning NOT-CLEAN with a new branch-introduced bug = the escalation trigger; surface to Director with read+recommendation+ask, don't silently take swing N+1 (under-sensitivity-via-confidence is the characteristic failure)."
+mentions = [
+    "seam-auditor",
+    "escalation",
+]
