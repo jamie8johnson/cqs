@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.43.0] - 2026-06-11
 
 **v1.42.0 full 16-category audit campaign — 107 fresh findings + 50 carried-forward (v1.40), every P1/P2 and P3/P4 tier closed.** The 2026-06-11 audit (PRs #1737–#1795, ~35 PRs in ~36h) swept the codebase across all 16 categories with five categories run as nested leads, then fixed the entire triage: P1 data-safety and security, P2 correctness/observability, and the P3/P4 diagnostic tail. Headline outcomes: a per-request daemon cache layer (vector index, file_set, notes, and cross-project context cached across queries — ~400ms CAGRA load and full reference-store re-merges eliminated per request); generation-stamped HNSW sidecars with honest dirty self-heal and discarded stale rebuilds; a store/search/serve schema-ownership boundary refactor (one schema owner, scoring inverted out of `store/`); crash-safe fingerprint stamping on both the CLI and watch pipelines; daemon↔CLI output parity (text-mode render-side, slim-envelope translation, stale-origin warnings, clap-derived arg forwarding); and index-time hardening against poisoned inputs (non-finite embeddings, truncated blobs, deep parse trees, Unicode-unsafe SQL case mapping). Triage is the single source of truth in `docs/audit-triage.md`.
 
