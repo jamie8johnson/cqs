@@ -72,21 +72,26 @@ fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)>
 }
 
 /// Caller info enriched with the originating project name.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// The cross cores (`callers_cross_core` / `callees_cross_core`) remap this
+/// into the surface-facing `CallerEntry` / `CalleeEntry` JSON shapes field by
+/// field, so this struct is never serialized directly — no `Serialize` derive.
+#[derive(Debug, Clone)]
 pub struct CrossProjectCaller {
     /// Which project this caller lives in.
     pub project: String,
-    #[serde(flatten)]
     pub caller: CallerInfo,
 }
 
 /// Callee info enriched with the originating project name.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// Like [`CrossProjectCaller`], remapped into the surface JSON shape by the
+/// cross cores rather than serialized directly — no `Serialize` derive.
+#[derive(Debug, Clone)]
 pub struct CrossProjectCallee {
     /// Which project this callee lives in.
     pub project: String,
     pub name: String,
-    #[serde(rename = "line_start")]
     pub line: u32,
 }
 

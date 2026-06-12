@@ -2289,3 +2289,41 @@ fn no_auth_banner_uses_loopback_under_wildcard_bind() {
         "cqs serve listening on http://127.0.0.1:8080"
     );
 }
+
+#[test]
+fn auth_banner_tty_embeds_token() {
+    let addr: SocketAddr = "127.0.0.1:8080".parse().expect("parse addr");
+    assert_eq!(
+        super::auth_banner_tty(addr, "secrettoken"),
+        "cqs serve listening on http://127.0.0.1:8080/?token=secrettoken"
+    );
+}
+
+#[test]
+fn auth_banner_non_tty_omits_token_and_hints() {
+    let addr: SocketAddr = "127.0.0.1:8080".parse().expect("parse addr");
+    let token = "secrettoken";
+    let lines = super::auth_banner_non_tty(addr);
+    let joined = lines.join("\n");
+    // The token must never appear in the non-TTY banner — that's the whole
+    // point of withholding it when stdout is logged into journald.
+    assert!(
+        !joined.contains(token),
+        "non-TTY banner leaked the token: {joined}"
+    );
+    assert!(
+        !joined.contains("token="),
+        "non-TTY banner must not embed a `token=` query param: {joined}"
+    );
+    // The URL is still printed so the operator knows where the server bound.
+    assert!(
+        lines[0] == "cqs serve listening on http://127.0.0.1:8080/",
+        "first line must be the token-free listening URL: {:?}",
+        lines[0]
+    );
+    // The hint must explain the token is per-launch and terminal-only.
+    assert!(
+        joined.contains("per-launch") && joined.contains("terminal"),
+        "non-TTY banner must hint that the token is per-launch and terminal-only: {joined}"
+    );
+}
