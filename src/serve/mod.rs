@@ -143,33 +143,27 @@ pub fn run_server(
 
         if !quiet {
             // When auth is enabled, emit the paste-ready URL (token + bind
-            // addr) so a fresh launch is one click away from being usable.
-            // The token appears here once and is
-            // never logged via tracing — auditors can grep for serve
-            // banners separately from the structured log stream.
+            // addr) so a fresh launch is one click away from being usable —
+            // but ONLY when stdout is an interactive terminal. The
+            // per-launch token is generated fresh on every start
+            // (`AuthToken::random`) and is never persisted; it lives only in
+            // this process's memory. Printing it into a non-TTY stdout means
+            // it lands in journald / container log drivers (30-day
+            // retention), turning a session secret into a logged one.
             //
-            // Route the token-bearing banner to stderr when stdout is not a
-            // TTY. systemd `StandardOutput=journal` and
-            // container log drivers persist stdout into a 30-day retention
-            // store — stderr is similarly captured but is the conventional
-            // place for "informational interactive output" and operators
-            // can redirect it (`2>/dev/null`) without losing structured
-            // logs. For a stronger guarantee, add `--no-banner` (TODO).
+            // Non-TTY: print the URL WITHOUT the token plus a hint that the
+            // token is per-launch and only surfaced on an interactive
+            // terminal — so an operator running headless knows to launch in a
+            // terminal (or pass `--no-auth` for unattended use).
             let stdout_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
             match auth.token() {
                 Some(token) => {
-                    let line = format!(
-                        "cqs serve listening on http://{actual}/?token={}",
-                        token.as_str()
-                    );
                     if stdout_is_tty {
-                        println!("{line}");
+                        println!("{}", auth_banner_tty(actual, token.as_str()));
                     } else {
-                        eprintln!("{line}");
-                        eprintln!(
-                            "(stdout is not a TTY; token-bearing banner routed to stderr to \
-                             avoid persisting into journald/container logs)"
-                        );
+                        for line in auth_banner_non_tty(actual) {
+                            println!("{line}");
+                        }
                     }
                 }
                 None => {
@@ -222,6 +216,34 @@ pub fn loopback_open_url(bind_addr: SocketAddr) -> String {
 /// a wildcard bind still prints a URL a browser will accept.
 fn no_auth_banner_line(actual: SocketAddr) -> String {
     format!("cqs serve listening on {}", loopback_open_url(actual))
+}
+
+/// Interactive (TTY-stdout) "listening on" banner: the paste-ready URL
+/// with the per-launch token embedded. Only used when stdout is a
+/// terminal — see the call site for why the token is withheld otherwise.
+fn auth_banner_tty(actual: SocketAddr, token: &str) -> String {
+    format!("cqs serve listening on http://{actual}/?token={token}")
+}
+
+/// Non-interactive (non-TTY stdout) "listening on" banner: the URL
+/// WITHOUT the token, plus a hint explaining where the token comes from.
+///
+/// The token is generated fresh per launch (`AuthToken::random`) and is
+/// never persisted — it exists only in process memory and is surfaced
+/// solely on an interactive terminal. A headless start therefore can't
+/// recover it from logs (by design: that's the leak this avoids), so the
+/// hint points at the two recovery paths: relaunch attached to a
+/// terminal, or use `--no-auth` for unattended access.
+fn auth_banner_non_tty(actual: SocketAddr) -> Vec<String> {
+    vec![
+        format!("cqs serve listening on http://{actual}/"),
+        "(auth token withheld: stdout is not a terminal, so the token is not printed here to \
+         avoid persisting it into journald/container logs)"
+            .to_string(),
+        "(the per-launch token is generated fresh each start and only shown on an interactive \
+         terminal; relaunch in a terminal to see it, or pass --no-auth for unattended use)"
+            .to_string(),
+    ]
 }
 
 /// Race a signal-driven shutdown against an idle-driven shutdown. With
