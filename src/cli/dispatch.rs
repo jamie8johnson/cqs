@@ -348,15 +348,35 @@ const SEARCH_KNOB_ARG_IDS: &[&str] = &[
     "no_demote",
 ];
 
+/// Top-level `Cli` arg IDs whose value is a *search scope* (`lang`, `path`)
+/// the subcommand handlers honor when the same flag is present on their own
+/// batch surface. On daemon forwarding these are re-spliced onto the tail of
+/// any subcommand whose batch `*Args` accepts them — see
+/// [`cqs::daemon_translate::CliArgSpec::scope_targets`]. A subset of
+/// [`SEARCH_KNOB_ARG_IDS`]; the membership is pinned by
+/// `scope_arg_ids_are_search_knobs` below so a scope ID can't drift out of the
+/// search-knob set silently.
+#[cfg(unix)]
+const SCOPE_ARG_IDS: &[&str] = &["lang", "path"];
+
 /// Build the [`cqs::daemon_translate::CliArgSpec`] from the live clap
 /// definition. Derived at runtime (like `telemetry::describe_command`) so a
 /// new top-level flag is classified automatically — hand-mirrored flag lists
 /// are how `-v <cmd>` / `--rrf <cmd>` came to hard-error daemon-up while
-/// working daemon-down.
+/// working daemon-down. The batch command is passed so the scope-forward
+/// target set is derived from each subcommand's live `*Args` surface rather
+/// than a hardcoded subcommand match.
 #[cfg(unix)]
 fn cli_arg_spec() -> cqs::daemon_translate::CliArgSpec {
     use clap::CommandFactory;
-    cqs::daemon_translate::CliArgSpec::from_clap(&Cli::command(), PROCESS_LOCAL_ARG_IDS)
+    let daemon_capable = crate::cli::definitions::Commands::daemon_capable_variant_names();
+    cqs::daemon_translate::CliArgSpec::from_clap(
+        &Cli::command(),
+        PROCESS_LOCAL_ARG_IDS,
+        &crate::cli::batch::BatchInput::command(),
+        SCOPE_ARG_IDS,
+        &daemon_capable,
+    )
 }
 
 /// Try to forward the current command to a running daemon.
@@ -729,6 +749,161 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every `SCOPE_ARG_IDS` entry must be a top-level search knob — a scope
+    /// flag is a filter the search path honors, never a process-local flag.
+    /// If a scope ID drifts out of `SEARCH_KNOB_ARG_IDS` (e.g. a rename) this
+    /// fails instead of silently forwarding a flag the batch parser rejects.
+    #[test]
+    fn scope_arg_ids_are_search_knobs() {
+        for id in SCOPE_ARG_IDS {
+            assert!(
+                SEARCH_KNOB_ARG_IDS.contains(id),
+                "SCOPE_ARG_IDS entry `{id}` must also be in SEARCH_KNOB_ARG_IDS — \
+                 a scope flag is a search knob, not a process-local flag"
+            );
+        }
+    }
+
+    /// The scope-forward target set is *derived* from the live batch clap
+    /// definition, not a hand-maintained list. This pins the derivation: the
+    /// set of subcommands the daemon translator forwards top-level scope flags
+    /// to must equal exactly the set of batch subcommands whose flattened
+    /// `*Args` surface accepts a scope-flag spelling.
+    ///
+    /// Concretely, this FAILS if someone adds `lang`/`path` to another wire
+    /// `*Args` struct without the forwarding picking it up — the independent
+    /// recomputation here grows, `spec.scope_targets` must grow with it, and a
+    /// mismatch means the derivation broke (someone re-introduced a hardcoded
+    /// list). It equally fails if `scope_targets` lists a subcommand whose
+    /// batch surface does *not* take the flag (a spurious forward).
+    #[test]
+    fn scope_targets_track_the_batch_wire_surface() {
+        let spec = cli_arg_spec();
+        assert!(
+            !spec.scope_flags.is_empty(),
+            "scope_flags empty — derivation regression (SCOPE_ARG_IDS not picked up from clap)"
+        );
+
+        // Independently recompute the expected targets straight from the batch
+        // clap surface: a *daemon-capable* subcommand is a target iff one of
+        // its non-positional args spells a scope flag. This mirrors the
+        // production derivation but is written separately here so a bug in the
+        // production walk is caught by divergence rather than copied.
+        let daemon_capable: std::collections::BTreeSet<&str> =
+            crate::cli::definitions::Commands::daemon_capable_variant_names()
+                .into_iter()
+                .collect();
+        let batch_app = crate::cli::batch::BatchInput::command();
+        let expected: std::collections::BTreeSet<String> = batch_app
+            .get_subcommands()
+            .filter(|sub| daemon_capable.contains(sub.get_name()))
+            .filter(|sub| {
+                sub.get_arguments()
+                    .filter(|a| !a.is_positional())
+                    .flat_map(spellings)
+                    .any(|s| spec.scope_flags.contains(&s))
+            })
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+
+        assert_eq!(
+            spec.scope_targets, expected,
+            "scope-forward targets diverged from the batch wire surface — \
+             the derivation must equal exactly the subcommands whose `*Args` \
+             accept a scope flag, never a hardcoded list"
+        );
+
+        // Anchor current behavior: `similar` carries lang/path on its
+        // `SimilarArgs`, so it must be a target; `callers` does not, so it must
+        // not. These guard against the derivation collapsing to empty/all.
+        assert!(
+            spec.scope_targets.contains("similar"),
+            "`similar` accepts --lang/--path on its batch surface and must be a scope-forward target"
+        );
+        assert!(
+            !spec.scope_targets.contains("callers"),
+            "`callers` has no --lang/--path on its batch surface and must not be a scope-forward target"
+        );
+    }
+
+    /// Behavioral pin on the *translator*, driven by the production-derived
+    /// spec: for every daemon-capable subcommand whose batch `*Args` accepts
+    /// `--lang`, a top-level `cqs --lang rust <sub> <pos>` must forward the
+    /// scope flag onto that subcommand's tail; for every daemon-capable
+    /// subcommand that does NOT accept it, the flag must be dropped.
+    ///
+    /// This is the real guard the issue asks for: it FAILS if someone adds
+    /// `lang`/`path` to another daemon-routed wire `*Args` struct but the
+    /// forwarding doesn't pick it up — e.g. if the derivation regressed to a
+    /// hardcoded `["similar"]` list, the newly-eligible subcommand would land
+    /// in the "accepts but not forwarded" branch here and trip the assert.
+    /// It probes the live batch clap surface for eligibility, so the
+    /// expectation tracks the wire structs, never a copy of the target list.
+    #[test]
+    fn translator_forwards_scope_flags_for_every_eligible_daemon_command() {
+        let spec = cli_arg_spec();
+        let batch_app = crate::cli::batch::BatchInput::command();
+
+        let mut checked_forward = 0u32;
+        let mut checked_dropped = 0u32;
+        for name in crate::cli::definitions::Commands::daemon_capable_variant_names() {
+            let Some(sub) = batch_app.find_subcommand(name) else {
+                // Pinned separately by `every_daemon_capable_command_has_a_batch_subcommand`.
+                continue;
+            };
+            // Does this subcommand's batch surface accept `--lang`? (a single
+            // representative scope spelling — `scope_flags` membership is the
+            // same set the production derivation consults).
+            let accepts_lang = sub
+                .get_arguments()
+                .filter(|a| !a.is_positional())
+                .flat_map(spellings)
+                .any(|s| s == "--lang");
+
+            // Build a top-level-scoped argv. A bare positional (`x`) satisfies
+            // every daemon-capable subcommand's required arg or is ignored by
+            // arg-less ones; the translator never parses it, only splices.
+            let argv: Vec<String> = ["--lang", "rust", name, "x"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let (cmd, args) =
+                cqs::daemon_translate::translate_cli_args_to_batch(&argv, true, &spec);
+            assert_eq!(
+                cmd, name,
+                "subcommand name must round-trip through the translator"
+            );
+
+            if accepts_lang {
+                assert!(
+                    args.windows(2).any(|w| w[0] == "--lang" && w[1] == "rust"),
+                    "daemon-capable `{name}` accepts --lang on its batch surface but the \
+                     translator did not forward the top-level `--lang rust` onto its tail \
+                     (got {args:?}) — the scope-forward derivation missed it"
+                );
+                checked_forward += 1;
+            } else {
+                assert!(
+                    !args.iter().any(|a| a == "--lang"),
+                    "daemon-capable `{name}` does NOT accept --lang on its batch surface, \
+                     so the top-level scope flag must be dropped, not forwarded (got {args:?})"
+                );
+                checked_dropped += 1;
+            }
+        }
+        // Guard the loop actually exercised both branches — a derivation that
+        // silently excluded every command would make the asserts vacuous.
+        assert!(
+            checked_forward >= 1,
+            "no daemon-capable subcommand was found to accept --lang — derivation regression \
+             (expected at least `similar`)"
+        );
+        assert!(
+            checked_dropped >= 1,
+            "no daemon-capable subcommand was found to reject --lang — fixture regression"
+        );
     }
 
     /// The derived spec marks value-taking flags correctly: `--model` /

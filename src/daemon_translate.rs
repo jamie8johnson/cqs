@@ -61,6 +61,22 @@ pub struct CliArgSpec {
     /// a search knob shared spelling-for-spelling with `args::SearchArgs` and
     /// forwards verbatim.
     pub bare_query_strip: std::collections::BTreeSet<String>,
+    /// Every spelling (`--lang`/`-l`, `--path`/`-p`, …) of a top-level
+    /// *scope* flag — a filter the top-level `Cli` consumes that also exists,
+    /// spelling-for-spelling, on at least one subcommand's batch surface.
+    /// These reach a CLI subcommand through the top-level region
+    /// (`cqs --lang rust similar foo`) and so are re-forwarded onto the
+    /// subcommand tail rather than dropped with the rest of that region.
+    /// Derived from the live clap definitions by [`CliArgSpec::from_clap`];
+    /// the per-subcommand decision lives in [`Self::scope_targets`].
+    pub scope_flags: std::collections::BTreeSet<String>,
+    /// Subcommand names whose batch `*Args` surface accepts at least one
+    /// [`Self::scope_flags`] spelling. Top-level scope flags are forwarded
+    /// onto exactly these subcommands' tails; every other subcommand drops
+    /// the whole top-level region. Derived from the batch clap definition,
+    /// not hand-listed — adding `lang`/`path` to another wire `*Args` struct
+    /// extends this set automatically.
+    pub scope_targets: std::collections::BTreeSet<String>,
 }
 
 impl CliArgSpec {
@@ -75,9 +91,28 @@ impl CliArgSpec {
     /// top-level flag is picked up without touching this module. A
     /// classification test on the caller side pins that every top-level arg
     /// ID is explicitly process-local or search-forwarded.
-    pub fn from_clap(cmd: &clap::Command, process_local_ids: &[&str]) -> Self {
+    ///
+    /// `scope_ids` lists the top-level arg IDs (struct field names) whose
+    /// value is a *search scope* the subcommand handler honors when the same
+    /// flag is present on its own batch surface (`lang`, `path`). Their
+    /// spellings are collected into [`Self::scope_flags`]; the batch clap
+    /// definition (`batch_cmd`) is probed per *daemon-capable* subcommand
+    /// (`daemon_capable_subcommands`) to populate [`Self::scope_targets`]
+    /// with exactly the subcommands whose `*Args` accept at least one of those
+    /// spellings — so forwarding tracks the wire structs, not a hand-maintained
+    /// list. The daemon-capability filter keeps a CLI-only subcommand that
+    /// happens to carry `lang` (e.g. batch `diff`/`drift`) out of the set: those
+    /// never reach the daemon translator, so listing them would be inert noise.
+    pub fn from_clap(
+        cmd: &clap::Command,
+        process_local_ids: &[&str],
+        batch_cmd: &clap::Command,
+        scope_ids: &[&str],
+        daemon_capable_subcommands: &[&str],
+    ) -> Self {
         let mut value_flags = std::collections::BTreeSet::new();
         let mut bare_query_strip = std::collections::BTreeSet::new();
+        let mut scope_flags = std::collections::BTreeSet::new();
         for arg in cmd.get_arguments() {
             if arg.is_positional() {
                 continue;
@@ -86,34 +121,84 @@ impl CliArgSpec {
                 arg.get_action(),
                 clap::ArgAction::Set | clap::ArgAction::Append
             );
-            let mut spellings: Vec<String> = Vec::new();
-            if let Some(long) = arg.get_long() {
-                spellings.push(format!("--{long}"));
-            }
-            for alias in arg.get_all_aliases().unwrap_or_default() {
-                spellings.push(format!("--{alias}"));
-            }
-            if let Some(short) = arg.get_short() {
-                spellings.push(format!("-{short}"));
-            }
-            for alias in arg.get_all_short_aliases().unwrap_or_default() {
-                spellings.push(format!("-{alias}"));
-            }
+            let spellings = arg_spellings(arg);
             let is_local = process_local_ids.contains(&arg.get_id().as_str());
+            let is_scope = scope_ids.contains(&arg.get_id().as_str());
             for spelling in spellings {
                 if takes_value {
                     value_flags.insert(spelling.clone());
                 }
                 if is_local {
-                    bare_query_strip.insert(spelling);
+                    bare_query_strip.insert(spelling.clone());
+                }
+                if is_scope {
+                    scope_flags.insert(spelling);
                 }
             }
         }
+        let scope_targets =
+            derive_scope_targets(batch_cmd, &scope_flags, daemon_capable_subcommands);
         Self {
             value_flags,
             bare_query_strip,
+            scope_flags,
+            scope_targets,
         }
     }
+}
+
+/// Every spelling of a clap arg: `--long`, every `--alias`, `-s`, every
+/// `-a` short alias. Shared by the top-level and per-subcommand scans so
+/// both derive flag spellings the same way.
+fn arg_spellings(arg: &clap::Arg) -> Vec<String> {
+    let mut spellings: Vec<String> = Vec::new();
+    if let Some(long) = arg.get_long() {
+        spellings.push(format!("--{long}"));
+    }
+    for alias in arg.get_all_aliases().unwrap_or_default() {
+        spellings.push(format!("--{alias}"));
+    }
+    if let Some(short) = arg.get_short() {
+        spellings.push(format!("-{short}"));
+    }
+    for alias in arg.get_all_short_aliases().unwrap_or_default() {
+        spellings.push(format!("-{alias}"));
+    }
+    spellings
+}
+
+/// Walk every daemon-capable batch subcommand and collect the names whose
+/// flattened `*Args` surface accepts at least one `scope_flags` spelling.
+/// This is the derivation that replaces the old `cmd == "similar"` string
+/// match: a subcommand is a forward target iff its batch clap definition
+/// actually carries the scope flag, so adding `lang`/`path` to another
+/// daemon-routed wire `*Args` struct enrolls that subcommand automatically.
+///
+/// `daemon_capable` gates the walk to subcommands the daemon translator can
+/// actually receive — a CLI-only batch subcommand that carries `lang` (batch
+/// `diff`/`drift`) never reaches this code path, so it's excluded rather than
+/// listed as an inert target.
+fn derive_scope_targets(
+    batch_cmd: &clap::Command,
+    scope_flags: &std::collections::BTreeSet<String>,
+    daemon_capable: &[&str],
+) -> std::collections::BTreeSet<String> {
+    let mut targets = std::collections::BTreeSet::new();
+    for sub in batch_cmd.get_subcommands() {
+        let name = sub.get_name();
+        if !daemon_capable.contains(&name) {
+            continue;
+        }
+        let accepts_scope = sub
+            .get_arguments()
+            .filter(|a| !a.is_positional())
+            .flat_map(arg_spellings)
+            .any(|s| scope_flags.contains(&s));
+        if accepts_scope {
+            targets.insert(name.to_string());
+        }
+    }
+    targets
 }
 
 /// Translate raw CLI argv into a `(subcommand, args)` pair for the batch
@@ -146,13 +231,15 @@ pub fn translate_cli_args_to_batch(
 /// differ per subcommand (blame's `-n` is `--commits`).
 fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<String>) {
     let mut idx = 0;
-    // Top-level scope flags (`--lang`/`-l`, `--path`/`-p`) reach the CLI's
-    // `cmd_similar` through the top-level `Cli` region (`cqs --lang rust similar
-    // foo`); they're dropped with the rest of that region below. For the
-    // `similar` subcommand — whose batch `SimilarArgs` accepts `--lang`/`--path`
-    // — capture them here so they can be re-appended to the forwarded tail,
-    // keeping daemon-routed scoping on par with the CLI-direct path. Other
-    // subcommands don't take these flags, so the forward is gated on `similar`.
+    // Top-level scope flags (`--lang`/`-l`, `--path`/`-p`) reach a CLI
+    // subcommand handler through the top-level `Cli` region (`cqs --lang rust
+    // similar foo`); they're dropped with the rest of that region below.
+    // Capture them here so they can be re-forwarded onto the subcommand tail
+    // for subcommands whose batch `*Args` surface accepts them — keeping
+    // daemon-routed scoping on par with the CLI-direct path. Which subcommands
+    // those are is derived from the batch clap definition (`spec.scope_targets`),
+    // not hand-listed: a subcommand enrolls automatically when its wire
+    // `*Args` struct carries the scope flags.
     let mut scope_forward: Vec<String> = Vec::new();
     while idx < raw.len() {
         let tok = &raw[idx];
@@ -164,7 +251,7 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         // spaced-form value flags consume their following value token too;
         // boolean flags consume only themselves.
         if !tok.contains('=') && spec.value_flags.contains(tok.as_str()) {
-            if is_scope_flag(tok) {
+            if spec.scope_flags.contains(tok.as_str()) {
                 // Spaced form: capture the flag and its following value token.
                 if let Some(val) = raw.get(idx + 1) {
                     scope_forward.push(tok.clone());
@@ -175,7 +262,7 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         } else {
             if let Some((key, _)) = tok.split_once('=') {
                 // Attached form (`--lang=rust`): forward the whole token.
-                if is_scope_flag(key) {
+                if spec.scope_flags.contains(key) {
                     scope_forward.push(tok.clone());
                 }
             }
@@ -188,13 +275,12 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         return (String::new(), Vec::new());
     };
     let mut tail: Vec<String> = raw[idx + 1..].to_vec();
-    if cmd == "similar" && !scope_forward.is_empty() {
+    if spec.scope_targets.contains(&cmd) && !scope_forward.is_empty() {
         // Splice the captured top-level scope flags in *front* of the tail so
-        // the daemon's `dispatch_similar` builds the same `--lang`/`--path`
-        // filter the CLI would. A subcommand tail can also carry these directly
-        // (`cqs similar foo --lang rust`); putting the top-level capture first
-        // means clap's last-wins resolution keeps any tail-explicit value
-        // authoritative.
+        // the daemon dispatch builds the same `--lang`/`--path` filter the CLI
+        // would. A subcommand tail can also carry these directly (`cqs similar
+        // foo --lang rust`); putting the top-level capture first means clap's
+        // last-wins resolution keeps any tail-explicit value authoritative.
         scope_forward.extend(tail);
         tail = scope_forward;
     }
@@ -211,15 +297,6 @@ fn translate_subcommand_args(raw: &[String], spec: &CliArgSpec) -> (String, Vec<
         tail.remove(0);
     }
     (cmd, tail)
-}
-
-/// Whether `flag` is a top-level scope flag (`--lang`/`-l` or `--path`/`-p`)
-/// that the `similar` subcommand accepts on its batch tail. Used by
-/// [`translate_subcommand_args`] to re-forward these from the dropped top-level
-/// region onto a daemon-routed `similar` invocation. Spellings mirror the
-/// `args::SimilarArgs` clap definition (`-l`/`--lang`, `-p`/`--path`).
-fn is_scope_flag(flag: &str) -> bool {
-    matches!(flag, "--lang" | "-l" | "--path" | "-p")
 }
 
 /// Whether `tok` is a combined-short cluster (`-qv`, `-qn5`): a single `-`
@@ -1189,6 +1266,14 @@ mod tests {
                 "--model",
                 "--slot",
             ]),
+            // The production spec derives these from the live clap definitions
+            // (`CliArgSpec::from_clap`); the hand-built subset here mirrors the
+            // scope flags and the one current forward target (`similar`) so the
+            // translator-rule tests below exercise the same path. The
+            // derivation itself is pinned by `scope_targets_track_the_batch_wire_surface`
+            // in `cli::dispatch`.
+            scope_flags: set(&["-l", "--lang", "-p", "--path"]),
+            scope_targets: set(&["similar"]),
         }
     }
 
