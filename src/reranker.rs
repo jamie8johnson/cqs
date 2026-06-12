@@ -327,7 +327,9 @@ impl OnnxReranker {
     ///
     /// Returns `Some(scores)` on success, or `None` when tokenization produced
     /// zero-length encodings across all passages (nothing to score).
-    /// `scores.len() == passages.len()` on `Some(...)`.
+    /// `scores.len() == passages.len()` on `Some(...)`. A `None` element inside
+    /// the inner vec marks a row that tokenized empty within an otherwise
+    /// scorable batch; the caller keeps that row's input cosine score.
     ///
     /// Separate from `rerank` so it can feed passages borrowed directly from
     /// `&Vec<SearchResult>` without cloning contents, then apply scores via
@@ -342,7 +344,7 @@ impl OnnxReranker {
         &self,
         query: &str,
         passages: &[&str],
-    ) -> Result<Option<Vec<f32>>, RerankerError> {
+    ) -> Result<Option<Vec<Option<f32>>>, RerankerError> {
         let tokenizer = self.tokenizer()?;
 
         // 1. Tokenize (query, passage) pairs once up front. Tokenization is
@@ -372,7 +374,7 @@ impl OnnxReranker {
             self.resolve_hidden_size(),
             self.section.as_ref(),
         );
-        let mut scores = Vec::with_capacity(passages.len());
+        let mut scores: Vec<Option<f32>> = Vec::with_capacity(passages.len());
         for chunk in encodings.chunks(batch_cap) {
             scores.extend(self.run_chunk(chunk)?);
         }
@@ -386,8 +388,10 @@ impl OnnxReranker {
     /// encoding in this chunk capped at `self.max_length`, so shorter chunks
     /// use smaller tensors.
     ///
-    /// Returns one score per encoding in `chunk`.
-    fn run_chunk(&self, chunk: &[tokenizers::Encoding]) -> Result<Vec<f32>, RerankerError> {
+    /// Returns one score per encoding in `chunk`. A `None` entry means that
+    /// row tokenized empty, so the caller keeps that row's input cosine score
+    /// rather than overwriting it with a synthetic cross-encoder value.
+    fn run_chunk(&self, chunk: &[tokenizers::Encoding]) -> Result<Vec<Option<f32>>, RerankerError> {
         // Track per-chunk wall-clock so operators tuning `CQS_RERANKER_BATCH`
         // or chasing tail latency can see per-chunk shape. The ORT
         // session.run owns ~98% of reranker latency.
@@ -407,18 +411,16 @@ impl OnnxReranker {
         if max_len == 0 {
             // This chunk's passages all tokenized empty, but the aggregate
             // check in compute_scores_opt already guaranteed overall_max > 0.
-            // Return sigmoid(0)=0.5 for these rows so the surviving non-empty
-            // cohort still carries ranking signal, but warn: the resulting
-            // rank order may interleave 0.5 synthetic scores into the middle
-            // of the cross-encoder distribution.
-            // TODO: return Option<f32> through to apply_rerank_scores so we can
-            // fall back to the input cosine for empty rows.
+            // Emit `None` for these rows so the caller keeps each row's input
+            // cosine score instead of an injected synthetic value. Keeping the
+            // cosine score preserves the row's existing rank position rather
+            // than teleporting it to the middle of the cross-encoder
+            // distribution.
             tracing::warn!(
                 batch_size,
-                "Reranker chunk all-empty after tokenization — emitting sigmoid(0)=0.5 fallback; \
-                 ranking may interleave synthetic scores with cross-encoder scores"
+                "Reranker chunk all-empty after tokenization — keeping input cosine scores for these rows"
             );
-            return Ok(vec![sigmoid(0.0); batch_size]);
+            return Ok(vec![None; batch_size]);
         }
 
         // token_type_ids come from the tokenizer — BERT-family rerankers use
@@ -512,7 +514,9 @@ impl OnnxReranker {
             )));
         }
 
-        let scores: Vec<f32> = (0..batch_size).map(|i| sigmoid(data[i * stride])).collect();
+        let scores: Vec<Option<f32>> = (0..batch_size)
+            .map(|i| Some(sigmoid(data[i * stride])))
+            .collect();
         // Completion event with elapsed_ms so per-chunk latency is queryable
         // without parsing the surrounding span.
         tracing::debug!(
@@ -526,7 +530,11 @@ impl OnnxReranker {
     /// Like [`compute_scores_opt`] but returns an empty vec instead of `None`
     /// when tokenization produces zero-length encodings. Used by [`rerank`]
     /// where a degenerate empty input just means a no-op.
-    fn compute_scores(&self, query: &str, passages: &[&str]) -> Result<Vec<f32>, RerankerError> {
+    fn compute_scores(
+        &self,
+        query: &str,
+        passages: &[&str],
+    ) -> Result<Vec<Option<f32>>, RerankerError> {
         if passages.len() <= 1 {
             return Ok(Vec::new());
         }
@@ -946,72 +954,6 @@ impl Reranker for NoopReranker {
     }
 }
 
-/// LLM-judge reranker skeleton.
-///
-/// Holds an `Arc<dyn LlmRerankProvider>` so a production deployment can plug
-/// in a Claude / GPT / Gemini scorer without touching the search path. **The
-/// current impl is a skeleton** — it returns `RerankerError::Inference` from
-/// every score-producing call. The point is to prove the trait surface
-/// supports an LLM-shaped impl: an `LlmRerankProvider` produces relevance
-/// scores asynchronously via a `cqs::llm::BatchProvider`-style trait, and the
-/// `Reranker` shim turns that into the synchronous `rerank` shape the search
-/// path expects.
-///
-/// Production wiring (unimplemented): the `score` method becomes a
-/// `tokio::block_on` of a batch-call to the LLM provider with
-/// `(query, passage)` pairs, parses scores from the response, and feeds them
-/// through `apply_rerank_scores`. The trait surface here doesn't change.
-// Scaffold only: `pub(crate)` and gated behind `#[cfg(test)]` because every
-// score call returns `Err`. The trait-surface pin lives in the `tests` module
-// below. Promote back to `pub` (and re-export from `lib.rs`) when the LLM
-// provider wiring lands.
-#[cfg(test)]
-pub(crate) struct LlmReranker;
-
-#[cfg(test)]
-impl LlmReranker {
-    /// Construct a skeleton instance. The skeleton returns
-    /// `RerankerError::Inference` on every score call so an integration
-    /// test against the production search path can verify the trait
-    /// hooks without LLM-credential setup.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Default for LlmReranker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl Reranker for LlmReranker {
-    fn rerank(
-        &self,
-        _query: &str,
-        _results: &mut Vec<SearchResult>,
-        _limit: usize,
-    ) -> Result<(), RerankerError> {
-        Err(RerankerError::Inference(
-            "LlmReranker is a skeleton — production wiring is not implemented".to_string(),
-        ))
-    }
-
-    fn rerank_with_passages(
-        &self,
-        _query: &str,
-        _results: &mut Vec<SearchResult>,
-        _passages: &[&str],
-        _limit: usize,
-    ) -> Result<(), RerankerError> {
-        Err(RerankerError::Inference(
-            "LlmReranker is a skeleton — production wiring is not implemented".to_string(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod batch_scaling_tests {
     use super::{
@@ -1162,9 +1104,13 @@ fn sigmoid(x: f32) -> f32 {
 /// corresponding result, sorts descending with a chunk-id secondary key for
 /// deterministic tie-breaking, and truncates to `limit`.
 ///
+/// A `None` score marks a row whose passage tokenized empty. Such rows keep
+/// their input cosine score, preserving their incoming rank position rather
+/// than receiving a synthetic mid-distribution value.
+///
 /// Separate from the impl block so the &mut results write and the earlier
 /// &results passage borrow live in disjoint scopes at the call site (`rerank`).
-fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit: usize) {
+fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<Option<f32>>, limit: usize) {
     if scores.is_empty() {
         return;
     }
@@ -1186,7 +1132,11 @@ fn apply_rerank_scores(results: &mut Vec<SearchResult>, scores: Vec<f32>, limit:
         results.truncate(n);
     }
     for (i, score) in scores.into_iter().take(n).enumerate() {
-        results[i].score = score;
+        // `None` means the row tokenized empty: keep its input cosine score so
+        // it stays where the upstream ranking put it.
+        if let Some(score) = score {
+            results[i].score = score;
+        }
     }
     let batch_size = results.len();
     // Sort descending by score, then truncate. Secondary sort on chunk id keeps
@@ -1572,7 +1522,7 @@ mod tests {
         results[4].score = 0.95;
         // Rerank cohort: low sigmoid scores that must still outrank the cosine
         // tail rather than losing the sort to it.
-        let scores = vec![0.1f32, 0.05, 0.2];
+        let scores = vec![Some(0.1f32), Some(0.05), Some(0.2)];
         super::apply_rerank_scores(&mut results, scores, 10);
         assert_eq!(
             results.len(),
@@ -1600,23 +1550,51 @@ mod tests {
         }
     }
 
-    /// `LlmReranker` is a skeleton — every score-producing call returns
-    /// `RerankerError::Inference` so an integration test against the
-    /// production search path can verify trait wiring without any
-    /// live LLM credentials. Pins that contract: any future production
-    /// `LlmReranker` impl must NOT silently no-op when the provider is
-    /// unconfigured.
+    /// A row whose passage tokenizes empty surfaces as `None` from
+    /// `run_chunk`/`compute_scores_opt`. `apply_rerank_scores` must keep that
+    /// row's input cosine score instead of overwriting it with a synthetic
+    /// mid-distribution value, so the empty row holds its incoming rank rather
+    /// than teleporting into the middle of the cross-encoder distribution.
     #[test]
-    fn llm_reranker_skeleton_returns_inference_error() {
-        let reranker = LlmReranker::new();
-        let mut results = vec![stub_result("a", "x"), stub_result("b", "y")];
-        let err = reranker.rerank("q", &mut results, 10).unwrap_err();
-        let RerankerError::Inference(msg) = err else {
-            panic!("expected Inference variant, got {err:?}");
-        };
+    fn apply_rerank_scores_empty_row_keeps_input_cosine_order() {
+        let mut results = vec![
+            stub_result("top", "first"),
+            stub_result("empty", ""),
+            stub_result("bottom", "third"),
+        ];
+        // Incoming cosine order: top (0.9) > empty (0.6) > bottom (0.1).
+        results[0].score = 0.9;
+        results[1].score = 0.6;
+        results[2].score = 0.1;
+
+        // Cross-encoder rescored the two non-empty rows low; the empty row is
+        // `None` and must fall back to its 0.6 cosine score. The old synthetic
+        // sigmoid(0)=0.5 would have ordered the empty row below 0.6, and with
+        // higher real rerank scores could have interleaved it into the middle.
+        let scores = vec![Some(0.3f32), None, Some(0.2f32)];
+        super::apply_rerank_scores(&mut results, scores, 10);
+
+        // All three survive (no length mismatch).
+        assert_eq!(results.len(), 3);
+
+        // The empty row kept its 0.6 cosine score.
+        let empty = results
+            .iter()
+            .find(|r| r.chunk.id == "empty")
+            .expect("empty row must survive");
         assert!(
-            msg.contains("skeleton"),
-            "skeleton error must self-identify; got: {msg}"
+            (empty.score - 0.6).abs() < f32::EPSILON,
+            "empty row must keep its 0.6 input cosine score, got {}",
+            empty.score
+        );
+
+        // With cosine 0.6 vs rerank 0.3 / 0.2, the empty row sorts first —
+        // it held its position above the rescored cohort rather than dropping
+        // to a synthetic mid value.
+        assert_eq!(
+            results[0].chunk.id, "empty",
+            "empty row's preserved cosine score must keep it ahead of the lower rerank scores; got order {:?}",
+            results.iter().map(|r| r.chunk.id.as_str()).collect::<Vec<_>>()
         );
     }
 
