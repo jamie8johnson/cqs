@@ -176,9 +176,6 @@ pub use types::TypeGraph;
 /// A type usage relationship from a chunk.
 pub use types::TypeUsage;
 
-/// Set RRF K override from config scoring overrides.
-pub use crate::search::scoring::set_rrf_k_from_config;
-
 /// Defense-in-depth sanitization for FTS5 query strings.
 /// Strips or escapes FTS5 special characters that could alter query semantics.
 /// Applied after `normalize_for_fts()` as an extra safety layer — if `normalize_for_fts`
@@ -295,24 +292,32 @@ impl ClearHnswDirty for ReadOnly {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Store<Mode = ReadWrite> {
-    pub(crate) pool: SqlitePool,
+    /// Connection pool. Private — reached only through the store's own typed
+    /// SQL methods (and [`Store::block_on`] for async composition). Test
+    /// fixtures borrow it via the `cfg(test)` [`Store::pool`] accessor.
+    pool: SqlitePool,
     /// Tokio runtime driving async sqlx operations.
+    ///
+    /// Private — the store drives futures through [`Store::block_on`] and
+    /// exposes a shareable handle via [`Store::runtime`].
     ///
     /// Stored as `Arc<Runtime>` so callers (e.g. the daemon) can construct one
     /// multi-thread runtime and hand the same `Arc` to `Store`,
     /// `EmbeddingCache`, and `QueryCache`. `Runtime::block_on` takes `&self`,
     /// so the `Arc` derefs transparently at call sites. When no caller supplies
     /// one, each open builds its own `Arc`.
-    pub(crate) rt: Arc<Runtime>,
+    rt: Arc<Runtime>,
     /// Embedding dimension for this store (read from metadata on open, default `EMBEDDING_DIM`).
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
-    /// Cached `OwnedNoteBoostIndex` derived from `notes_summaries_cache`.
-    /// Built lazily on first `cached_note_boost_index()` call, invalidated
-    /// alongside the notes cache in `invalidate_notes_cache`.
-    note_boost_cache: RwLock<Option<Arc<crate::search::scoring::OwnedNoteBoostIndex>>>,
+    /// Search-owned note-boost cache, derived from `notes_summaries_cache`.
+    /// Built lazily on first `cached_note_boost_index()` call (defined
+    /// search-side), invalidated alongside the notes cache in
+    /// `invalidate_notes_cache`. The store holds this as an opaque cell — the
+    /// concrete boost-index type and the boost math live in `search::scoring`.
+    pub(crate) note_boost_cache: crate::search::scoring::NoteBoostCache,
     /// Cached call graph — populated on first access, valid until `clear_caches()`.
     /// `OnceLock` is write-once within a cache epoch. `clear_caches(&mut self)` swaps
     /// in a fresh OnceLock, which is safe because `&mut self` guarantees exclusive access.
@@ -707,6 +712,17 @@ impl<Mode> Store<Mode> {
     /// `QueryCache::open_with_runtime` call `Arc::clone(store.runtime())`.
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.rt
+    }
+
+    /// Borrow the connection pool for test-only raw SQL setup.
+    ///
+    /// `pool` is otherwise private — production code reaches the database
+    /// through typed store methods. Cross-module test fixtures that seed rows
+    /// with bespoke SQL (e.g. `llm::batch`, `impact::cross_project`,
+    /// `serve::tests`) use this together with [`Store::block_on`].
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 }
 
@@ -1146,7 +1162,7 @@ fn open_with_config_impl<Mode>(
         dim,
         closed: AtomicBool::new(false),
         notes_summaries_cache: RwLock::new(None),
-        note_boost_cache: RwLock::new(None),
+        note_boost_cache: crate::search::scoring::NoteBoostCache::default(),
         call_graph_cache: std::sync::OnceLock::new(),
         test_chunks_cache: std::sync::OnceLock::new(),
         chunk_type_map_cache: std::sync::OnceLock::new(),
@@ -1294,12 +1310,9 @@ impl<Mode> Store<Mode> {
             .notes_summaries_cache
             .write()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        // PF-V1.25-4: note_boost_cache is derived from notes_summaries_cache;
-        // clear alongside it so a reset doesn't leave stale boost data.
-        *self
-            .note_boost_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = None;
+        // note_boost_cache is derived from notes_summaries_cache; clear
+        // alongside it so a reset doesn't leave stale boost data.
+        self.note_boost_cache.clear();
         self.call_graph_cache = std::sync::OnceLock::new();
         self.test_chunks_cache = std::sync::OnceLock::new();
         self.chunk_type_map_cache = std::sync::OnceLock::new();

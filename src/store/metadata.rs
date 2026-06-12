@@ -399,53 +399,9 @@ impl<Mode> Store<Mode> {
                 *p.into_inner() = None;
             }
         }
-        match self.note_boost_cache.write() {
-            Ok(mut guard) => *guard = None,
-            Err(p) => {
-                tracing::warn!(
-                    "note boost cache write lock poisoned during invalidation, recovering"
-                );
-                *p.into_inner() = None;
-            }
-        }
-    }
-
-    /// Get the cached `OwnedNoteBoostIndex`, building from
-    /// [`Store::cached_notes_summaries`] on first access or after invalidation.
-    ///
-    /// The owned index is computed once per notes-table revision and shared
-    /// via `Arc` across all search paths, avoiding an O(notes × mentions)
-    /// HashMap rebuild on every search (notes change far less often than
-    /// searches fire).
-    ///
-    /// Returns `Arc` of a `pub(crate)` type — callers outside the crate
-    /// cannot access the type directly, hence `pub(crate)` on this accessor.
-    pub(crate) fn cached_note_boost_index(
-        &self,
-    ) -> Result<Arc<crate::search::scoring::OwnedNoteBoostIndex>, StoreError> {
-        // Fast path: read lock, check if populated
-        {
-            let guard = self.note_boost_cache.read().unwrap_or_else(|p| {
-                tracing::warn!("note boost cache read lock poisoned, recovering");
-                p.into_inner()
-            });
-            if let Some(ref idx) = *guard {
-                return Ok(Arc::clone(idx));
-            }
-        }
-        // Cache miss — get notes, build index, write-lock to store.
-        let notes = self.cached_notes_summaries()?;
-        let built = Arc::new(crate::search::scoring::OwnedNoteBoostIndex::new(&notes));
-        let mut guard = self.note_boost_cache.write().unwrap_or_else(|p| {
-            tracing::warn!("note boost cache write lock poisoned, recovering");
-            p.into_inner()
-        });
-        // Double-check in case a concurrent read populated while we waited.
-        if let Some(ref existing) = *guard {
-            return Ok(Arc::clone(existing));
-        }
-        *guard = Some(Arc::clone(&built));
-        Ok(built)
+        // The note-boost cache is search-owned; forward the invalidation so
+        // the next search rebuilds the boost data from fresh notes.
+        self.note_boost_cache.invalidate();
     }
 }
 

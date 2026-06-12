@@ -833,7 +833,7 @@ mod tests {
         let embedding_bytes =
             crate::store::helpers::embedding_to_bytes(&embedding, crate::EMBEDDING_DIM).unwrap();
         let now = chrono::Utc::now().to_rfc3339();
-        store.rt.block_on(async {
+        store.block_on(async {
             sqlx::query(
                 "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name,
                      signature, content, content_hash, doc, line_start, line_end, embedding,
@@ -847,7 +847,7 @@ mod tests {
             .bind(content_hash)
             .bind(&embedding_bytes)
             .bind(&now)
-            .execute(&store.pool)
+            .execute(store.pool())
             .await
             .unwrap();
         });
