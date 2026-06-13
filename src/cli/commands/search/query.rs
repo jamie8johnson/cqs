@@ -2219,6 +2219,75 @@ mod tests {
             }
         }
 
+        /// Regression guard at the overlay *search* seam: a file noted in the
+        /// parent index and re-served from the overlay leg must carry the note's
+        /// sentiment multiplier AND record `note_boost` provenance. This
+        /// exercises the EXACT production call `apply_overlay` makes
+        /// (`overlay.store.search_filtered_with_index`) after `build_overlay`
+        /// copied the parent's notes into the shadow store. With an empty
+        /// overlay notes table the multiplier collapses to 1.0 and `note_boost`
+        /// is never recorded — the score divergence + provenance lie this
+        /// guards against.
+        #[test]
+        fn overlay_search_records_note_boost_for_noted_edited_file() {
+            use cqs::note::Note;
+
+            // Parent index carries a -0.5 note on `src/fragile.rs`. An in-memory
+            // store is a sufficient notes source — `copy_notes_from` reads the
+            // parent's notes table over SQLite, no on-disk index needed.
+            let parent = Store::open_memory().expect("parent store");
+            parent
+                .init(&ModelInfo::default())
+                .expect("init parent store");
+            let note = Note {
+                id: "note:0".to_string(),
+                text: "fragile — handle with care".to_string(),
+                sentiment: -0.5,
+                mentions: vec!["src/fragile.rs".to_string()],
+                kind: None,
+            };
+            parent
+                .upsert_notes_batch(&[note], std::path::Path::new("docs/notes.toml"), 100)
+                .expect("seed parent note");
+
+            // Overlay shadow store: one chunk for the edited+noted file at slot 0,
+            // plus the parent's notes copied in (the fix under test).
+            let overlay = overlay_with(&[("src/fragile.rs", "fragile_fn", 0)], &["src/fragile.rs"]);
+            let copied = overlay
+                .store
+                .copy_notes_from(&parent)
+                .expect("copy parent notes into shadow");
+            assert_eq!(copied, 1, "the parent note crossed into the shadow store");
+
+            // Search the shadow store exactly as `apply_overlay` does, with
+            // rank-signal recording on so we can read the provenance.
+            let mut filter = SearchFilter::default();
+            filter.query_text = "fragile".to_string();
+            filter.record_rank_signals = true;
+            let hits = overlay
+                .store
+                .search_filtered_with_index(&one_hot(0), &filter, 10, 0.0, None)
+                .expect("overlay store search");
+
+            let hit = hits
+                .iter()
+                .find(|r| r.chunk.name == "fragile_fn")
+                .expect("the noted chunk is retrieved from the overlay store");
+
+            // Provenance: `note_boost` is recorded with the -0.5 multiplier
+            // (< 1.0). Absence here is the provenance lie the fix closes.
+            let note_signal = hit
+                .rank_signals
+                .iter()
+                .find(|s| s.signal == "note_boost")
+                .expect("overlay hit must record note_boost provenance");
+            assert!(
+                note_signal.value < 1.0,
+                "note_boost multiplier must reflect the -0.5 demotion, got {}",
+                note_signal.value
+            );
+        }
+
         /// A `PreparedQuery` carrying `emb` + a default filter and nothing else
         /// (no SPLADE, no index, no reranker) — exactly what `apply_overlay`
         /// reads (`query_embedding`, `filter`).
