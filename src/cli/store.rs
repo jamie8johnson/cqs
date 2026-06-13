@@ -18,6 +18,11 @@ use super::definitions;
 pub(crate) struct SlotPaths {
     /// Project root (`<root>` — directory holding `.cqs/`).
     pub root: PathBuf,
+    /// Project-level `.cqs/` dir (holds project-scoped state shared across
+    /// slots: `audit-mode.json`, `config.toml`, telemetry). NOT slot-local.
+    /// Equals [`slot_dir`](Self::slot_dir) under the legacy `.cqs/index.db`
+    /// layout, where the index lives directly in `.cqs/`.
+    pub project_cqs_dir: PathBuf,
     /// Slot dir `.cqs/slots/<name>/` (holds index.db, hnsw_*, splade.*).
     pub slot_dir: PathBuf,
     /// Slot name (validated, post-resolution).
@@ -51,15 +56,19 @@ pub(crate) fn resolve_slot_paths(slot_flag: Option<&str>) -> Result<SlotPaths> {
     // clean "Index not found" error pointing at the modern path.
     if !slots_root.exists() && project_cqs_dir.join(cqs::INDEX_DB_FILENAME).exists() {
         // Pre-slots layout — index.db sits directly in `.cqs/`. Treat
-        // `.cqs/` as the slot dir for this read.
+        // `.cqs/` as the slot dir for this read. The project dir and the slot
+        // dir are the same path here, so project-scoped reads (audit-mode)
+        // still resolve correctly.
         return Ok(SlotPaths {
             root,
+            project_cqs_dir: project_cqs_dir.clone(),
             slot_dir: project_cqs_dir,
             slot_name: cqs::slot::DEFAULT_SLOT.to_string(),
         });
     }
     Ok(SlotPaths {
         root,
+        project_cqs_dir,
         slot_dir,
         slot_name: resolved.name,
     })
@@ -146,6 +155,13 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
     /// Slot dir — `.cqs/slots/<active>/`. Holds index.db, hnsw_*, splade.*.
     /// Most call sites use this as the "where do my index files live" anchor.
     pub cqs_dir: PathBuf,
+    /// Project-level `.cqs/` dir — anchor for project-scoped state that is
+    /// shared across slots (audit-mode, config). Distinct from [`cqs_dir`],
+    /// which is the slot-local index dir. Equals `cqs_dir` only under the
+    /// legacy `.cqs/index.db` layout. The daemon resolves the same state from
+    /// its own project `.cqs/`; reading these from the slot dir on the CLI
+    /// surface silently diverges from the daemon.
+    pub project_cqs_dir: PathBuf,
     reranker: OnceLock<std::sync::Arc<dyn cqs::Reranker>>,
     embedder: OnceLock<cqs::Embedder>,
     splade_encoder: OnceLock<Option<cqs::splade::SpladeEncoder>>,
@@ -158,6 +174,33 @@ pub(crate) struct CommandContext<'a, Mode = cqs::store::ReadWrite> {
 }
 
 impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
+    /// Build a context from explicit paths and an already-open read-only store,
+    /// bypassing CWD-driven slot resolution. Lets a test pin a slot-migrated
+    /// layout (`slot_dir != project_cqs_dir`) and assert that project-scoped
+    /// reads (audit-mode) resolve from `project_cqs_dir`, not the slot dir.
+    /// Mirrors the batch module's `create_test_context`.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        cli: &'a definitions::Cli,
+        store: cqs::Store<cqs::store::ReadOnly>,
+        root: PathBuf,
+        slot_dir: PathBuf,
+        project_cqs_dir: PathBuf,
+    ) -> Self {
+        Self {
+            cli,
+            store,
+            root,
+            cqs_dir: slot_dir,
+            project_cqs_dir,
+            reranker: OnceLock::new(),
+            embedder: OnceLock::new(),
+            splade_encoder: OnceLock::new(),
+            splade_index: OnceLock::new(),
+            index_aware_model: OnceLock::new(),
+        }
+    }
+
     /// Open the project store in read-only mode and build a command context.
     pub fn open_readonly(cli: &'a definitions::Cli) -> Result<Self> {
         let (store, paths) = open_project_store_readonly_for_slot(cli.slot.as_deref())?;
@@ -168,6 +211,7 @@ impl<'a> CommandContext<'a, cqs::store::ReadOnly> {
             store,
             root: paths.root,
             cqs_dir: paths.slot_dir,
+            project_cqs_dir: paths.project_cqs_dir,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),
@@ -191,6 +235,7 @@ impl<'a> CommandContext<'a, cqs::store::ReadWrite> {
             store,
             root: paths.root,
             cqs_dir: paths.slot_dir,
+            project_cqs_dir: paths.project_cqs_dir,
             reranker: OnceLock::new(),
             embedder: OnceLock::new(),
             splade_encoder: OnceLock::new(),

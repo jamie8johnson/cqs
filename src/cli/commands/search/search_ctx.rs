@@ -200,7 +200,13 @@ impl SearchCtx for crate::cli::CommandContext<'_, ReadOnly> {
     }
 
     fn audit_state(&self) -> cqs::audit::AuditMode {
-        cqs::audit::load_audit_state(&self.cqs_dir)
+        // Audit-mode is project-scoped: the writer (`cmd_audit_mode`) and the
+        // daemon both resolve `audit-mode.json` from the project `.cqs/`, not
+        // the slot dir. Read it from `project_cqs_dir` so CLI-direct search
+        // suppresses note-boost and forces the hybrid path identically to the
+        // daemon. Reading `cqs_dir` (the slot dir) misses the file entirely on
+        // slot-migrated projects, leaving audit-mode silently inert here.
+        cqs::audit::load_audit_state(&self.project_cqs_dir)
     }
 
     fn references(&self) -> Result<Vec<Arc<ReferenceIndex>>> {
@@ -216,5 +222,67 @@ impl SearchCtx for crate::cli::CommandContext<'_, ReadOnly> {
 
     fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>> {
         crate::cli::commands::resolve::find_reference(&self.root, name).map(Arc::new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchCtx;
+    use clap::Parser;
+    use cqs::store::{ModelInfo, Store};
+
+    /// Integration pin for the project-vs-slot audit-mode split.
+    ///
+    /// Builds a slot-migrated layout on disk — index.db under
+    /// `.cqs/slots/work/`, `audit-mode.json` at the PROJECT level (`.cqs/`) —
+    /// then constructs a real `CommandContext` whose slot `cqs_dir` is the slot
+    /// dir and whose `project_cqs_dir` is the project `.cqs/`. The CLI-direct
+    /// `audit_state()` must resolve the project file (active), matching the
+    /// daemon. The earlier unit pins constructed bespoke `SearchCtx` mocks and
+    /// missed this because they never exercised the slot/project dir split that
+    /// a real `CommandContext` carries.
+    #[test]
+    fn cli_audit_state_resolves_from_project_dir_not_slot() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        let project_cqs_dir = root.join(".cqs");
+        let slot_dir = project_cqs_dir.join("slots").join("work");
+        std::fs::create_dir_all(&slot_dir).unwrap();
+
+        // Real store under the slot dir.
+        let db = slot_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let s = Store::open(&db).unwrap();
+            s.init(&ModelInfo::default()).unwrap();
+        }
+        let store = Store::open_readonly(&db).unwrap();
+
+        // Audit-mode ON, written at the PROJECT level (where `cmd_audit_mode`
+        // and the daemon both put it) — NOT in the slot dir.
+        let mode = cqs::audit::AuditMode {
+            enabled: true,
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(30)),
+        };
+        cqs::audit::save_audit_state(&project_cqs_dir, &mode).unwrap();
+
+        // Sanity: the file lives at the project level, not the slot dir.
+        assert!(project_cqs_dir.join("audit-mode.json").exists());
+        assert!(!slot_dir.join("audit-mode.json").exists());
+        // Negative control: reading the slot dir alone (the old, buggy anchor)
+        // misses the file and reports inactive.
+        assert!(
+            !cqs::audit::load_audit_state(&slot_dir).is_active(),
+            "slot dir holds no audit-mode.json — the old slot-anchored read would miss it"
+        );
+
+        let cli = crate::cli::Cli::try_parse_from(["cqs", "some query"]).unwrap();
+        let ctx =
+            crate::cli::CommandContext::new_for_test(&cli, store, root, slot_dir, project_cqs_dir);
+
+        assert!(
+            ctx.audit_state().is_active(),
+            "CLI-direct audit_state() must resolve audit-mode.json from the project \
+             .cqs/, matching the daemon — reading the slot dir would report inactive"
+        );
     }
 }
