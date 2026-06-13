@@ -737,6 +737,18 @@ define_chunk_types! {
     Module => "module", hints = ["all modules", "every module"];
     /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
     Macro => "macro", hints = ["all macros", "every macro", "macro_rules"];
+    /// Item-position macro INVOCATION whose body is an opaque token-tree
+    /// (Rust `proptest! { ... }`, `define_languages! { ... }`). Distinct from
+    /// `Macro` (a `macro_rules!` *definition*): an invocation block defines no
+    /// callable of its own, so it is NonCode and never a dead-code candidate,
+    /// but it IS walked for call edges so functions called only from inside the
+    /// token-tree (e.g. a `proptest!` body) gain a real caller. Captured only
+    /// at item scope (child of `source_file` / `declaration_list`); expression-
+    /// position invocations like `println!` inside a fn body stay inside their
+    /// surrounding function chunk.
+    MacroInvocation => "macroinvocation", capture = "macro_invocation",
+        hints = ["macro invocation", "all macro invocations"],
+        human = "macro invocation";
     /// Object/singleton definition (Scala)
     Object => "object", hints = ["all objects", "every object"];
     /// Type alias definition (Scala, future: Haskell, Kotlin)
@@ -826,6 +838,7 @@ impl ChunkType {
             | ChunkType::Delegate
             | ChunkType::Event
             | ChunkType::ConfigKey
+            | ChunkType::MacroInvocation
             | ChunkType::Namespace => ChunkClass::NonCode,
         }
     }
@@ -1412,6 +1425,7 @@ mod tests {
                 | ChunkType::Delegate
                 | ChunkType::Event
                 | ChunkType::ConfigKey
+                | ChunkType::MacroInvocation
                 | ChunkType::Namespace => {
                     assert!(!ct.is_code(), "{ct} should not be code");
                 }

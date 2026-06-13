@@ -151,6 +151,7 @@ pub fn classify_chunk_type(ct: ChunkType) -> Kind {
         // matrix doesn't yet rule on) land here.
         ChunkType::Section
         | ChunkType::Macro
+        | ChunkType::MacroInvocation
         | ChunkType::Impl
         | ChunkType::ConfigKey
         | ChunkType::Service
@@ -334,6 +335,7 @@ mod tests {
                 ChunkType::Module | ChunkType::Namespace => Kind::Module,
                 ChunkType::Section
                 | ChunkType::Macro
+                | ChunkType::MacroInvocation
                 | ChunkType::Impl
                 | ChunkType::ConfigKey
                 | ChunkType::Service

@@ -131,6 +131,17 @@ pub(crate) fn extract_serde_callback_calls(
 /// the `identifier` child of a `macro_invocation` whose next sibling is `!`
 /// (never a `token_tree`), so it is never emitted as a call.
 ///
+/// BARE macro args (`m!(callback)`): an `identifier` inside a token_tree that is
+/// NOT followed by a `token_tree` is usually a variable / a token, but it can be
+/// a function or macro passed by name to a code-gen macro — e.g.
+/// `for_each_logged_batch_cmd!(gen_log_query_dispatch)`, where
+/// `gen_log_query_dispatch` is a `macro_rules!` the outer macro expands. Bare
+/// idents are noise-prone, so this case emits an edge ONLY when the ident is in
+/// `known_fns` (the same intra-file precision gate the fn-pointer-arg pass uses;
+/// it includes `macro_definition` names). The leading segment of a `m::n` path
+/// (next sibling `::`) is also a bare ident not followed by a `token_tree`, but
+/// it is excluded by the `known_fns` gate in the normal case.
+///
 /// Walks only `node`'s subtree, so callers pass the chunk node to stay scoped
 /// to one chunk's byte range. `line_offset` is subtracted (saturating, min 1)
 /// to convert absolute tree rows to chunk-relative 1-indexed lines, matching
@@ -140,6 +151,7 @@ pub(crate) fn extract_macro_call_edges(
     source: &str,
     language: Language,
     line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
 ) -> Vec<CallSite> {
     let _span = tracing::debug_span!("extract_macro_call_edges", %language).entered();
 
@@ -148,7 +160,7 @@ pub(crate) fn extract_macro_call_edges(
     }
 
     let mut calls = Vec::new();
-    collect_macro_calls(node, source, line_offset, false, &mut calls);
+    collect_macro_calls(node, source, line_offset, false, known_fns, &mut calls);
     calls
 }
 
@@ -158,12 +170,15 @@ pub(crate) fn extract_macro_call_edges(
 /// macro `token_tree`. Only once inside do we treat an `identifier` followed by
 /// a `token_tree` as a call — outside token-trees the normal call query already
 /// covers real `call_expression`s, and applying the heuristic there would
-/// double-count.
+/// double-count. A bare `identifier` NOT followed by a `token_tree` emits only
+/// when it is in `known_fns` (the precision gate for the noise-prone bare-arg
+/// case — see [`extract_macro_call_edges`]).
 fn collect_macro_calls(
     node: tree_sitter::Node,
     source: &str,
     line_offset: u32,
     in_token_tree: bool,
+    known_fns: &std::collections::HashSet<String>,
     out: &mut Vec<CallSite>,
 ) {
     let mut cursor = node.walk();
@@ -181,18 +196,21 @@ fn collect_macro_calls(
                 .get(i + 1)
                 .map(|n| n.kind() == "token_tree")
                 .unwrap_or(false);
-            if next_is_token_tree {
-                let callee_name = source[child.byte_range()].to_string();
-                if !should_skip_callee(&callee_name) {
-                    let line_number = (child.start_position().row as u32 + 1)
-                        .saturating_sub(line_offset)
-                        .max(1);
-                    out.push(CallSite {
-                        callee_name,
-                        line_number,
-                        kind: CallEdgeKind::MacroHeuristic,
-                    });
-                }
+            let callee_name = source[child.byte_range()].to_string();
+            // `func(args)` shape: emit unconditionally (high precision — an
+            // ident directly before `(...)`/`[...]`/`{...}` is a call).
+            // Bare ident (no following token_tree): emit ONLY if it names a
+            // same-file fn/macro (precision gate against variable noise).
+            let emit = next_is_token_tree || known_fns.contains(&callee_name);
+            if emit && !should_skip_callee(&callee_name) {
+                let line_number = (child.start_position().row as u32 + 1)
+                    .saturating_sub(line_offset)
+                    .max(1);
+                out.push(CallSite {
+                    callee_name,
+                    line_number,
+                    kind: CallEdgeKind::MacroHeuristic,
+                });
             }
         }
 
@@ -201,23 +219,38 @@ fn collect_macro_calls(
         // `in_token_tree` flag latches on once we enter a token_tree and stays
         // set for that subtree.
         let child_in_token_tree = in_token_tree || kind == "token_tree";
-        collect_macro_calls(*child, source, line_offset, child_in_token_tree, out);
+        collect_macro_calls(
+            *child,
+            source,
+            line_offset,
+            child_in_token_tree,
+            known_fns,
+            out,
+        );
     }
 }
 
-/// Collect the names of every Rust function definition in `node`'s subtree.
+/// Collect the names of every Rust function (and macro) definition in `node`'s
+/// subtree.
 ///
-/// Used by [`extract_fn_pointer_arg_edges`] as the intra-file precision filter:
-/// a bare `identifier` in argument position is emitted as a fn-pointer edge ONLY
-/// if it names a function defined in the same file. This keeps the common
-/// variable-as-argument case (`f(state, count)` where `count` is a local) out of
-/// the call graph while still catching `f(state, handler)` where `handler` is a
-/// local free function passed by value.
+/// Used as the intra-file precision filter for two bare-identifier edge passes:
+/// - [`extract_fn_pointer_arg_edges`]: a bare `identifier` in CALL-argument
+///   position is emitted as a fn-pointer edge ONLY if it names something defined
+///   in the same file.
+/// - [`collect_macro_calls`]: a bare `identifier` MACRO argument (`m!(callback)`,
+///   not followed by a `token_tree`) is noise-prone, so it emits only when it
+///   names a same-file definition.
+/// This keeps the common variable-as-argument case (`f(state, count)` where
+/// `count` is a local) out of the call graph while still catching `f(state,
+/// handler)` / `m!(handler)` where `handler` is a local free function or macro
+/// passed by value.
 ///
-/// Captures `function_item` (free / inherent / associated fns) and
-/// `function_signature_item` (trait method declarations). Callers pass the WHOLE
-/// file's root so the set is file-wide — a fn referenced in one chunk but defined
-/// in another still resolves.
+/// Captures `function_item` (free / inherent / associated fns),
+/// `function_signature_item` (trait method declarations), and `macro_definition`
+/// (`macro_rules!` — a code-gen macro like `gen_log_query_dispatch` passed as a
+/// bare arg to another macro is a real reference, not a variable). Callers pass
+/// the WHOLE file's root so the set is file-wide — a definition referenced in one
+/// chunk but declared in another still resolves.
 pub(crate) fn collect_rust_fn_names(
     node: tree_sitter::Node,
     source: &str,
@@ -226,7 +259,10 @@ pub(crate) fn collect_rust_fn_names(
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
         let kind = n.kind();
-        if kind == "function_item" || kind == "function_signature_item" {
+        if kind == "function_item"
+            || kind == "function_signature_item"
+            || kind == "macro_definition"
+        {
             if let Some(name_node) = n.child_by_field_name("name") {
                 names.insert(source[name_node.byte_range()].to_string());
             }
@@ -320,6 +356,8 @@ fn collect_fn_pointer_args(
 /// - `(identifier)` → emit if in `known_fns` (intra-file function name).
 /// - `(scoped_identifier name: (identifier))` → emit terminal segment always.
 /// - `(tuple_expression …)` / `(array_expression …)` → recurse into elements.
+/// - `(type_cast_expression value: …)` → unwrap the cast (`f as *const ()`)
+///   and re-apply the rule to the inner value.
 /// Other argument shapes (literals, real nested `call_expression`s, references,
 /// closures) are left alone: nested calls are handled by the outer recursion in
 /// [`collect_fn_pointer_args`], and the rest are not fn-pointer values.
@@ -351,6 +389,18 @@ fn emit_fn_pointer_arg(
             let mut cursor = arg.walk();
             for inner in arg.named_children(&mut cursor) {
                 emit_fn_pointer_arg(inner, source, line_offset, known_fns, out);
+            }
+        }
+        // `f as *const ()` / `on_sigterm as sighandler_t` — Rust coerces a
+        // fn-item to a fn-pointer / raw-pointer type via `as`. The cast wraps
+        // the fn name in a `type_cast_expression` whose `value` is the bare
+        // identifier (or scoped path). Unwrap to the inner value and apply the
+        // same two-tier rule: a bare ident emits only if known intra-file, a
+        // scoped path emits its terminal segment. Fixes the `signal(SIG,
+        // on_sigterm as *const ()...)` shape (false-DEAD `on_sigterm`).
+        "type_cast_expression" => {
+            if let Some(value) = arg.child_by_field_name("value") {
+                emit_fn_pointer_arg(value, source, line_offset, known_fns, out);
             }
         }
         _ => {}
@@ -490,21 +540,25 @@ impl Parser {
             let scope = root
                 .descendant_for_byte_range(start_byte, end_byte)
                 .unwrap_or(root);
+
+            // Intra-file fn/macro-name set: the precision gate for both the
+            // bare-macro-arg edge (`m!(callback)`) and the fn-pointer-value
+            // edge. Collected from the whole tree so a definition referenced
+            // inside this range but declared outside it still resolves.
+            let known_fns = collect_rust_fn_names(root, &source);
+
             calls.extend(extract_macro_call_edges(
                 scope,
                 &source,
                 language,
                 line_offset,
+                &known_fns,
             ));
 
             // Fn-pointer / callback argument edges: `f(state, handler)`,
             // `set_handler(on_sigterm)`, `.map(parse_line)`, `register(m::h)`.
             // The function is a VALUE in argument position, invisible to the
-            // call query. Known-fn set is collected from the whole tree (the
-            // `source` slice) so an intra-file fn referenced inside this range
-            // but defined outside it still resolves. Deduped below against
-            // query-captured calls.
-            let known_fns = collect_rust_fn_names(root, &source);
+            // call query. Deduped below against query-captured calls.
             calls.extend(extract_fn_pointer_arg_edges(
                 scope,
                 &source,
@@ -881,8 +935,11 @@ impl Parser {
             // Macro token-tree call edges: calls inside `println!`/`vec!`/etc.
             // are opaque tokens, not `call_expression`s. Walk the chunk node for
             // them. This loop uses ABSOLUTE line numbers (the call query above
-            // does not subtract line_start), so pass line_offset = 0.
-            calls.extend(extract_macro_call_edges(node, &source, language, 0));
+            // does not subtract line_start), so pass line_offset = 0. `known_fns`
+            // gates the bare-macro-arg case (`m!(callback)`).
+            calls.extend(extract_macro_call_edges(
+                node, &source, language, 0, &known_fns,
+            ));
 
             // Fn-pointer / callback argument edges: a function passed as a VALUE
             // in argument position (`from_fn_with_state(state, touch_idle_clock)`,
@@ -1737,7 +1794,8 @@ const CFG: Config = Config {
             let mut ts = tree_sitter::Parser::new();
             ts.set_language(&grammar).unwrap();
             let tree = ts.parse(content, None).unwrap();
-            extract_macro_call_edges(tree.root_node(), content, Language::Rust, 0)
+            let known_fns = collect_rust_fn_names(tree.root_node(), content);
+            extract_macro_call_edges(tree.root_node(), content, Language::Rust, 0, &known_fns)
                 .into_iter()
                 .map(|c| c.callee_name)
                 .collect()
@@ -1907,6 +1965,148 @@ fn render() {
             assert!(
                 callees.contains(&"auth_banner_tty"),
                 "render should call auth_banner_tty via the println! macro, got: {callees:?}"
+            );
+        }
+
+        /// Collect, via the whole-file relationship path, every callee named by
+        /// ANY `function_calls` row in the file (across all chunks). Used by the
+        /// item-position macro-invocation tests below: the calls live inside a
+        /// `proptest!{}` / `for_each_..!()` block that is now anchored as its own
+        /// (NonCode) `MacroInvocation` chunk, so the edges show up on that chunk
+        /// — not on any surrounding function. Asserting against the union of all
+        /// callees in the file is the shape the dead-code resolver actually sees
+        /// (it keys callee_name → chunk name across all rows).
+        fn all_callees(content: &str) -> Vec<String> {
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+            calls
+                .iter()
+                .flat_map(|fc| fc.calls.iter().map(|c| c.callee_name.clone()))
+                .collect()
+        }
+
+        /// SLICE A — calls inside a `proptest!{}` body must reach the call graph.
+        /// The whole `proptest! { ... }` block is one `macro_invocation` whose
+        /// body is an opaque token-tree, so `fn prop_x` inside it is NOT a
+        /// `function_item` chunk. Before the fix nothing chunked the block, so a
+        /// function called ONLY from inside it (here `rewrite_all_checksums`)
+        /// showed zero callers — a `cqs dead` false positive. Anchoring the block
+        /// as a `MacroInvocation` chunk lets the token-tree pass attribute the
+        /// inner calls. Covers BOTH the plain `f(args)` form AND the
+        /// `x in generator()` strategy form.
+        #[test]
+        fn test_proptest_body_inner_calls_emit() {
+            let content = r#"
+fn rewrite_all_checksums(dir: &str, base: &str) {}
+fn gen_stamp() -> u32 { 0 }
+
+proptest! {
+    #[test]
+    fn prop_roundtrip(seed in gen_stamp()) {
+        rewrite_all_checksums("dir", "index");
+        let _ = seed;
+    }
+}
+"#;
+            let callees = all_callees(content);
+            // Plain `f(args)` form inside the proptest body.
+            assert!(
+                callees.contains(&"rewrite_all_checksums".to_string()),
+                "plain call inside proptest!{{}} body must emit an edge, got: {callees:?}"
+            );
+            // `x in generator()` strategy form: the generator call must emit.
+            assert!(
+                callees.contains(&"gen_stamp".to_string()),
+                "`seed in gen_stamp()` strategy call must emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// SLICE A — the anchoring `MacroInvocation` chunk is NonCode, so it is
+        /// never itself a dead-code candidate, and an expression-position macro
+        /// (`println!` in a fn body) is NOT chunked separately — it stays inside
+        /// its surrounding function chunk. This pins that the new chunk pattern
+        /// is scoped to item position only.
+        #[test]
+        fn test_item_macro_chunk_is_noncode_and_scoped() {
+            let content = r#"
+fn helper() {}
+
+fn body() {
+    println!("{}", helper());
+}
+
+proptest! {
+    #[test]
+    fn p(x in 0u32..3) { let _ = x; helper(); }
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            // The proptest block is a MacroInvocation chunk named `proptest`.
+            let mac = chunks
+                .iter()
+                .find(|c| c.chunk_type == ChunkType::MacroInvocation);
+            assert!(
+                mac.is_some(),
+                "proptest!{{}} block should be a MacroInvocation chunk, got: {:?}",
+                chunks
+                    .iter()
+                    .map(|c| (&c.name, c.chunk_type))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(mac.unwrap().name, "proptest");
+            // It is NonCode → not callable, not code (so never a dead candidate).
+            assert!(!ChunkType::MacroInvocation.is_callable());
+            assert!(!ChunkType::MacroInvocation.is_code());
+            // The expression-position `println!` produced NO MacroInvocation
+            // chunk — `body` is the only function chunk and it carries the
+            // helper() edge itself.
+            let macro_chunks = chunks
+                .iter()
+                .filter(|c| c.chunk_type == ChunkType::MacroInvocation)
+                .count();
+            assert_eq!(
+                macro_chunks, 1,
+                "only the item-position proptest!{{}} is chunked, not the nested println!"
+            );
+        }
+
+        /// SLICE B — a BARE identifier macro arg that names a same-file fn/macro
+        /// emits an edge; a random bare ident does NOT. The production shape is
+        /// `for_each_logged_batch_cmd!(gen_log_query_dispatch)`, where the
+        /// `gen_log_query_dispatch` macro is passed by bare name (no following
+        /// token_tree). The precision gate is the intra-file known-fns/macros set.
+        #[test]
+        fn test_bare_macro_arg_known_emits() {
+            let content = r#"
+macro_rules! gen_log_query_dispatch { () => {}; }
+macro_rules! for_each_logged_batch_cmd { ($e:ident) => {}; }
+
+for_each_logged_batch_cmd!(gen_log_query_dispatch);
+"#;
+            let callees = all_callees(content);
+            assert!(
+                callees.contains(&"gen_log_query_dispatch".to_string()),
+                "bare known-macro arg `gen_log_query_dispatch` must emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// SLICE B precision pin — a bare ident macro arg that is NOT a known
+        /// same-file fn/macro (an arbitrary token / variable name) must NOT emit
+        /// an edge. This is the noise guard that justifies the known-fns gate.
+        #[test]
+        fn test_bare_macro_arg_unknown_not_emitted() {
+            let content = r#"
+macro_rules! some_macro { ($x:ident) => {}; }
+
+some_macro!(not_a_defined_fn);
+"#;
+            let callees = all_callees(content);
+            assert!(
+                !callees.contains(&"not_a_defined_fn".to_string()),
+                "an unknown bare macro arg must NOT emit an edge, got: {callees:?}"
             );
         }
     }
@@ -2147,6 +2347,45 @@ fn install() {
             assert!(
                 callees.contains(&"on_sigterm".to_string()),
                 "on_sigterm passed to set_handler should emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// SLICE C — `signal(SIG, on_sigterm as *const () as sighandler_t)`:
+        /// the fn name is wrapped in a `type_cast_expression` (here a DOUBLE
+        /// cast). The cast arm unwraps to the inner `value` and re-applies the
+        /// two-tier rule, so the known intra-file fn `on_sigterm` emits an edge.
+        /// Fixes the production false-DEAD `on_sigterm` (the SIGTERM handler).
+        #[test]
+        fn test_fn_pointer_cast_arg() {
+            let content = r#"
+fn on_sigterm() {}
+
+fn install() {
+    signal(15, on_sigterm as *const () as usize);
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                callees.contains(&"on_sigterm".to_string()),
+                "on_sigterm in a `as`-cast arg should emit an edge, got: {callees:?}"
+            );
+        }
+
+        /// SLICE C precision pin — a cast of an UNKNOWN bare ident (a variable
+        /// coerced via `as`) must NOT emit; the cast arm still honours the
+        /// known-fns gate for bare identifiers.
+        #[test]
+        fn test_fn_pointer_cast_unknown_not_emitted() {
+            let content = r#"
+fn install() {
+    let ptr = 0usize;
+    register(ptr as *const ());
+}
+"#;
+            let callees = callees_of(content, "install");
+            assert!(
+                !callees.contains(&"ptr".to_string()),
+                "a cast of the `ptr` variable must NOT emit an edge, got: {callees:?}"
             );
         }
 
