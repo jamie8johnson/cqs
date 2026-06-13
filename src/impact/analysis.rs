@@ -21,6 +21,15 @@ fn rel_path(path: &Path, root: &Path) -> std::path::PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
+/// Ceiling on the distinct type names pulled for one-hop type expansion in
+/// [`find_type_impacted`]. Each remaining (post-`COMMON_TYPES`-filter) type
+/// drives a fan-out `get_type_users_batch` query, so an unbounded set lets a
+/// pathological target (a function touching hundreds of types) explode the
+/// reverse-type query. 200 covers every realistic target's distinct-type count
+/// with headroom; the outer `--limit` truncation still clips the rendered
+/// list. Distinct from a rendered-row cap — this bounds the internal fan-out.
+const MAX_TYPE_EXPANSION_FETCH: usize = 200;
+
 /// Options for impact analysis.
 pub struct ImpactOptions {
     /// Maximum depth for transitive caller discovery (default: 3).
@@ -103,6 +112,9 @@ pub fn analyze_impact<Mode>(
         tests,
         transitive_callers,
         type_impacted,
+        // Set by `truncate_impact_sections` when the per-section limit clips
+        // the list; the untruncated analysis result reports zero dropped.
+        type_impacted_truncated: 0,
         degraded,
     })
 }
@@ -438,12 +450,12 @@ fn find_type_impacted<Mode>(
 ) -> Result<Vec<TypeImpacted>, StoreError> {
     let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
 
-    // usize::MAX: the type set is filtered by COMMON_TYPES + deduped, then
-    // drives a fan-out type-users query — capping here would silently truncate
-    // the impact graph.
-    // TODO: consider a per-target ceiling (~200) once we measure typical
-    // edge counts at the impact-target level.
-    let type_pairs = store.get_types_used_by(target_name, usize::MAX)?;
+    // Bounded ceiling: the type set is filtered by COMMON_TYPES + deduped, then
+    // drives a fan-out type-users query. MAX_TYPE_EXPANSION_FETCH caps the
+    // distinct types we expand so a target touching hundreds of types can't
+    // explode the reverse query; the outer `--limit` still clips the rendered
+    // list.
+    let type_pairs = store.get_types_used_by(target_name, MAX_TYPE_EXPANSION_FETCH)?;
     let type_names: Vec<String> = type_pairs
         .into_iter()
         .map(|t| t.type_name)

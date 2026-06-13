@@ -875,6 +875,7 @@ mod tests {
                 tests_found: 0,
                 callees_truncated: 0,
                 callers_truncated: 0,
+                key_types_truncated: 0,
             },
         };
 
@@ -967,6 +968,7 @@ mod tests {
                 tests_found: 0,
                 callees_truncated: 0,
                 callers_truncated: 0,
+                key_types_truncated: 0,
             },
         };
 

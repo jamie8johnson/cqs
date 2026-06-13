@@ -184,7 +184,21 @@ pub(crate) fn cmd_onboard(
         // Key types
         if !result.key_types.is_empty() {
             println!();
-            println!("{}", "── Key Types ──".cyan().bold());
+            if result.summary.key_types_truncated > 0 {
+                let total = result.key_types.len() + result.summary.key_types_truncated;
+                println!(
+                    "{}",
+                    format!(
+                        "── Key Types (showing {} of {}, raise CQS_ONBOARD_KEY_TYPES to see more) ──",
+                        result.key_types.len(),
+                        total
+                    )
+                    .cyan()
+                    .bold()
+                );
+            } else {
+                println!("{}", "── Key Types ──".cyan().bold());
+            }
             let type_strs: Vec<String> = result
                 .key_types
                 .iter()

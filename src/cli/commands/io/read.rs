@@ -18,6 +18,41 @@ use cqs::parser::ChunkType;
 use cqs::store::Store;
 use cqs::{compute_hints, FunctionHints, COMMON_TYPES};
 
+/// Maximum type-dependency fragments rendered in a focused read. The
+/// type-edge query plus the `COMMON_TYPES` filter can still leave a long tail
+/// for a type-heavy chunk; emitting a definition fragment per remaining type
+/// floods an agent's token budget. Env override: `CQS_READ_TYPE_DEPS`.
+const MAX_READ_TYPE_DEPS_DEFAULT: usize = 50;
+
+/// Ceiling on rows pulled from `get_types_used_by` for the focused-read type
+/// section. The list is filtered by `COMMON_TYPES` after the fetch, so the SQL
+/// ceiling sits above [`MAX_READ_TYPE_DEPS_DEFAULT`] to leave filtering
+/// headroom while still bounding the query.
+const READ_TYPE_DEPS_FETCH_CEILING: usize = 200;
+
+/// Resolve `CQS_READ_TYPE_DEPS`, default 50. Parse/warn/default via the shared
+/// `cqs::limits::parse_env_usize` (warns on a malformed value).
+fn max_read_type_deps() -> usize {
+    cqs::limits::parse_env_usize("CQS_READ_TYPE_DEPS", MAX_READ_TYPE_DEPS_DEFAULT)
+}
+
+/// Clip `types` to `cap` in place. Returns `Some(message)` describing the
+/// truncation ("showing N of M …") when the list was over the cap, or `None`
+/// when it fit. The returned message is shared between the rendered body
+/// marker and the JSON `warnings[]` entry so the two never drift. The fetch +
+/// filter order is preserved, so the kept fragments are the deterministic
+/// front of the list.
+fn clip_type_deps(types: &mut Vec<cqs::store::TypeUsage>, cap: usize) -> Option<String> {
+    let total = types.len();
+    if total <= cap {
+        return None;
+    }
+    types.truncate(cap);
+    Some(format!(
+        "type dependencies truncated: showing {cap} of {total} (raise CQS_READ_TYPE_DEPS to see more)"
+    ))
+}
+
 // ─── Shared core functions ──────────────────────────────────────────────────
 
 /// Validate path (traversal, size) and read file contents.
@@ -215,10 +250,12 @@ pub(crate) fn build_focused_output<Mode>(
     output.push('\n');
 
     // Type dependencies.
-    // usize::MAX requests all rows. The display path filters by COMMON_TYPES
-    // then truncates inline downstream.
-    // TODO: cap at e.g. 50 once we measure typical edge count per chunk.
-    let type_deps = match store.get_types_used_by(&chunk.name, usize::MAX) {
+    // The SQL fetch is bounded by READ_TYPE_DEPS_FETCH_CEILING; the display
+    // path filters by COMMON_TYPES then caps the rendered fragments to
+    // `max_read_type_deps()` so a type-heavy chunk can't flood the focused
+    // read with hundreds of type-definition fragments. The dropped count is
+    // surfaced in `output` (a `// [cqs] ...` marker) and `warnings`.
+    let type_deps = match store.get_types_used_by(&chunk.name, READ_TYPE_DEPS_FETCH_CEILING) {
         Ok(pairs) => pairs,
         Err(e) => {
             tracing::warn!(function = %chunk.name, error = %e, "Failed to query type deps");
@@ -226,11 +263,29 @@ pub(crate) fn build_focused_output<Mode>(
         }
     };
     let mut seen_types = std::collections::HashSet::new();
-    let filtered_types: Vec<cqs::store::TypeUsage> = type_deps
+    let mut filtered_types: Vec<cqs::store::TypeUsage> = type_deps
         .into_iter()
         .filter(|t| !COMMON_TYPES.contains(t.type_name.as_str()))
         .filter(|t| seen_types.insert(t.type_name.clone()))
         .collect();
+    // Capture failures and truncation as structured warnings rather than
+    // silently dropping. Both the batch-fetch failure and the type-deps cap
+    // surface here so downstream JSON callers see a `warnings` entry telling
+    // them what was missed instead of inferring it from absent fragments.
+    let mut warnings: Vec<String> = Vec::new();
+    let type_deps_cap = max_read_type_deps();
+    if let Some(msg) = clip_type_deps(&mut filtered_types, type_deps_cap) {
+        tracing::warn!(
+            function = %chunk.name,
+            cap = type_deps_cap,
+            "Focused read: type dependencies truncated to CQS_READ_TYPE_DEPS"
+        );
+        // Mark the truncation in the rendered body too — the focused-read
+        // content is what a text consumer sees, so a capped list must not read
+        // as complete there either.
+        let _ = writeln!(output, "// [cqs] {msg}");
+        warnings.push(msg);
+    }
     tracing::debug!(
         type_count = filtered_types.len(),
         "Type deps for focused read"
@@ -241,11 +296,6 @@ pub(crate) fn build_focused_output<Mode>(
         .iter()
         .map(|t| t.type_name.as_str())
         .collect();
-    // Capture batch failure as a structured warning rather than silently
-    // empty the map. Type definitions still get omitted (the dependency
-    // surface is best-effort), but downstream JSON callers see a `warnings`
-    // entry telling them why.
-    let mut warnings: Vec<String> = Vec::new();
     let batch_results = match store.search_by_names_batch(&type_names, 5) {
         Ok(m) => m,
         Err(e) => {
@@ -527,6 +577,53 @@ pub(crate) fn cmd_read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_type_deps(n: usize) -> Vec<cqs::store::TypeUsage> {
+        (0..n)
+            .map(|i| cqs::store::TypeUsage {
+                type_name: format!("Type{i}"),
+                edge_kind: "Param".to_string(),
+            })
+            .collect()
+    }
+
+    /// An over-cap type-deps list is clipped to the cap and returns a
+    /// truncation message reporting the true total ("showing N of M").
+    #[test]
+    fn clip_type_deps_over_cap_clips_and_reports_total() {
+        let mut deps = make_type_deps(120);
+        let msg = clip_type_deps(&mut deps, 50).expect("over-cap must report truncation");
+        assert_eq!(deps.len(), 50, "clipped to the cap");
+        assert!(
+            msg.contains("showing 50 of 120"),
+            "message reports total: {msg}"
+        );
+        assert!(
+            msg.contains("CQS_READ_TYPE_DEPS"),
+            "message names the knob: {msg}"
+        );
+        // Front of the deterministic order is preserved.
+        assert_eq!(deps[0].type_name, "Type0");
+    }
+
+    /// An under-cap list is unchanged and emits no truncation signal.
+    #[test]
+    fn clip_type_deps_under_cap_unchanged_no_message() {
+        let mut deps = make_type_deps(12);
+        assert!(
+            clip_type_deps(&mut deps, 50).is_none(),
+            "under cap must not report truncation"
+        );
+        assert_eq!(deps.len(), 12, "list unchanged below the cap");
+    }
+
+    /// At exactly the cap there is no truncation (boundary).
+    #[test]
+    fn clip_type_deps_at_cap_no_message() {
+        let mut deps = make_type_deps(50);
+        assert!(clip_type_deps(&mut deps, 50).is_none());
+        assert_eq!(deps.len(), 50);
+    }
 
     #[test]
     fn full_read_output_serialization() {

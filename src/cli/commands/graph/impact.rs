@@ -329,6 +329,10 @@ fn truncate_impact_sections(result: &mut cqs::ImpactResult, limit: usize) {
     result.callers.truncate(limit);
     result.transitive_callers.truncate(limit);
     result.tests.truncate(limit);
+    // Record how many type-impacted functions the limit dropped so the JSON
+    // can emit an honest pre-truncation total ("showing N of M") rather than
+    // letting the capped window read as the complete shared-type-user set.
+    result.type_impacted_truncated = result.type_impacted.len().saturating_sub(limit);
     result.type_impacted.truncate(limit);
 }
 
@@ -426,11 +430,21 @@ fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, targe
     // Type-impacted functions
     if !result.type_impacted.is_empty() {
         println!();
-        println!(
-            "{} ({}):",
-            "Type-Impacted".magenta(),
-            result.type_impacted.len()
-        );
+        if result.type_impacted_truncated > 0 {
+            let total = result.type_impacted.len() + result.type_impacted_truncated;
+            println!(
+                "{} (showing {} of {}, raise --limit to see more):",
+                "Type-Impacted".magenta(),
+                result.type_impacted.len(),
+                total
+            );
+        } else {
+            println!(
+                "{} ({}):",
+                "Type-Impacted".magenta(),
+                result.type_impacted.len()
+            );
+        }
         for ti in &result.type_impacted {
             let rel = cqs::rel_display(&ti.file, root);
             println!(
@@ -560,6 +574,7 @@ mod tests {
             transitive_callers: Vec::new(),
             tests: Vec::new(),
             type_impacted: Vec::new(),
+            type_impacted_truncated: 0,
             degraded: false,
         };
         let out = ImpactCoreOutput::Function {
@@ -585,6 +600,7 @@ mod tests {
             transitive_callers: Vec::new(),
             tests: Vec::new(),
             type_impacted: Vec::new(),
+            type_impacted_truncated: 0,
             degraded: false,
         };
         let out = ImpactCoreOutput::Function {
@@ -776,5 +792,66 @@ mod tests {
             "must still emit truncation suffix on UTF-8 boundary case"
         );
         // Implicit: as_str() succeeded → valid UTF-8.
+    }
+
+    /// Build an `ImpactResult` with `n` type-impacted entries for cap tests.
+    fn impact_with_type_impacted(n: usize) -> cqs::ImpactResult {
+        let type_impacted = (0..n)
+            .map(|i| cqs::TypeImpacted {
+                name: format!("fn{i}"),
+                file: PathBuf::from("src/lib.rs"),
+                line: i as u32 + 1,
+                shared_types: vec!["MyType".to_string()],
+            })
+            .collect();
+        cqs::ImpactResult {
+            function_name: "target".to_string(),
+            callers: Vec::new(),
+            transitive_callers: Vec::new(),
+            tests: Vec::new(),
+            type_impacted,
+            type_impacted_truncated: 0,
+            degraded: false,
+        }
+    }
+
+    /// Over-cap `type_impacted` is clipped to the limit, and the JSON reports
+    /// the clipped count plus an honest pre-truncation total + dropped count so
+    /// the capped window never reads as the complete shared-type-user set.
+    #[test]
+    fn truncate_impact_clips_type_impacted_and_reports_total() {
+        let mut result = impact_with_type_impacted(120);
+        truncate_impact_sections(&mut result, 50);
+        assert_eq!(result.type_impacted.len(), 50, "clipped to limit");
+        assert_eq!(result.type_impacted_truncated, 70, "true dropped count");
+
+        let json = cqs::impact_to_json(&result).unwrap();
+        assert_eq!(json["type_impacted_count"], 50, "rendered window length");
+        assert_eq!(
+            json["type_impacted_total"], 120,
+            "honest pre-truncation total"
+        );
+        assert_eq!(json["type_impacted_truncated"], 70);
+    }
+
+    /// Under-cap `type_impacted` is unchanged and the JSON carries no
+    /// truncation signal (no `type_impacted_total` / `type_impacted_truncated`).
+    #[test]
+    fn truncate_impact_leaves_under_cap_unchanged_no_signal() {
+        let mut result = impact_with_type_impacted(12);
+        truncate_impact_sections(&mut result, 50);
+        assert_eq!(result.type_impacted.len(), 12, "no clip below limit");
+        assert_eq!(result.type_impacted_truncated, 0);
+
+        let json = cqs::impact_to_json(&result).unwrap();
+        assert_eq!(json["type_impacted_count"], 12);
+        assert!(
+            json.get("type_impacted_total").is_none(),
+            "no total field when not truncated, got: {json}"
+        );
+        assert!(
+            json.get("type_impacted_truncated").is_none(),
+            "no truncated field when not truncated, got: {json}"
+        );
     }
 }
