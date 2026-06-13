@@ -734,8 +734,11 @@ impl Parser {
             // This loop produces ABSOLUTE line numbers (matching the call query
             // above, which does not subtract line_start), so pass line_offset =
             // 0. The relative-line conversion for `chunk_calls` below applies to
-            // these edges identically.
-            calls.extend(calls::extract_macro_call_edges(node, &source, language, 0));
+            // these edges identically. `known_fns` gates the bare-macro-arg case
+            // (`m!(callback)`).
+            calls.extend(calls::extract_macro_call_edges(
+                node, &source, language, 0, &known_fns,
+            ));
 
             // Fn-pointer / callback argument edges: a function passed as a VALUE
             // in argument position (`from_fn_with_state(state, touch_idle_clock)`,
