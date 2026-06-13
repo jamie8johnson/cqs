@@ -148,6 +148,7 @@ pub fn analyze_impact_cross(
         tests,
         transitive_callers,
         type_impacted: Vec::new(),
+        type_impacted_truncated: 0,
         degraded: false,
     })
 }

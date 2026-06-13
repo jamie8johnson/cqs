@@ -217,6 +217,7 @@ mod tests {
             }],
             transitive_callers: Vec::new(),
             type_impacted: Vec::new(),
+            type_impacted_truncated: 0,
             degraded: false,
         };
         let json = impact_to_json(&result).unwrap();
@@ -250,6 +251,7 @@ mod tests {
                 depth: 2,
             }],
             type_impacted: Vec::new(),
+            type_impacted_truncated: 0,
             degraded: false,
         };
         let json = impact_to_json(&result).unwrap();
@@ -269,6 +271,7 @@ mod tests {
             tests: Vec::new(),
             transitive_callers: Vec::new(),
             type_impacted: Vec::new(),
+            type_impacted_truncated: 0,
             degraded: false,
         };
         let json = impact_to_json(&result).unwrap();

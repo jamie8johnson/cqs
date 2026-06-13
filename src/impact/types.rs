@@ -89,6 +89,12 @@ pub struct ImpactResult {
     pub tests: Vec<TestInfo>,
     pub transitive_callers: Vec<TransitiveCaller>,
     pub type_impacted: Vec<TypeImpacted>,
+    /// Type-impacted functions dropped by the per-section limit truncation.
+    /// `truncate_impact_sections` records the count clipped from
+    /// `type_impacted` so the serialized `type_impacted_count` (post-truncation
+    /// length) can be paired with an honest pre-truncation total. Zero when no
+    /// truncation happened.
+    pub type_impacted_truncated: usize,
     /// True when batch name search failed and caller snippets may be incomplete.
     /// CLI handlers can display a warning when this is set.
     pub degraded: bool,
@@ -99,10 +105,13 @@ impl serde::Serialize for ImpactResult {
         use serde::ser::SerializeStruct;
 
         // Count non-empty optional fields to determine struct length
-        let mut field_count = 6; // name, callers, caller_count, tests, test_count, type_impacted, type_impacted_count
-        field_count += 1; // type_impacted_count
+        let mut field_count = 7; // name, callers, caller_count, tests, test_count, type_impacted, type_impacted_count
         if !self.transitive_callers.is_empty() {
             field_count += 1;
+        }
+        if self.type_impacted_truncated > 0 {
+            // type_impacted_total + type_impacted_truncated
+            field_count += 2;
         }
         if self.degraded {
             field_count += 1;
@@ -119,6 +128,16 @@ impl serde::Serialize for ImpactResult {
         }
         state.serialize_field("type_impacted", &self.type_impacted)?;
         state.serialize_field("type_impacted_count", &self.type_impacted.len())?;
+        if self.type_impacted_truncated > 0 {
+            // The rendered list was clipped: emit the true pre-truncation total
+            // plus the dropped count so a consumer never reads the capped window
+            // as the complete shared-type-user set.
+            state.serialize_field(
+                "type_impacted_total",
+                &(self.type_impacted.len() + self.type_impacted_truncated),
+            )?;
+            state.serialize_field("type_impacted_truncated", &self.type_impacted_truncated)?;
+        }
         if self.degraded {
             state.serialize_field("degraded", &true)?;
         }

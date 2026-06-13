@@ -370,6 +370,7 @@ fn test_suggest_tests_empty_impact() {
         tests: Vec::new(),
         transitive_callers: Vec::new(),
         type_impacted: Vec::new(),
+        type_impacted_truncated: 0,
         degraded: false,
     };
     let suggestions = suggest_tests(&store, &impact, std::path::Path::new("/test"));

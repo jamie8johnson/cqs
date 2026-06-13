@@ -34,6 +34,19 @@ const MAX_CALLEE_FETCH_DEFAULT: usize = 30;
 /// `CQS_ONBOARD_CALLER_FETCH`.
 const MAX_CALLER_FETCH_DEFAULT: usize = 15;
 
+/// Maximum key-type dependencies to render. The type-edge query plus the
+/// `COMMON_TYPES` filter can still leave a long tail for a type-heavy entry
+/// point; an unbounded list floods an agent's token budget. Env override:
+/// `CQS_ONBOARD_KEY_TYPES`.
+const MAX_KEY_TYPES_DEFAULT: usize = 50;
+
+/// Ceiling on rows pulled from `get_types_used_by` for the key-types section.
+/// The list is filtered by `COMMON_TYPES` after the fetch, so the SQL ceiling
+/// is set above [`MAX_KEY_TYPES_DEFAULT`] to leave filtering headroom while
+/// still bounding the query — a target touching thousands of type edges can't
+/// pull them all.
+const KEY_TYPES_FETCH_CEILING: usize = 200;
+
 /// Resolve `CQS_ONBOARD_CALLEE_FETCH`, default 30. Parse/warn/default via
 /// the shared `crate::limits::parse_env_usize` (warns on a malformed value).
 fn max_callee_fetch() -> usize {
@@ -44,6 +57,12 @@ fn max_callee_fetch() -> usize {
 /// the shared `crate::limits::parse_env_usize` (warns on a malformed value).
 fn max_caller_fetch() -> usize {
     crate::limits::parse_env_usize("CQS_ONBOARD_CALLER_FETCH", MAX_CALLER_FETCH_DEFAULT)
+}
+
+/// Resolve `CQS_ONBOARD_KEY_TYPES`, default 50. Parse/warn/default via the
+/// shared `crate::limits::parse_env_usize` (warns on a malformed value).
+fn max_key_types() -> usize {
+    crate::limits::parse_env_usize("CQS_ONBOARD_KEY_TYPES", MAX_KEY_TYPES_DEFAULT)
 }
 
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
@@ -109,6 +128,13 @@ pub struct OnboardSummary {
     /// `callees_truncated`.
     #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
     pub callers_truncated: usize,
+    /// Key-type dependencies dropped because the filtered list exceeded
+    /// `CQS_ONBOARD_KEY_TYPES`. Zero when no truncation happened. Pairs with
+    /// the rendered `key_types` length so a consumer can recover the true
+    /// total (`key_types.len() + key_types_truncated`) and never reads the
+    /// capped list as complete.
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_zero_usize")]
+    pub key_types_truncated: usize,
 }
 
 /// Produce a guided tour of a concept in the codebase.
@@ -268,18 +294,28 @@ pub fn onboard<Mode>(
     });
     let callers: Vec<OnboardEntry> = caller_chunks.into_iter().map(gathered_to_onboard).collect();
 
-    // 7. Type dependencies — filter common types.
-    // Pass usize::MAX for "all rows"; the post-filter `filter_common_types`
-    // discards most of these anyway.
-    // TODO: consider a sane cap (e.g. 100) once we've measured the typical
-    // edge count for entry-point chunks.
-    let key_types = match store.get_types_used_by(&entry_name, usize::MAX) {
+    // 7. Type dependencies — filter common types, then cap.
+    // The SQL fetch is bounded by KEY_TYPES_FETCH_CEILING (the post-filter
+    // `filter_common_types` discards most rows, so the ceiling sits above the
+    // render cap for filtering headroom). The filtered list is then clipped to
+    // `max_key_types()` so a type-heavy entry point can't flood the output;
+    // `key_types_truncated` carries the dropped count to the summary.
+    let key_types_cap = max_key_types();
+    let key_types_all = match store.get_types_used_by(&entry_name, KEY_TYPES_FETCH_CEILING) {
         Ok(types) => filter_common_types(types),
         Err(e) => {
             tracing::warn!(error = %e, "Type dependency lookup failed, skipping key_types");
             Vec::new()
         }
     };
+    let (key_types, key_types_truncated) = cap_key_types(key_types_all, key_types_cap);
+    if key_types_truncated > 0 {
+        tracing::warn!(
+            dropped = key_types_truncated,
+            cap = key_types_cap,
+            "Onboard: key_types truncated to CQS_ONBOARD_KEY_TYPES"
+        );
+    }
 
     // 8. Tests via reverse BFS
     let tests: Vec<TestEntry> = find_affected_tests_with_chunks(
@@ -311,6 +347,7 @@ pub fn onboard<Mode>(
         tests_found: tests.len(),
         callees_truncated,
         callers_truncated,
+        key_types_truncated,
     };
 
     tracing::info!(
@@ -351,6 +388,19 @@ where
     entries.sort_by_key(|a| key_fn(&a.1));
     entries.truncate(max);
     entries.into_iter().collect()
+}
+
+/// Clip the filtered key-types list to `cap`, returning the (possibly
+/// truncated) list and the number of entries dropped. The fetch + filter
+/// order is preserved (edge_kind, then type name) so the rendered window is
+/// the deterministic front of the list. A `cap` of zero is treated as a clip
+/// to zero with the full length reported as dropped.
+fn cap_key_types(mut types: Vec<TypeInfo>, cap: usize) -> (Vec<TypeInfo>, usize) {
+    let dropped = types.len().saturating_sub(cap);
+    if dropped > 0 {
+        types.truncate(cap);
+    }
+    (types, dropped)
 }
 
 /// Returns true for chunk types that have call graph connections.
@@ -532,6 +582,47 @@ mod tests {
         ];
         let filtered = filter_common_types(types);
         assert_eq!(filtered.len(), 3);
+    }
+
+    /// Build `n` distinct `TypeInfo` rows for cap tests.
+    fn make_key_types(n: usize) -> Vec<TypeInfo> {
+        (0..n)
+            .map(|i| TypeInfo {
+                type_name: format!("Type{i}"),
+                edge_kind: TypeEdgeKind::Param,
+            })
+            .collect()
+    }
+
+    /// An over-cap key-types list is clipped to the cap and reports the true
+    /// dropped count (so the summary can recover total = cap + dropped).
+    #[test]
+    fn cap_key_types_clips_over_cap_and_reports_dropped() {
+        let (clipped, dropped) = cap_key_types(make_key_types(120), 50);
+        assert_eq!(clipped.len(), 50, "clipped to the cap");
+        assert_eq!(dropped, 70, "true dropped count = 120 - 50");
+        // Total is recoverable from the rendered length + dropped.
+        assert_eq!(clipped.len() + dropped, 120);
+        // The front of the deterministic order is preserved.
+        assert_eq!(clipped[0].type_name, "Type0");
+        assert_eq!(clipped[49].type_name, "Type49");
+    }
+
+    /// An under-cap list is returned unchanged with zero truncation signal.
+    #[test]
+    fn cap_key_types_leaves_under_cap_unchanged() {
+        let (clipped, dropped) = cap_key_types(make_key_types(12), 50);
+        assert_eq!(clipped.len(), 12, "no clip below the cap");
+        assert_eq!(dropped, 0, "no truncation signal when under cap");
+    }
+
+    /// At exactly the cap there is no truncation — the boundary must not
+    /// report a phantom drop of zero-but-truncated.
+    #[test]
+    fn cap_key_types_at_cap_boundary_no_truncation() {
+        let (clipped, dropped) = cap_key_types(make_key_types(50), 50);
+        assert_eq!(clipped.len(), 50);
+        assert_eq!(dropped, 0);
     }
 
     #[test]
