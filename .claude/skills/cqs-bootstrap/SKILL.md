@@ -108,8 +108,12 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
    - `code-reviewer` — diff review (review + impact → risk report)
    - `test-finder` — test coverage lookup (test-map + impact → coverage report)
    - `implementer` — implementation with cqs checkpoints (scout before, review after)
+   - `lane-implementer` — implementation lane with the full gate battery baked in (private target dir, all-targets clippy, targeted tests, provenance lint, commit-don't-push)
    - `explorer` — codebase exploration via cqs semantic search
    - `auditor` — code audit agent with cqs tools built in
+   - `seam-auditor` — composition adversary (finds two correct units whose join lies)
+   - `property-auditor` — property-based testing lane (proptest: invariant + generator finds the input examples miss)
+   - `interleaving-auditor` — concurrency adversary (loom/stress: finds the schedule that breaks a shared invariant)
 
 ### Phase 3: cqs Init & Index
 

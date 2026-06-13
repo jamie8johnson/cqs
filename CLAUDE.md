@@ -201,6 +201,10 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 - **explorer** — codebase exploration via cqs (replaces raw grep/glob for conceptual queries)
 - **auditor** — code audit for a single category, appends to audit-findings.md
 - **seam-auditor** — composition adversary: finds two correct units whose join lies. Orthogonal to the house happy/sad signature; dispatch during audits, after multi-lane merges, or from /idle. Read-only; the find is the deliverable. (#1826)
+- **property-auditor** — property-based testing lane (proptest): states an algebraic invariant (round-trip / idempotence / two-path-equivalence / metamorphic / bounds) and generates valid inputs that live where hand-written examples don't. Dispatch after a codec/round-trip/equivalence change or from /idle. Writes generators + properties; deliverable is a minimal falsifying input or a durable property. (#1826)
+- **interleaving-auditor** — concurrency adversary: finds a schedule where two individually-correct ops break a shared invariant (the daemon epochs/bitmask, LRU rebuilds, watch-drain-vs-query). Loom for the model-checkable core, stress harness for the integration races. Dispatch after a change to the daemon caches / watch loop, during audits, or from /idle. Deliverable is a reproducing interleaving or a durable concurrency test. (#1826)
+
+The seam/property/interleaving trio are the orthogonally-shaped auditors of #1826 — each staffs a region the happy/sad-path unit suite is structurally blind to. Their value test: each must find a bug class the example suite *cannot express*; if one only re-finds happy/sad bugs, it's the wrong shape.
 
 **Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` (fable) before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
 
