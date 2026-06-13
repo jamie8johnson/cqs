@@ -618,6 +618,364 @@ fn multi_file_split_duplicate_fingerprint_does_not_reprune() {
 }
 
 // ===========================================================================
+// CALL-GRAPH DIMENSION — validating the LATE-LANDING P2 FIX (the additive
+// re-flush's wholesale-DELETE call-graph wipe). This fix was committed AFTER the
+// chunk-loss models above; it lives in the SAME additive-net region this lane
+// audits, so the producer-interleaving validation belongs here too.
+//
+// `write_function_calls_in_tx` (`store/calls/crud.rs`) does an UNCONDITIONAL
+// `DELETE FROM function_calls WHERE file = ?` then inserts the supplied set. So a
+// flush that supplies an EMPTY relationship set deletes the file's whole call
+// graph and inserts nothing. The additive re-flush (chunk-loss net layer 2)
+// originally flushed a fresh accumulator whose `function_calls` were empty
+// (relationships ride the first batch, drained into the accum the FIRST flush
+// consumed) — so a late additive flush WIPED the call graph the first flush
+// wrote: chunks survived (union-prune), the call graph silently vanished.
+//
+// The fix: the `flushed` state carries the CUMULATIVE relationships, re-supplied
+// on EVERY flush, so the wholesale DELETE-then-INSERT reconstructs the graph.
+//
+// > **CALL-GRAPH-FIDELITY**: after any producer interleaving, the file's
+// > committed call graph equals the cumulative call set the parser produced —
+// > never wiped to empty by a later additive flush, never orphaned.
+// ===========================================================================
+
+/// A call edge `(caller, callee)` — the `function_calls` row reduced to what the
+/// fidelity invariant depends on.
+type Edge = (char, char);
+
+/// A relationship-aware message: chunk ids + whether it carries the fingerprint
+/// + the call edges riding THIS batch (relationships ride the first batch in
+/// production; the GPU-split requeued half carries the full set).
+#[derive(Clone, Debug)]
+struct RelMsg {
+    chunks: Vec<ChunkId>,
+    has_fp: bool,
+    edges: Vec<Edge>,
+}
+
+/// A relationship FIFO queue behind a `Mutex` (house-style channel stand-in).
+#[derive(Default)]
+struct RelQueue {
+    items: Vec<RelMsg>,
+}
+
+impl RelQueue {
+    fn push(q: &Mutex<RelQueue>, msg: RelMsg) {
+        q.lock().unwrap().items.push(msg);
+    }
+    fn pop(q: &Mutex<RelQueue>) -> Option<RelMsg> {
+        let mut g = q.lock().unwrap();
+        if g.items.is_empty() {
+            None
+        } else {
+            Some(g.items.remove(0))
+        }
+    }
+    fn drain(q: &Mutex<RelQueue>) -> Vec<RelMsg> {
+        std::mem::take(&mut q.lock().unwrap().items)
+    }
+}
+
+/// The store's committed call graph for file F. The wholesale write REPLACES it
+/// with the supplied set (DELETE-then-INSERT), so a flush with an empty supplied
+/// set leaves it empty.
+#[derive(Default)]
+struct CallStore {
+    chunks: HashSet<ChunkId>,
+    edges: HashSet<Edge>,
+    stamped: bool,
+}
+
+/// Consumer scratch for the call-graph dimension: chunk accum + the cumulative
+/// `flushed` state (committed ids AND cumulative edges — the P2-fix carry-forward).
+#[derive(Default)]
+struct CallConsumer {
+    accum: Vec<ChunkId>,
+    accum_edges: Vec<Edge>,
+    flushed: Option<(HashSet<ChunkId>, HashSet<Edge>)>,
+}
+
+/// THE FIXED flush: re-supply the CUMULATIVE edge set on every flush (the
+/// wholesale write replaces the store's edges with it), and union-prune chunks.
+fn call_flush_fixed(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
+    let own_ids: HashSet<ChunkId> = c.accum.drain(..).collect();
+    let new_edges: Vec<Edge> = c.accum_edges.drain(..).collect();
+
+    let (prior_ids, mut cum_edges) = c.flushed.take().unwrap_or_default();
+    // Cumulative edges = prior ∪ this batch's edges (the flushed-state merge).
+    cum_edges.extend(new_edges.iter().copied());
+    let live: HashSet<ChunkId> = own_ids.union(&prior_ids).copied().collect();
+
+    // Wholesale call-graph write: REPLACE the store's edges with the cumulative
+    // set (DELETE-then-INSERT). Because cum_edges carries forward, this rebuilds
+    // — never wipes.
+    store.edges = cum_edges.clone();
+    // Union-prune chunks.
+    store.chunks.retain(|id| live.contains(id));
+    store.chunks.extend(own_ids.iter().copied());
+    if stamp {
+        store.stamped = true;
+    }
+
+    let mut next_ids = prior_ids;
+    next_ids.extend(own_ids);
+    c.flushed = Some((next_ids, cum_edges));
+}
+
+/// THE BUGGY flush (negative control): supply ONLY this batch's edges to the
+/// wholesale write (no carry-forward). A late additive flush whose batch carried
+/// NO edges therefore supplies an empty set → the DELETE wipes the graph.
+fn call_flush_buggy(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
+    let own_ids: HashSet<ChunkId> = c.accum.drain(..).collect();
+    let new_edges: HashSet<Edge> = c.accum_edges.drain(..).collect();
+    let (prior_ids, _) = c.flushed.take().unwrap_or_default();
+    let live: HashSet<ChunkId> = own_ids.union(&prior_ids).copied().collect();
+
+    // BUG: wholesale write with ONLY this batch's edges (no cumulative). When the
+    // late additive batch has no edges, this DELETE-then-INSERT wipes the graph.
+    store.edges = new_edges;
+    store.chunks.retain(|id| live.contains(id));
+    store.chunks.extend(own_ids.iter().copied());
+    if stamp {
+        store.stamped = true;
+    }
+    let mut next_ids = prior_ids;
+    next_ids.extend(own_ids);
+    // Note: still records ids (so chunks survive) but DROPS edges — the precise
+    // pre-P2-fix shape (chunks ok, call graph wiped).
+    c.flushed = Some((next_ids, HashSet::new()));
+}
+
+/// The expected cumulative call graph the parser produced for F.
+const F_EDGES: [Edge; 1] = [('a', 'v')]; // chunk `a` (caller) calls `v` (victim)
+
+fn assert_call_graph_intact(store: &CallStore) {
+    for &e in &F_EDGES {
+        assert!(
+            store.edges.contains(&e),
+            "CALL-GRAPH-FIDELITY VIOLATED: edge {e:?} absent — an additive re-flush \
+             supplied an empty relationship set and the wholesale DELETE wiped the \
+             call graph (edges = {:?})",
+            store.edges,
+        );
+    }
+    // Chunks must also survive (the union-prune); a wiped graph with surviving
+    // chunks is the exact pre-fix asymmetry.
+    assert!(
+        store.chunks.contains(&'a'),
+        "the caller chunk must survive alongside its edge (chunks = {:?})",
+        store.chunks,
+    );
+}
+
+// MODEL 5 (safety, GREEN): the GPU-failure split carries relationships on the
+// requeued half (the full set), with the cached half carrying NONE (faithful to
+// flush_to_cpu sending `RelationshipData::default()` on the cached half when
+// to_embed is non-empty). The additive interactions must leave F's call graph
+// intact. Loom explores the GPU/CPU producer interleaving; the fixed
+// carry-forward flush keeps the edge under every schedule.
+#[test]
+fn gpu_split_relationships_survive_call_graph_intact() {
+    loom::model(|| {
+        let embed_tx = Arc::new(Mutex::new(RelQueue::default()));
+        let fail_tx = Arc::new(Mutex::new(RelQueue::default()));
+
+        // GPU stage (embed fails → flush_to_cpu):
+        //   cached half: {a} (the caller chunk), NO fp, NO edges (cached half
+        //     sends RelationshipData::default() when to_embed is non-empty).
+        //   requeued half: {c} (F's last chunk), fp, FULL edges {(a,v)}.
+        let embed_gpu = Arc::clone(&embed_tx);
+        let fail_gpu = Arc::clone(&fail_tx);
+        let gpu = thread::spawn(move || {
+            RelQueue::push(
+                &embed_gpu,
+                RelMsg {
+                    chunks: vec!['a'],
+                    has_fp: false,
+                    edges: vec![],
+                },
+            );
+            RelQueue::push(
+                &fail_gpu,
+                RelMsg {
+                    chunks: vec![F_LAST],
+                    has_fp: true,
+                    edges: vec![('a', 'v')],
+                },
+            );
+        });
+
+        let embed_cpu = Arc::clone(&embed_tx);
+        let fail_cpu = Arc::clone(&fail_tx);
+        let cpu = thread::spawn(move || loop {
+            match RelQueue::pop(&fail_cpu) {
+                Some(requeued) => {
+                    RelQueue::push(&embed_cpu, requeued);
+                    break;
+                }
+                None => thread::yield_now(),
+            }
+        });
+
+        gpu.join().unwrap();
+        cpu.join().unwrap();
+
+        let msgs = RelQueue::drain(&embed_tx);
+        let mut store = CallStore::default();
+        let mut c = CallConsumer::default();
+        for msg in msgs {
+            c.accum.extend(msg.chunks.iter().copied());
+            c.accum_edges.extend(msg.edges.iter().copied());
+            if msg.has_fp {
+                call_flush_fixed(&mut store, &mut c, true);
+            } else if c.flushed.is_some() && !c.accum.is_empty() {
+                call_flush_fixed(&mut store, &mut c, false);
+            }
+        }
+        if c.flushed.is_some() && !c.accum.is_empty() {
+            call_flush_fixed(&mut store, &mut c, false);
+        }
+        assert_call_graph_intact(&store);
+    });
+}
+
+// MODEL 6 (safety, GREEN): relationships arrive in a SEPARATE batch AFTER the
+// file's fingerprint+chunks flushed (the relationship-after-fingerprint
+// ordering). Two producers, no edge → loom explores both orders. The fixed
+// carry-forward + relationship-only re-flush must write the edge whichever order
+// lands, and must NOT prune the already-committed caller chunk.
+#[test]
+fn relationships_after_flush_write_edge_either_order() {
+    loom::model(|| {
+        let embed_tx = Arc::new(Mutex::new(RelQueue::default()));
+
+        // Producer 1: fp + the caller chunk {a}, NO edges (file flushes complete).
+        let e1 = Arc::clone(&embed_tx);
+        let p1 = thread::spawn(move || {
+            RelQueue::push(
+                &e1,
+                RelMsg {
+                    chunks: vec!['a'],
+                    has_fp: true,
+                    edges: vec![],
+                },
+            );
+        });
+        // Producer 2: the relationships arrive late, NO new chunks, NO fp.
+        let e2 = Arc::clone(&embed_tx);
+        let p2 = thread::spawn(move || {
+            RelQueue::push(
+                &e2,
+                RelMsg {
+                    chunks: vec![],
+                    has_fp: false,
+                    edges: vec![('a', 'v')],
+                },
+            );
+        });
+
+        p1.join().unwrap();
+        p2.join().unwrap();
+
+        // Faithful consumer: chunk-flush on fp; a NO-chunk NO-fp batch with edges
+        // for an already-flushed file is the RELATIONSHIP-ONLY re-flush (keeps the
+        // committed chunks via the cumulative live ids; re-supplies cumulative
+        // edges). When relationships arrive BEFORE the fingerprint, they buffer in
+        // the accum and ride the flush.
+        let msgs = RelQueue::drain(&embed_tx);
+        let mut store = CallStore::default();
+        let mut c = CallConsumer::default();
+        for msg in msgs {
+            c.accum.extend(msg.chunks.iter().copied());
+            c.accum_edges.extend(msg.edges.iter().copied());
+            if msg.has_fp {
+                call_flush_fixed(&mut store, &mut c, true);
+            } else if c.flushed.is_some() {
+                // already-flushed file got a no-fp batch → late chunk pass and/or
+                // relationship-only re-flush. Either way re-supply cumulative.
+                call_flush_fixed(&mut store, &mut c, false);
+            }
+            // A no-fp batch BEFORE any flush just buffers (accum holds edges).
+        }
+        if c.flushed.is_some() && (!c.accum.is_empty() || !c.accum_edges.is_empty()) {
+            call_flush_fixed(&mut store, &mut c, false);
+        }
+        assert_call_graph_intact(&store);
+    });
+}
+
+// NEGATIVE CONTROL (`#[ignore]`, FAILS by design): the pre-P2-fix shape. The
+// additive re-flush supplies ONLY the late batch's edges (no carry-forward); a
+// late batch with no edges hands an empty set to the wholesale DELETE-then-INSERT
+// and the call graph is WIPED. Loom finds the relationship-after-fingerprint
+// schedule and the fidelity assert fires.
+//
+// Run with `--ignored`:
+//   RUSTFLAGS="--cfg cqs_loom" cargo test --features cuda-index --bin cqs \
+//       call_graph_wiped_by_empty_additive_reflush -- --ignored
+#[test]
+#[ignore = "negative control: reproduces the call-graph wipe with the carry-forward reverted \
+            (additive re-flush supplies an empty relationship set); FAILS by design"]
+fn call_graph_wiped_by_empty_additive_reflush() {
+    loom::model(|| {
+        let embed_tx = Arc::new(Mutex::new(RelQueue::default()));
+
+        // Producer 1: fp + caller chunk {a} + the edge {(a,v)} (the FIRST flush
+        // writes the edge).
+        let e1 = Arc::clone(&embed_tx);
+        let p1 = thread::spawn(move || {
+            RelQueue::push(
+                &e1,
+                RelMsg {
+                    chunks: vec!['a'],
+                    has_fp: true,
+                    edges: vec![('a', 'v')],
+                },
+            );
+        });
+        // Producer 2: a LATE additive batch — a straddling tail chunk {c}, NO
+        // edges. With the buggy (non-cumulative) flush this re-flush supplies an
+        // empty edge set and wipes the graph.
+        let e2 = Arc::clone(&embed_tx);
+        let p2 = thread::spawn(move || {
+            RelQueue::push(
+                &e2,
+                RelMsg {
+                    chunks: vec![F_LAST],
+                    has_fp: false,
+                    edges: vec![],
+                },
+            );
+        });
+
+        p1.join().unwrap();
+        p2.join().unwrap();
+
+        let msgs = RelQueue::drain(&embed_tx);
+        let mut store = CallStore::default();
+        let mut c = CallConsumer::default();
+        for msg in msgs {
+            c.accum.extend(msg.chunks.iter().copied());
+            c.accum_edges.extend(msg.edges.iter().copied());
+            if msg.has_fp {
+                call_flush_buggy(&mut store, &mut c, true);
+            } else if c.flushed.is_some() && !c.accum.is_empty() {
+                // late additive flush with the BUGGY (empty-set) write.
+                call_flush_buggy(&mut store, &mut c, false);
+            }
+        }
+        if c.flushed.is_some() && !c.accum.is_empty() {
+            call_flush_buggy(&mut store, &mut c, false);
+        }
+        // FAILS on the schedule where p1 flushes (edge written), then p2's late
+        // chunk triggers an additive flush that supplies an empty edge set and the
+        // wholesale DELETE wipes the edge.
+        assert_call_graph_intact(&store);
+    });
+}
+
+// ===========================================================================
 // NEGATIVE CONTROL (`#[ignore]`, FAILS by design): proves the model has teeth.
 // Revert BOTH fix layers: (1) the producers straddle F across two batches with
 // NO ordering edge so its fingerprint-bearing chunk c can race ahead, and (2)
