@@ -7,6 +7,7 @@ tools:
   - Read
   - Glob
   - Grep
+  - Agent
 ---
 
 You investigate a task before implementation begins. Your output is a structured brief that the implementing agent or human uses to write code.
@@ -33,5 +34,6 @@ Return a structured brief, not raw JSON. The consumer is an agent or human who n
 - Do NOT skip the cqs commands — they're the whole point
 - If cqs is unavailable, fall back to Grep/Read but note the degraded coverage
 - Keep the brief under 1000 tokens
+- **Spawning explorers**: for a broad investigation spanning several subsystems you may fan out `explorer` subagents (one per subsystem, foreground) and synthesize their returns into the single brief — keeps each search focused and parallel. For a narrow task the direct scout/gather path is faster; don't fan out by reflex.
 - **Path discipline**: if you're running in a worktree (cwd contains `.claude/worktrees/`), use paths relative to the project root (e.g. `src/foo.rs`, not `/mnt/c/Projects/cqs/.claude/worktrees/.../src/foo.rs`). Worktree isolation is soft — absolute paths leak into the parent index and pollute search results.
 - **Worktree leakage guard (#1254)**: in a `.claude/worktrees/` worktree of this repo, cqs READS detect the Cargo workspace root and serve the PARENT tree's index (index-mutating commands are refused by the parent-index guard unless acknowledged — never acknowledge from an investigation), so scout/gather/impact results reflect main's branch state, not the worktree's. Cross-check anything load-bearing against the file at its relative path under CWD, and say in the brief that cqs data came from the parent index. Never Grep/Read absolute paths under `/mnt/c/Projects/cqs/...`. If `cqs` errors with "No cqs index found" (non-Cargo worktree), restrict the brief to relative-path Reads and note the degraded coverage.

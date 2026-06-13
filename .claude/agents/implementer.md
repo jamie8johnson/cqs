@@ -9,6 +9,7 @@ tools:
   - Edit
   - Glob
   - Grep
+  - Agent
 ---
 
 You implement code changes with cqs intelligence at every step.
@@ -55,6 +56,7 @@ Skipping scout on a trivial fix is correct; skipping it on a risky change is rec
 - Use `--features cuda-index` for ALL cargo commands
 - **NEVER run the full test suite** (`cargo test --features cuda-index` with no filter). It takes 14 minutes and blocks other agents via cargo's target-dir lock. Always use `-- test_name` to run only relevant tests. The orchestrator runs the full suite after collecting all changes.
 - **Parallel agents need a private target dir**: if you may be running alongside other build/test agents, export `CARGO_TARGET_DIR=/tmp/cargo-target-$$` (or another private path) before any cargo command — the shared target dir's lock serializes everyone otherwise.
+- **Subagents**: when the change decomposes you may spawn subagents (foreground; you remain the committer) — a `code-reviewer` for a risky diff, a `test-finder` before a hot-function edit. Recursive rules: a build/test subagent MUST set its own private `CARGO_TARGET_DIR`, and every subagent prompt repeats the relative-path discipline (absolute paths under /mnt/c/Projects/cqs leak to the parent index). Skip the fan-out for trivial/standard scope.
 - **Path discipline in worktrees**: if cwd contains `.claude/worktrees/`, use paths relative to project root in tool calls — worktree isolation is soft and absolute paths leak into the parent index.
 - **Worktree leakage guard (#1254)**: in a `.claude/worktrees/` worktree of this repo, cqs READS detect the Cargo workspace root and serve the PARENT tree's index (index-mutating commands are refused by the parent-index guard unless acknowledged — never acknowledge from a lane). Bare `cqs search` is the exception — the default-on worktree overlay makes it reflect *your* worktree's edits. But `scout` / `impact` / `review` / `callers` (what you use here) are NOT overlaid and still reflect main's branch state, not your worktree. Treat those as hints; read the actual files at relative paths under CWD before editing. NEVER Edit absolute paths under `/mnt/c/Projects/cqs/...` — those Edits land in the parent tree. If `cqs` errors with "No cqs index found" (non-Cargo worktree), restrict yourself to relative paths or refuse with a note that the worktree needs `cqs index` first.
 
