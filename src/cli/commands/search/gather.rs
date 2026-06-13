@@ -89,7 +89,7 @@ pub(crate) fn gather_core(
     };
 
     let opts = GatherOptions {
-        expand_depth: args.depth.clamp(0, 5),
+        expand_depth: args.depth.clamp(0, crate::cli::GATHER_DEPTH_CAP),
         direction: args.direction,
         limit: fetch_limit,
         ..GatherOptions::default()
