@@ -85,7 +85,7 @@ const HNSW_META_VERSION: u32 = 1;
 /// needs *before* it can instantiate the right `Hnsw<f32, D>` type
 /// parameter — plus the store-state stamp the sidecar contents reflect.
 /// Mirrors the CAGRA `.cagra.meta` sidecar pattern (`src/cagra.rs`).
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 struct HnswMeta {
     /// Format magic. See [`HNSW_META_MAGIC`].
     magic: String,
@@ -2877,5 +2877,407 @@ mod tests {
             read_hnsw_meta_metric(tmp.path(), "legacy").unwrap(),
             DistanceMetric::Cosine
         );
+    }
+
+    // ===== property tests: HnswMeta save→load codec + the stamp/version
+    // contracts =====
+    //
+    // The example tests above pin hand-picked values: one fixed stamp from
+    // `setup_store()`, the (Some,Some) and (None,None) presence shapes, the
+    // `dot`/`cosine` metrics, `version == 1`. The structural null is the rest
+    // of the field space — boundary stamp values (0, 1, u64::MAX), the two
+    // *half-present* presence shapes (the hand-edited-meta case the
+    // `store_stamp()` doc calls out), version boundaries around
+    // `HNSW_META_VERSION` (including 0 and u32::MAX), and arbitrary metric /
+    // magic strings. The properties below drive the REAL functions
+    // (`serde_json` serialize == the save path's encoder; `read_hnsw_meta` /
+    // `read_hnsw_meta_metric` == the load path's decoder + validators) over a
+    // generator that lands deliberately on those boundaries.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Serialize a typed `HnswMeta` exactly as `save_impl` does
+        /// (`serde_json::to_vec`), write it to the basename's `.hnsw.meta`
+        /// path under `dir`, and return that path's parent for the readers.
+        fn write_meta_json(dir: &Path, basename: &str, meta: &HnswMeta) {
+            let path = dir.join(format!("{}.hnsw.meta", basename));
+            let bytes = serde_json::to_vec(meta).expect("HnswMeta serializes");
+            std::fs::write(&path, bytes).expect("write meta");
+        }
+
+        /// Generator coverage claim: every (chunk_count, splade_generation)
+        /// presence pairing — (None,None), (Some,None), (None,Some),
+        /// (Some,Some) — at stamp values drawn from the boundary set
+        /// {0, 1, u64::MAX} unioned with a uniform u64. Distrust: proptest
+        /// weights the explicit boundary set so the two half-present shapes
+        /// (which `store_stamp()` must collapse to `None`) and the u64::MAX
+        /// edge are not left to uniform luck.
+        fn stamp_field() -> impl Strategy<Value = Option<u64>> {
+            prop_oneof![
+                Just(None),
+                prop_oneof![Just(0u64), Just(1u64), Just(u64::MAX), any::<u64>(),].prop_map(Some),
+            ]
+        }
+
+        /// Generator coverage claim: `version` lands on the validation
+        /// boundary deliberately — 0 (below current), HNSW_META_VERSION
+        /// (the accept/reject seam), HNSW_META_VERSION+1 (first rejected),
+        /// u32::MAX (max) — plus a uniform u32 so no in-between value is
+        /// unreachable.
+        fn version_field() -> impl Strategy<Value = u32> {
+            prop_oneof![
+                Just(0u32),
+                Just(HNSW_META_VERSION),
+                Just(HNSW_META_VERSION.saturating_add(1)),
+                Just(u32::MAX),
+                any::<u32>(),
+            ]
+        }
+
+        /// Generator coverage claim: `magic` is the correct constant about
+        /// half the time and arbitrary unicode (incl. the empty string and
+        /// near-misses) otherwise, so the magic-gate's accept and reject arms
+        /// both get hit.
+        fn magic_field() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just(HNSW_META_MAGIC.to_string()),
+                Just(String::new()),
+                Just("cqshnsw".to_string()),  // case near-miss
+                Just("CQSHNSW ".to_string()), // trailing-space near-miss
+                ".*",                         // arbitrary, incl. unicode
+            ]
+        }
+
+        /// Generator coverage claim: `metric` covers every accepted spelling
+        /// `FromStr` recognizes (so the metric round-trips through
+        /// `read_hnsw_meta_metric`), the canonical persisted spellings, and
+        /// arbitrary garbage (so the typed-error arm is exercised).
+        fn metric_field() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("cosine".to_string()),
+                Just("dot".to_string()),
+                Just("dotproduct".to_string()),
+                Just("inner_product".to_string()),
+                Just("ip".to_string()),
+                Just("  Cosine  ".to_string()), // whitespace + case (FromStr trims/lowercases)
+                ".*",                           // arbitrary, incl. unicode garbage
+            ]
+        }
+
+        /// A fully-arbitrary, always-well-formed `HnswMeta` (correct magic +
+        /// supported version + parseable metric). Used by the round-trip and
+        /// stamp properties where the validators must ACCEPT every input, so
+        /// the generator stays inside the valid region but still sweeps the
+        /// full stamp boundary set.
+        fn valid_meta() -> impl Strategy<Value = HnswMeta> {
+            (
+                prop_oneof![Just("cosine".to_string()), Just("dot".to_string())],
+                0u32..=HNSW_META_VERSION, // supported versions only
+                stamp_field(),
+                stamp_field(),
+            )
+                .prop_map(|(metric, version, chunk_count, splade_generation)| {
+                    HnswMeta {
+                        magic: HNSW_META_MAGIC.to_string(),
+                        version,
+                        metric,
+                        chunk_count,
+                        splade_generation,
+                    }
+                })
+        }
+
+        proptest! {
+            // Determinism: proptest's default RNG is seeded and a falsifier is
+            // pinned in `.proptest-regressions`; we additionally pin the
+            // boundary cases below as explicit `#[test]`s.
+
+            /// Invariant (round-trip / codec):
+            ///   read(write(meta)) ≡ meta   ∀ well-formed meta.
+            /// The save path encodes with `serde_json::to_vec`; the load path
+            /// decodes with `serde_json::from_slice` inside `read_hnsw_meta`.
+            /// This drives both real functions and asserts byte-faithful field
+            /// reconstruction — the `#[serde(default)] Option<u64>` fields are
+            /// the bite risk (a `None` that decodes as `Some(0)`, or a stamp
+            /// dropped, would silently break the staleness guard).
+            #[test]
+            fn prop_meta_round_trips(meta in valid_meta()) {
+                let tmp = TempDir::new().unwrap();
+                write_meta_json(tmp.path(), "rt", &meta);
+                let loaded = read_hnsw_meta(tmp.path(), "rt")
+                    .expect("well-formed meta must read")
+                    .expect("meta file exists");
+                prop_assert_eq!(loaded, meta);
+            }
+
+            /// Invariant (stamp pairing):
+            ///   store_stamp() = Some{cc,sg}  iff  chunk_count=Some(cc) ∧ splade_generation=Some(sg)
+            ///                 = None          otherwise (incl. both half-present shapes).
+            /// Driven through the persisted form so the `#[serde(default)]`
+            /// decode of half-present pairs is the actual subject. The example
+            /// suite only covers (Some,Some) at one fixed stamp and (None,None).
+            #[test]
+            fn prop_store_stamp_full_pairing(
+                cc in stamp_field(),
+                sg in stamp_field(),
+            ) {
+                let meta = HnswMeta {
+                    magic: HNSW_META_MAGIC.to_string(),
+                    version: HNSW_META_VERSION,
+                    metric: "cosine".to_string(),
+                    chunk_count: cc,
+                    splade_generation: sg,
+                };
+                let tmp = TempDir::new().unwrap();
+                write_meta_json(tmp.path(), "sp", &meta);
+                let loaded = read_hnsw_meta(tmp.path(), "sp").unwrap().unwrap();
+                let expected = match (cc, sg) {
+                    (Some(chunk_count), Some(splade_generation)) => {
+                        Some(StoreStamp { chunk_count, splade_generation })
+                    }
+                    _ => None,
+                };
+                prop_assert_eq!(loaded.store_stamp(), expected);
+            }
+
+            /// Invariant (version/magic gate — the generation-stamp seam):
+            ///   read_hnsw_meta accepts  iff  magic == HNSW_META_MAGIC ∧ version ≤ HNSW_META_VERSION.
+            /// A meta from a *newer* generation (version > this binary) must be
+            /// REJECTED, never silently used as-current — that is exactly the
+            /// sidecar-from-a-future-generation class. Both arms are generated.
+            #[test]
+            fn prop_version_magic_gate(
+                magic in magic_field(),
+                version in version_field(),
+                metric in metric_field(),
+                cc in stamp_field(),
+                sg in stamp_field(),
+            ) {
+                let meta = HnswMeta {
+                    magic: magic.clone(),
+                    version,
+                    metric,
+                    chunk_count: cc,
+                    splade_generation: sg,
+                };
+                let tmp = TempDir::new().unwrap();
+                write_meta_json(tmp.path(), "vg", &meta);
+                let result = read_hnsw_meta(tmp.path(), "vg");
+                let should_accept = magic == HNSW_META_MAGIC && version <= HNSW_META_VERSION;
+                if should_accept {
+                    prop_assert!(
+                        result.is_ok() && result.as_ref().unwrap().is_some(),
+                        "magic+version valid → must accept; got {:?}",
+                        result.err()
+                    );
+                } else {
+                    // A mismatched magic or future version is a typed error —
+                    // never a silent Ok that the load path would treat as a
+                    // current sidecar.
+                    prop_assert!(
+                        result.is_err(),
+                        "magic={:?} version={} should reject (magic_ok={}, ver_ok={})",
+                        magic,
+                        version,
+                        magic == HNSW_META_MAGIC,
+                        version <= HNSW_META_VERSION,
+                    );
+                }
+            }
+
+            /// Invariant (metric round-trip):
+            ///   read_hnsw_meta_metric(write(meta)) = meta.metric.parse::<DistanceMetric>()
+            /// whenever magic+version are valid. A parseable metric survives;
+            /// an unparseable one is a typed error (never a silent cosine).
+            #[test]
+            fn prop_metric_round_trip(metric in metric_field()) {
+                let meta = HnswMeta {
+                    magic: HNSW_META_MAGIC.to_string(),
+                    version: HNSW_META_VERSION,
+                    metric: metric.clone(),
+                    chunk_count: None,
+                    splade_generation: None,
+                };
+                let tmp = TempDir::new().unwrap();
+                write_meta_json(tmp.path(), "mr", &meta);
+                let got = read_hnsw_meta_metric(tmp.path(), "mr");
+                match metric.parse::<DistanceMetric>() {
+                    Ok(expected) => {
+                        prop_assert_eq!(
+                            got.expect("parseable metric must read"),
+                            expected
+                        );
+                    }
+                    Err(_) => {
+                        prop_assert!(
+                            got.is_err(),
+                            "unparseable metric {:?} must be a typed error, not a silent cosine",
+                            metric
+                        );
+                    }
+                }
+            }
+
+            /// Invariant (generation-mismatch self-heal — the headline target):
+            ///   verify_hnsw_current Ok  iff  the persisted full stamp == the live store stamp.
+            /// For ANY (saved, live) stamp pair and ANY presence shape, the
+            /// dirty-path check accepts ONLY when a complete stamp is present
+            /// AND equals the live store. A persisted stamp from a *different*
+            /// generation (saved ≠ live) must be refused — silently accepting
+            /// it is the sidecar-from-previous-generation bug. The example
+            /// suite drives this with the store's *actual* generation; here we
+            /// forge the persisted stamp directly so saved>live, saved<live,
+            /// saved==live, and the half/empty shapes are all reachable.
+            ///
+            /// `setup_store()` gives a fresh store at a fixed live stamp; we
+            /// read it once and forge persisted stamps around it.
+            #[test]
+            fn prop_verify_current_accepts_iff_stamp_equals_live(
+                saved_cc in stamp_field(),
+                saved_sg in stamp_field(),
+            ) {
+                let (store, tmp) = crate::test_helpers::setup_store();
+                let live = StoreStamp::read(&store).unwrap();
+
+                // Forge a verified sidecar SET (graph/data/ids/checksum) so
+                // `verify_hnsw_checksums` passes — then the only thing left to
+                // decide the verdict is the stamp comparison. Build+save a real
+                // tiny index, then overwrite ONLY the meta with the forged
+                // stamp and refresh its checksum line.
+                small_index().save(tmp.path(), "index").unwrap();
+                let forged = HnswMeta {
+                    magic: HNSW_META_MAGIC.to_string(),
+                    version: HNSW_META_VERSION,
+                    metric: "cosine".to_string(),
+                    chunk_count: saved_cc,
+                    splade_generation: saved_sg,
+                };
+                write_meta_json(tmp.path(), "index", &forged);
+                // Rebuild the checksum manifest over the (now-forged) meta plus
+                // the real graph/data/ids so checksum verification still passes
+                // and the stamp comparison is the sole discriminator.
+                rewrite_all_checksums(tmp.path(), "index");
+
+                let result = verify_hnsw_current(tmp.path(), "index", &store);
+
+                let saved_stamp = match (saved_cc, saved_sg) {
+                    (Some(c), Some(g)) => Some(StoreStamp {
+                        chunk_count: c,
+                        splade_generation: g,
+                    }),
+                    _ => None,
+                };
+                let should_accept = saved_stamp == Some(live);
+                if should_accept {
+                    prop_assert!(
+                        result.is_ok(),
+                        "stamp equals live → must heal; got {:?}",
+                        result.err()
+                    );
+                } else {
+                    prop_assert!(
+                        result.is_err(),
+                        "saved stamp {:?} ≠ live {:?} (or absent) → must refuse, not silently heal",
+                        saved_stamp,
+                        live,
+                    );
+                }
+            }
+        }
+
+        /// Rewrite the blake3 checksum manifest over the four content files
+        /// (graph/data/ids/meta) as they currently sit on disk. Used by the
+        /// `verify_hnsw_current` property after forging the meta so the
+        /// checksum pass stays green and the stamp comparison is the sole
+        /// discriminator.
+        fn rewrite_all_checksums(dir: &Path, basename: &str) {
+            let mut lines = Vec::new();
+            for ext in &["hnsw.ids", "hnsw.graph", "hnsw.data", "hnsw.meta"] {
+                let path = dir.join(format!("{}.{}", basename, ext));
+                if path.exists() {
+                    let mut hasher = blake3::Hasher::new();
+                    let mut file = std::fs::File::open(&path).unwrap();
+                    std::io::copy(&mut file, &mut hasher).unwrap();
+                    lines.push(format!("{}:{}", ext, hasher.finalize().to_hex()));
+                }
+            }
+            std::fs::write(
+                dir.join(format!("{}.hnsw.checksum", basename)),
+                lines.join("\n"),
+            )
+            .unwrap();
+        }
+
+        // ===== pinned boundary regressions =====
+        //
+        // The boundary cases the properties sweep, pinned as explicit examples
+        // so a generator change can never silently stop covering them. These
+        // are the values a hand-written suite would have to enumerate by hand;
+        // they are kept here as the durable floor under the generated search.
+
+        /// version == HNSW_META_VERSION is the accept/reject seam: it must be
+        /// accepted (the boundary is `>`, not `>=`).
+        #[test]
+        fn boundary_version_at_limit_accepts() {
+            let tmp = TempDir::new().unwrap();
+            let meta = HnswMeta {
+                magic: HNSW_META_MAGIC.to_string(),
+                version: HNSW_META_VERSION,
+                metric: "cosine".to_string(),
+                chunk_count: Some(u64::MAX),
+                splade_generation: Some(0),
+            };
+            write_meta_json(tmp.path(), "b", &meta);
+            let loaded = read_hnsw_meta(tmp.path(), "b").unwrap().unwrap();
+            assert_eq!(
+                loaded.store_stamp(),
+                Some(StoreStamp {
+                    chunk_count: u64::MAX,
+                    splade_generation: 0
+                })
+            );
+        }
+
+        /// version == HNSW_META_VERSION + 1 is the first rejected value: a
+        /// sidecar written by a newer binary must be refused, not used.
+        #[test]
+        fn boundary_version_above_limit_rejects() {
+            let tmp = TempDir::new().unwrap();
+            let meta = HnswMeta {
+                magic: HNSW_META_MAGIC.to_string(),
+                version: HNSW_META_VERSION + 1,
+                metric: "cosine".to_string(),
+                chunk_count: None,
+                splade_generation: None,
+            };
+            write_meta_json(tmp.path(), "b", &meta);
+            let err =
+                read_hnsw_meta(tmp.path(), "b").expect_err("future-version sidecar must reject");
+            assert!(format!("{err}").contains("newer than this binary"));
+        }
+
+        /// Both half-present stamp shapes collapse to `None` — a hand-edited
+        /// meta carrying only one of the pair cannot prove a generation.
+        #[test]
+        fn boundary_half_present_stamp_is_none() {
+            for (cc, sg) in [(Some(7u64), None), (None, Some(9u64))] {
+                let tmp = TempDir::new().unwrap();
+                let meta = HnswMeta {
+                    magic: HNSW_META_MAGIC.to_string(),
+                    version: HNSW_META_VERSION,
+                    metric: "cosine".to_string(),
+                    chunk_count: cc,
+                    splade_generation: sg,
+                };
+                write_meta_json(tmp.path(), "b", &meta);
+                let loaded = read_hnsw_meta(tmp.path(), "b").unwrap().unwrap();
+                assert_eq!(
+                    loaded.store_stamp(),
+                    None,
+                    "half-present pair {cc:?}/{sg:?} must not yield a stamp"
+                );
+            }
+        }
     }
 }
