@@ -448,17 +448,71 @@ pub struct CallerWithContext {
     pub edge_kind: CallEdgeKind,
 }
 
+/// Provenance for a single `(caller, callee)` edge in an in-memory
+/// [`CallGraph`]. Carries the edge's [`CallEdgeKind`] plus its source location
+/// so the cross-project caller/callee paths can surface the same provenance the
+/// single-project SQL queries already do. When several raw
+/// `function_calls` rows share a `(caller, callee)` pair, the metadata is
+/// collapsed to the most-trusted kind (lowest [`CallEdgeKind::trust_rank`]),
+/// keeping that row's source location — mirroring the local `MIN(rank)` collapse
+/// in `get_callers_full`.
+///
+/// Read in-memory by the cross-project surfaces and projected into their own
+/// serializable shapes; never serialized directly (see the `CallGraph.edges`
+/// `#[serde(skip)]`).
+#[derive(Debug, Clone)]
+pub struct CallEdgeMeta {
+    /// Provenance of the edge (default ⇒ `call`).
+    pub edge_kind: CallEdgeKind,
+    /// File the caller is defined in (the `function_calls.file` of the
+    /// chosen row). Empty when synthesized without a source location (tests).
+    pub file: String,
+    /// Caller definition's start line (`function_calls.caller_line`).
+    pub caller_line: u32,
+    /// Line where the call to the callee occurs (`function_calls.call_line`).
+    pub call_line: u32,
+}
+
+impl CallEdgeMeta {
+    /// The default-`call` metadata with no source location — used when a graph
+    /// is synthesized from bare name adjacency (tests, ad-hoc construction).
+    pub fn default_call() -> Self {
+        Self {
+            edge_kind: CallEdgeKind::Call,
+            file: String::new(),
+            caller_line: 0,
+            call_line: 0,
+        }
+    }
+}
+
 /// In-memory call graph for BFS traversal
 ///
 /// Built from a single scan of the `function_calls` table.
 /// Both forward and reverse adjacency lists are included
 /// to support trace (forward BFS) and impact/test-map (reverse BFS).
+///
+/// `edges` is a parallel, BFS-irrelevant metadata side-table: it carries each
+/// edge's [`CallEdgeMeta`] (provenance + source location) keyed by
+/// `(caller, callee)`. BFS traversal reads only `forward`/`reverse` (name
+/// adjacency); the cross-project caller/callee paths look up `edges` to surface
+/// `edge_kind` and source location and to apply `--edge-kind` filtering, the way
+/// the single-project SQL queries already do.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CallGraph {
     /// Forward edges: caller_name -> Vec<callee_name>
     pub forward: HashMap<Arc<str>, Vec<Arc<str>>>,
     /// Reverse edges: callee_name -> Vec<caller_name>
     pub reverse: HashMap<Arc<str>, Vec<Arc<str>>>,
+    /// Per-edge provenance keyed by `(caller, callee)`. Parallel to the
+    /// adjacency lists — not consulted by BFS. See the struct doc.
+    ///
+    /// `#[serde(skip)]`: the tuple key has no string representation for a JSON
+    /// object, and `CallGraph` is never serialized to JSON in production (the
+    /// derive exists for the adjacency maps). The cross-project surfaces read
+    /// this in-memory and project into their own serializable shapes.
+    #[serde(skip)]
+    pub edges: HashMap<(Arc<str>, Arc<str>), CallEdgeMeta>,
 }
 
 impl CallGraph {
@@ -466,6 +520,12 @@ impl CallGraph {
     ///
     /// Convenience for tests and ad-hoc graph construction. Production code uses
     /// the interner in `get_call_graph()` for shared allocation across maps.
+    ///
+    /// The synthesized graph carries no edge provenance — every edge implied by
+    /// the forward map is recorded in `edges` as default-`call` with no source
+    /// location ([`CallEdgeMeta::default_call`]), so the cross-project surfaces
+    /// stay consistent (a missing entry and a default entry both render as the
+    /// omitted `call` kind).
     pub fn from_string_maps(
         forward: HashMap<String, Vec<String>>,
         reverse: HashMap<String, Vec<String>>,
@@ -479,10 +539,34 @@ impl CallGraph {
                 })
                 .collect()
         };
-        Self {
-            forward: convert(forward),
-            reverse: convert(reverse),
+        let forward = convert(forward);
+        let reverse = convert(reverse);
+        // Synthesize default-`call` metadata for every forward edge so the
+        // cross-project paths have a consistent (if location-less) entry.
+        let mut edges: HashMap<(Arc<str>, Arc<str>), CallEdgeMeta> = HashMap::new();
+        for (caller, callees) in &forward {
+            for callee in callees {
+                edges
+                    .entry((Arc::clone(caller), Arc::clone(callee)))
+                    .or_insert_with(CallEdgeMeta::default_call);
+            }
         }
+        Self {
+            forward,
+            reverse,
+            edges,
+        }
+    }
+
+    /// Look up the provenance for a `(caller, callee)` edge, falling back to
+    /// default-`call` with no source location when the edge has no recorded
+    /// metadata (a synthesized graph, or a reverse-only edge). Both surfaces a
+    /// `call` edge, so the fallback is indistinguishable from a stored default.
+    pub fn edge_meta(&self, caller: &str, callee: &str) -> CallEdgeMeta {
+        self.edges
+            .get(&(Arc::from(caller), Arc::from(callee)))
+            .cloned()
+            .unwrap_or_else(CallEdgeMeta::default_call)
     }
 }
 

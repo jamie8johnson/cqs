@@ -93,6 +93,9 @@ pub struct CrossProjectCallee {
     pub project: String,
     pub name: String,
     pub line: u32,
+    /// Provenance of the call edge, threaded through the in-memory CallGraph.
+    /// Defaults to [`CallEdgeKind::Call`] for an edge with no recorded metadata.
+    pub edge_kind: crate::parser::CallEdgeKind,
 }
 
 /// Test chunk enriched with the originating project name.
@@ -268,22 +271,25 @@ impl CrossProjectContext {
             if let Some(callers) = graph.reverse.get(callee_name) {
                 for caller_arc in callers {
                     let caller_name = caller_arc.as_ref();
+                    // Look up the edge's provenance (kind + source location)
+                    // recorded at graph load — threaded through the in-memory
+                    // CallGraph so cross-project callers carry the same
+                    // edge_kind/file/line the single-project SQL path does.
+                    let meta = graph.edge_meta(caller_name, callee_name);
                     tracing::debug!(
                         project = %ns.name,
                         caller = caller_name,
                         callee = callee_name,
+                        edge_kind = %meta.edge_kind,
                         "Cross-project caller found"
                     );
                     all_callers.push(CrossProjectCaller {
                         project: ns.name.clone(),
                         caller: CallerInfo {
                             name: caller_name.to_string(),
-                            file: std::path::PathBuf::new(),
-                            line: 0,
-                            // Cross-project edges come from the in-memory
-                            // CallGraph, which does not track edge_kind; default
-                            // to the syntactic `call`.
-                            edge_kind: crate::parser::CallEdgeKind::Call,
+                            file: std::path::PathBuf::from(meta.file),
+                            line: meta.caller_line,
+                            edge_kind: meta.edge_kind,
                         },
                     });
                 }
@@ -315,16 +321,22 @@ impl CrossProjectContext {
             if let Some(callees) = graph.forward.get(caller_name) {
                 for callee_arc in callees {
                     let callee_name = callee_arc.as_ref();
+                    // Edge provenance + call-site line from the in-memory graph;
+                    // `line` is the call_line (where the call occurs), matching
+                    // the single-project `get_callees_full` semantics.
+                    let meta = graph.edge_meta(caller_name, callee_name);
                     tracing::debug!(
                         project = %ns.name,
                         caller = caller_name,
                         callee = callee_name,
+                        edge_kind = %meta.edge_kind,
                         "Cross-project callee found"
                     );
                     all_callees.push(CrossProjectCallee {
                         project: ns.name.clone(),
                         name: callee_name.to_string(),
-                        line: 0,
+                        line: meta.call_line,
+                        edge_kind: meta.edge_kind,
                     });
                 }
             }
@@ -368,6 +380,8 @@ impl CrossProjectContext {
 
         let mut forward: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
         let mut reverse: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        let mut edges: HashMap<(Arc<str>, Arc<str>), crate::store::helpers::CallEdgeMeta> =
+            HashMap::new();
 
         for idx in 0..self.stores.len() {
             let graph = &self.graphs[&idx];
@@ -383,9 +397,28 @@ impl CrossProjectContext {
                     .or_default()
                     .extend(callers.iter().cloned());
             }
+            // Preserve each project's edge provenance. When the same
+            // `(caller, callee)` pair appears in more than one project (a shared
+            // function name), keep the most-trusted kind — mirroring the
+            // within-project MIN-rank collapse so a `call` edge in one project
+            // is never demoted to a `doc_reference` from another.
+            for (key, meta) in &graph.edges {
+                edges
+                    .entry((Arc::clone(&key.0), Arc::clone(&key.1)))
+                    .and_modify(|existing| {
+                        if meta.edge_kind.trust_rank() < existing.edge_kind.trust_rank() {
+                            *existing = meta.clone();
+                        }
+                    })
+                    .or_insert_with(|| meta.clone());
+            }
         }
 
-        Ok(CallGraph { forward, reverse })
+        Ok(CallGraph {
+            forward,
+            reverse,
+            edges,
+        })
     }
 }
 
@@ -452,6 +485,126 @@ mod tests {
         let _keep = dir.keep();
 
         NamedStore::new(name.to_string(), store, db_path)
+    }
+
+    /// Helper: a NamedStore with explicit per-edge provenance. Each tuple is
+    /// `(caller, callee, edge_kind, file, caller_line, call_line)`, written
+    /// straight into `function_calls` so the in-memory `CallGraph` carries the
+    /// kind + source location end-to-end.
+    fn make_named_store_with_edges(
+        name: &str,
+        edges: &[(&str, &str, crate::parser::CallEdgeKind, &str, i64, i64)],
+    ) -> NamedStore {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let model_info = crate::store::helpers::ModelInfo::default();
+
+        let store = Store::<crate::store::ReadOnly>::open_readonly_after_init(&db_path, |store| {
+            store.init(&model_info)?;
+            for (caller, callee, kind, file, caller_line, call_line) in edges {
+                store.rt.block_on(async {
+                    sqlx::query(
+                        "INSERT INTO function_calls (file, caller_name, callee_name, caller_line, call_line, edge_kind)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .bind(file)
+                    .bind(caller)
+                    .bind(callee)
+                    .bind(caller_line)
+                    .bind(call_line)
+                    .bind(kind.as_str())
+                    .execute(&store.pool)
+                    .await
+                })?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let _keep = dir.keep();
+        NamedStore::new(name.to_string(), store, db_path)
+    }
+
+    /// Edge provenance (kind + source location) survives the in-memory
+    /// `CallGraph` load and surfaces on cross-project callers/callees.
+    #[test]
+    fn cross_project_caller_carries_edge_kind_and_location() {
+        use crate::parser::CallEdgeKind;
+        let store = make_named_store_with_edges(
+            "proj_a",
+            &[(
+                "caller_a",
+                "target",
+                CallEdgeKind::MacroHeuristic,
+                "src/a.rs",
+                12,
+                34,
+            )],
+        );
+        let mut ctx = CrossProjectContext::new(vec![store]);
+
+        let callers = ctx.get_callers_cross("target").unwrap();
+        assert_eq!(callers.len(), 1);
+        let c = &callers[0];
+        assert_eq!(c.caller.name, "caller_a");
+        // Provenance threaded through, not defaulted to `call`.
+        assert_eq!(c.caller.edge_kind, CallEdgeKind::MacroHeuristic);
+        assert_eq!(c.caller.file, std::path::PathBuf::from("src/a.rs"));
+        assert_eq!(c.caller.line, 12);
+
+        // Callee side: kind threads through, line is the call_line.
+        let callees = ctx.get_callees_cross("caller_a").unwrap();
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0].name, "target");
+        assert_eq!(callees[0].edge_kind, CallEdgeKind::MacroHeuristic);
+        assert_eq!(callees[0].line, 34);
+    }
+
+    /// Multiple raw rows for one `(caller, callee)` pair collapse to the
+    /// most-trusted kind at graph load — a co-located `call` and `doc_reference`
+    /// surface as `call`, mirroring the single-project MIN-rank collapse.
+    #[test]
+    fn cross_project_edge_collapse_keeps_most_trusted_kind() {
+        use crate::parser::CallEdgeKind;
+        let store = make_named_store_with_edges(
+            "proj_a",
+            &[
+                ("c", "t", CallEdgeKind::DocReference, "src/a.rs", 1, 5),
+                ("c", "t", CallEdgeKind::Call, "src/a.rs", 1, 9),
+            ],
+        );
+        let mut ctx = CrossProjectContext::new(vec![store]);
+        let callers = ctx.get_callers_cross("t").unwrap();
+        assert_eq!(callers.len(), 1, "the pair collapses to one edge");
+        assert_eq!(
+            callers[0].caller.edge_kind,
+            CallEdgeKind::Call,
+            "call (rank 0) outranks doc_reference (rank 4)"
+        );
+    }
+
+    /// The cross-project MERGE keeps the most-trusted kind when the same
+    /// `(caller, callee)` appears in more than one project — a `call` in one
+    /// project is never demoted to a `doc_reference` from another.
+    #[test]
+    fn merged_call_graph_keeps_most_trusted_across_projects() {
+        use crate::parser::CallEdgeKind;
+        let store_a = make_named_store_with_edges(
+            "proj_a",
+            &[("shared", "fn", CallEdgeKind::DocReference, "src/a.rs", 1, 2)],
+        );
+        let store_b = make_named_store_with_edges(
+            "proj_b",
+            &[("shared", "fn", CallEdgeKind::Call, "src/b.rs", 3, 4)],
+        );
+        let mut ctx = CrossProjectContext::new(vec![store_a, store_b]);
+        let merged = ctx.merged_call_graph().unwrap();
+        let meta = merged.edge_meta("shared", "fn");
+        assert_eq!(
+            meta.edge_kind,
+            CallEdgeKind::Call,
+            "merge must keep the most-trusted kind across projects"
+        );
     }
 
     #[test]

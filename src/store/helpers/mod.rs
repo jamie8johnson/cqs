@@ -34,9 +34,9 @@ pub use rows::clamp_line_number;
 
 // Domain types
 pub use types::{
-    AttributedCaller, CallGraph, CalleeInfo, CallerAttribution, CallerInfo, CallerWithContext,
-    ChunkIdentity, ChunkSummary, IndexStats, NoteSearchResult, NoteStats, NoteSummary,
-    ParentContext, RankSignal, SearchResult, StaleFile, StaleReport, UnifiedResult,
+    AttributedCaller, CallEdgeMeta, CallGraph, CalleeInfo, CallerAttribution, CallerInfo,
+    CallerWithContext, ChunkIdentity, ChunkSummary, IndexStats, NoteSearchResult, NoteStats,
+    NoteSummary, ParentContext, RankSignal, SearchResult, StaleFile, StaleReport, UnifiedResult,
 };
 
 // Search filter

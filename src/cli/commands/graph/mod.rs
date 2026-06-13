@@ -11,7 +11,7 @@ pub(crate) mod trace;
 
 pub(crate) use callers::{
     callees_core, callees_cross_core, callers_core, callers_cross_core, cmd_callees, cmd_callers,
-    parse_edge_kind, CalleesArgs, CallersArgs as CallersCoreArgs, EDGE_KIND_CROSS_PROJECT_ERR,
+    parse_edge_kind, CalleesArgs, CallersArgs as CallersCoreArgs,
 };
 pub(crate) use deps::{cmd_deps, deps_core, DepsArgs as DepsCoreArgs};
 pub(crate) use explain::cmd_explain;
