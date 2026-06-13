@@ -653,6 +653,25 @@ mod tests {
         }
     }
 
+    /// Default-on flip: the batch `search` surface mirrors the CLI —
+    /// `--no-overlay` parses, and `--overlay --no-overlay` is rejected by clap.
+    #[test]
+    fn test_parse_search_overlay_flags_conflict() {
+        let off = BatchInput::try_parse_from(["search", "hello", "--no-overlay"]).unwrap();
+        match off.cmd {
+            BatchCmd::Search { ref args, .. } => {
+                assert!(args.no_overlay, "--no-overlay sets the flag");
+                assert!(!args.overlay);
+            }
+            _ => panic!("Expected Search command"),
+        }
+        let conflict = BatchInput::try_parse_from(["search", "hello", "--overlay", "--no-overlay"]);
+        assert!(
+            conflict.is_err(),
+            "batch search --overlay and --no-overlay must conflict"
+        );
+    }
+
     #[test]
     fn test_parse_callers() {
         let input = BatchInput::try_parse_from(["callers", "my_func"]).unwrap();

@@ -5,8 +5,8 @@ use anyhow::{bail, Result};
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 use crate::cli::commands::search::query::{
-    merge_references, overlay_env_requested, prepare_query, query_core, retrieve_project,
-    retrieve_ref_scoped, Prepared, ProjectSurface, QueryArgs,
+    merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped, Prepared,
+    ProjectSurface, QueryArgs,
 };
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
@@ -78,7 +78,12 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
 ///    this query — e.g. a daemon search from the project root itself).
 fn prepare_overlay_request(ctx: &BatchView, args: &SearchArgs) -> Result<()> {
     cqs::worktree_overlay::clear_overlay_meta();
-    if !(args.overlay || overlay_env_requested()) {
+    // The default-on flip is decided CLIENT-side: the client applies the
+    // tri-state resolution and forwards a `--overlay` flag (+ `--overlay-root`)
+    // whenever it activates. The daemon has no client cwd, so it never does
+    // default-on itself — `overlay_eligible = false` — but it still honors an
+    // explicit `--no-overlay` / `=0` opt-out that rode the wire (opt-out wins).
+    if !daemon_overlay_active(args) {
         return Ok(());
     }
     if let Some(root) = &args.overlay_root {
@@ -146,11 +151,26 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
         // The daemon surface is always JSON, so provenance is on unless the
         // caller suppresses it for a tight token budget.
         record_rank_signals: !args.no_rank_signals,
-        // Overlay opt-in (flag OR env). The daemon's `BatchView::overlay()`
-        // (PR-3) consults this to decide whether to resolve+build an overlay
-        // for the request's worktree root.
-        overlay: args.overlay || overlay_env_requested(),
+        // Overlay activation (daemon-side): opt-out wins, else opt-in (wire flag
+        // OR the daemon's own env). Default-on is a client-side decision, so the
+        // daemon passes `overlay_eligible = false` — it only ever sees an
+        // overlay when the client forwarded `--overlay`. `BatchView::overlay()`
+        // consults this to decide whether to resolve+build an overlay.
+        overlay: daemon_overlay_active(args),
     }
+}
+
+/// Daemon-side overlay activation: the shared tri-state resolution with
+/// `overlay_eligible = false` (the daemon never does default-on — that is a
+/// client-side decision keyed on the client's cwd). Reduces to: explicit
+/// `--no-overlay` / `CQS_WORKTREE_OVERLAY=0` opt-out wins, else explicit
+/// `--overlay` / `CQS_WORKTREE_OVERLAY=1` opt-in, else off.
+fn daemon_overlay_active(args: &SearchArgs) -> bool {
+    crate::cli::commands::search::query::resolve_overlay_active(
+        args.overlay,
+        args.no_overlay,
+        false,
+    )
 }
 
 /// [`QueryArgs`] for the daemon's `--ref` / `--include-refs` fan-out.
