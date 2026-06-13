@@ -43,6 +43,50 @@ fn full_disk_fingerprint(abs_path: &std::path::Path) -> FileFingerprint {
     .unwrap_or_default()
 }
 
+/// How many leading chunks of `chunks` form a FILE-ALIGNED batch under the soft
+/// cap `batch_size`.
+///
+/// `chunks` must have each file's chunks in a contiguous run (the parser's rayon
+/// fold/reduce guarantees this). The returned `take` is a sum of whole
+/// contiguous file-runs from the front: it never splits a file's run across the
+/// boundary. The first file's run is ALWAYS included, even when that one file
+/// alone exceeds `batch_size` (so an oversize file rides as its own batch rather
+/// than being split — splitting is exactly the cross-stage race this prevents).
+/// Subsequent file-runs are added only while the running total stays at or below
+/// `batch_size`.
+///
+/// Invariants (held for any non-empty `chunks`, any `batch_size >= 1`):
+///   * `1 <= take <= chunks.len()`
+///   * `chunks[take - 1].file != chunks[take].file` when `take < chunks.len()`
+///     (the cut lands on a file boundary)
+fn file_aligned_take(chunks: &[cqs::Chunk], batch_size: usize) -> usize {
+    debug_assert!(
+        !chunks.is_empty(),
+        "file_aligned_take needs a non-empty slice"
+    );
+    let mut take = 0usize;
+    while take < chunks.len() {
+        // Extent of the contiguous run for the file at `take`.
+        let run_file = &chunks[take].file;
+        let run_len = chunks[take..]
+            .iter()
+            .take_while(|c| &c.file == run_file)
+            .count();
+        // Always include the first run; stop before adding a later run that
+        // would push the batch over the soft cap.
+        if take > 0 && take + run_len > batch_size {
+            break;
+        }
+        take += run_len;
+        // The first run is committed; once we're at/over the cap, stop adding
+        // more files (the next run starts a fresh batch).
+        if take >= batch_size {
+            break;
+        }
+    }
+    take
+}
+
 /// Result of the per-batch staleness pre-filter: which files to parse, and
 /// the disk fingerprint for each of them.
 struct StalenessFilterResult {
@@ -476,17 +520,37 @@ pub(super) fn parser_stage(
             continue;
         }
 
-        // Send in embedding-sized batches. Relationships ride with the first
-        // batch only; per-chunk data (chunk_calls, type_edges) is deferred in
-        // store_stage until all chunks are committed.
+        // Send in embedding-sized batches, FILE-ALIGNED: a single file's chunks
+        // are never split across two `ParsedBatch`es. The two embed stages
+        // (GPU + CPU) work-steal `parse_rx`, so a file split across batches
+        // could have its halves processed by different stages at different
+        // speeds; the fingerprint-bearing half (the file's last chunk) could
+        // then reach `store_stage` BEFORE the file's earlier-batch chunks,
+        // firing a flush+prune on a PARTIAL accumulator and stranding the
+        // late-arriving chunks in an accum that never flushes — silent,
+        // non-deterministic chunk loss. Keeping each file's whole contiguous run
+        // inside one batch makes that file ride exactly one stage in order, so
+        // its chunks and fingerprint arrive together (or, on a GPU-failure
+        // split, cached-then-requeued in FIFO order on the single `embed_tx`).
+        // Completion is then order-independent by construction, not by timing.
         //
-        // A file's fingerprint is stamped ONLY in the batch carrying its last
-        // chunk (`remaining_per_file` hits zero), so the stamp lands strictly
-        // after every one of the file's chunks has been written — a crash
-        // between two of a file's batch commits leaves it unstamped and the
-        // next run's pre-filter reclassifies it STALE. The empty-file prune
-        // set rides with the first batch (it references no chunks, so ordering
-        // against chunk writes is irrelevant).
+        // A file's chunks are contiguous in `chunks` (the rayon fold appends
+        // each file's chunks in one `extend`, and reduce concatenates disjoint
+        // partitions), so a batch is a sum of whole contiguous file-runs.
+        // `batch_size` is a soft cap: a single file larger than `batch_size`
+        // rides alone (its own batch). `embed_documents` re-batches internally
+        // at `embed_batch_size` for GPU memory, so an oversize per-file batch
+        // does not change peak GPU usage — and `store_stage` already buffers a
+        // whole straddling file in its accumulator regardless, so peak host
+        // memory is unchanged too.
+        //
+        // Relationships ride with the first batch only; per-chunk data
+        // (chunk_calls, type_edges) is deferred in store_stage until all chunks
+        // are committed. A file's fingerprint is stamped in the (single) batch
+        // carrying its chunks, so the stamp lands together with — never before —
+        // the file's data. The empty-file prune set rides with the first batch
+        // (it references no chunks, so ordering against chunk writes is
+        // irrelevant).
         //
         // Drain owned chunks into each batch instead of `chunks.chunks(n)` +
         // `.to_vec()`, which would clone every Chunk. We own `chunks` here and
@@ -495,11 +559,14 @@ pub(super) fn parser_stage(
         let mut remaining_empties = Some(empty_file_fingerprints);
         let mut chunks = chunks;
         while !chunks.is_empty() {
-            let take = batch_size.min(chunks.len());
+            let take = file_aligned_take(&chunks, batch_size);
             // Compute the per-batch fingerprint stamp set from a borrow first;
             // `drain` below moves the same chunks out. Decrement each file's
             // remaining count as its chunks leave; a file whose count reaches
             // zero in this window has delivered its last chunk, so stamp it.
+            // With file-aligned batching a file's whole run is in one window, so
+            // its count drops to zero in the same batch as its chunks — the
+            // stamp can never precede the data.
             let mut batch_fps: std::collections::HashMap<PathBuf, FileFingerprint> =
                 std::collections::HashMap::new();
             for c in &chunks[..take] {
@@ -536,18 +603,221 @@ mod tests {
     use crossbeam_channel::unbounded;
     use std::collections::HashSet;
 
-    /// Fixture-driven regression test for the drain-based send loop. Builds a
-    /// small fixture corpus, runs `parser_stage` end-to-end,
-    /// and verifies:
+    /// Build a chunk whose only load-bearing field for `file_aligned_take` is
+    /// its `file` — the function groups by contiguous `file` runs.
+    fn aligned_chunk(file: &str) -> cqs::Chunk {
+        cqs::Chunk {
+            id: format!("{file}:0"),
+            file: PathBuf::from(file),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: "x".to_string(),
+            signature: String::new(),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            byte_start: 0,
+            content_hash: String::new(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    }
+
+    fn aligned_chunks(files: &[&str]) -> Vec<cqs::Chunk> {
+        files.iter().map(|f| aligned_chunk(f)).collect()
+    }
+
+    /// `file_aligned_take` never splits a single file's contiguous run, and the
+    /// cut always lands on a file boundary. This is the by-construction property
+    /// that kills the GPU/CPU work-steal chunk-loss race: a file that rides one
+    /// `ParsedBatch` rides one embed stage in order, so its fingerprint never
+    /// reaches `store_stage` before its data.
+    #[test]
+    fn file_aligned_take_respects_soft_cap_when_files_split_cleanly() {
+        // Three files of 2 chunks each, cap 3: take only file a (2 <= 3, then
+        // adding b's run would be 4 > 3 → stop). Cut lands between a and b.
+        let chunks = aligned_chunks(&["a", "a", "b", "b", "c", "c"]);
+        let take = file_aligned_take(&chunks, 3);
+        assert_eq!(take, 2, "take only the first whole file-run under the cap");
+        assert_ne!(
+            chunks[take - 1].file,
+            chunks[take].file,
+            "cut must land on a file boundary"
+        );
+    }
+
+    #[test]
+    fn file_aligned_take_packs_multiple_small_files_up_to_cap() {
+        // Files of 1 chunk each, cap 3: pack a, b, c (3 == cap → stop).
+        let chunks = aligned_chunks(&["a", "b", "c", "d"]);
+        let take = file_aligned_take(&chunks, 3);
+        assert_eq!(take, 3, "pack whole small files until the cap is reached");
+        assert_ne!(chunks[take - 1].file, chunks[take].file);
+    }
+
+    #[test]
+    fn file_aligned_take_oversize_file_rides_alone() {
+        // First file alone exceeds the cap: it must STILL be taken whole (never
+        // split — splitting is the race). The next file starts a fresh batch.
+        let chunks = aligned_chunks(&["big", "big", "big", "big", "small"]);
+        let take = file_aligned_take(&chunks, 2);
+        assert_eq!(
+            take, 4,
+            "an oversize first file rides alone, whole — never split"
+        );
+        assert_eq!(chunks[take - 1].file, PathBuf::from("big"));
+        assert_eq!(chunks[take].file, PathBuf::from("small"));
+    }
+
+    #[test]
+    fn file_aligned_take_single_file_takes_all() {
+        let chunks = aligned_chunks(&["a", "a", "a"]);
+        assert_eq!(file_aligned_take(&chunks, 2), 3, "lone file: take its run");
+    }
+
+    /// Driving `file_aligned_take` to exhaustion (as the drain loop does) must
+    /// (1) deliver every chunk exactly once, (2) never split a file across two
+    /// batches. Property-style sweep over a fixed corpus and several caps.
+    #[test]
+    fn file_aligned_take_full_drain_never_splits_a_file() {
+        let layouts: &[&[&str]] = &[
+            &["a", "a", "b", "c", "c", "c", "d"],
+            &["x", "x", "x", "x", "y"],
+            &["p", "q", "r", "s"],
+            &["solo", "solo", "solo"],
+        ];
+        for layout in layouts {
+            for cap in 1..=6 {
+                let mut chunks = aligned_chunks(layout);
+                let mut delivered: Vec<PathBuf> = Vec::new();
+                while !chunks.is_empty() {
+                    let take = file_aligned_take(&chunks, cap);
+                    assert!(take >= 1 && take <= chunks.len(), "take in bounds");
+                    // Boundary: the chunk just before the cut and just after must
+                    // belong to different files (no split).
+                    if take < chunks.len() {
+                        assert_ne!(
+                            chunks[take - 1].file,
+                            chunks[take].file,
+                            "layout {layout:?} cap {cap}: cut split a file run"
+                        );
+                    }
+                    delivered.extend(chunks.drain(..take).map(|c| c.file));
+                }
+                // Every chunk delivered exactly once, in original order.
+                let expected: Vec<PathBuf> =
+                    aligned_chunks(layout).into_iter().map(|c| c.file).collect();
+                assert_eq!(
+                    delivered, expected,
+                    "layout {layout:?} cap {cap}: drain lost or reordered chunks"
+                );
+            }
+        }
+    }
+
+    /// End-to-end: a file whose chunks exceed `embed_batch_size` must ride
+    /// EXACTLY ONE `ParsedBatch` — never straddle two. This is the parser-side
+    /// guarantee that makes the GPU/CPU work-steal chunk-loss bug impossible by
+    /// construction: a file confined to one batch is processed by one embed
+    /// stage in order, so its fingerprint-bearing data can never overtake its
+    /// earlier chunks in the cross-stage race.
+    #[test]
+    fn parser_stage_never_straddles_a_file_across_batches() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // `big.rs` has > embed_batch_size functions; `a.rs`/`b.rs` are small.
+        let mut big = String::new();
+        for i in 0..200 {
+            use std::fmt::Write as _;
+            writeln!(&mut big, "pub fn big_{i}() {{}}").unwrap();
+        }
+        std::fs::write(root.join("big.rs"), &big).unwrap();
+        std::fs::write(root.join("a.rs"), "pub fn a_one() {}\npub fn a_two() {}\n").unwrap();
+        std::fs::write(root.join("b.rs"), "pub fn b_one() {}\n").unwrap();
+
+        let rel_paths = vec![
+            PathBuf::from("big.rs"),
+            PathBuf::from("a.rs"),
+            PathBuf::from("b.rs"),
+        ];
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: true,
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(rel_paths, ctx, tx).unwrap();
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        assert!(
+            batches.len() >= 2,
+            "big.rs should force multiple batches, got {}",
+            batches.len()
+        );
+
+        // No file appears in more than one batch (the no-straddle invariant).
+        let mut file_to_batch: std::collections::HashMap<PathBuf, usize> =
+            std::collections::HashMap::new();
+        for (bi, b) in batches.iter().enumerate() {
+            let files_in_batch: HashSet<PathBuf> =
+                b.chunks.iter().map(|c| c.file.clone()).collect();
+            for f in files_in_batch {
+                if let Some(prev) = file_to_batch.insert(f.clone(), bi) {
+                    assert_eq!(
+                        prev, bi,
+                        "file {f:?} straddled parse batches {prev} and {bi} — \
+                         the no-straddle invariant is broken"
+                    );
+                }
+            }
+        }
+        // big.rs really did produce more than one batch's worth of chunks, so
+        // the no-straddle property was non-trivially exercised.
+        let big = PathBuf::from("big.rs");
+        let big_chunks: usize = batches
+            .iter()
+            .flat_map(|b| b.chunks.iter())
+            .filter(|c| c.file == big)
+            .count();
+        assert!(
+            big_chunks > embed_batch_size(),
+            "big.rs must exceed embed_batch_size to exercise the no-straddle path; got {big_chunks}"
+        );
+    }
+
+    /// Fixture-driven regression test for the file-aligned send loop. Builds a
+    /// many-file fixture corpus, runs `parser_stage` end-to-end, and verifies:
     ///
     /// * every chunk the parser produced is delivered (no loss)
     /// * chunk IDs are unique across batches (drain did not alias data)
-    /// * each batch respects `embed_batch_size()`
+    /// * NO file straddles two batches (the no-straddle invariant that kills the
+    ///   GPU/CPU work-steal chunk-loss race)
+    /// * each batch is at or below `embed_batch_size()` (soft cap; a lone file
+    ///   larger than the cap is the only exception, absent from this fixture)
     /// * at least two batches are emitted (so the loop actually iterates)
     /// * relationships ride with exactly one batch
     ///
-    /// The fixture produces >64 chunks so the default `embed_batch_size()`
-    /// of 64 forces multiple iterations — avoids mutating the shared
+    /// Uses many SMALL files (each well under the cap) so the file-aligned packer
+    /// must group several files per batch and roll to a second batch — exercising
+    /// the multi-file packing path. Avoids mutating the shared
     /// `CQS_EMBED_BATCH_SIZE` env var, which would race with
     /// `pipeline::tests::test_embed_batch_size`.
     #[test]
@@ -562,23 +832,21 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
 
-        // Three fixture files. File `big.rs` has 70 trivial functions so the
-        // total chunk count exceeds the default embed_batch_size (64),
-        // guaranteeing at least two batches without touching env vars.
-        let mut big = String::new();
-        for i in 0..70 {
-            use std::fmt::Write as _;
-            writeln!(&mut big, "pub fn big_{i}() {{}}").unwrap();
+        // 50 files of 2 functions each = 100 chunks. With the default
+        // embed_batch_size (64) the file-aligned packer fills a first batch with
+        // ~32 files (64 chunks), then rolls the rest into a second batch —
+        // forcing multiple iterations and exercising multi-file packing, all
+        // with files far smaller than the cap (so none rides alone/oversize).
+        let mut rel_paths: Vec<PathBuf> = Vec::new();
+        for i in 0..50 {
+            let name = format!("f{i}.rs");
+            std::fs::write(
+                root.join(&name),
+                format!("pub fn f{i}_a() {{}}\npub fn f{i}_b() {{}}\n"),
+            )
+            .unwrap();
+            rel_paths.push(PathBuf::from(name));
         }
-        std::fs::write(root.join("big.rs"), &big).unwrap();
-        std::fs::write(root.join("a.rs"), "pub fn a_one() {}\npub fn a_two() {}\n").unwrap();
-        std::fs::write(root.join("b.rs"), "pub fn b_one() {}\n").unwrap();
-
-        let rel_paths: Vec<PathBuf> = vec![
-            PathBuf::from("big.rs"),
-            PathBuf::from("a.rs"),
-            PathBuf::from("b.rs"),
-        ];
 
         // Store + parser — same flavour as the real pipeline.
         let db_path = root.join("index.db");
@@ -624,16 +892,28 @@ mod tests {
         let mut ids: HashSet<String> = HashSet::new();
         let mut total = 0usize;
         let mut rels_seen = 0usize;
-        for b in &batches {
+        // Every file appears in at most one batch (no straddle).
+        let mut file_to_batch: std::collections::HashMap<PathBuf, usize> =
+            std::collections::HashMap::new();
+        for (bi, b) in batches.iter().enumerate() {
             assert!(!b.chunks.is_empty(), "empty batch should not be sent");
+            // Soft cap: every fixture file is 2 chunks (< cap), so no batch may
+            // exceed the cap (only a lone oversize file could, and there is none).
             assert!(
                 b.chunks.len() <= max_batch,
-                "batch must respect embed_batch_size={max_batch}, got {}",
+                "batch must respect the soft cap embed_batch_size={max_batch}, got {}",
                 b.chunks.len()
             );
             total += b.chunks.len();
             for c in &b.chunks {
                 assert!(ids.insert(c.id.clone()), "duplicated chunk id: {}", c.id);
+                if let Some(prev) = file_to_batch.insert(c.file.clone(), bi) {
+                    assert_eq!(
+                        prev, bi,
+                        "file {:?} straddled batches {prev} and {bi}",
+                        c.file
+                    );
+                }
             }
             let has_rels = !b.relationships.type_refs.is_empty()
                 || !b.relationships.function_calls.is_empty()
@@ -1002,12 +1282,14 @@ mod tests {
         );
     }
 
-    /// File-complete fingerprint stamping: a file whose chunks straddle two
-    /// embed batches has its fingerprint stamped ONLY in the batch carrying
-    /// its last chunk — never the earlier batch. Pins the crash-safety
-    /// invariant: the fingerprint lands strictly after all of the file's
-    /// chunks, so a crash between the two batch commits leaves the file
-    /// unstamped (and therefore STALE on the next run) rather than current.
+    /// File-complete fingerprint stamping under file-aligned batching: a large
+    /// file (>64 functions) rides EXACTLY ONE `ParsedBatch` — its chunks are
+    /// never split across batches — and its fingerprint is stamped exactly once,
+    /// on that single batch. This is the post-fix shape of the crash-safety +
+    /// no-loss invariant: because the file is confined to one batch (and thus
+    /// one embed stage, in order), the fingerprint physically rides with the
+    /// file's data, so it can NEVER reach `store_stage` before the file's chunks
+    /// (the GPU/CPU work-steal race the no-straddle rule eliminates).
     #[test]
     fn parser_stage_stamps_fingerprint_only_on_last_chunk_batch() {
         let _lock = super::super::types::TEST_ENV_MUTEX
@@ -1017,8 +1299,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
 
-        // One file with >64 functions so its chunks span at least two
-        // `embed_batch_size`-bounded batches.
+        // One file with >64 functions: pre-fix this straddled two batches; with
+        // file-aligned batching it rides ONE (oversize-rides-alone) batch.
         let mut big = String::new();
         for i in 0..70 {
             use std::fmt::Write as _;
@@ -1044,36 +1326,35 @@ mod tests {
         parser_stage(vec![PathBuf::from("straddle.rs")], ctx, tx).unwrap();
 
         let batches: Vec<ParsedBatch> = rx.try_iter().collect();
-        assert!(
-            batches.len() >= 2,
-            "fixture must straddle batches, got {}",
-            batches.len()
-        );
         let straddle = PathBuf::from("straddle.rs");
 
-        // Fingerprint absent from every batch BEFORE the last, present in the
-        // final batch — and stamped exactly once overall.
-        let (last_idx, _) = batches
+        // The file's chunks all ride a SINGLE batch (no straddle).
+        let chunk_bearing: Vec<usize> = batches
             .iter()
             .enumerate()
-            .rev()
-            .find(|(_, b)| !b.chunks.is_empty())
-            .expect("at least one non-empty batch");
+            .filter(|(_, b)| b.chunks.iter().any(|c| c.file == straddle))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            chunk_bearing.len(),
+            1,
+            "a single file must ride exactly one batch (no straddle), got batches {chunk_bearing:?}"
+        );
+
+        // Its fingerprint is stamped exactly once, on that same batch — never
+        // ahead of the data.
         let mut stamp_count = 0;
         for (i, b) in batches.iter().enumerate() {
             if b.file_fingerprints.contains_key(&straddle) {
                 stamp_count += 1;
                 assert_eq!(
-                    i, last_idx,
-                    "fingerprint stamped on batch {i}, expected only the last batch {last_idx}"
+                    i, chunk_bearing[0],
+                    "fingerprint stamped on batch {i}, expected the file's only batch {}",
+                    chunk_bearing[0]
                 );
             }
         }
         assert_eq!(stamp_count, 1, "fingerprint must be stamped exactly once");
-        assert!(
-            batches[last_idx].file_fingerprints.contains_key(&straddle),
-            "last batch must carry the fingerprint"
-        );
     }
 
     /// A previously-indexed file that now parses to ZERO chunks rides the

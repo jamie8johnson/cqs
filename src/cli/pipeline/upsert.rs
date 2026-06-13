@@ -85,6 +85,29 @@ struct FileAccum {
     type_refs: Vec<cqs::parser::ChunkTypeRefs>,
 }
 
+/// State retained for a file AFTER its first flush this run, so a late
+/// (out-of-order) batch can ADDITIVELY re-flush without losing anything.
+///
+/// `live_ids` is the cumulative set of chunk ids committed so far — the additive
+/// re-flush unions it into the prune set so the earlier flush's chunks survive.
+///
+/// `function_calls` / `type_refs` are the cumulative relationships seen for the
+/// file across ALL its batches. They are CARRIED FORWARD here because the
+/// file-level call-graph write (`write_function_calls_in_tx`) is a wholesale
+/// DELETE-then-INSERT of the supplied set: an additive re-flush that supplied an
+/// EMPTY set would wipe the call edges the first flush wrote and insert nothing
+/// (silently deleting the file's whole call graph). Supplying the cumulative set
+/// on EVERY flush makes the last write reconstruct the file's complete call
+/// graph + type edges, robust to relationships arriving in any batch (early with
+/// the fingerprint, or late with a straddling tail).
+#[derive(Default)]
+struct FlushedFile {
+    fp: cqs::store::FileFingerprint,
+    live_ids: HashSet<String>,
+    function_calls: Vec<cqs::parser::FunctionCalls>,
+    type_refs: Vec<cqs::parser::ChunkTypeRefs>,
+}
+
 /// Stage 3: per-file fused write of embedded chunks + call graph + function
 /// calls + fingerprint stamp; type edges deferred to the end. #1835: each file
 /// is written in ONE all-or-nothing transaction (`upsert_file_fused`) when it
@@ -117,29 +140,69 @@ pub(super) fn store_stage(
     // straggler — flushes FK-checked at the end via `upsert_calls_batch`.
     let mut pending_chunk_calls: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
 
-    // Flush one COMPLETE file in a single fused transaction: real + sentinel
-    // chunks + FTS + per-chunk calls + file-level function_calls + phantom prune
-    // + fingerprint stamp, all-or-nothing. On Err the tx rolled back → the file
-    // is left in its prior coherent state, UNstamped, so the next reconcile
+    // Files already flushed this run, keyed by origin. This is the
+    // order-independence safety net: the upstream parser stage keeps each file's
+    // chunks inside ONE embed stage (file-aligned parse batches) so a file's
+    // chunks, relationships, and fingerprint arrive together — but if a future
+    // change ever let a file's chunks straddle the GPU/CPU work-steal again, a
+    // fingerprint-bearing batch could arrive before (or after) some of the
+    // file's chunks/relationships. Without this map those late chunks would land
+    // in a fresh, never-flushed accumulator and be silently dropped (and the
+    // fingerprint flush's prune would delete any earlier-arriving ones). With it,
+    // a late batch for an already-flushed file triggers an ADDITIVE re-flush:
+    //   * the prune live set is the UNION of prior-committed ids and new chunks,
+    //     so no chunk the file produced is pruned away; and
+    //   * the cumulative relationships (function_calls + type_refs) are supplied
+    //     on EVERY flush, so the wholesale DELETE-then-INSERT call-graph write
+    //     reconstructs the file's complete call graph + type edges instead of
+    //     wiping them with an empty late set.
+    // Dormant in the in-order production path; the deterministic out-of-order
+    // regression tests exercise it directly.
+    let mut flushed: HashMap<PathBuf, FlushedFile> = HashMap::new();
+
+    // Flush one file in a single fused transaction: real + sentinel chunks +
+    // FTS + per-chunk calls + file-level function_calls + phantom prune +
+    // fingerprint stamp, all-or-nothing. On Err the tx rolled back → the file is
+    // left in its prior coherent state, UNstamped, so the next reconcile
     // re-selects it (orphan-impossible in either direction). Type edges are
-    // written right after, against the now-committed chunks. Returns
-    // `(embedded, calls, type_edges)` credited (only on success).
+    // written right after, against the now-committed chunks.
+    //
+    // `function_calls` / `type_refs` are the CUMULATIVE relationship sets for the
+    // file (not just this batch's), supplied explicitly so an additive re-flush
+    // re-writes the file's whole call graph + type edges rather than wiping them
+    // (the call-graph write is a wholesale DELETE-then-INSERT of the supplied
+    // set). `extra_live_ids` are chunk ids ALREADY committed for this file in a
+    // prior flush this run; they are unioned into the prune live set so the prior
+    // flush's chunks survive. Both are empty for the normal single-flush path.
+    // Returns `(embedded, calls, type_edges, committed_live_ids)` — the live ids
+    // are returned (only on success) so the caller can track the cumulative set
+    // for any further additive re-flush.
     let flush_file = |store: &Store,
                       pending_chunk_calls: &mut HashMap<String, Vec<cqs::parser::CallSite>>,
                       origin: &PathBuf,
-                      accum: FileAccum,
-                      fp: &cqs::store::FileFingerprint|
-     -> (usize, usize, usize) {
-        // Complete live-id set for the prune (every chunk this file produced).
-        let live_ids: Vec<String> = accum
+                      accum: &FileAccum,
+                      function_calls: &[cqs::parser::FunctionCalls],
+                      type_refs: &[cqs::parser::ChunkTypeRefs],
+                      fp: &cqs::store::FileFingerprint,
+                      extra_live_ids: &HashSet<String>|
+     -> (usize, usize, usize, Option<Vec<String>>) {
+        // This flush's own chunk ids.
+        let own_ids: Vec<String> = accum
             .real
             .iter()
             .map(|(c, _)| c.id.clone())
             .chain(accum.sentinel.iter().map(|c| c.id.clone()))
             .collect();
-        // Drain this file's own per-chunk calls (caller present in this tx).
+        // Complete live-id set for the prune: this flush's chunks PLUS any chunks
+        // already committed for this file in a prior (out-of-order) flush, so the
+        // prune never deletes the file's earlier-committed chunks.
+        let mut live_ids: Vec<String> = own_ids.clone();
+        live_ids.extend(extra_live_ids.iter().cloned());
+        // Drain this file's own per-chunk calls (caller present in this tx). Only
+        // for ids written in THIS tx (`own_ids`); a prior flush already drained
+        // its own ids' calls.
         let mut file_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
-        for id in &live_ids {
+        for id in &own_ids {
             if let Some(sites) = pending_chunk_calls.remove(id) {
                 for site in sites {
                     file_calls.push((id.clone(), site));
@@ -151,12 +214,11 @@ pub(super) fn store_stage(
         // `total_calls` semantics, which summed both). Credited only on a
         // successful flush below.
         let calls_count: usize = file_calls.len()
-            + accum
-                .function_calls
+            + function_calls
                 .iter()
                 .map(|fc| fc.calls.len())
                 .sum::<usize>();
-        let type_edge_count: usize = accum.type_refs.iter().map(|t| t.type_refs.len()).sum();
+        let type_edge_count: usize = type_refs.iter().map(|t| t.type_refs.len()).sum();
         let live_refs: Vec<&str> = live_ids.iter().map(|s| s.as_str()).collect();
         match store.upsert_file_fused(
             &accum.real,
@@ -165,31 +227,41 @@ pub(super) fn store_stage(
             &file_calls,
             origin.as_path(),
             &live_refs,
-            &accum.function_calls,
+            function_calls,
             fp,
         ) {
             Ok(_) => {
                 // Type edges resolve against THIS file's chunks (by name+line),
                 // which are now committed by the fused write above — so they
-                // never silently skip a not-yet-committed target. Best-effort:
-                // a failure here only loses this file's type edges (re-resolved
-                // next reindex), it does not roll back the coherent fused write.
-                if !accum.type_refs.is_empty() {
-                    if let Err(e) = store
-                        .upsert_type_edges_for_files(&[(origin.clone(), accum.type_refs.clone())])
+                // never silently skip a not-yet-committed target. The CUMULATIVE
+                // set is re-supplied on every flush, and the per-chunk-id
+                // DELETE-then-INSERT in `upsert_type_edges_one_file` is
+                // idempotent — so an additive re-flush rebuilds the file's type
+                // edges rather than dropping them. Best-effort: a failure here
+                // only loses this file's type edges (re-resolved next reindex),
+                // it does not roll back the coherent fused write.
+                if !type_refs.is_empty() {
+                    if let Err(e) =
+                        store.upsert_type_edges_for_files(&[(origin.clone(), type_refs.to_vec())])
                     {
                         tracing::warn!(
                             file = %origin.display(),
                             error = %e,
                             "Failed to store type edges after fused write"
                         );
-                        return (accum.real.len() + accum.sentinel.len(), calls_count, 0);
+                        return (
+                            accum.real.len() + accum.sentinel.len(),
+                            calls_count,
+                            0,
+                            Some(live_ids),
+                        );
                     }
                 }
                 (
                     accum.real.len() + accum.sentinel.len(),
                     calls_count,
                     type_edge_count,
+                    Some(live_ids),
                 )
             }
             Err(e) => {
@@ -199,7 +271,7 @@ pub(super) fn store_stage(
                     "Fused per-file write failed; file left in its prior coherent state \
                      (chunks/calls/stamp all rolled back) — re-indexes next run"
                 );
-                (0, 0, 0)
+                (0, 0, 0, None)
             }
         }
     };
@@ -217,20 +289,44 @@ pub(super) fn store_stage(
             pending_chunk_calls.entry(caller_id).or_default().push(site);
         }
 
+        // Files that ALREADY flushed this run but received NEW relationships this
+        // batch (out-of-order: relationships rode a batch AFTER the file's
+        // fingerprint+chunks). Their cumulative `flushed` copy grew but no new
+        // chunks arrived, so the late-arrival chunk pass below won't pick them
+        // up; a dedicated relationship-only re-flush writes the new edges.
+        let mut rels_dirty: HashSet<PathBuf> = HashSet::new();
+
         // File-level function_calls also ride the first batch; buffer per origin
         // until the file completes (its fingerprint arrives in a later batch).
+        // If the file ALREADY flushed this run (out-of-order: its fingerprint
+        // preceded this relationship batch), merge into the cumulative `flushed`
+        // copy instead — an additive re-flush below rewrites the call graph with
+        // the complete set.
         for (file, fcs) in std::mem::take(&mut batch.relationships.function_calls) {
-            accums.entry(file).or_default().function_calls.extend(fcs);
+            match flushed.get_mut(&file) {
+                Some(state) => {
+                    state.function_calls.extend(fcs);
+                    rels_dirty.insert(file);
+                }
+                None => accums.entry(file).or_default().function_calls.extend(fcs),
+            }
         }
 
         // Type edges also ride the first batch; buffer per origin and write them
         // with the file's flush (after its chunks commit, so they always resolve).
+        // Same already-flushed routing as function_calls.
         for (file, chunk_type_refs) in std::mem::take(&mut batch.relationships.type_refs) {
-            accums
-                .entry(file)
-                .or_default()
-                .type_refs
-                .extend(chunk_type_refs);
+            match flushed.get_mut(&file) {
+                Some(state) => {
+                    state.type_refs.extend(chunk_type_refs);
+                    rels_dirty.insert(file);
+                }
+                None => accums
+                    .entry(file)
+                    .or_default()
+                    .type_refs
+                    .extend(chunk_type_refs),
+            }
         }
 
         // Accumulate this batch's chunks into their per-file buffers, routing
@@ -249,34 +345,164 @@ pub(super) fn store_stage(
         }
 
         // FLUSH completed files. A file's fingerprint rides the batch carrying
-        // its LAST chunk, so its presence here means the file is COMPLETE.
-        // Track which origins flushed WITH chunks this batch so the zero-chunk
-        // pass below skips a stray empty-set entry for the same origin (which
-        // would otherwise prune the chunk we just wrote).
+        // its LAST chunk, so (in the in-order production path) its presence here
+        // means the file is COMPLETE. Track which origins flushed WITH chunks
+        // this batch so the zero-chunk pass below skips a stray empty-set entry
+        // for the same origin (which would otherwise prune the chunk we just
+        // wrote).
         let mut flushed_with_chunks: HashSet<PathBuf> = HashSet::new();
+        let empty_live: HashSet<String> = HashSet::new();
         for (file, fp) in std::mem::take(&mut batch.file_fingerprints) {
             match accums.remove(&file) {
                 Some(accum) => {
                     flushed_with_chunks.insert(file.clone());
-                    let (embedded, calls, type_edges) =
-                        flush_file(store, &mut pending_chunk_calls, &file, accum, &fp);
+                    let (embedded, calls, type_edges, committed) = flush_file(
+                        store,
+                        &mut pending_chunk_calls,
+                        &file,
+                        &accum,
+                        &accum.function_calls,
+                        &accum.type_refs,
+                        &fp,
+                        &empty_live,
+                    );
                     total_embedded += embedded;
                     total_calls += calls;
                     total_type_edges += type_edges;
+                    // Record the flush so a late (out-of-order) batch for this
+                    // file triggers an ADDITIVE re-flush instead of stranding its
+                    // chunks — carrying forward the cumulative relationships so the
+                    // re-flush rewrites (not wipes) the call graph + type edges.
+                    // On a failed flush (`None`) record an empty live set with the
+                    // fingerprint so a later additive flush still stamps.
+                    let entry = flushed.entry(file.clone()).or_default();
+                    entry.fp = fp.clone();
+                    entry.function_calls = accum.function_calls;
+                    entry.type_refs = accum.type_refs;
+                    if let Some(ids) = committed {
+                        entry.live_ids.extend(ids);
+                    }
                 }
                 None => {
-                    // A chunk-bearing fingerprint with no accumulated chunks is
-                    // not an expected shape (the stamp rides the last-chunk
-                    // batch). Skip it rather than route to the zero-chunk flush —
-                    // that would prune any prior chunks for the origin. The file
-                    // stays unstamped and re-indexes next run.
+                    // A chunk-bearing fingerprint with no accumulated chunks: in
+                    // the in-order path this is unexpected (the stamp rides the
+                    // last-chunk batch). With out-of-order arrival it means the
+                    // fingerprint preceded ALL of the file's chunks. Record the
+                    // fingerprint with an empty live set so when the chunks arrive
+                    // later the additive-flush pass writes + stamps them; the file
+                    // is left unstamped for now (no chunks to stamp against yet).
+                    flushed.entry(file.clone()).or_default().fp = fp.clone();
                     tracing::warn!(
                         file = %file.display(),
                         "Chunk-bearing fingerprint arrived with no accumulated chunks; \
-                         skipping (file re-indexes next run)"
+                         deferring stamp until the file's chunks arrive"
                     );
                 }
             }
+        }
+
+        // LATE-ARRIVAL additive flush: any file that was already flushed this run
+        // but has since accumulated MORE chunks (its fingerprint arrived before
+        // some of its chunks, out of order). Re-flush the new chunks additively —
+        // the prune live set is the UNION of prior-committed ids and the new
+        // chunks, so nothing the file produced is pruned away. This cannot fire
+        // in the in-order production path (a flushed file's accum is empty); it
+        // is the safety net the deterministic out-of-order test exercises.
+        let late_files: Vec<PathBuf> = accums
+            .iter()
+            .filter(|(file, a)| {
+                flushed.contains_key(*file) && (!a.real.is_empty() || !a.sentinel.is_empty())
+            })
+            .map(|(file, _)| file.clone())
+            .collect();
+        for file in late_files {
+            let Some(accum) = accums.remove(&file) else {
+                continue;
+            };
+            // Fold any relationships the late chunk batch carried into the
+            // cumulative `flushed` copy (normally none — relationships route
+            // straight to `flushed` once a file is flushed — but defensive), then
+            // snapshot fp + cumulative live ids + relationships and flush
+            // additively. Cumulative relationships are re-supplied so the call
+            // graph is reconstructed, not wiped.
+            let (fp, prior_ids, function_calls, type_refs) = {
+                let Some(state) = flushed.get_mut(&file) else {
+                    continue;
+                };
+                state
+                    .function_calls
+                    .extend(accum.function_calls.iter().cloned());
+                state.type_refs.extend(accum.type_refs.iter().cloned());
+                (
+                    state.fp.clone(),
+                    state.live_ids.clone(),
+                    state.function_calls.clone(),
+                    state.type_refs.clone(),
+                )
+            };
+            flushed_with_chunks.insert(file.clone());
+            let (embedded, calls, type_edges, committed) = flush_file(
+                store,
+                &mut pending_chunk_calls,
+                &file,
+                &accum,
+                &function_calls,
+                &type_refs,
+                &fp,
+                &prior_ids,
+            );
+            total_embedded += embedded;
+            total_calls += calls;
+            total_type_edges += type_edges;
+            if let Some(ids) = committed {
+                if let Some(entry) = flushed.get_mut(&file) {
+                    entry.live_ids.extend(ids);
+                }
+            }
+        }
+
+        // RELATIONSHIP-ONLY re-flush: a file that already flushed this run and
+        // received NEW relationships this batch but NO new chunks (relationships
+        // rode a batch after the file's fingerprint+chunks). The late-arrival
+        // chunk pass above already covers files that also got new chunks (it
+        // re-supplies the cumulative relationships), so skip those here. The
+        // accum is empty (no new chunks); `extra_live_ids` = the file's already-
+        // committed ids so the prune KEEPS them (an empty accum + empty live set
+        // would delete the whole file). The cumulative relationships are
+        // re-supplied so the call graph + type edges are rewritten complete.
+        let rels_only: Vec<PathBuf> = rels_dirty
+            .into_iter()
+            .filter(|f| !flushed_with_chunks.contains(f))
+            .collect();
+        let empty_accum = FileAccum::default();
+        for file in rels_only {
+            let (fp, prior_ids, function_calls, type_refs) = match flushed.get(&file) {
+                Some(state) => (
+                    state.fp.clone(),
+                    state.live_ids.clone(),
+                    state.function_calls.clone(),
+                    state.type_refs.clone(),
+                ),
+                None => continue,
+            };
+            // No committed chunks yet (fingerprint-with-no-chunks deferral) → the
+            // file isn't on disk; relationships have no caller chunks to wire to.
+            // Defer until its chunks arrive (the chunk pass will re-supply rels).
+            if prior_ids.is_empty() {
+                continue;
+            }
+            let (_embedded, calls, type_edges, _committed) = flush_file(
+                store,
+                &mut pending_chunk_calls,
+                &file,
+                &empty_accum,
+                &function_calls,
+                &type_refs,
+                &fp,
+                &prior_ids,
+            );
+            total_calls += calls;
+            total_type_edges += type_edges;
         }
 
         // FLUSH zero-chunk files (parsed to nothing this run): same fused
@@ -296,12 +522,17 @@ pub(super) fn store_stage(
             // the first batch); a zero-chunk file carries no chunks, so any stray
             // chunk in the accum is dropped — empties never carry chunks.
             let accum = accums.remove(&file).unwrap_or_default();
-            let zero_chunk = FileAccum {
-                function_calls: accum.function_calls,
-                ..Default::default()
-            };
-            let (embedded, calls, type_edges) =
-                flush_file(store, &mut pending_chunk_calls, &file, zero_chunk, &fp);
+            let zero_chunk = FileAccum::default();
+            let (embedded, calls, type_edges, _committed) = flush_file(
+                store,
+                &mut pending_chunk_calls,
+                &file,
+                &zero_chunk,
+                &accum.function_calls,
+                &accum.type_refs,
+                &fp,
+                &empty_live,
+            );
             total_embedded += embedded;
             total_calls += calls;
             total_type_edges += type_edges;
@@ -314,6 +545,57 @@ pub(super) fn store_stage(
             "parsed:{} embedded:{} written:{}",
             parsed, embedded, total_embedded
         ));
+    }
+
+    // Belt-and-suspenders: additively flush any residual accum for a file that
+    // WAS flushed this run (its fingerprint arrived, then more of its chunks
+    // arrived out of order in the final batch). The per-batch late pass handles
+    // these as they arrive, so this normally finds nothing; it guarantees no
+    // already-fingerprinted file's late chunks are stranded at shutdown.
+    let residual_flushed: Vec<PathBuf> = accums
+        .iter()
+        .filter(|(file, a)| {
+            flushed.contains_key(*file) && (!a.real.is_empty() || !a.sentinel.is_empty())
+        })
+        .map(|(file, _)| file.clone())
+        .collect();
+    for file in residual_flushed {
+        let Some(accum) = accums.remove(&file) else {
+            continue;
+        };
+        let (fp, prior_ids, function_calls, type_refs) = {
+            let Some(state) = flushed.get_mut(&file) else {
+                continue;
+            };
+            state
+                .function_calls
+                .extend(accum.function_calls.iter().cloned());
+            state.type_refs.extend(accum.type_refs.iter().cloned());
+            (
+                state.fp.clone(),
+                state.live_ids.clone(),
+                state.function_calls.clone(),
+                state.type_refs.clone(),
+            )
+        };
+        let (embedded, calls, type_edges, committed) = flush_file(
+            store,
+            &mut pending_chunk_calls,
+            &file,
+            &accum,
+            &function_calls,
+            &type_refs,
+            &fp,
+            &prior_ids,
+        );
+        total_embedded += embedded;
+        total_calls += calls;
+        total_type_edges += type_edges;
+        if let Some(ids) = committed {
+            if let Some(entry) = flushed.get_mut(&file) {
+                entry.live_ids.extend(ids);
+            }
+        }
     }
 
     // Any accum still holding chunks at end-of-stream is an INCOMPLETE file
@@ -1173,6 +1455,357 @@ mod tests {
         assert!(
             users.iter().any(|u| u.name == "user_fn"),
             "type edge must resolve at the file's fused flush; got {:?}",
+            users.iter().map(|u| &u.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// THE HEADLINE REGRESSION TEST. A file straddling two embed batches whose
+    /// fingerprint-bearing batch (the file's "last" chunk) arrives at
+    /// `store_stage` BEFORE the file's earlier-batch chunks — exactly the effect
+    /// of the GPU/CPU `parse_rx` work-steal race when a file's halves are
+    /// processed by stages running at different speeds. EVERY one of the file's
+    /// chunks must end up in the store: ZERO loss.
+    ///
+    /// Pre-fix (revert both the parser file-alignment AND the `store_stage`
+    /// additive-reflush net): the fingerprint flush prunes the file to the
+    /// partial live set {c} the moment it arrives, then [a, b] land in a fresh
+    /// accumulator that never flushes (its fingerprint was already consumed) and
+    /// are silently dropped at end-of-stream — only `c` survives. That is the
+    /// confirmed, non-deterministic full-corpus chunk loss, made deterministic
+    /// here by feeding the batches in the adversarial order directly.
+    #[test]
+    fn store_stage_out_of_order_fingerprint_before_chunks_loses_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn a() {}\nfn b() {}\nfn c() {}";
+        let mut last_fp = HashMap::new();
+        last_fp.insert(PathBuf::from("straddle.rs"), full_fp(content));
+
+        // ADVERSARIAL ORDER: the fingerprint-bearing batch (the file's last
+        // chunk `c`) arrives FIRST, before the earlier chunks `a` and `b`.
+        run_store_stage(
+            &store,
+            vec![
+                embedded_batch(
+                    vec![chunk("straddle.rs", "cccc", "fn c() {}")],
+                    last_fp,
+                    HashMap::new(),
+                ),
+                embedded_batch(
+                    vec![
+                        chunk("straddle.rs", "aaaa", "fn a() {}"),
+                        chunk("straddle.rs", "bbbb", "fn b() {}"),
+                    ],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        // All three chunks present — none pruned, none stranded.
+        let stored = store.get_chunks_by_origin("straddle.rs").unwrap();
+        assert_eq!(
+            stored.len(),
+            3,
+            "out-of-order arrival must lose NO chunks; got {:?}",
+            stored.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+        let ids: HashSet<String> = stored.iter().map(|c| c.id.clone()).collect();
+        for suffix in ["aaaa", "bbbb", "cccc"] {
+            assert!(
+                ids.contains(&format!("straddle.rs:1:{suffix}")),
+                "chunk {suffix} missing from the store after out-of-order arrival; got {ids:?}"
+            );
+        }
+
+        // And the file is stamped (its fingerprint landed with the flush).
+        let fps = store.fingerprints_for_origins(&["straddle.rs"]).unwrap();
+        assert!(
+            fps.get("straddle.rs")
+                .is_some_and(|fp| fp.content_hash.is_some()),
+            "the completed file must be stamped after the additive flush"
+        );
+    }
+
+    /// Extreme out-of-order: the fingerprint arrives in a batch with NONE of the
+    /// file's chunks (all of them follow in a LATER batch). The chunk-bearing
+    /// fingerprint's empty-accum arm defers the stamp; the later chunks then
+    /// trigger the additive flush that writes + stamps them. ZERO loss.
+    #[test]
+    fn store_stage_out_of_order_fingerprint_with_no_chunks_then_chunks_later() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn a() {}\nfn b() {}";
+        let mut fp_only = HashMap::new();
+        fp_only.insert(PathBuf::from("late.rs"), full_fp(content));
+
+        run_store_stage(
+            &store,
+            vec![
+                // Fingerprint, but no chunks for late.rs in this batch.
+                embedded_batch(Vec::new(), fp_only, HashMap::new()),
+                // The file's chunks arrive afterward.
+                embedded_batch(
+                    vec![
+                        chunk("late.rs", "aaaa", "fn a() {}"),
+                        chunk("late.rs", "bbbb", "fn b() {}"),
+                    ],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        let stored = store.get_chunks_by_origin("late.rs").unwrap();
+        assert_eq!(
+            stored.len(),
+            2,
+            "fingerprint-before-all-chunks must still write every chunk; got {:?}",
+            stored.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+        let fps = store.fingerprints_for_origins(&["late.rs"]).unwrap();
+        assert!(
+            fps.get("late.rs")
+                .is_some_and(|fp| fp.content_hash.is_some()),
+            "the file must be stamped once its chunks arrive and flush"
+        );
+    }
+
+    /// Out-of-order arrival must NOT clobber a prior run's chunks for a DIFFERENT
+    /// file, nor leave the re-indexed file's prior chunks behind. Seed the file
+    /// with stale chunks, then re-index it out-of-order; the prune live set is
+    /// the UNION of all this-run chunks, so the stale chunk is removed and all
+    /// new chunks survive (no over-prune, no under-prune).
+    #[test]
+    fn store_stage_out_of_order_prunes_stale_keeps_all_new() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Seed two STALE chunks (different ids than the new run will produce).
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("reidx.rs"), full_fp(b"old"));
+        store
+            .upsert_embedded_batch(
+                &[
+                    (chunk("reidx.rs", "old1", "fn old1() {}"), emb.clone()),
+                    (chunk("reidx.rs", "old2", "fn old2() {}"), emb.clone()),
+                ],
+                &[],
+                &seed_fp,
+            )
+            .unwrap();
+        assert_eq!(store.get_chunks_by_origin("reidx.rs").unwrap().len(), 2);
+
+        // Re-index out-of-order with three NEW chunks; fingerprint rides the
+        // batch with the "last" new chunk, which arrives first.
+        let content = b"fn n1() {}\nfn n2() {}\nfn n3() {}";
+        let mut new_fp = HashMap::new();
+        new_fp.insert(PathBuf::from("reidx.rs"), full_fp(content));
+        run_store_stage(
+            &store,
+            vec![
+                embedded_batch(
+                    vec![chunk("reidx.rs", "new3", "fn n3() {}")],
+                    new_fp,
+                    HashMap::new(),
+                ),
+                embedded_batch(
+                    vec![
+                        chunk("reidx.rs", "new1", "fn n1() {}"),
+                        chunk("reidx.rs", "new2", "fn n2() {}"),
+                    ],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        let ids: HashSet<String> = store
+            .get_chunks_by_origin("reidx.rs")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        // All three new chunks present.
+        for suffix in ["new1", "new2", "new3"] {
+            assert!(
+                ids.contains(&format!("reidx.rs:1:{suffix}")),
+                "new chunk {suffix} missing after out-of-order reindex; got {ids:?}"
+            );
+        }
+        // Neither stale chunk survives (the union prune removed prior-run rows).
+        for suffix in ["old1", "old2"] {
+            assert!(
+                !ids.contains(&format!("reidx.rs:1:{suffix}")),
+                "stale chunk {suffix} must be pruned by the out-of-order reindex; got {ids:?}"
+            );
+        }
+        assert_eq!(
+            ids.len(),
+            3,
+            "exactly the three new chunks remain; got {ids:?}"
+        );
+    }
+
+    /// Build an `EmbeddedBatch` carrying a type-edge set for `file` — chunk
+    /// `caller` (line 1) references type `Config`. Mirrors the real pipeline,
+    /// where type_refs ride the first parse batch.
+    fn one_type_ref() -> Vec<cqs::parser::ChunkTypeRefs> {
+        vec![cqs::parser::ChunkTypeRefs {
+            name: "caller".to_string(),
+            line_start: 1,
+            type_refs: vec![cqs::parser::TypeRef {
+                type_name: "Config".to_string(),
+                line_number: 1,
+                kind: Some(cqs::parser::TypeEdgeKind::Param),
+            }],
+        }]
+    }
+
+    /// THE EDGE-SURVIVAL REGRESSION TEST (relationships-with-fingerprint, chunks
+    /// late). Out-of-order arrival must preserve the file's CALL GRAPH and TYPE
+    /// EDGES, not just its chunks. The relationships ride the FIRST batch (with
+    /// the fingerprint); the caller chunk arrives LATER. The additive re-flush
+    /// for the late chunk must re-supply the cumulative relationships so the
+    /// call-graph write (a wholesale DELETE-then-INSERT) rebuilds the edge rather
+    /// than wiping it.
+    ///
+    /// Pre-fix (additive re-flush supplies an EMPTY relationship set): the
+    /// re-flush's `DELETE FROM function_calls WHERE file = ?` wipes the
+    /// `caller→victim` edge the first flush wrote and inserts nothing — chunks
+    /// survive (union-prune) but `get_callers_full("victim")` returns `[]`. The
+    /// load-bearing assertion is EDGE SURVIVAL; the no-orphan check is kept as a
+    /// secondary assertion (it is vacuously satisfied by a fully-deleted edge
+    /// set, which is exactly why it alone was an insufficient guard).
+    #[test]
+    fn store_stage_out_of_order_preserves_call_graph() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn caller() { victim(); }\nfn other() {}";
+        let mut last_fp = HashMap::new();
+        last_fp.insert(PathBuf::from("calls.rs"), full_fp(content));
+
+        // Fingerprint-bearing batch carries the file's relationships (call edge
+        // caller→victim + a type edge caller→Config) and chunk `other`; the
+        // `caller` chunk arrives in the LATER batch.
+        let mut first = embedded_batch(
+            vec![chunk("calls.rs", "other", "fn other() {}")],
+            last_fp,
+            HashMap::new(),
+        );
+        first
+            .relationships
+            .function_calls
+            .insert(PathBuf::from("calls.rs"), one_call("caller", "victim"));
+        first
+            .relationships
+            .type_refs
+            .insert(PathBuf::from("calls.rs"), one_type_ref());
+
+        run_store_stage(
+            &store,
+            vec![
+                first,
+                embedded_batch(
+                    vec![chunk("calls.rs", "caller", "fn caller() { victim(); }")],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        // Both chunks present.
+        assert_eq!(
+            store.get_chunks_by_origin("calls.rs").unwrap().len(),
+            2,
+            "out-of-order arrival with relationships must keep all chunks"
+        );
+        // LOAD-BEARING: the call edge survives the additive re-flush.
+        let callers = store.get_callers_full("victim").unwrap();
+        assert!(
+            callers.iter().any(|c| c.name == "caller"),
+            "the caller→victim call edge must survive the out-of-order re-flush; got {:?}",
+            callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        // LOAD-BEARING: the type edge survives too.
+        let users = store.get_type_users("Config", 10).unwrap();
+        assert!(
+            users.iter().any(|u| u.name == "caller"),
+            "the caller→Config type edge must survive the out-of-order re-flush; got {:?}",
+            users.iter().map(|u| &u.name).collect::<Vec<_>>()
+        );
+        // Secondary: no calls-without-chunks orphan (vacuous if the edge set were
+        // wiped — kept only as a complement to the edge-survival checks above).
+        assert!(
+            store.find_orphaned_function_calls().unwrap().is_empty(),
+            "out-of-order arrival must not leave an orphaned function_calls row"
+        );
+    }
+
+    /// EDGE-SURVIVAL, the OTHER ordering (fingerprint+chunks first, relationships
+    /// LATE). The relationship batch arrives AFTER the file already flushed, so
+    /// it lands in the cumulative `flushed` copy and must trigger a
+    /// relationship-only re-flush that writes the edge against the now-present
+    /// caller chunk — without re-pruning the file's already-committed chunks.
+    #[test]
+    fn store_stage_out_of_order_relationships_after_flush_write_edge() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn caller() { victim(); }";
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("calls.rs"), full_fp(content));
+
+        // Batch 1: fingerprint + the caller chunk, NO relationships (the file
+        // flushes complete-on-chunks). Batch 2: the relationships arrive late.
+        let mut rel_batch = embedded_batch(Vec::new(), HashMap::new(), HashMap::new());
+        rel_batch
+            .relationships
+            .function_calls
+            .insert(PathBuf::from("calls.rs"), one_call("caller", "victim"));
+        rel_batch
+            .relationships
+            .type_refs
+            .insert(PathBuf::from("calls.rs"), one_type_ref());
+
+        run_store_stage(
+            &store,
+            vec![
+                embedded_batch(
+                    vec![chunk("calls.rs", "caller", "fn caller() { victim(); }")],
+                    fp,
+                    HashMap::new(),
+                ),
+                rel_batch,
+            ],
+        );
+
+        // The chunk survived (not re-pruned by the relationship-only re-flush).
+        assert_eq!(
+            store.get_chunks_by_origin("calls.rs").unwrap().len(),
+            1,
+            "the relationship-only re-flush must not prune the file's chunks"
+        );
+        // The late edge was written.
+        let callers = store.get_callers_full("victim").unwrap();
+        assert!(
+            callers.iter().any(|c| c.name == "caller"),
+            "a late relationship batch must write its call edge; got {:?}",
+            callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let users = store.get_type_users("Config", 10).unwrap();
+        assert!(
+            users.iter().any(|u| u.name == "caller"),
+            "a late relationship batch must write its type edge; got {:?}",
             users.iter().map(|u| &u.name).collect::<Vec<_>>()
         );
     }
