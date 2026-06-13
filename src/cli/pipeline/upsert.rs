@@ -911,11 +911,11 @@ mod tests {
     }
 
     /// #1835 Finding 1, STRADDLING seam: a drift file whose calls ride the FIRST
-    /// embed batch but whose chunks span TWO batches. The calls failure in batch
-    /// 1 must forfeit the chunk advance in BOTH batches (`calls_failed` persists
-    /// across the loop), so none of the file's old chunks advance → drift
-    /// re-arms. Pins that the forfeit is not just per-batch but spans a file's
-    /// whole straddle.
+    /// embed batch but whose chunks span TWO batches. The file is accumulated
+    /// across both batches and written in ONE fused transaction at completion;
+    /// a function_calls failure inside that tx rolls the whole file back, so
+    /// none of its old chunks advance → drift re-arms. Pins that the forfeit is
+    /// whole-file (the fused write is all-or-nothing), not per-batch.
     #[test]
     fn store_stage_straddling_drift_calls_failure_forfeits_all_batches() {
         let current = cqs::parser_version();
@@ -952,9 +952,10 @@ mod tests {
             .contains("straddle.rs"));
 
         // Re-index at N across TWO batches: calls + first chunk in batch 1
-        // (drop function_calls so the replace fails), second chunk in batch 2
-        // (fingerprint rides the last batch). The fix must skip BOTH chunk
-        // upserts because the file is in `calls_failed` from batch 1.
+        // (drop function_calls so the in-tx replace fails), second chunk in
+        // batch 2 (fingerprint rides the last batch, triggering the flush). The
+        // fused write at completion rolls back the whole file, so neither
+        // chunk advances.
         raw_exec(&db_path, "DROP TABLE function_calls");
         let mut calls = HashMap::new();
         calls.insert(PathBuf::from("straddle.rs"), one_call("a", "b"));
