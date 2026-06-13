@@ -10,6 +10,14 @@
 mod commands;
 mod context;
 mod handlers;
+/// Loom model of the cache-invalidation epoch protocol (the
+/// interleaving-auditor lane). Compiled only under `--cfg cqs_loom` AND in a
+/// test build — `loom` is a dev-dependency, so the module (which `use`s it at
+/// module scope) must not reach the plain `cargo build` / non-test bin target,
+/// where dev-deps are absent. See the module docs for the run command. Absent
+/// from a normal build.
+#[cfg(all(cqs_loom, test))]
+mod interleaving_model;
 mod pipeline;
 mod session;
 mod view;
@@ -35,6 +43,17 @@ use cqs::store::{ReadOnly, Store};
 use cqs::Embedder;
 
 use super::open_project_store_readonly;
+
+/// A write-back cache cell value tagged with the `invalidation_epoch` it was
+/// published at. The shared mutable caches (`hnsw`, `base_hnsw`, `file_set`,
+/// `notes_cache`, `splade_index`) store `Option<EpochCell<T>>` instead of a bare
+/// `Option<Arc<T>>` so every reader can prove the value belongs to its own
+/// checkout generation by comparing the tag against `checkout_epoch` — closing
+/// the deferred-clear residue race (the interleaving-auditor finding, proved by
+/// the loom `epoch_gated_checkout_snapshot_is_safe` model): the publisher's (C)
+/// re-check and the sticky retry can both miss a stale value, but a tag mismatch
+/// is detected on every read regardless of whether the clear ever ran.
+pub(super) type EpochCell<T> = (u64, Arc<T>);
 
 pub(crate) use context::BatchContext;
 pub(crate) use session::{cmd_batch, create_context, create_context_with_runtime};
@@ -584,14 +603,22 @@ mod tests {
         (dir, cqs_dir)
     }
 
+    /// Wrap a value as a write-back cell entry tagged with `ctx`'s current
+    /// invalidation epoch — the generation a checkout at this epoch will serve.
+    /// Tests that seat a cache value directly must tag it so the epoch-gated
+    /// snapshot/read paths treat it as current rather than a stale residue.
+    fn tagged<T: ?Sized>(ctx: &BatchContext, value: std::sync::Arc<T>) -> Option<EpochCell<T>> {
+        Some((ctx.invalidation_epoch.load(Ordering::SeqCst), value))
+    }
+
     #[test]
     fn test_invalidate_clears_mutable_caches() {
         let (_dir, cqs_dir) = setup_test_store();
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate mutable caches
-        *ctx.file_set.lock().unwrap() = Some(std::sync::Arc::new(HashSet::new()));
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.file_set.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(HashSet::new()));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
@@ -754,7 +781,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         assert!(ctx.notes_cache.lock().unwrap().is_some());
 
         // First staleness check — sets baseline mtime, no invalidation
@@ -801,7 +828,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
 
         // Populate a cache and run the first check to capture baseline identity.
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(
             ctx.notes_cache.lock().unwrap().is_some(),
@@ -871,7 +898,7 @@ mod tests {
 
         // Populate a cache and run the first check to baseline both
         // discriminators (identity + data_version).
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(
             ctx.notes_cache.lock().unwrap().is_some(),
@@ -941,7 +968,7 @@ mod tests {
         let ctx = create_test_context(&cqs_dir).unwrap();
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         ctx.check_index_staleness();
         assert!(ctx.notes_cache.lock().unwrap().is_some());
 
@@ -960,7 +987,7 @@ mod tests {
         );
 
         // Repopulate, then WAL-commit against the NEW file with no checkpoint.
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         let id_before = DbFileIdentity::from_path(&index_path).unwrap();
         let mut writer = ctx
             .runtime
@@ -1766,7 +1793,7 @@ mod tests {
         assert!(view.cached_vector_index.is_none());
 
         // A sibling view publishes (simulated by writing the cell directly).
-        *ctx.hnsw.lock().unwrap() = Some(std::sync::Arc::new(MockIdx));
+        *ctx.hnsw.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(MockIdx));
 
         // The earlier view falls back to the live cell — no rebuild.
         let idx = view.vector_index().unwrap().expect("cell value served");
@@ -1789,7 +1816,7 @@ mod tests {
         let (_dir, cqs_dir) = setup_test_store();
         let ctx = create_test_context(&cqs_dir).unwrap();
 
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
@@ -1876,11 +1903,12 @@ mod tests {
         // next-generation values into the shared cells (simulated by
         // writing the cells directly).
         ctx.invalidate().unwrap();
-        *ctx.hnsw.lock().unwrap() = Some(std::sync::Arc::new(MockIdx));
+        *ctx.hnsw.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(MockIdx));
         let sentinel = PathBuf::from("/sentinel/from/next/generation");
-        *ctx.file_set.lock().unwrap() = Some(std::sync::Arc::new(
-            [sentinel.clone()].into_iter().collect::<HashSet<_>>(),
-        ));
+        *ctx.file_set.lock().unwrap() = tagged(
+            &ctx,
+            std::sync::Arc::new([sentinel.clone()].into_iter().collect::<HashSet<_>>()),
+        );
 
         // The stale view must not serve either next-generation value.
         if let Some(idx) = view.vector_index().unwrap() {
@@ -1903,7 +1931,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .map(|i| i.name())
+                .map(|(_, i)| i.name())
                 .unwrap_or("<cleared>"),
             "mock",
             "stale view's rebuild must not displace the published index"
@@ -1913,7 +1941,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .is_some_and(|fs| fs.contains(&sentinel)),
+                .is_some_and(|(_, fs)| fs.contains(&sentinel)),
             "stale view's rebuild must not displace the published file set"
         );
     }
@@ -1928,7 +1956,7 @@ mod tests {
         let (_dir, cqs_dir) = setup_test_store();
         let ctx = create_test_context(&cqs_dir).unwrap();
 
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(
             cqs::store::CallGraph::from_string_maps(Default::default(), Default::default()),
         ));
@@ -1942,7 +1970,7 @@ mod tests {
         assert_ne!(ctx.pending_invalidation.get(), 0);
 
         // A fresh post-invalidation rebuild lands in a non-deferred slot.
-        *ctx.notes_cache.lock().unwrap() = Some(std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
         let epoch_after_invalidate = ctx.invalidation_epoch.load(Ordering::SeqCst);
 
         // The retry clears ONLY the deferred slot.
