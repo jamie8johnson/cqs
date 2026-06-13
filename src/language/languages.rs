@@ -6252,12 +6252,43 @@ fn extract_container_name_rust_rust(container: tree_sitter::Node, source: &str) 
 }
 
 /// Post-process Rust chunks: reclassify `new` methods as Constructor (convention).
+/// Item-scope test for a captured `macro_invocation` chunk. The chunk query
+/// captures EVERY `macro_invocation` (tree-sitter-rust can't express the parent
+/// constraint for the statement form), so this discards the expression-position
+/// ones. An item-position macro invocation is either a DIRECT child of
+/// `source_file` / `declaration_list` (the block form `m! { ... }`) or wrapped
+/// in an `expression_statement` whose parent is `source_file` / `declaration_list`
+/// (the statement form `m!(...);`). Anything else — a `println!` inside a fn
+/// `block`, a macro in expression position — is NOT item scope and is dropped so
+/// it stays inside its surrounding function chunk.
+fn is_item_scope_macro_invocation(node: tree_sitter::Node) -> bool {
+    fn is_item_list(kind: &str) -> bool {
+        kind == "source_file" || kind == "declaration_list"
+    }
+    match node.parent() {
+        None => false,
+        Some(parent) if is_item_list(parent.kind()) => true,
+        Some(parent) if parent.kind() == "expression_statement" => parent
+            .parent()
+            .map(|gp| is_item_list(gp.kind()))
+            .unwrap_or(false),
+        Some(_) => false,
+    }
+}
+
 fn post_process_rust_rust(
     name: &mut String,
     chunk_type: &mut ChunkType,
     node: tree_sitter::Node,
     source: &str,
 ) -> bool {
+    // Drop expression-position macro invocations (e.g. `println!` in a fn body):
+    // only item-scope invocations anchor a MacroInvocation chunk. See
+    // `is_item_scope_macro_invocation`.
+    if *chunk_type == ChunkType::MacroInvocation && !is_item_scope_macro_invocation(node) {
+        return false;
+    }
+
     // Rust convention: fn new(...) inside an impl block is a constructor
     if *chunk_type == ChunkType::Method && name == "new" {
         *chunk_type = ChunkType::Constructor;
