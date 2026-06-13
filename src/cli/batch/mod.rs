@@ -10,6 +10,14 @@
 mod commands;
 mod context;
 mod handlers;
+/// Loom model of the cache-invalidation epoch protocol (the
+/// interleaving-auditor lane). Compiled only under `--cfg cqs_loom` AND in a
+/// test build — `loom` is a dev-dependency, so the module (which `use`s it at
+/// module scope) must not reach the plain `cargo build` / non-test bin target,
+/// where dev-deps are absent. See the module docs for the run command. Absent
+/// from a normal build.
+#[cfg(all(cqs_loom, test))]
+mod interleaving_model;
 mod pipeline;
 mod session;
 mod view;
