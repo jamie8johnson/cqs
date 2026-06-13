@@ -550,8 +550,9 @@ fn is_parse_candidate(worktree_root: &Path, rel: &str) -> bool {
 /// Domain-separated preimage (plan §6):
 /// ```text
 /// blake3(
-///   "cqs-overlay-v1\0"
+///   "cqs-overlay-v2\0"
 ///   ‖ parent_head_oid ‖ "\0"
+///   ‖ notes_revision ‖ "\0"
 ///   ‖ for each record, sorted by (new, old):
 ///       status_letter ‖ "\0" ‖ old ‖ "\0" ‖ new ‖ "\0"
 ///       ‖ blake3(worktree file bytes)   // 32 zero bytes for D / unreadable
@@ -565,11 +566,23 @@ fn is_parse_candidate(worktree_root: &Path, rel: &str) -> bool {
 /// preimage means a parent commit (the usual index-rebuild cause)
 /// automatically rebuilds the overlay. Sorting makes the fingerprint
 /// order-independent across git output orderings.
-pub fn fingerprint(worktree_root: &Path, delta: &Delta) -> [u8; 32] {
+///
+/// `notes_revision` is a digest of the parent's notes (see
+/// `Store::notes_revision`). Notes participate in the overlay's *state* (they
+/// are copied into the shadow store so its `note_boost` matches the parent),
+/// so they must participate in the overlay's *cache identity* too: a parent
+/// notes mutation flips this token, the fingerprint differs, and the LRU
+/// treats the cached overlay as a miss and rebuilds with the fresh notes —
+/// invalidation by content-identity, not the deferrable overlay-clear. Both
+/// production fingerprint sites (build and re-validation) must pass the same
+/// token so a notes-unchanged re-validation still matches the cached build.
+pub fn fingerprint(worktree_root: &Path, delta: &Delta, notes_revision: &[u8; 32]) -> [u8; 32] {
     let _span = tracing::debug_span!("overlay_fingerprint").entered();
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"cqs-overlay-v1\0");
+    hasher.update(b"cqs-overlay-v2\0");
     hasher.update(delta.parent_head_oid.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(notes_revision);
     hasher.update(b"\0");
 
     // Sort records by (new, old) so git ordering doesn't change the result.
@@ -751,6 +764,13 @@ mod tests {
         assert!(recs.is_empty(), "truncated rename yields no record");
     }
 
+    /// A fixed notes-revision token for the fingerprint-structure tests below.
+    /// These tests exercise the record/content terms of the preimage; the notes
+    /// term is held constant here and varied in the overlay-build tests that own
+    /// a parent `Store`. (Value is arbitrary but non-zero so a regression that
+    /// dropped the notes term would still alter every digest.)
+    const TEST_NOTES_REV: [u8; 32] = [7u8; 32];
+
     /// Build a minimal `Delta` with known records (no git, no FS) for
     /// fingerprint determinism / order-independence tests.
     fn delta_with(records: Vec<DeltaRecord>) -> Delta {
@@ -779,9 +799,39 @@ mod tests {
                 new: "src/b.rs".into(),
             },
         ];
-        let fp1 = fingerprint(dir, &delta_with(recs.clone()));
-        let fp2 = fingerprint(dir, &delta_with(recs));
+        let fp1 = fingerprint(dir, &delta_with(recs.clone()), &TEST_NOTES_REV);
+        let fp2 = fingerprint(dir, &delta_with(recs), &TEST_NOTES_REV);
         assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn fingerprint_folds_in_notes_revision() {
+        // Same worktree delta, different notes-revision tokens → different
+        // fingerprints. This is the structural property the notes-coherence
+        // hazard needed: a parent notes mutation (which flips the token) must
+        // move the cache identity so the overlay LRU rebuilds with the fresh
+        // notes. The inverse — identical token → identical fingerprint — guards
+        // against a notes-unchanged re-validation spuriously rebuilding (the
+        // over-invalidation trap).
+        let dir = std::path::Path::new("/nonexistent");
+        let rec = DeltaRecord {
+            status: DeltaStatus::Deleted,
+            old: None,
+            new: "src/a.rs".into(),
+        };
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        let fp_a = fingerprint(dir, &delta_with(vec![rec.clone()]), &token_a);
+        let fp_a2 = fingerprint(dir, &delta_with(vec![rec.clone()]), &token_a);
+        let fp_b = fingerprint(dir, &delta_with(vec![rec]), &token_b);
+        assert_eq!(
+            fp_a, fp_a2,
+            "same delta + same notes token → same fingerprint"
+        );
+        assert_ne!(
+            fp_a, fp_b,
+            "same delta + different notes token → different fingerprint"
+        );
     }
 
     #[test]
@@ -799,8 +849,12 @@ mod tests {
             old: None,
             new: "src/b.rs".into(),
         };
-        let fp_ab = fingerprint(dir, &delta_with(vec![a.clone(), b.clone()]));
-        let fp_ba = fingerprint(dir, &delta_with(vec![b, a]));
+        let fp_ab = fingerprint(
+            dir,
+            &delta_with(vec![a.clone(), b.clone()]),
+            &TEST_NOTES_REV,
+        );
+        let fp_ba = fingerprint(dir, &delta_with(vec![b, a]), &TEST_NOTES_REV);
         assert_eq!(fp_ab, fp_ba);
     }
 
@@ -819,8 +873,8 @@ mod tests {
             old: None,
             new: "src/b.rs".into(),
         };
-        let fp_two = fingerprint(dir, &delta_with(vec![a.clone(), b]));
-        let fp_one = fingerprint(dir, &delta_with(vec![a]));
+        let fp_two = fingerprint(dir, &delta_with(vec![a.clone(), b]), &TEST_NOTES_REV);
+        let fp_one = fingerprint(dir, &delta_with(vec![a]), &TEST_NOTES_REV);
         assert_ne!(fp_two, fp_one);
     }
 
@@ -836,9 +890,9 @@ mod tests {
             old: None,
             new: "a.rs".into(),
         };
-        let fp_before = fingerprint(root, &delta_with(vec![rec.clone()]));
+        let fp_before = fingerprint(root, &delta_with(vec![rec.clone()]), &TEST_NOTES_REV);
         std::fs::write(root.join("a.rs"), b"fn edited() {}").unwrap();
-        let fp_after = fingerprint(root, &delta_with(vec![rec]));
+        let fp_after = fingerprint(root, &delta_with(vec![rec]), &TEST_NOTES_REV);
         assert_ne!(
             fp_before, fp_after,
             "content change must move the fingerprint"
@@ -863,11 +917,11 @@ mod tests {
             old: None,
             new: "link.rs".into(),
         };
-        let fp_before = fingerprint(root, &delta_with(vec![rec.clone()]));
+        let fp_before = fingerprint(root, &delta_with(vec![rec.clone()]), &TEST_NOTES_REV);
 
         // Mutate the target the symlink points at.
         std::fs::write(root.join("target.rs"), b"fn edited_target() {}").unwrap();
-        let fp_after = fingerprint(root, &delta_with(vec![rec.clone()]));
+        let fp_after = fingerprint(root, &delta_with(vec![rec.clone()]), &TEST_NOTES_REV);
         assert_eq!(
             fp_before, fp_after,
             "symlink target change must NOT move the fingerprint"
@@ -880,7 +934,7 @@ mod tests {
             old: None,
             new: "link.rs".into(),
         };
-        let fp_sentinel = fingerprint(root, &delta_with(vec![del]));
+        let fp_sentinel = fingerprint(root, &delta_with(vec![del]), &TEST_NOTES_REV);
         // Only the status letter differs in the preimage; re-derive with a
         // Modified record over a path whose content_digest errors (the symlink)
         // to confirm the sentinel path is taken.

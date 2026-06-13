@@ -72,7 +72,19 @@ pub(crate) fn build_overlay<M>(
     let started = Instant::now();
 
     let delta = discover_delta(worktree_root, parent_root)?;
-    let fp = fingerprint(worktree_root, &delta);
+    // Fold the parent's notes-revision token into the overlay's cache identity.
+    // Notes are copied into the shadow store below (so its `note_boost` matches
+    // the parent), so they must participate in the fingerprint too: a parent
+    // notes mutation flips the token → the LRU rebuilds with fresh notes rather
+    // than serving a stale boost until the deferrable overlay-clear. A read
+    // failure degrades to a zero token (a stable sentinel) — the overlay still
+    // serves correct hits; it just won't auto-invalidate on a notes change,
+    // which the deferrable clear still covers.
+    let notes_revision = parent_store.notes_revision().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "overlay: failed to read parent notes-revision — fingerprint will not track notes for this build");
+        [0u8; 32]
+    });
+    let fp = fingerprint(worktree_root, &delta, &notes_revision);
 
     // A clean worktree (no touched origins) has nothing to overlay. Return
     // None so the caller skips the merge entirely rather than building an
@@ -347,6 +359,136 @@ mod tests {
             note_signal.value < 1.0,
             "note_boost reflects the -0.5 demotion, got {}",
             note_signal.value
+        );
+    }
+
+    /// End-to-end invalidation: a parent notes mutation moves the overlay's
+    /// fingerprint and the rebuilt shadow store's `note_boost` reflects the new
+    /// sentiment. Proven through the real build: the notes-revision token
+    /// folded into the fingerprint means a
+    /// `cqs notes update` on the parent invalidates the overlay's cache identity
+    /// (fingerprint differs → LRU miss → rebuild with fresh notes) instead of
+    /// serving a stale boost until the deferrable overlay-clear runs.
+    #[test]
+    fn build_overlay_fingerprint_tracks_parent_note_sentiment() {
+        use cqs::embedder::ModelConfig;
+        use cqs::note::Note;
+
+        let embedder = match cqs::Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Skipping build_overlay notes-revision e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        let parser = CqParser::new().expect("parser");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).unwrap();
+        std::fs::write(parent.join("src/lib.rs"), "pub fn alpha() -> i32 { 1 }\n").unwrap();
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let wt = tmp.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+
+        // Edit lib.rs in the worktree so its origin is masked + re-served from
+        // the overlay. The worktree delta is held FIXED across the two builds —
+        // only the parent note changes — so any fingerprint move is attributable
+        // to the notes-revision token, not the delta.
+        std::fs::write(
+            wt.join("src/lib.rs"),
+            "pub fn alpha() -> i32 { 2 }\npub fn beta() -> i32 { 3 }\n",
+        )
+        .unwrap();
+
+        let parent = dunce::canonicalize(&parent).unwrap_or(parent);
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        let parent_store = Store::open_memory().expect("parent store");
+        let parent_model = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+        parent_store.init(&parent_model).expect("init parent store");
+
+        // First build: a -0.5 (demotion) note on the edited file.
+        let note_neg = Note {
+            id: "note:0".to_string(),
+            text: "lib is load-bearing".to_string(),
+            sentiment: -0.5,
+            mentions: vec!["src/lib.rs".to_string()],
+            kind: None,
+        };
+        parent_store
+            .upsert_notes_batch(&[note_neg], std::path::Path::new("docs/notes.toml"), 100)
+            .expect("seed parent note");
+
+        let overlay0 = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+            .expect("build_overlay (neg)")
+            .expect("non-clean worktree yields Some(overlay)");
+        let fp0 = overlay0.fingerprint;
+
+        // Mutate the parent note's sentiment (the `cqs notes update` path):
+        // -0.5 → +0.5. INSERT OR REPLACE on the same id is the update.
+        let note_pos = Note {
+            id: "note:0".to_string(),
+            text: "lib is load-bearing".to_string(),
+            sentiment: 0.5,
+            mentions: vec!["src/lib.rs".to_string()],
+            kind: None,
+        };
+        parent_store
+            .upsert_notes_batch(&[note_pos], std::path::Path::new("docs/notes.toml"), 200)
+            .expect("update parent note");
+
+        let overlay1 = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+            .expect("build_overlay (pos)")
+            .expect("non-clean worktree yields Some(overlay)");
+        let fp1 = overlay1.fingerprint;
+
+        // The fingerprint moved — so the LRU treats overlay1 as a miss and
+        // serves the rebuilt store, not the stale overlay0.
+        assert_ne!(
+            fp0, fp1,
+            "a parent note sentiment change must move the overlay fingerprint"
+        );
+
+        // And the rebuilt overlay's note_boost reflects the NEW (+0.5) sentiment:
+        // a boost above 1.0, where overlay0 carried a demotion below 1.0.
+        let query_emb = embedder.embed_query("beta function").expect("embed query");
+        let mut filter = cqs::SearchFilter::default();
+        filter.query_text = "beta function".to_string();
+        filter.record_rank_signals = true;
+
+        let boost_of = |ov: &WorktreeOverlay| -> f32 {
+            let hits = ov
+                .store
+                .search_filtered_with_index(&query_emb, &filter, 10, 0.0, None)
+                .expect("shadow search");
+            let lib_hit = hits
+                .iter()
+                .find(|r| r.chunk.file == std::path::Path::new("src/lib.rs"))
+                .expect("a chunk from the edited+noted file is retrieved");
+            lib_hit
+                .rank_signals
+                .iter()
+                .find(|s| s.signal == "note_boost")
+                .expect("overlay hit records note_boost provenance")
+                .value
+        };
+
+        assert!(
+            boost_of(&overlay0) < 1.0,
+            "overlay0 carried the -0.5 demotion"
+        );
+        assert!(
+            boost_of(&overlay1) > 1.0,
+            "overlay1 (rebuilt after the notes update) carries the +0.5 boost"
         );
     }
 }

@@ -292,7 +292,17 @@ pub(crate) fn get_overlay_via_lru<M>(
         // discovery error) falls through to a rebuild below.
         match cqs::worktree_overlay::discover_delta(worktree_root, parent_root) {
             Ok(delta) => {
-                let fp = cqs::worktree_overlay::fingerprint(worktree_root, &delta);
+                // Recompute the same fingerprint the build stamped — including
+                // the notes-revision token, so a parent notes mutation since the
+                // cached build registers as a fingerprint change (rebuild) and a
+                // notes-unchanged re-validation still matches. The zero-token
+                // fallback mirrors `build_overlay` so a read failure does not
+                // spuriously diverge the two computations.
+                let notes_revision = parent_store.notes_revision().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "overlay re-validation: failed to read parent notes-revision — using zero token");
+                    [0u8; 32]
+                });
+                let fp = cqs::worktree_overlay::fingerprint(worktree_root, &delta, &notes_revision);
                 if fp == entry.overlay.fingerprint {
                     tracing::debug!(
                         "overlay fingerprint re-validated (unchanged) — reusing cached build"
