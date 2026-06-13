@@ -2,9 +2,46 @@
 
 use super::*;
 use notify::EventKind;
+use serial_test::serial;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
+
+/// RAII guard that snapshots a process-global env var on construction and
+/// restores it (set back to the prior value, or removed if it was unset) on
+/// drop. Pairs with `#[serial(group)]`: serial prevents concurrent readers
+/// from observing a half-set var, and the guard ensures a panicking test
+/// leaves the env exactly as it found it instead of leaking the mutation into
+/// later tests. Use one per env var that the watch paths read.
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvVarGuard {
+    /// Snapshot `key`, then set it to `value`.
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+
+    /// Snapshot `key`, then remove it.
+    fn remove(key: &'static str) -> Self {
+        let prev = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 // Shared test fixtures. These four fields are identical across every
 // `test_watch_config*` call, so we keep exactly one `&'static` copy per type
@@ -374,7 +411,13 @@ fn collect_events_cqs_dir_skip_survives_gitignore_allowlist() {
     );
 }
 
+// All `build_gitignore_matcher_*` tests share the `watch_gitignore_env` serial
+// group: `build_gitignore_matcher` reads `CQS_WATCH_RESPECT_GITIGNORE`, and the
+// kill-switch test sets it to "0" (which forces a `None` matcher). Without
+// serialization a parallel sibling observes that "0" mid-window and its
+// `.expect("matcher should build")` panics on the unexpected `None`.
 #[test]
+#[serial(watch_gitignore_env)]
 fn build_gitignore_matcher_missing_returns_none() {
     // A project with neither .gitignore nor .cqsignore should produce
     // a `None` matcher — the watch loop indexes everything.
@@ -386,20 +429,16 @@ fn build_gitignore_matcher_missing_returns_none() {
 }
 
 #[test]
+#[serial(watch_gitignore_env)]
 fn build_gitignore_matcher_env_kill_switch() {
     // CQS_WATCH_RESPECT_GITIGNORE=0 forces None even if .gitignore exists.
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
 
-    // Save + set + restore to stay neighbour-friendly with parallel
-    // tests that may inspect the variable.
-    let prev = std::env::var("CQS_WATCH_RESPECT_GITIGNORE").ok();
-    std::env::set_var("CQS_WATCH_RESPECT_GITIGNORE", "0");
+    // RAII guard restores the prior value even if the assertion panics, so the
+    // "0" never leaks into the next test in the serial group.
+    let _guard = EnvVarGuard::set("CQS_WATCH_RESPECT_GITIGNORE", "0");
     let result = build_gitignore_matcher(tmp.path());
-    match prev {
-        Some(v) => std::env::set_var("CQS_WATCH_RESPECT_GITIGNORE", v),
-        None => std::env::remove_var("CQS_WATCH_RESPECT_GITIGNORE"),
-    }
 
     assert!(
         result.is_none(),
@@ -408,6 +447,7 @@ fn build_gitignore_matcher_env_kill_switch() {
 }
 
 #[test]
+#[serial(watch_gitignore_env)]
 fn build_gitignore_matcher_real_file_loads_rules() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(
@@ -429,6 +469,7 @@ fn build_gitignore_matcher_real_file_loads_rules() {
 }
 
 #[test]
+#[serial(watch_gitignore_env)]
 fn build_gitignore_matcher_loads_cqsignore() {
     // The watch matcher must layer .cqsignore on top of .gitignore so
     // cqs-specific exclusions (vendor bundles etc.) are respected at
@@ -458,6 +499,7 @@ fn build_gitignore_matcher_loads_cqsignore() {
 }
 
 #[test]
+#[serial(watch_gitignore_env)]
 fn build_gitignore_matcher_cqsignore_only() {
     // .cqsignore alone (no .gitignore) should still build the matcher.
     let tmp = tempfile::TempDir::new().unwrap();
@@ -472,51 +514,43 @@ fn build_gitignore_matcher_cqsignore_only() {
 }
 
 // ===== SPLADE builder / batch-size tests =====
+//
+// Every test in this section reads or writes the process-global
+// `CQS_SPLADE_BATCH` env var (`splade_batch_size` / `splade_batch_size_for`
+// both consult it). They share the `splade_batch_env` serial group so a
+// writer's value never bleeds into a concurrent reader, and each uses an
+// `EnvVarGuard` so a panicking assertion restores the prior value instead of
+// leaking it to the next test in the group.
 
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_env_override() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::set_var("CQS_SPLADE_BATCH", "16");
+    let _guard = EnvVarGuard::set("CQS_SPLADE_BATCH", "16");
     let got = splade_batch_size();
-    match prev {
-        Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
-        None => std::env::remove_var("CQS_SPLADE_BATCH"),
-    }
     assert_eq!(got, 16);
 }
 
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_default_is_32() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let got = splade_batch_size();
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
     assert_eq!(got, 32);
 }
 
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_invalid_falls_back_to_default() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::set_var("CQS_SPLADE_BATCH", "not-a-number");
+    let _guard = EnvVarGuard::set("CQS_SPLADE_BATCH", "not-a-number");
     let got = splade_batch_size();
-    match prev {
-        Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
-        None => std::env::remove_var("CQS_SPLADE_BATCH"),
-    }
     assert_eq!(got, 32, "unparseable value falls back to default");
 }
 
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_zero_falls_back_to_default() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::set_var("CQS_SPLADE_BATCH", "0");
+    let _guard = EnvVarGuard::set("CQS_SPLADE_BATCH", "0");
     let got = splade_batch_size();
-    match prev {
-        Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
-        None => std::env::remove_var("CQS_SPLADE_BATCH"),
-    }
     assert_eq!(got, 32, "0 is not a valid batch size, falls back");
 }
 
@@ -530,13 +564,10 @@ use super::reindex::splade_batch_size_for;
 /// Reference shape (hidden=768, max_length=256, the SPLADE-base /
 /// ensembledistil values) reproduces baseline 32.
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_baseline_returns_default() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let got = splade_batch_size_for(768, 256);
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
     assert_eq!(got, 32, "baseline (768, 256) → 32");
 }
 
@@ -544,53 +575,40 @@ fn splade_batch_size_for_baseline_returns_default() {
 /// 768/1024 = 0.75; seq_factor = 256/512 = 0.5; scaled = 32 * 0.75 *
 /// 0.5 = 12; rounded = 16 (next power of two).
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_splade_code_class_halves() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let got = splade_batch_size_for(1024, 512);
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
     assert_eq!(got, 16, "1024/512 → 16");
 }
 
 /// Wider hidden (1024) at baseline seq. hidden_factor = 0.75; scaled
 /// = 32 * 0.75 = 24; rounded = 32. (next_power_of_two(24) = 32.)
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_wider_hidden_at_baseline_seq_holds_32() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let got = splade_batch_size_for(1024, 256);
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
     assert_eq!(got, 32, "1024/256 → 32 (rounded up)");
 }
 
 /// Long seq (1024) at baseline hidden. seq_factor = 256/1024 = 0.25;
 /// scaled = 32 * 0.25 = 8.
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_long_seq_quarters_batch() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let got = splade_batch_size_for(768, 1024);
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
     assert_eq!(got, 8, "768/1024 → 8");
 }
 
 /// Env override wins regardless of (hidden, max_length).
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_env_override_wins() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::set_var("CQS_SPLADE_BATCH", "100");
+    let _guard = EnvVarGuard::set("CQS_SPLADE_BATCH", "100");
     let got = splade_batch_size_for(1024, 1024);
     let got2 = splade_batch_size_for(384, 128);
-    match prev {
-        Some(v) => std::env::set_var("CQS_SPLADE_BATCH", v),
-        None => std::env::remove_var("CQS_SPLADE_BATCH"),
-    }
     assert_eq!(got, 100, "env override wins for wide+long shape");
     assert_eq!(got2, 100, "env override wins for narrow+short shape");
 }
@@ -598,29 +616,22 @@ fn splade_batch_size_for_env_override_wins() {
 /// Degenerate dims (zeros) don't panic. The `.max(1)` floors ensure
 /// the formula stays bounded.
 #[test]
+#[serial(splade_batch_env)]
 fn splade_batch_size_for_zero_dims_do_not_panic() {
-    let prev = std::env::var("CQS_SPLADE_BATCH").ok();
-    std::env::remove_var("CQS_SPLADE_BATCH");
+    let _guard = EnvVarGuard::remove("CQS_SPLADE_BATCH");
     let _ = splade_batch_size_for(0, 256);
     let _ = splade_batch_size_for(768, 0);
     let _ = splade_batch_size_for(0, 0);
-    if let Some(v) = prev {
-        std::env::set_var("CQS_SPLADE_BATCH", v);
-    }
 }
 
 #[test]
+#[serial(watch_incremental_splade_env)]
 fn build_splade_encoder_env_kill_switch_returns_none() {
     // CQS_WATCH_INCREMENTAL_SPLADE=0 must return None regardless of
     // whether a SPLADE model is configured. Verifies the feature-flag
     // kill-switch fires before any model-load work.
-    let prev = std::env::var("CQS_WATCH_INCREMENTAL_SPLADE").ok();
-    std::env::set_var("CQS_WATCH_INCREMENTAL_SPLADE", "0");
+    let _guard = EnvVarGuard::set("CQS_WATCH_INCREMENTAL_SPLADE", "0");
     let got = build_splade_encoder_for_watch();
-    match prev {
-        Some(v) => std::env::set_var("CQS_WATCH_INCREMENTAL_SPLADE", v),
-        None => std::env::remove_var("CQS_WATCH_INCREMENTAL_SPLADE"),
-    }
     assert!(
         got.is_none(),
         "CQS_WATCH_INCREMENTAL_SPLADE=0 must disable the encoder"
@@ -2045,7 +2056,13 @@ fn make_gc_test_chunk(file: &Path, name: &str, line_start: u32) -> cqs::parser::
 }
 
 /// Startup GC prunes phantom chunks for files no longer on disk.
+///
+/// Shares the `daemon_startup_gc_env` serial group with
+/// `run_daemon_startup_gc_disabled_by_env_keeps_phantoms`: both read/write
+/// `CQS_DAEMON_STARTUP_GC` (consulted by `run_daemon_startup_gc`), and the
+/// disabled-test's "0" would skip this test's expected prune if they overlap.
 #[test]
+#[serial(daemon_startup_gc_env)]
 fn run_daemon_startup_gc_prunes_phantom_chunks() {
     use super::gc::run_daemon_startup_gc;
     use std::io::Write;
@@ -2089,7 +2106,7 @@ fn run_daemon_startup_gc_prunes_phantom_chunks() {
     let parser = CqParser::new().unwrap();
 
     // No env override → startup GC runs.
-    std::env::remove_var("CQS_DAEMON_STARTUP_GC");
+    let _guard = EnvVarGuard::remove("CQS_DAEMON_STARTUP_GC");
     run_daemon_startup_gc(&store, root, &parser, None);
 
     let after = store.stats().unwrap().total_chunks;
@@ -2107,6 +2124,7 @@ fn run_daemon_startup_gc_prunes_phantom_chunks() {
 /// `CQS_DAEMON_STARTUP_GC=0` short-circuits the prune. Pinning it keeps the
 /// operator-visible escape hatch honest.
 #[test]
+#[serial(daemon_startup_gc_env)]
 fn run_daemon_startup_gc_disabled_by_env_keeps_phantoms() {
     use super::gc::run_daemon_startup_gc;
 
@@ -2127,12 +2145,11 @@ fn run_daemon_startup_gc_disabled_by_env_keeps_phantoms() {
 
     let parser = CqParser::new().unwrap();
 
-    // SAFETY: env-mutation in a parallel-test world. The vars are namespaced
-    // (CQS_DAEMON_STARTUP_GC) and unset at end; concurrent watch tests don't
-    // touch this var.
-    std::env::set_var("CQS_DAEMON_STARTUP_GC", "0");
+    // `#[serial(daemon_startup_gc_env)]` serializes this against the sibling
+    // prune test; the guard restores the prior value on drop so a panic can't
+    // leak "0" into the next test.
+    let _guard = EnvVarGuard::set("CQS_DAEMON_STARTUP_GC", "0");
     run_daemon_startup_gc(&store, root, &parser, None);
-    std::env::remove_var("CQS_DAEMON_STARTUP_GC");
 
     let after = store.stats().unwrap().total_chunks;
     assert_eq!(
