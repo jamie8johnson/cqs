@@ -5,6 +5,13 @@
 //! 2. Embedder: Embed chunks (GPU with CPU fallback)
 //! 3. Writer: Write to SQLite
 
+// Loom model of the index-pipeline chunk-loss protocol — the GPU/CPU work-steal
+// race that fed two producers into one `store_stage` consumer (#1891, the
+// interleaving-auditor validation lane). Gated to `--cfg cqs_loom` test builds;
+// absent from a normal build. See the module header for the NO-LOSS invariant it
+// pins and the schedules it enumerates.
+#[cfg(all(cqs_loom, test))]
+mod chunkloss_interleaving_model;
 mod embedding;
 mod parsing;
 mod reuse;
