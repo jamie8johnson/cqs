@@ -112,6 +112,13 @@ pub(crate) use reindex::reindex_files as overlay_reindex_files;
 #[cfg(unix)]
 mod daemon;
 
+// Loom model of the watch-reconcile-vs-query coherence protocol (#1826
+// interleaving-auditor). Gated to `--cfg cqs_loom` test builds; absent from a
+// normal build. See the module header for the invariant it pins and the
+// schedules it enumerates.
+#[cfg(all(cqs_loom, test))]
+mod reconcile_interleaving_model;
+
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle.
