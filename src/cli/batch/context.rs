@@ -154,16 +154,16 @@ pub(crate) struct BatchContext {
     // `call_graph` / `test_chunks` stay view-local `RefCell`s: their view
     // fallback goes through the snapshot Store, which holds its own internal
     // `OnceLock` caches, so a per-view rebuild is a cheap cache hit there.
-    pub(super) hnsw: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
-    pub(super) base_hnsw: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
+    pub(super) hnsw: Arc<Mutex<Option<EpochCell<dyn VectorIndex>>>>,
+    pub(super) base_hnsw: Arc<Mutex<Option<EpochCell<dyn VectorIndex>>>>,
     pub(super) call_graph: RefCell<Option<Arc<cqs::store::CallGraph>>>,
     pub(super) test_chunks: RefCell<Option<Arc<Vec<cqs::store::ChunkSummary>>>>,
     /// Cache returns `Arc<HashSet<PathBuf>>` so callers don't clone the full
     /// set on every invocation.
-    pub(super) file_set: Arc<Mutex<Option<Arc<HashSet<PathBuf>>>>>,
+    pub(super) file_set: Arc<Mutex<Option<EpochCell<HashSet<PathBuf>>>>>,
     /// Cached notes returned as `Arc<Vec<Note>>` so callers don't clone the
     /// full Vec on every dispatch.
-    pub(super) notes_cache: Arc<Mutex<Option<Arc<Vec<cqs::note::Note>>>>>,
+    pub(super) notes_cache: Arc<Mutex<Option<EpochCell<Vec<cqs::note::Note>>>>>,
     /// Monotonic counter bumped at the start of every mutable-cache
     /// invalidation. Views snapshot it at checkout; a view-side cache build
     /// publishes into the shared cells only while the epoch is unchanged, so
@@ -208,7 +208,7 @@ pub(crate) struct BatchContext {
     /// the BatchContext path or the view path. The SPLADE rebuild path replaces
     /// the inner `Arc<SpladeIndex>`; existing readers that already cloned the
     /// previous Arc keep their snapshot until the next dispatch.
-    pub(super) splade_index: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    pub(super) splade_index: Arc<Mutex<Option<EpochCell<cqs::splade::index::SpladeIndex>>>>,
     /// Cached cross-project context (opened reference stores + per-store call
     /// graphs), shared with every `BatchView` so the daemon's
     /// `--cross-project` graph dispatchers (callers/callees/impact/test-map/
@@ -1202,11 +1202,17 @@ impl BatchContext {
     /// cache-poison loop.
     pub fn ensure_splade_index(&self) {
         self.check_index_staleness();
+        // Epoch-gated presence check: a value tagged with the current epoch is
+        // a real hit; a stale-tagged residue (a deferred clear that raced) is
+        // treated as absent so it is rebuilt rather than served. Capture the
+        // epoch once and reuse it as the publish tag below.
+        let current_epoch = self.invalidation_epoch.load(Ordering::SeqCst);
         if self
             .splade_index
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .is_some()
+            .as_ref()
+            .is_some_and(|(epoch, _)| *epoch == current_epoch)
         {
             return;
         }
@@ -1273,19 +1279,28 @@ impl BatchContext {
                 "SPLADE index loaded from disk (batch)"
             );
         }
-        *self.splade_index.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(idx));
+        // Publish epoch-tagged. If an invalidation bumped the epoch while the
+        // (possibly multi-second) build above ran, the value is built from a
+        // now-stale store snapshot — tag it with `current_epoch` so the next
+        // epoch-gated read sees the mismatch and rebuilds, rather than serving a
+        // cross-generation index. (Mirrors `BatchView::publish_if_current`.)
+        *self.splade_index.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((current_epoch, Arc::new(idx)));
     }
 
     /// Snapshot the cached SPLADE index as an `Option<Arc<SpladeIndex>>`.
     ///
     /// Returns an Arc clone rather than a borrow, so search handlers can run
-    /// outside any BatchContext borrow scope.
+    /// outside any BatchContext borrow scope. Epoch-gated: a stale-tagged
+    /// residue (a deferred clear that raced) reads as absent rather than served.
     pub fn borrow_splade_index(&self) -> Option<Arc<cqs::splade::index::SpladeIndex>> {
+        let current_epoch = self.invalidation_epoch.load(Ordering::SeqCst);
         self.splade_index
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
-            .map(Arc::clone)
+            .filter(|(epoch, _)| *epoch == current_epoch)
+            .map(|(_, value)| Arc::clone(value))
     }
 
     /// Get a cached reference index by name, loading on first access.
@@ -1479,19 +1494,31 @@ impl BatchContext {
         // later invalidation bumps the shared counter, and the view's
         // publish-back path compares against this captured value.
         let checkout_epoch = self.invalidation_epoch.load(Ordering::SeqCst);
-        fn snapshot_cell<T: ?Sized>(cell: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+        // Snapshot a write-back cell EPOCH-GATED: adopt the cached value only
+        // when its publish-epoch tag equals `checkout_epoch`. A residue from an
+        // older generation (a deferred clear the publisher's (C) re-check and
+        // the sticky retry both raced and missed — the interleaving-auditor
+        // finding) carries a stale tag and is dropped here, so `cached_*` never
+        // holds a value from a generation other than this view's store snapshot.
+        // Both reads happen under the same outer lock as `checkout_epoch`, so no
+        // invalidation can move the epoch between them.
+        fn snapshot_cell<T: ?Sized>(
+            cell: &Mutex<Option<EpochCell<T>>>,
+            checkout_epoch: u64,
+        ) -> Option<Arc<T>> {
             cell.lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
-                .map(Arc::clone)
+                .filter(|(epoch, _)| *epoch == checkout_epoch)
+                .map(|(_, value)| Arc::clone(value))
         }
-        let vector_index = snapshot_cell(&self.hnsw);
-        let base_vector_index = snapshot_cell(&self.base_hnsw);
+        let vector_index = snapshot_cell(&self.hnsw, checkout_epoch);
+        let base_vector_index = snapshot_cell(&self.base_hnsw, checkout_epoch);
         let call_graph = self.call_graph.borrow().as_ref().map(Arc::clone);
         let test_chunks = self.test_chunks.borrow().as_ref().map(Arc::clone);
-        let notes_cache = snapshot_cell(&self.notes_cache);
-        let file_set = snapshot_cell(&self.file_set);
-        let splade_index_snapshot = snapshot_cell(&self.splade_index);
+        let notes_cache = snapshot_cell(&self.notes_cache, checkout_epoch);
+        let file_set = snapshot_cell(&self.file_set, checkout_epoch);
+        let splade_index_snapshot = snapshot_cell(&self.splade_index, checkout_epoch);
         let config = self.config();
         let audit_state = self.audit_state();
         BatchView {
