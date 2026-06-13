@@ -788,4 +788,44 @@ mod tests {
         std::fs::create_dir_all(&loose).unwrap();
         assert_eq!(overlay_root(&loose, dir.path()), None);
     }
+
+    /// REGRESSION: the production shape `overlay_root(&wt, &wt)` — an
+    /// out-of-tree worktree whose resolved project root IS the worktree
+    /// itself (the CLI's `find_project_root()` returns the worktree root; only
+    /// the *index dir* redirects to main). The earlier guard compared
+    /// `worktree_root` against the passed `resolved_root`, which equals the
+    /// worktree here, so it wrongly returned `None` for every out-of-tree
+    /// worktree. The fix compares against the lookup's own `main_root`. The
+    /// existing nested test passes `parent` as `resolved_root` and would pass
+    /// under BOTH the old and the new comparison — only this shape pins the fix.
+    #[test]
+    fn overlay_root_some_for_out_of_tree_worktree_resolved_to_itself() {
+        let dir = TempDir::new().unwrap();
+        // Main project: a real `.git/` dir + a `.cqs/` index. Sibling of wt.
+        let main = dir.path().join("main");
+        std::fs::create_dir_all(main.join(".git").join("worktrees").join("wt")).unwrap();
+        std::fs::create_dir_all(main.join(crate::INDEX_DIR)).unwrap();
+
+        // Out-of-tree worktree: a sibling dir (NOT nested under main), whose
+        // `.git` is a FILE pointing at main's per-worktree gitdir, with a
+        // `commondir` resolving back to main's `.git/` — exactly the layout
+        // `git worktree add ../wt` produces.
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let canon_main = dunce::canonicalize(&main).unwrap();
+        let gitdir = canon_main.join(".git").join("worktrees").join("wt");
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        // commondir: relative path from <gitdir> back to canonical `.git/`.
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+
+        let canon_wt = dunce::canonicalize(&wt).unwrap();
+
+        // The production call shape: resolved_root == the worktree itself.
+        assert_eq!(
+            overlay_root(&canon_wt, &canon_wt),
+            Some(canon_wt.clone()),
+            "an out-of-tree worktree resolved to itself is overlay-eligible \
+             (the index redirects to main even though the project root is the wt)"
+        );
+    }
 }

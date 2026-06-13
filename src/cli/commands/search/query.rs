@@ -410,15 +410,32 @@ pub(crate) fn prepare_query<'a>(
     let store = ctx.store();
     let cqs_dir = ctx.cqs_dir();
 
+    // Overlay-active fetch over-fetch (plan §7.2, risk #5): masking the delta's
+    // origins out of a `limit`-sized parent fetch can hollow the top-k below
+    // `limit` with nothing left to backfill — the store, FTS, and rerank pools
+    // are all sized to `limit` on the plain path. When an overlay will merge,
+    // fetch 2x at every parent-retrieval site so the post-mask pool still fills
+    // to `limit`. INACTIVE must stay byte-exact: `None` ⇒ multiplier 1 ⇒ every
+    // limit is the pre-overlay value, so the #14 byte-identical fence holds.
+    let overlay_active = ctx.overlay().is_some();
+    let overlay_fetch = |n: usize| -> usize {
+        if overlay_active {
+            n.saturating_mul(2).max(n)
+        } else {
+            n
+        }
+    };
+
     // Name-only path: FTS by name, skip embedding entirely. With an overlay,
     // mask the delta's parent name hits and merge the overlay store's name
     // hits in their place (plan §7.3). The `--name-only` flag has no dense
     // fallback, so this short-circuits unconditionally — including the
     // all-masked, no-overlay-hit empty case (correct: a name deleted from a
-    // changed file is genuinely absent from the worktree).
+    // changed file is genuinely absent from the worktree). Over-fetch 2x when
+    // an overlay is active so masking can't starve the post-merge `limit`.
     if args.name_only {
         let parent = store
-            .search_by_name(query, args.limit)
+            .search_by_name(query, overlay_fetch(args.limit))
             .context("Failed to search by name")?;
         let merged = overlay_mask_name_results(ctx.overlay().as_deref(), parent, query, args)?;
         let unified: Vec<UnifiedResult> = merged.into_iter().map(UnifiedResult::Code).collect();
@@ -454,7 +471,9 @@ pub(crate) fn prepare_query<'a>(
     // NameOnly-classified queries.
     if let Some(ref c) = classification {
         if args.fts_first && c.strategy == cqs::search::router::SearchStrategy::NameOnly {
-            let parent = store.search_by_name(query, args.limit)?;
+            // 2x over-fetch when an overlay is active (same under-fill guard as
+            // the `--name-only` path above).
+            let parent = store.search_by_name(query, overlay_fetch(args.limit))?;
             // CRITICAL ORDERING (plan §7.3): mask the overlay's delta hits
             // BEFORE the `is_empty()` check. An FTS hit set that is entirely
             // masked (every match lives in a changed file) must fall through to
@@ -489,12 +508,18 @@ pub(crate) fn prepare_query<'a>(
         }
     }
 
-    // Over-retrieve when reranking to give the cross-encoder more candidates.
-    let effective_limit = if args.rerank {
+    // Over-retrieve when reranking to give the cross-encoder more candidates,
+    // and 2x more when an overlay is active so the post-mask dense pool still
+    // fills to `limit` (plan §7.2 / risk #5). `overlay_fetch` is identity when
+    // no overlay is present, so the inactive path keeps the exact prior
+    // `effective_limit` — the #14 byte-identical contract. Applied OUTSIDE the
+    // rerank branch so it composes with `rerank_pool_size` (overlay + rerank
+    // ⇒ 2× the rerank pool).
+    let effective_limit = overlay_fetch(if args.rerank {
         crate::cli::limits::rerank_pool_size(args.limit)
     } else {
         args.limit
-    };
+    });
 
     let query_embedding = ctx.embedder()?.embed_query(query)?;
 
@@ -688,12 +713,17 @@ pub(crate) fn retrieve_project(
     let query = args.query.as_str();
     let store = ctx.store();
 
-    // Worktree overlay (result-trust §3). When present, the project search
-    // over-fetches 2x and the final merge truncates back to `args.limit` —
-    // masking the delta's parent hits can hollow out the top-k, so the
-    // headroom keeps the post-mask result count at full strength (the same
-    // under-fill rationale `search_reference`'s `apply_weight` over-fetch
-    // uses, `reference.rs:257-267`).
+    // Worktree overlay (result-trust §3). The store fetch already over-fetched
+    // 2x when an overlay is active (`prepare_query`'s `overlay_fetch` on
+    // `effective_limit` → `search_limit`), so masking the delta's parent hits
+    // can't starve the pool below `limit`. The job HERE is to NOT clip that
+    // headroom before the overlay merge: the pattern-filter and rerank
+    // truncations cut to `post_limit` (2x) rather than `args.limit`, leaving
+    // the over-fetched survivors in play; `apply_overlay`'s `merge_results`
+    // does the final truncate to `args.limit`. Inactive ⇒ `post_limit ==
+    // args.limit` and the fetch was un-doubled, so the path is byte-exact
+    // (the #14 fence). Same under-fill rationale as `search_reference`'s
+    // `apply_weight` over-fetch (`reference.rs:257-267`).
     let overlay = ctx.overlay();
     let post_limit = if overlay.is_some() {
         args.limit.saturating_mul(2).max(args.limit)
@@ -2212,6 +2242,94 @@ mod tests {
                 }),
                 "apply_overlay records the Active envelope meta"
             );
+        }
+
+        // ── Under-fill backfill: the over-fetched pool refills the top-k ──────
+        //
+        // The store fetch over-fetches 2x when an overlay is active
+        // (`prepare_query`), so by the time `apply_overlay` runs, the project
+        // pool is `2*limit`. Masking `k` of them out must NOT drop the result
+        // count below `limit` — the surviving over-fetched parent hits backfill
+        // the holes. Pin that: a `2*limit` pool with `limit` masked origins
+        // yields exactly `limit` results (all from the unmasked half), and the
+        // masked origins are gone. The overlay leg is empty here (query slot has
+        // no overlay chunk), so the backfill is purely the over-fetch headroom.
+        #[test]
+        fn overlay_masked_hollow_backfills_from_overfetch() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            let limit = 5;
+            // src/changed.rs is the masked origin; src/keep.rs is unchanged.
+            let overlay = overlay_with(&[("src/changed.rs", "noise", 9)], &["src/changed.rs"]);
+
+            // A 2*limit over-fetched pool: the top `limit` are masked (changed
+            // file, higher scores), the next `limit` are unmasked survivors.
+            let mut project = Vec::new();
+            for i in 0..limit {
+                project.push(UnifiedResult::Code(project_result(
+                    "src/changed.rs",
+                    &format!("masked_{i}"),
+                    0.9 - i as f32 * 0.01,
+                )));
+            }
+            for i in 0..limit {
+                project.push(UnifiedResult::Code(project_result(
+                    "src/keep.rs",
+                    &format!("survivor_{i}"),
+                    0.5 - i as f32 * 0.01,
+                )));
+            }
+            assert_eq!(project.len(), 2 * limit, "simulated over-fetched pool");
+
+            // Query a slot with no overlay chunk → empty overlay leg → backfill
+            // is purely the over-fetch headroom.
+            let prepared = prepared_with(one_hot(1));
+            let out = apply_overlay(&args_limit(limit), &prepared, project, &overlay).unwrap();
+
+            assert_eq!(
+                out.len(),
+                limit,
+                "masking the top-k must NOT hollow the result count below limit; \
+                 the over-fetched survivors backfill it. got {:?}",
+                names(&out)
+            );
+            assert!(
+                names(&out).iter().all(|n| n.starts_with("survivor_")),
+                "every survivor is from the unmasked origin; got {:?}",
+                names(&out)
+            );
+            assert!(
+                files(&out).iter().all(|f| f == "src/keep.rs"),
+                "no masked-origin hit leaked through; got {:?}",
+                files(&out)
+            );
+        }
+
+        // Inactive contrast: `apply_overlay` only runs under `Some(overlay)`, so
+        // the no-overlay path is `retrieve_project`'s `overlay = None` branch —
+        // no mask, no over-fetch, no merge. Pin the pure-logic half here: a
+        // `limit`-sized pool with NO masked origins passes through with its
+        // count and order intact when run through the merge (an empty mask set +
+        // empty overlay leg is identity up to the merge's score sort).
+        #[test]
+        fn overlay_empty_mask_empty_leg_preserves_pool() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            let limit = 5;
+            // Empty mask set, no overlay chunks: nothing to mask, nothing to add.
+            let overlay = overlay_with(&[], &[]);
+            let mut project = Vec::new();
+            for i in 0..limit {
+                project.push(UnifiedResult::Code(project_result(
+                    "src/keep.rs",
+                    &format!("hit_{i}"),
+                    0.9 - i as f32 * 0.01,
+                )));
+            }
+            let prepared = prepared_with(one_hot(1));
+            let out = apply_overlay(&args_limit(limit), &prepared, project, &overlay).unwrap();
+            assert_eq!(out.len(), limit, "empty-mask empty-leg preserves the pool");
+            // Score-desc order preserved (the inputs were already score-desc).
+            let want: Vec<String> = (0..limit).map(|i| format!("hit_{i}")).collect();
+            assert_eq!(names(&out), want, "order is preserved through the merge");
         }
 
         // ── FTS short-circuit masking (plan §7.3) ─────────────────────────────
