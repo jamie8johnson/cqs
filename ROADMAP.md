@@ -1,6 +1,20 @@
 # Roadmap
 
-## Current: v1.42.0 (cut 2026-06-09)
+## Current: v1.44.0 (cut 2026-06-13, crates.io published)
+
+Minor release. Schema v31, PARSER_VERSION 8. Recall: **72.5% R@5 / 47.7% R@1 / 88.5% R@20** (v3.v2 dual-judge, 218 queries; R@5 is the headline — R@1 is noise-sensitive). Two threads plus a headline bugfix:
+
+- **Result-trust program — calibration metadata so agents act on results without a defensive re-read (#1821, all four axes shipped).** §1 edge provenance (`function_calls.edge_kind`: call/serde_callback/macro_heuristic/fn_pointer/doc_reference) + §2 `cqs dead --verdict` self-classification (#1836); §4 per-result `rank_signals` (why a hit ranked — dense/fts/name_match/note_boost/parent_boost/sparse, #1847); §3 worktree search overlay, **default-on for `.claude/worktrees/` CWDs** so `cqs search` reflects your edits not the parent branch (#1850/1851/1853/1866, search-only). The macro/fn-pointer/serde edge passes (PARSER_VERSION 3→5, #1808/1819/1822) cut confident-dead 44→17.  **Remaining to close #1821: delete the agent-def hedge clause, gated on #1858 (extend overlay to graph/scout commands).**
+- **Auditor trio complete + applied (#1826).** seam/property/interleaving auditor agent defs — the three orthogonally-shaped auditors that staff the test suite's structural null (the space *between* units that happy/sad per-unit coverage can't express). Each found-or-guarded a bug class the example suite cannot. proptests (codec round-trip, HnswMeta contracts, daemon-vs-CLI equivalence) + loom models (watch reconcile-vs-query, index-build NO-LOSS/CALL-GRAPH-FIDELITY).
+- **HEADLINE FIX: non-deterministic silent chunk loss in the full-corpus build (closes #1891+#1886, #1892).** GPU/CPU embed stages work-stealing a cloned `parse_rx` with no cross-stage ordering ∘ #1835's per-file prune-flush assuming in-order delivery → a file straddling a parse-batch boundary had its fingerprint overtake its chunks → partial flush + prune → real code silently dropped (struct/impl/fn vanish, tests survive; ~hundreds/index). Fixed by construction (parser file-alignment + store-stage order-independence net), **loom-proven** under every interleaving. The bug was a seam-auditor find. Recovered ~765 chunks (R@5 +0.9 / R@20 +1.3).
+
+**Next:** #1858 worktree overlay phase-2 (Part A seed-routing for scout/gather/task, Part B add/subtract graph shadowing for callers/callees/impact/dead) → empties the hedge → closes #1821.
+
+## Previous: v1.43.0 (cut 2026-06-11, crates.io published)
+
+Minor release. The **v1.42.0 full 16-category audit campaign** — 107 fresh findings + 50 carried-forward (v1.40), ~35 PRs (#1737–#1795) in ~36h, every P1/P2 and P3/P4 tier closed. Headlines: per-request daemon cache layer (vector index / file_set / notes / cross-project context cached across queries — ~400ms CAGRA load + reference-store re-merges eliminated per request); generation-stamped HNSW sidecars with dirty self-heal; store/search/serve schema-ownership boundary refactor; crash-safe fingerprint stamping on both pipelines; daemon↔CLI output parity; index-time hardening against poisoned inputs. Plus opt-in tiered-index backend (incremental adds replace periodic rebuilds, behind a commented fork pin), `cqs status --watch` daemon stats, slot-parallel reindex, adaptive watch debounce, `DistanceMetric` threading. Triage is the single source of truth in `docs/audit-triage.md`.
+
+## Earlier: v1.42.0 (cut 2026-06-09)
 
 Minor release. Schema v28. Four threads:
 - **Comment-canonical embedding reuse** (#1677): `chunks.canonical_hash` (comment-stripped + whitespace-collapsed blake3) keys both embedding-reuse paths on both surfaces (bulk pipeline + watch incremental); comment/formatting-only edits no longer re-embed the corpus.
