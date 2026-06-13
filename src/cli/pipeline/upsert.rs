@@ -13,18 +13,10 @@ use cqs::{Chunk, Embedding, Store};
 use super::types::EmbeddedBatch;
 use crate::cli::check_interrupted;
 
-/// How often (in batches) to flush deferred vecs.
-/// Overridable via `CQS_DEFERRED_FLUSH_BATCHES` env var (the value is a
-/// batch count, not a duration).
-fn deferred_flush_interval() -> usize {
-    std::env::var("CQS_DEFERRED_FLUSH_BATCHES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50)
-}
-
-/// Attempt to flush deferred chunk calls whose FK targets (caller_id) already
-/// exist in the database. Returns calls that could NOT be flushed (missing FK).
+/// Attempt to flush leftover per-chunk calls whose FK targets (caller_id)
+/// already exist in the database. Returns calls that could NOT be flushed
+/// (missing FK). Used only for the end-of-run stragglers — a file's own calls
+/// ride its fused write.
 fn flush_calls(
     store: &Store,
     calls: Vec<(String, cqs::parser::CallSite)>,
@@ -68,33 +60,36 @@ fn flush_calls(
     retained
 }
 
-/// Attempt to flush deferred type edges. Type edge resolution already handles
-/// missing chunks gracefully (warns and skips), so we flush everything.
+/// Per-file accumulator: buffers a file's embedded chunks (and its file-level
+/// `function_calls`) as embed batches arrive, until the file is COMPLETE, then
+/// flushes the whole file in ONE fused transaction (`upsert_file_fused`).
 ///
-/// Returns `true` if the flush succeeded (caller should clear the buffer),
-/// `false` if it failed (caller must leave the buffer intact for retry).
-#[must_use]
-fn flush_type_edges(store: &Store, edges: &[(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)]) -> bool {
-    if edges.is_empty() {
-        return true;
-    }
-    tracing::info!(files = edges.len(), "Periodic flush: deferred type edges");
-    match store.upsert_type_edges_for_files(edges) {
-        Ok(()) => true,
-        Err(e) => {
-            // Leave the buffer intact for retry rather than silently
-            // dropping all deferred edges on transient failure.
-            tracing::warn!(
-                files = edges.len(),
-                error = %e,
-                "Periodic flush of deferred type edges failed, retaining for retry"
-            );
-            false
-        }
-    }
+/// Completion signal: a file's reconcile fingerprint rides the embed batch
+/// carrying its LAST chunk (the parser stamps it on the last-chunk window; the
+/// GPU-failure split holds it with the requeued half). So a fingerprint arriving
+/// for an origin means every one of the file's chunks has now arrived across this
+/// and prior batches — even when a file straddles batches or a GPU split scatters
+/// its chunks. A zero-chunk file's completion signal is its
+/// `empty_file_fingerprints` entry.
+///
+/// Memory bound: only MULTI-batch files (>embed_batch_size chunks, default 64)
+/// are held mid-accumulation; single-batch files flush on arrival. Peak hold is
+/// the in-flight straddling files' embedded chunks (~dim*4 bytes + content per
+/// chunk); a pathological 10k-chunk file is ~30 MB. Files flush incrementally as
+/// they complete, so progress is preserved and the buffer drains continuously.
+#[derive(Default)]
+struct FileAccum {
+    real: Vec<(Chunk, Embedding)>,
+    sentinel: Vec<Chunk>,
+    function_calls: Vec<cqs::parser::FunctionCalls>,
+    type_refs: Vec<cqs::parser::ChunkTypeRefs>,
 }
 
-/// Stage 3: Write embedded chunks to SQLite with call graph, function calls, and type edges.
+/// Stage 3: per-file fused write of embedded chunks + call graph + function
+/// calls + fingerprint stamp; type edges deferred to the end. #1835: each file
+/// is written in ONE all-or-nothing transaction (`upsert_file_fused`) when it
+/// completes, so the index is never left with chunks-without-calls,
+/// calls-without-chunks, or a stamp ahead of its content.
 ///
 /// Returns `(total_embedded, total_cached, total_type_edges, total_calls)` counts.
 pub(super) fn store_stage(
@@ -109,124 +104,208 @@ pub(super) fn store_stage(
     let mut total_cached = 0;
     let mut total_type_edges = 0;
     let mut total_calls = 0;
-    let mut deferred_type_edges: Vec<(PathBuf, Vec<cqs::parser::ChunkTypeRefs>)> = Vec::new();
-    let mut deferred_chunk_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
-    // Track every chunk id we upsert per file so we can prune phantom rows
-    // (chunks at the same origin from prior runs whose ID format / hash
-    // changed) after the loop completes. Per-batch pruning is unsafe because
-    // a single file's chunks can split across batches when the file is large
-    // — pruning mid-loop would delete chunks the next batch is about to
-    // re-insert. The watch path passes per-file live_ids to
-    // `upsert_chunks_calls_and_prune`; this keeps the full reindex pipeline
-    // in line.
-    let mut live_ids_per_file: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    // Files that survived the staleness pre-filter but parsed to zero chunks
-    // this run: their stale chunks must be pruned (empty live set) so they
-    // don't survive forever and re-classify the file STALE every run. Stored
-    // separately from `live_ids_per_file` so a file that DID produce chunks in
-    // one batch isn't clobbered into an empty live set by a stray empty entry.
-    let mut empty_file_fingerprints: HashMap<PathBuf, cqs::store::FileFingerprint> = HashMap::new();
-    let mut batch_counter: usize = 0;
-    let flush_interval = deferred_flush_interval();
 
-    for batch in embed_rx {
+    // Per-file accumulators, keyed by origin. A file is flushed (one fused tx)
+    // the moment its fingerprint arrives (last chunk); only mid-straddle files
+    // are ever held here.
+    let mut accums: HashMap<PathBuf, FileAccum> = HashMap::new();
+
+    // Per-chunk `calls` (FK on chunks(id)) keyed by caller chunk id. A file's
+    // own calls are drained at its flush and written in the SAME fused tx (the
+    // caller chunk is present in that tx, so the FK holds). Any leftover — a
+    // call whose caller chunk never arrived (shouldn't happen) or a cross-file
+    // straggler — flushes FK-checked at the end via `upsert_calls_batch`.
+    let mut pending_chunk_calls: HashMap<String, Vec<cqs::parser::CallSite>> = HashMap::new();
+
+    // Flush one COMPLETE file in a single fused transaction: real + sentinel
+    // chunks + FTS + per-chunk calls + file-level function_calls + phantom prune
+    // + fingerprint stamp, all-or-nothing. On Err the tx rolled back → the file
+    // is left in its prior coherent state, UNstamped, so the next reconcile
+    // re-selects it (orphan-impossible in either direction). Type edges are
+    // written right after, against the now-committed chunks. Returns
+    // `(embedded, calls, type_edges)` credited (only on success).
+    let flush_file = |store: &Store,
+                      pending_chunk_calls: &mut HashMap<String, Vec<cqs::parser::CallSite>>,
+                      origin: &PathBuf,
+                      accum: FileAccum,
+                      fp: &cqs::store::FileFingerprint|
+     -> (usize, usize, usize) {
+        // Complete live-id set for the prune (every chunk this file produced).
+        let live_ids: Vec<String> = accum
+            .real
+            .iter()
+            .map(|(c, _)| c.id.clone())
+            .chain(accum.sentinel.iter().map(|c| c.id.clone()))
+            .collect();
+        // Drain this file's own per-chunk calls (caller present in this tx).
+        let mut file_calls: Vec<(String, cqs::parser::CallSite)> = Vec::new();
+        for id in &live_ids {
+            if let Some(sites) = pending_chunk_calls.remove(id) {
+                for site in sites {
+                    file_calls.push((id.clone(), site));
+                }
+            }
+        }
+        // Telemetry: count both the per-chunk `calls` rows and the file-level
+        // `function_calls` call sites written in this tx (matches the pre-#1835
+        // `total_calls` semantics, which summed both). Credited only on a
+        // successful flush below.
+        let calls_count: usize = file_calls.len()
+            + accum
+                .function_calls
+                .iter()
+                .map(|fc| fc.calls.len())
+                .sum::<usize>();
+        let type_edge_count: usize = accum.type_refs.iter().map(|t| t.type_refs.len()).sum();
+        let live_refs: Vec<&str> = live_ids.iter().map(|s| s.as_str()).collect();
+        match store.upsert_file_fused(
+            &accum.real,
+            &accum.sentinel,
+            fp.mtime,
+            &file_calls,
+            origin.as_path(),
+            &live_refs,
+            &accum.function_calls,
+            fp,
+        ) {
+            Ok(_) => {
+                // Type edges resolve against THIS file's chunks (by name+line),
+                // which are now committed by the fused write above — so they
+                // never silently skip a not-yet-committed target. Best-effort:
+                // a failure here only loses this file's type edges (re-resolved
+                // next reindex), it does not roll back the coherent fused write.
+                if !accum.type_refs.is_empty() {
+                    if let Err(e) = store
+                        .upsert_type_edges_for_files(&[(origin.clone(), accum.type_refs.clone())])
+                    {
+                        tracing::warn!(
+                            file = %origin.display(),
+                            error = %e,
+                            "Failed to store type edges after fused write"
+                        );
+                        return (accum.real.len() + accum.sentinel.len(), calls_count, 0);
+                    }
+                }
+                (
+                    accum.real.len() + accum.sentinel.len(),
+                    calls_count,
+                    type_edge_count,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(
+                    file = %origin.display(),
+                    error = %e,
+                    "Fused per-file write failed; file left in its prior coherent state \
+                     (chunks/calls/stamp all rolled back) — re-indexes next run"
+                );
+                (0, 0, 0)
+            }
+        }
+    };
+
+    for mut batch in embed_rx {
         if check_interrupted() {
             break;
         }
 
-        // Stash zero-chunk files for the post-loop prune. A later batch may
-        // still carry chunks for the same origin (a file straddling batches
-        // where only a later half is empty cannot happen — empties have no
-        // chunks anywhere — but guard anyway): the post-loop pass skips any
-        // origin that also appears in `live_ids_per_file`.
-        for (file, fp) in batch.empty_file_fingerprints {
-            empty_file_fingerprints.entry(file).or_insert(fp);
-        }
-
-        // Use pre-extracted chunk calls from the parse stage (rayon parallel)
-        // instead of re-parsing each chunk sequentially here.
-        // Defer chunk_calls — they reference caller_id with FK on chunks(id),
-        // and chunks from later batches aren't in the DB yet.
-        deferred_chunk_calls.extend(batch.relationships.chunk_calls);
-
-        let batch_count = batch.chunk_embeddings.len();
-
-        // Upsert chunks WITHOUT calls (calls are deferred). Also accumulate
-        // per-file live IDs for the post-loop prune pass.
-        //
-        // When `uncached_need_embedding` is set, the chunks past index
-        // `cached_count` carry zero-vec sentinels (skip-first-pass path
-        // under `--llm-summaries`). Cached chunks still carry real
-        // embeddings (from the global cache). Slice the batch and route
-        // each half to the correct insert mode so cached chunks land at
-        // `needs_embedding=0` while sentinel chunks land at
-        // `needs_embedding=1`.
-        //
-        // The whole batch — real chunks, sentinel chunks, and the per-file
-        // fingerprint stamps — writes in ONE transaction
-        // (`upsert_embedded_batch`), not one transaction per file: per-file
-        // granularity existed only because the old upsert API took a single
-        // source_mtime, and it cost a BEGIN/COMMIT + content-hash snapshot
-        // SELECT per file. Chunk-level atomicity is preserved: a crash may
-        // lose whole uncommitted batches, but chunks and their FTS rows
-        // always commit together. (The watch path keeps its own per-file
-        // fused tx — see `upsert_chunks_calls_and_prune` — because a daemon
-        // tick must commit chunks + calls + function_calls + prune per file
-        // as one unit.)
-        let cached_slice_end = batch.cached_count.min(batch.chunk_embeddings.len());
-        let mut real_pairs: Vec<(Chunk, Embedding)> = Vec::new();
-        let mut sentinel_chunks: Vec<Chunk> = Vec::new();
-        for (i, (chunk, embedding)) in batch.chunk_embeddings.into_iter().enumerate() {
-            live_ids_per_file
-                .entry(chunk.file.clone())
-                .or_default()
-                .insert(chunk.id.clone());
-            if i < cached_slice_end || !batch.uncached_need_embedding {
-                real_pairs.push((chunk, embedding));
-            } else {
-                // Past cached_count and skip-first-pass mode is on — chunk
-                // carries a zero-vec sentinel; route to the unembedded mode.
-                sentinel_chunks.push(chunk);
-            }
-        }
-        store.upsert_embedded_batch(&real_pairs, &sentinel_chunks, &batch.file_fingerprints)?;
-
-        // Store function calls extracted during parsing (for the
-        // `function_calls` table). Defer-and-batch like type edges: a
-        // per-file `upsert_function_calls` would open one transaction per
-        // file (~2,500 BEGIN/COMMIT round-trips on a typical wire). Collect
-        // every (file, calls) tuple first, then a single batched call writes
-        // them all in one transaction.
-        let mut function_call_entries: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> =
-            Vec::with_capacity(batch.relationships.function_calls.len());
-        for (file, function_calls) in batch.relationships.function_calls {
-            for fc in &function_calls {
-                total_calls += fc.calls.len();
-            }
-            function_call_entries.push((file, function_calls));
-        }
-        if !function_call_entries.is_empty() {
-            if let Err(e) = store.upsert_function_calls_for_files(&function_call_entries) {
-                tracing::warn!(
-                    files = function_call_entries.len(),
-                    error = %e,
-                    "Failed to store batched function calls"
-                );
-            }
-        }
-
-        // Defer type edge insertion — collect for later.
-        // Type edges reference chunk IDs that may be in later batches,
-        // so we insert them after all chunks are committed.
-        for (file, chunk_type_refs) in batch.relationships.type_refs {
-            for ctr in &chunk_type_refs {
-                total_type_edges += ctr.type_refs.len();
-            }
-            deferred_type_edges.push((file, chunk_type_refs));
-        }
-
-        total_embedded += batch_count;
         total_cached += batch.cached_count;
+
+        // Per-chunk `calls` ride the first batch of a parsed file-batch; buffer
+        // them keyed by caller chunk id until their file flushes.
+        for (caller_id, site) in std::mem::take(&mut batch.relationships.chunk_calls) {
+            pending_chunk_calls.entry(caller_id).or_default().push(site);
+        }
+
+        // File-level function_calls also ride the first batch; buffer per origin
+        // until the file completes (its fingerprint arrives in a later batch).
+        for (file, fcs) in std::mem::take(&mut batch.relationships.function_calls) {
+            accums.entry(file).or_default().function_calls.extend(fcs);
+        }
+
+        // Type edges also ride the first batch; buffer per origin and write them
+        // with the file's flush (after its chunks commit, so they always resolve).
+        for (file, chunk_type_refs) in std::mem::take(&mut batch.relationships.type_refs) {
+            accums
+                .entry(file)
+                .or_default()
+                .type_refs
+                .extend(chunk_type_refs);
+        }
+
+        // Accumulate this batch's chunks into their per-file buffers, routing
+        // each to real vs sentinel by the same split `upsert_embedded_batch`
+        // used: chunks past `cached_count` carry zero-vec sentinels only when
+        // `uncached_need_embedding` is set (the `--llm-summaries` skip-first-pass
+        // path); otherwise every chunk is a real embedding.
+        let cached_slice_end = batch.cached_count.min(batch.chunk_embeddings.len());
+        for (i, (chunk, embedding)) in batch.chunk_embeddings.into_iter().enumerate() {
+            let accum = accums.entry(chunk.file.clone()).or_default();
+            if i < cached_slice_end || !batch.uncached_need_embedding {
+                accum.real.push((chunk, embedding));
+            } else {
+                accum.sentinel.push(chunk);
+            }
+        }
+
+        // FLUSH completed files. A file's fingerprint rides the batch carrying
+        // its LAST chunk, so its presence here means the file is COMPLETE.
+        // Track which origins flushed WITH chunks this batch so the zero-chunk
+        // pass below skips a stray empty-set entry for the same origin (which
+        // would otherwise prune the chunk we just wrote).
+        let mut flushed_with_chunks: HashSet<PathBuf> = HashSet::new();
+        for (file, fp) in std::mem::take(&mut batch.file_fingerprints) {
+            match accums.remove(&file) {
+                Some(accum) => {
+                    flushed_with_chunks.insert(file.clone());
+                    let (embedded, calls, type_edges) =
+                        flush_file(store, &mut pending_chunk_calls, &file, accum, &fp);
+                    total_embedded += embedded;
+                    total_calls += calls;
+                    total_type_edges += type_edges;
+                }
+                None => {
+                    // A chunk-bearing fingerprint with no accumulated chunks is
+                    // not an expected shape (the stamp rides the last-chunk
+                    // batch). Skip it rather than route to the zero-chunk flush —
+                    // that would prune any prior chunks for the origin. The file
+                    // stays unstamped and re-indexes next run.
+                    tracing::warn!(
+                        file = %file.display(),
+                        "Chunk-bearing fingerprint arrived with no accumulated chunks; \
+                         skipping (file re-indexes next run)"
+                    );
+                }
+            }
+        }
+
+        // FLUSH zero-chunk files (parsed to nothing this run): same fused
+        // primitive with empty chunks + empty live set → clears chunks + FTS,
+        // writes any function_calls (oversize-function class), stamps the
+        // registry — all-or-nothing. Their function_calls may have been
+        // accumulated from the first batch, so pull the accum if present.
+        for (file, fp) in std::mem::take(&mut batch.empty_file_fingerprints) {
+            // A file already flushed WITH chunks this batch must not be re-flushed
+            // as zero-chunk — that would prune the chunks we just wrote (the
+            // stray-empty-entry defense; empties never legitimately co-occur with
+            // chunks for the same origin).
+            if flushed_with_chunks.contains(&file) {
+                continue;
+            }
+            // Pull any accumulated function_calls (oversize-function class rides
+            // the first batch); a zero-chunk file carries no chunks, so any stray
+            // chunk in the accum is dropped — empties never carry chunks.
+            let accum = accums.remove(&file).unwrap_or_default();
+            let zero_chunk = FileAccum {
+                function_calls: accum.function_calls,
+                ..Default::default()
+            };
+            let (embedded, calls, type_edges) =
+                flush_file(store, &mut pending_chunk_calls, &file, zero_chunk, &fp);
+            total_embedded += embedded;
+            total_calls += calls;
+            total_type_edges += type_edges;
+        }
 
         let parsed = parsed_count.load(Ordering::Relaxed);
         let embedded = embedded_count.load(Ordering::Relaxed);
@@ -235,142 +314,39 @@ pub(super) fn store_stage(
             "parsed:{} embedded:{} written:{}",
             parsed, embedded, total_embedded
         ));
-
-        // Periodic flush to bound deferred vec memory.
-        batch_counter += 1;
-        if batch_counter.is_multiple_of(flush_interval) {
-            deferred_chunk_calls = flush_calls(store, std::mem::take(&mut deferred_chunk_calls));
-            // Only clear the buffer on successful flush; on failure the
-            // buffer is left intact so the next flush retries.
-            if flush_type_edges(store, &deferred_type_edges) {
-                deferred_type_edges.clear();
-            }
-        }
     }
 
-    // Prune phantom chunks per file. Walks every origin we touched, deletes
-    // rows whose ID isn't in the current live set. Catches old-format chunk
-    // IDs from prior chunker versions (e.g. `:t3wN:` middle segments, `:wN`
-    // window suffixes). Mirrors the watch path's per-file
-    // `upsert_chunks_calls_and_prune(prune_file: Some(...))` so a
-    // `cqs index --force` after a chunker bump doesn't accumulate orphans.
-    // Runs before the deferred call/edge flushes so any FK-cascading delete
-    // from `chunks` happens before fresh calls reference the new IDs.
-    //
-    // One transaction for the whole sweep — the per-file variant opened a
-    // BEGIN/COMMIT per origin, thousands of round-trips of pure overhead
-    // on a full reindex.
-    //
-    // Zero-chunk files (survived the pre-filter, parsed to nothing this run)
-    // are pruned with an EMPTY live set: `delete_phantom_chunks_batch` deletes
-    // every chunk for an origin whose live set is empty. Without this their old
-    // chunks survive the prune (the loop above never saw them, so they have no
-    // `live_ids_per_file` entry) and keep returning stale search hits forever.
-    // Skip any origin that DID produce chunks this run — that file is handled
-    // by its real live set.
-    //
-    // `function_calls` is handled SEPARATELY and earlier: parsing.rs stashes
-    // EVERY parsed file's call set (empty included), so the batched
-    // `upsert_function_calls_for_files` above already DELETE-then-INSERT
-    // replaced the set for every parsed origin — empty sets cleared,
-    // oversize-function files (zero chunks, NON-empty calls) refreshed. The
-    // chunk prune deliberately makes no call-graph decision: gating
-    // function_calls on chunk count would destroy the oversize-function edges.
-    //
-    // v29 #1774: the fingerprint no longer lives ONLY on chunk rows — the
-    // `file_registry` table persists it for zero-chunk origins. We prune the
-    // file's stale chunks below, then stamp its fingerprint into the registry
-    // (after the prune block) so the next run's pre-filter sees a stored
-    // fingerprint and SKIPS the parse entirely instead of re-parsing to zero
-    // chunks every run. That re-parse was cheap but not free; the registry
-    // closes it.
-    let mut prune_entries: Vec<(&std::path::Path, Vec<&str>)> = live_ids_per_file
+    // Any accum still holding chunks at end-of-stream is an INCOMPLETE file
+    // (its fingerprint never arrived — interrupt or producer crash mid-stream).
+    // Leave it UNWRITTEN: its prior state survives untouched and the next run
+    // re-indexes it. Writing a half-accumulated file would be exactly the
+    // half-state the fused write exists to prevent.
+    let incomplete: Vec<&PathBuf> = accums
         .iter()
-        .map(|(file, live_ids)| {
-            (
-                file.as_path(),
-                live_ids.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-            )
-        })
+        .filter(|(_, a)| !a.real.is_empty() || !a.sentinel.is_empty())
+        .map(|(f, _)| f)
         .collect();
-    for file in empty_file_fingerprints.keys() {
-        if !live_ids_per_file.contains_key(file) {
-            prune_entries.push((file.as_path(), Vec::new()));
-        }
+    if !incomplete.is_empty() {
+        tracing::warn!(
+            files = incomplete.len(),
+            "store_stage ended with incomplete files (no fingerprint); left unwritten, \
+             they re-index next run"
+        );
     }
-    match store.delete_phantom_chunks_batch(&prune_entries) {
-        Ok(deleted) if deleted > 0 => {
-            tracing::info!(
-                count = deleted,
-                "Pruned phantom chunks from prior chunker versions"
-            );
-        }
-        Ok(_) => {}
-        Err(e) => {
+
+    // Final flush: any per-chunk calls whose file never flushed (caller chunk
+    // never arrived, or a cross-file straggler). FK-checked; only credit on
+    // success (a single tx — an Err means zero rows landed).
+    let leftover_calls: Vec<(String, cqs::parser::CallSite)> = pending_chunk_calls
+        .into_iter()
+        .flat_map(|(id, sites)| sites.into_iter().map(move |s| (id.clone(), s)))
+        .collect();
+    if !leftover_calls.is_empty() {
+        let retained = flush_calls(store, leftover_calls);
+        if !retained.is_empty() {
             tracing::warn!(
-                files = prune_entries.len(),
-                error = %e,
-                "Batched phantom prune failed; orphan rows from prior chunker versions may persist"
-            );
-        }
-    }
-
-    // v29 #1774: persist the reconcile fingerprint for files that parsed to
-    // ZERO chunks this run into `file_registry`. A file that produced chunks in
-    // some batch is excluded — its fingerprint already rode the chunk-write
-    // transaction via `upsert_embedded_batch`. Only the genuinely zero-chunk
-    // survivors need the registry stamp, so the next `cqs index` pre-filter
-    // sees a stored fingerprint and skips the parse instead of re-parsing to
-    // zero chunks forever. Best-effort: a failure here only forfeits the skip
-    // (the file re-parses next run, idempotently), so it warns rather than
-    // aborting the index.
-    let registry_entries: Vec<(std::path::PathBuf, cqs::store::FileFingerprint)> =
-        empty_file_fingerprints
-            .into_iter()
-            .filter(|(file, _)| !live_ids_per_file.contains_key(file))
-            .collect();
-    if !registry_entries.is_empty() {
-        match store.set_file_registry_fingerprints_batch(&registry_entries) {
-            Ok(stamped) => tracing::debug!(
-                stamped,
-                "Stamped file_registry fingerprints for zero-chunk files"
-            ),
-            Err(e) => tracing::warn!(
-                files = registry_entries.len(),
-                error = %e,
-                "Failed to stamp file_registry for zero-chunk files; they will re-parse next run"
-            ),
-        }
-    }
-
-    // Final flush: insert any remaining deferred items now that all chunks
-    // are in the DB. Only credit `total_calls` on a successful insert — the
-    // upsert is a single transaction, so one bad FK rolls back the whole
-    // batch and an Err means *zero* rows landed. Counting the attempt
-    // anyway would make the "Pipeline indexing complete total_calls=N" log
-    // lie about graph completeness.
-    if !deferred_chunk_calls.is_empty() {
-        match store.upsert_calls_batch(&deferred_chunk_calls) {
-            Ok(()) => {
-                total_calls += deferred_chunk_calls.len();
-            }
-            Err(e) => {
-                tracing::warn!(
-                    count = deferred_chunk_calls.len(),
-                    error = %e,
-                    "Failed to store deferred chunk calls — call graph is incomplete by this many rows"
-                );
-            }
-        }
-    }
-
-    // Single transaction for all remaining files instead of per-file transactions.
-    if !deferred_type_edges.is_empty() {
-        if let Err(e) = store.upsert_type_edges_for_files(&deferred_type_edges) {
-            tracing::warn!(
-                files = deferred_type_edges.len(),
-                error = %e,
-                "Failed to store deferred type edges"
+                count = retained.len(),
+                "Some per-chunk calls had no committed caller chunk; dropped from the graph"
             );
         }
     }
@@ -405,6 +381,14 @@ mod tests {
             parent_type_name: None,
             parser_version: 0,
         }
+    }
+
+    /// Like [`chunk`] but stamps a specific `parser_version` — needed to model
+    /// PARSER_VERSION drift (a chunk parsed by an older version vs current).
+    fn chunk_at_version(file: &str, id_suffix: &str, body: &str, parser_version: u32) -> Chunk {
+        let mut c = chunk(file, id_suffix, body);
+        c.parser_version = parser_version;
+        c
     }
 
     fn full_fp(content: &[u8]) -> FileFingerprint {
@@ -442,24 +426,76 @@ mod tests {
         store_stage(rx, store, &parsed, &embedded, &ProgressBar::hidden()).unwrap();
     }
 
-    /// Simulated crash between a straddling file's two batch commits. The
-    /// pipeline stamps a file's fingerprint only in the batch carrying its
-    /// LAST chunk; if the process dies after committing the file's first
-    /// (chunk-only, no-fingerprint) batch but before the second, the file is
-    /// half-indexed and UNSTAMPED. The staleness pre-filter consumes these
-    /// fingerprints (NULL columns degrade to "not current"), so the file MUST
-    /// classify stale on the next run rather than be skipped permanently.
-    ///
-    /// Drives `store_stage` with only the first batch (no fingerprint) and
-    /// then closes the channel — exactly the post-crash on-disk state.
+    /// Build an `EmbeddedBatch` whose chunks ride with a `function_calls` set —
+    /// one caller `name` with one callee — keyed on the same origin so the
+    /// store stage's `upsert_function_calls_for_files` writes it.
+    fn embedded_batch_with_calls(
+        chunks: Vec<Chunk>,
+        file_fingerprints: HashMap<PathBuf, FileFingerprint>,
+        calls: HashMap<PathBuf, Vec<cqs::parser::FunctionCalls>>,
+    ) -> EmbeddedBatch {
+        let mut b = embedded_batch(chunks, file_fingerprints, HashMap::new());
+        b.relationships.function_calls = calls;
+        b
+    }
+
+    /// One caller → one callee `function_calls` set for `origin`.
+    fn one_call(caller: &str, callee: &str) -> Vec<cqs::parser::FunctionCalls> {
+        vec![cqs::parser::FunctionCalls {
+            name: caller.to_string(),
+            line_start: 1,
+            calls: vec![cqs::parser::CallSite {
+                callee_name: callee.to_string(),
+                line_number: 1,
+                kind: cqs::parser::CallEdgeKind::Call,
+            }],
+        }]
+    }
+
+    /// Run one raw SQL statement against the on-disk DB through a separate
+    /// connection, bypassing the `Store` wrapper — used to drop `function_calls`
+    /// out from under the store stage so its calls-replace returns Err.
+    fn raw_exec(db_path: &std::path::Path, sql: &str) {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let db_path = db_path.to_path_buf();
+        let sql = sql.to_string();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let mut conn = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .connect()
+                .await
+                .unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        });
+    }
+
+    /// #1835 fused-write guarantee: an INCOMPLETE file (its fingerprint never
+    /// arrived — process died / interrupt between a straddling file's batches)
+    /// leaves NOTHING on disk. The per-file fused write accumulates a file's
+    /// chunks until its fingerprint (last-chunk signal) arrives, then writes the
+    /// whole file in ONE tx. A first-half batch with no fingerprint is held in
+    /// the accumulator and, when the channel closes without the fingerprint, the
+    /// file is dropped UNWRITTEN — its prior state (here: empty) survives. This
+    /// is STRONGER than the old per-batch behavior, which committed the half and
+    /// relied on the unstamped fingerprint to re-trigger: now there is no
+    /// half-state to leak at all.
     #[test]
-    fn store_stage_partial_file_leaves_fingerprint_unstamped() {
+    fn store_stage_partial_file_leaves_nothing_committed() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = Store::open(&tmp.path().join("index.db")).unwrap();
         store.init(&ModelInfo::default()).unwrap();
 
         // Batch 1 of 2 for straddle.rs: chunks present, fingerprint WITHHELD
-        // (it would have ridden the second, never-committed batch).
+        // (it would have ridden the second, never-committed batch). Channel then
+        // closes without the second batch — the post-crash on-disk state.
         let first_half = vec![
             chunk("straddle.rs", "aaaa", "fn a() {}"),
             chunk("straddle.rs", "bbbb", "fn b() {}"),
@@ -469,22 +505,18 @@ mod tests {
             vec![embedded_batch(first_half, HashMap::new(), HashMap::new())],
         );
 
-        // Chunks landed...
+        // NOTHING committed — the file never completed, so the fused write never
+        // fired. No chunks, no fingerprint → the file re-indexes next run.
         assert_eq!(
             store.get_chunks_by_origin("straddle.rs").unwrap().len(),
-            2,
-            "first-half chunks must be committed"
+            0,
+            "an incomplete file must leave NO chunks (the fused write never fired)"
         );
-
-        // ...but the reconcile fingerprint the staleness pre-filter reads is
-        // unpopulated, so the file is NOT marked current.
         let fps = store.fingerprints_for_origins(&["straddle.rs"]).unwrap();
-        let fp = fps
-            .get("straddle.rs")
-            .expect("origin row exists for the committed chunks");
         assert!(
-            fp.content_hash.is_none() && fp.size.is_none(),
-            "a half-indexed file must stay unstamped so it re-indexes; got {fp:?}"
+            !fps.contains_key("straddle.rs"),
+            "an incomplete file must leave NO stamped fingerprint; got {:?}",
+            fps.get("straddle.rs")
         );
     }
 
@@ -613,6 +645,533 @@ mod tests {
             store.get_chunks_by_origin("live.rs").unwrap().len(),
             1,
             "a file with a real live set must survive a stray empty entry"
+        );
+    }
+
+    /// #1835 Finding 2 (MED-HIGH) — a ZERO-chunk file (the oversize-function
+    /// class: parses to no chunks but HAS function_calls) whose calls replace
+    /// FAILS must keep its OLD chunks and stay UNSTAMPED. The zero-chunk prune
+    /// is unconditional in the success path; on a calls failure it must be
+    /// FORFEITED so the file's old chunks survive as drift fuel — otherwise the
+    /// file is skipped next run with stale calls (the same false-DEAD seal as
+    /// Finding 1, via the zero-chunk route). Mirrors the watch path's
+    /// prune-forfeit-on-calls-failure.
+    #[test]
+    fn store_stage_zero_chunk_calls_failure_forfeits_prune_and_stamp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Pre-seed gone.rs with chunks + a current fingerprint (prior good run).
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("gone.rs"), full_fp(b"seed"));
+        store
+            .upsert_embedded_batch(
+                &[(chunk("gone.rs", "1111", "fn one() {}"), emb.clone())],
+                &[],
+                &seed_fp,
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_chunks_by_origin("gone.rs").unwrap().len(),
+            1,
+            "precondition: seed chunk present"
+        );
+
+        // Reindex: gone.rs parses to ZERO chunks but carries a (refreshed) call
+        // set (oversize-function class). Drop `function_calls` so the replace
+        // fails, then run: the empty-set prune + registry stamp must be forfeited.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+        let mut empties = HashMap::new();
+        empties.insert(PathBuf::from("gone.rs"), full_fp(b"now empty"));
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("gone.rs"), one_call("oversize", "callee"));
+        let batch = EmbeddedBatch {
+            cached_count: 0,
+            chunk_embeddings: Vec::new(),
+            relationships: RelationshipData {
+                function_calls: calls,
+                ..RelationshipData::default()
+            },
+            file_fingerprints: HashMap::new(),
+            empty_file_fingerprints: empties,
+            uncached_need_embedding: false,
+        };
+        run_store_stage(&store, vec![batch]);
+
+        // FINDING 2: old chunk NOT pruned (drift fuel survives) ...
+        assert_eq!(
+            store.get_chunks_by_origin("gone.rs").unwrap().len(),
+            1,
+            "a calls-write failure must forfeit the zero-chunk prune so old \
+             chunks survive as drift fuel"
+        );
+        // ... and the registry is NOT re-stamped to the new content. The stored
+        // fingerprint must still be the prior good run's (seed), not "now empty".
+        let fps = store.fingerprints_for_origins(&["gone.rs"]).unwrap();
+        let fp = fps.get("gone.rs").expect("origin exists from seed");
+        assert_eq!(
+            fp.size,
+            Some(b"seed".len() as u64),
+            "registry must NOT be re-stamped to the new (zero-chunk) content on \
+             a calls failure; must stay the prior good fingerprint; got {fp:?}"
+        );
+    }
+
+    /// Happy-path baseline for #1835: a chunk-bearing file with a function_calls
+    /// set, calls write SUCCEEDS, so the fingerprint is stamped — proving the
+    /// stamp still lands when chunks + calls are coherent. Without this the
+    /// error-path test below could pass vacuously (a never-stamping pipeline).
+    #[test]
+    fn store_stage_single_batch_calls_success_stamps_fingerprint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("caller.rs"), full_fp(b"fn caller() {}"));
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("caller.rs"), one_call("caller", "victim"));
+
+        run_store_stage(
+            &store,
+            vec![embedded_batch_with_calls(
+                vec![chunk("caller.rs", "cccc", "fn caller() { victim(); }")],
+                fp,
+                calls,
+            )],
+        );
+
+        // Calls landed and the fingerprint is fully stamped (chunk-row columns
+        // + registry shadow) so the next pre-filter SKIPS the file.
+        let fps = store.fingerprints_for_origins(&["caller.rs"]).unwrap();
+        let stamped = fps.get("caller.rs").expect("origin exists");
+        assert!(
+            stamped.content_hash.is_some() && stamped.size.is_some() && stamped.mtime.is_some(),
+            "coherent chunks+calls must stamp the fingerprint; got {stamped:?}"
+        );
+    }
+
+    /// #1835 fused-write ERROR-PATH: when the per-file fused write fails (here:
+    /// the in-tx `function_calls` write errors because the table was dropped),
+    /// the WHOLE transaction rolls back — chunks, calls, function_calls, and the
+    /// stamp all revert. The file is never sealed "current" with a stale call
+    /// set (false-DEAD), and never left with chunks-without-calls either.
+    ///
+    /// Fresh-file case: with no prior rows, the rollback means nothing landed —
+    /// zero chunks, no stamp — and the next run re-indexes from scratch. (The
+    /// chunk-bearing drift case, where the rollback must preserve OLD chunks at
+    /// the OLD parser_version, is covered by
+    /// `store_stage_chunk_bearing_drift_calls_failure_re_arms_heal`; the
+    /// orphan-impossible doctor check by
+    /// `store_stage_fused_failure_leaves_no_orphan_and_doctor_clean`.)
+    #[test]
+    fn store_stage_single_batch_calls_failure_forfeits_stamp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("caller.rs"), full_fp(b"fn caller() {}"));
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("caller.rs"), one_call("caller", "victim"));
+
+        // Inject the calls-write failure: drop the table the replace writes to.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+
+        run_store_stage(
+            &store,
+            vec![embedded_batch_with_calls(
+                vec![chunk("caller.rs", "cccc", "fn caller() { victim(); }")],
+                fp,
+                calls,
+            )],
+        );
+
+        // mechanism (b): calls failed → the fresh file's chunk upsert is
+        // forfeited (no old rows to preserve), so nothing landed.
+        assert_eq!(
+            store.get_chunks_by_origin("caller.rs").unwrap().len(),
+            0,
+            "a calls-write failure forfeits the chunk upsert for a fresh file"
+        );
+
+        // ...and the fingerprint is NOT stamped — neither chunk-row columns nor
+        // the registry shadow — so the file re-indexes next run.
+        let fps = store.fingerprints_for_origins(&["caller.rs"]).unwrap();
+        assert!(
+            !fps.contains_key("caller.rs"),
+            "a calls-write failure must leave NO stamped fingerprint; got {:?}",
+            fps.get("caller.rs")
+        );
+    }
+
+    /// #1835 Finding 1 (HIGH) — REPRODUCING test for the chunk-bearing
+    /// unchanged-content PARSER_VERSION-drift class. This is the trust-v30
+    /// magnet: a file re-indexed purely because its stored chunks carry an older
+    /// parser_version (bytes unchanged). The chunk upsert advances
+    /// `chunks.parser_version` to current; if that advance commits before the
+    /// calls outcome is known, a calls failure leaves the file reading "current"
+    /// (drift query no longer selects it; fingerprint matches disk) yet with
+    /// STALE function_calls — skipped FOREVER (false-DEAD / ghost-caller).
+    ///
+    /// Setup: seed `drift.rs` CLEAN at parser_version N-1 (chunk + registry
+    /// shadow + disk-matching fingerprint), confirm it's drift-selected. Then run
+    /// store_stage re-indexing the SAME content at version N with a calls set,
+    /// `function_calls` dropped so the replace fails. Post-fix assertion: the
+    /// chunk advance is FORFEITED — `chunks.parser_version` stays N-1, so
+    /// `origins_with_parser_drift` STILL selects it next run (the heal trigger
+    /// re-arms). The OLD chunk and its call edge survive intact.
+    ///
+    /// Pre-fix (chunk advance commits before the calls outcome): the chunk's
+    /// parser_version would be N, the drift query would NOT select it, and the
+    /// file would be skipped with stale calls — the bug.
+    #[test]
+    fn store_stage_chunk_bearing_drift_calls_failure_re_arms_heal() {
+        let current = cqs::parser_version();
+        let stale = current - 1;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Seed CLEAN at version N-1: a chunk, a current registry/chunk-row
+        // fingerprint, and a function_call edge — the prior successful run's
+        // coherent state.
+        let body = "fn drifty() { helper(); }";
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("drift.rs"), full_fp(body.as_bytes()));
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        store
+            .upsert_embedded_batch(
+                &[(chunk_at_version("drift.rs", "seed", body, stale), emb)],
+                &[],
+                &seed_fp,
+            )
+            .unwrap();
+        // Seed the prior call edge directly so we can prove it survives.
+        store
+            .upsert_function_calls_for_files(&[(
+                PathBuf::from("drift.rs"),
+                one_call("drifty", "helper"),
+            )])
+            .unwrap();
+
+        // Precondition: the seeded chunk registers as parser-version drifted.
+        let drifted_before = store
+            .origins_with_parser_drift(&["drift.rs"], current)
+            .unwrap();
+        assert!(
+            drifted_before.contains("drift.rs"),
+            "precondition: seeded chunk at N-1 must be drift-selected"
+        );
+
+        // Re-index the SAME content at version N, carrying a refreshed call set,
+        // with `function_calls` dropped so the replace fails deterministically.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+        let mut reidx_fp = HashMap::new();
+        reidx_fp.insert(PathBuf::from("drift.rs"), full_fp(body.as_bytes()));
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("drift.rs"), one_call("drifty", "helper"));
+        run_store_stage(
+            &store,
+            vec![embedded_batch_with_calls(
+                vec![chunk_at_version("drift.rs", "seed", body, current)],
+                reidx_fp,
+                calls,
+            )],
+        );
+
+        // HEAL TRIGGER RE-ARMED: the chunk advance was forfeited, so the stored
+        // chunk is STILL at N-1 and the drift query STILL selects it. The drift
+        // predicate keys on `chunks.parser_version` and its NOT EXISTS reads
+        // `file_registry`, so the dropped `function_calls` table is irrelevant
+        // to this query.
+        let drifted_after = store
+            .origins_with_parser_drift(&["drift.rs"], current)
+            .unwrap();
+        assert!(
+            drifted_after.contains("drift.rs"),
+            "FINDING 1: after a calls-write failure the chunk parser_version \
+             advance MUST be forfeited so the file stays drift-selected and \
+             re-indexes next run — else it is skipped forever with stale calls"
+        );
+
+        // The old chunk survives intact (one row, still at the seeded id).
+        assert_eq!(
+            store.get_chunks_by_origin("drift.rs").unwrap().len(),
+            1,
+            "the old chunk must survive the forfeited re-index (drift fuel)"
+        );
+    }
+
+    /// #1835 Finding 1, STRADDLING seam: a drift file whose calls ride the FIRST
+    /// embed batch but whose chunks span TWO batches. The calls failure in batch
+    /// 1 must forfeit the chunk advance in BOTH batches (`calls_failed` persists
+    /// across the loop), so none of the file's old chunks advance → drift
+    /// re-arms. Pins that the forfeit is not just per-batch but spans a file's
+    /// whole straddle.
+    #[test]
+    fn store_stage_straddling_drift_calls_failure_forfeits_all_batches() {
+        let current = cqs::parser_version();
+        let stale = current - 1;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Seed two chunks at N-1 (the straddle file's prior state).
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("straddle.rs"), full_fp(b"two fns"));
+        store
+            .upsert_embedded_batch(
+                &[
+                    (
+                        chunk_at_version("straddle.rs", "aaaa", "fn a() {}", stale),
+                        emb.clone(),
+                    ),
+                    (
+                        chunk_at_version("straddle.rs", "bbbb", "fn b() {}", stale),
+                        emb.clone(),
+                    ),
+                ],
+                &[],
+                &seed_fp,
+            )
+            .unwrap();
+        assert!(store
+            .origins_with_parser_drift(&["straddle.rs"], current)
+            .unwrap()
+            .contains("straddle.rs"));
+
+        // Re-index at N across TWO batches: calls + first chunk in batch 1
+        // (drop function_calls so the replace fails), second chunk in batch 2
+        // (fingerprint rides the last batch). The fix must skip BOTH chunk
+        // upserts because the file is in `calls_failed` from batch 1.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("straddle.rs"), one_call("a", "b"));
+        let mut last_fp = HashMap::new();
+        last_fp.insert(PathBuf::from("straddle.rs"), full_fp(b"two fns"));
+        run_store_stage(
+            &store,
+            vec![
+                embedded_batch_with_calls(
+                    vec![chunk_at_version(
+                        "straddle.rs",
+                        "aaaa",
+                        "fn a() {}",
+                        current,
+                    )],
+                    HashMap::new(),
+                    calls,
+                ),
+                embedded_batch(
+                    vec![chunk_at_version(
+                        "straddle.rs",
+                        "bbbb",
+                        "fn b() {}",
+                        current,
+                    )],
+                    last_fp,
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        // Both old chunks survive at N-1 → drift re-arms (the file re-indexes
+        // next run). If batch 2's chunk had advanced, the drift query could
+        // still select it (one chunk at N-1 suffices), but the SECOND chunk
+        // being advanced would corrupt the half-state; assert NEITHER advanced.
+        assert!(
+            store
+                .origins_with_parser_drift(&["straddle.rs"], current)
+                .unwrap()
+                .contains("straddle.rs"),
+            "FINDING 1 straddle: a calls failure must forfeit the chunk advance \
+             across the file's whole straddle so drift re-arms"
+        );
+        assert_eq!(
+            store.get_chunks_by_origin("straddle.rs").unwrap().len(),
+            2,
+            "both old chunks survive the forfeited straddle re-index"
+        );
+    }
+
+    /// #1835 ORPHAN-IMPOSSIBLE (the structurally-missing test): a forced fused
+    /// per-file write failure must leave NO orphan in EITHER direction —
+    /// `find_orphaned_function_calls` returns EMPTY (no function_calls row for a
+    /// file absent from both `chunks` and `file_registry`), and no
+    /// chunks-without-calls. Because the fused write is one tx, a failure rolls
+    /// back the function_calls write together with the chunk write, so the
+    /// calls-without-chunks magnet the calls-before-chunks reorder created is now
+    /// impossible. The file is also left coherent (prior state) and unstamped, so
+    /// it re-indexes next run.
+    ///
+    /// Setup: seed `caller.rs` CLEAN (chunk + call edge + stamp). Re-index the
+    /// same content with `function_calls` dropped so the in-tx write fails. After
+    /// recreating the table, the doctor finds NO orphan and the old chunk
+    /// survives — doctor-clean.
+    #[test]
+    fn store_stage_fused_failure_leaves_no_orphan_and_doctor_clean() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Prior good run: caller.rs has a chunk, a call edge, and a stamp.
+        let emb = Embedding::new(vec![0.25_f32; cqs::EMBEDDING_DIM]);
+        let body = "fn caller() { victim(); }";
+        let mut seed_fp = HashMap::new();
+        seed_fp.insert(PathBuf::from("caller.rs"), full_fp(body.as_bytes()));
+        store
+            .upsert_embedded_batch(&[(chunk("caller.rs", "seed", body), emb)], &[], &seed_fp)
+            .unwrap();
+        store
+            .upsert_function_calls_for_files(&[(
+                PathBuf::from("caller.rs"),
+                one_call("caller", "victim"),
+            )])
+            .unwrap();
+        assert!(
+            store.find_orphaned_function_calls().unwrap().is_empty(),
+            "precondition: no orphan before the failed re-index"
+        );
+
+        // Re-index with function_calls dropped → the in-tx fused write fails →
+        // the whole tx rolls back.
+        raw_exec(&db_path, "DROP TABLE function_calls");
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("caller.rs"), full_fp(body.as_bytes()));
+        let mut calls = HashMap::new();
+        calls.insert(PathBuf::from("caller.rs"), one_call("caller", "victim"));
+        run_store_stage(
+            &store,
+            vec![embedded_batch_with_calls(
+                vec![chunk("caller.rs", "seed", body)],
+                fp,
+                calls,
+            )],
+        );
+
+        // Recreate the table so the doctor query can run, then assert NO orphan
+        // in either direction. The rollback reverted the new function_calls
+        // write; the prior function_calls + chunk both survive coherently.
+        raw_exec(
+            &db_path,
+            "CREATE TABLE function_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             file TEXT NOT NULL, caller_name TEXT NOT NULL, caller_line INTEGER NOT NULL, \
+             callee_name TEXT NOT NULL, call_line INTEGER NOT NULL, \
+             edge_kind TEXT NOT NULL DEFAULT 'call')",
+        );
+        assert!(
+            store.find_orphaned_function_calls().unwrap().is_empty(),
+            "ORPHAN-IMPOSSIBLE: a fused-write failure must leave NO orphaned \
+             function_calls (no calls-without-chunks) — doctor-clean"
+        );
+        // The prior chunk survives (the rollback reverted any prune), so there is
+        // no chunks-without-calls orphan either.
+        assert_eq!(
+            store.get_chunks_by_origin("caller.rs").unwrap().len(),
+            1,
+            "the prior chunk survives the rolled-back fused write"
+        );
+    }
+
+    /// #1835 fused straddle: a file whose chunks span TWO embed batches is held
+    /// in the accumulator and written in ONE fused tx when its fingerprint
+    /// (last-chunk signal) arrives in the second batch. After completion BOTH
+    /// chunks are present and the file is stamped — proving accumulate→fused
+    /// works across a straddle, not just single-batch files.
+    #[test]
+    fn store_stage_straddling_file_written_in_one_fused_tx_at_completion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        let content = b"fn a() {}\nfn b() {}";
+        let mut last_fp = HashMap::new();
+        last_fp.insert(PathBuf::from("straddle.rs"), full_fp(content));
+
+        run_store_stage(
+            &store,
+            vec![
+                // Batch 1: first chunk, NO fingerprint → held in accumulator,
+                // nothing written yet.
+                embedded_batch(
+                    vec![chunk("straddle.rs", "aaaa", "fn a() {}")],
+                    HashMap::new(),
+                    HashMap::new(),
+                ),
+                // Batch 2: last chunk + fingerprint → file COMPLETE → one fused
+                // write commits both chunks + the stamp.
+                embedded_batch(
+                    vec![chunk("straddle.rs", "bbbb", "fn b() {}")],
+                    last_fp,
+                    HashMap::new(),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            store.get_chunks_by_origin("straddle.rs").unwrap().len(),
+            2,
+            "both straddling chunks must land in the single fused write at completion"
+        );
+        let fps = store.fingerprints_for_origins(&["straddle.rs"]).unwrap();
+        let fp = fps.get("straddle.rs").expect("origin exists");
+        assert!(
+            fp.content_hash.is_some() && fp.size.is_some() && fp.mtime.is_some(),
+            "the completed straddle must be fully stamped; got {fp:?}"
+        );
+    }
+
+    /// #1835 type-edge resolution under per-file flush: a chunk's type edges
+    /// ride the first batch but are written at the file's flush — AFTER its
+    /// chunks commit — so they always resolve (the resolver maps name+line to a
+    /// chunk id, which now exists). Pins that moving type edges from the old
+    /// end-of-run deferred flush to per-file did not start silently dropping
+    /// them.
+    #[test]
+    fn store_stage_type_edges_resolve_at_file_flush() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("index.db")).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Chunk `user_fn` at line 1; its type edge references `Config`.
+        let c = chunk("u.rs", "user_fn", "fn user_fn() {}");
+        let mut fp = HashMap::new();
+        fp.insert(PathBuf::from("u.rs"), full_fp(b"fn user_fn() {}"));
+        let mut batch = embedded_batch(vec![c], fp, HashMap::new());
+        batch.relationships.type_refs.insert(
+            PathBuf::from("u.rs"),
+            vec![cqs::parser::ChunkTypeRefs {
+                name: "user_fn".to_string(),
+                line_start: 1,
+                type_refs: vec![cqs::parser::TypeRef {
+                    type_name: "Config".to_string(),
+                    line_number: 1,
+                    kind: Some(cqs::parser::TypeEdgeKind::Param),
+                }],
+            }],
+        );
+
+        run_store_stage(&store, vec![batch]);
+
+        // The type edge resolved (chunk committed in the same flush) → the type
+        // graph reports user_fn as a user of Config.
+        let users = store.get_type_users("Config", 10).unwrap();
+        assert!(
+            users.iter().any(|u| u.name == "user_fn"),
+            "type edge must resolve at the file's fused flush; got {:?}",
+            users.iter().map(|u| &u.name).collect::<Vec<_>>()
         );
     }
 }
