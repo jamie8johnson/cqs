@@ -392,11 +392,11 @@ pub(crate) struct BatchView {
     /// publishes it back through [`Self::publish_if_current`]; the
     /// BatchContext path picks the same value up on its next
     /// `checkout_view`. Cleared by `invalidate_mutable_caches`.
-    pub(super) vector_index_cell: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
-    pub(super) base_vector_index_cell: Arc<Mutex<Option<Arc<dyn VectorIndex>>>>,
-    pub(super) file_set_cell: Arc<Mutex<Option<Arc<HashSet<PathBuf>>>>>,
-    pub(super) notes_cell: Arc<Mutex<Option<Arc<Vec<cqs::note::Note>>>>>,
-    pub(super) splade_index_cell: Arc<Mutex<Option<Arc<cqs::splade::index::SpladeIndex>>>>,
+    pub(super) vector_index_cell: Arc<Mutex<Option<EpochCell<dyn VectorIndex>>>>,
+    pub(super) base_vector_index_cell: Arc<Mutex<Option<EpochCell<dyn VectorIndex>>>>,
+    pub(super) file_set_cell: Arc<Mutex<Option<EpochCell<HashSet<PathBuf>>>>>,
+    pub(super) notes_cell: Arc<Mutex<Option<EpochCell<Vec<cqs::note::Note>>>>>,
+    pub(super) splade_index_cell: Arc<Mutex<Option<EpochCell<cqs::splade::index::SpladeIndex>>>>,
     /// Shared cross-project cache cell. Unlike the other cells the view holds
     /// no checkout-time snapshot — the cached context is itself mutable
     /// (`Arc<Mutex<CrossProjectContext>>`), so [`Self::cross_project`] reads or
@@ -483,7 +483,7 @@ impl BatchView {
     /// query stays internally consistent.
     fn publish_if_current<T: ?Sized>(
         &self,
-        cell: &Mutex<Option<Arc<T>>>,
+        cell: &Mutex<Option<EpochCell<T>>>,
         value: &Arc<T>,
         slot: &'static str,
     ) {
@@ -495,7 +495,15 @@ impl BatchView {
             );
             return;
         }
-        *guard = Some(Arc::clone(value));
+        // Tag the published value with this view's `checkout_epoch` — the
+        // generation its store snapshot belongs to. Every later read compares
+        // the tag against its own checkout_epoch, so a value that lingers past
+        // an invalidation (a deferred clear the (C) re-check below and the
+        // sticky retry both raced and missed) is detected on read regardless of
+        // whether any clear ever ran. This is the load-bearing half of the
+        // interleaving-auditor fix; the (C) re-check stays as a best-effort
+        // early clear.
+        *guard = Some((self.checkout_epoch, Arc::clone(value)));
         // An invalidation may have bumped the epoch between the check above
         // and the store: it found this cell locked and deferred the clear to
         // the lock holder. Re-check and perform that deferred clear here,
@@ -507,19 +515,25 @@ impl BatchView {
         }
     }
 
-    /// Read a shared cell — but only when no invalidation has run since this
-    /// view's checkout. A cell populated after an invalidation belongs to a
-    /// NEWER index generation than this view's store snapshot; serving it
-    /// against the old store would mix generations (reindex reassigns chunk
-    /// rowids, so results would be silently wrong). On epoch mismatch the
+    /// Read a shared cell — but only when its value belongs to this view's
+    /// checkout generation. A value tagged with a different epoch belongs to a
+    /// different index generation than this view's store snapshot; serving it
+    /// against this store would mix generations (reindex reassigns chunk rowids,
+    /// so results would be silently wrong). The tag comparison subsumes the
+    /// older "epoch moved since checkout" check AND catches a stale residue that
+    /// coexists with the current epoch (the deferred-clear race). On a miss the
     /// caller falls back to building from its own snapshot store, and the
-    /// matching publish guard then discards that build.
-    fn read_cell_if_current<T: ?Sized>(&self, cell: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+    /// matching publish guard then discards that build if the epoch has since
+    /// moved.
+    fn read_cell_if_current<T: ?Sized>(
+        &self,
+        cell: &Mutex<Option<EpochCell<T>>>,
+    ) -> Option<Arc<T>> {
         let guard = cell.lock().unwrap_or_else(|p| p.into_inner());
-        if self.invalidation_epoch.load(Ordering::SeqCst) != self.checkout_epoch {
-            return None;
-        }
-        guard.as_ref().map(Arc::clone)
+        guard
+            .as_ref()
+            .filter(|(epoch, _)| *epoch == self.checkout_epoch)
+            .map(|(_, value)| Arc::clone(value))
     }
 
     /// Vector index for this snapshot. Falls back to the shared cell (a
@@ -541,19 +555,19 @@ impl BatchView {
             // handling: a poisoned value is nulled out under the same guard
             // regardless of epoch — leaving it would let a later reader or
             // checkout snapshot revive a dead CUDA context — while serving a
-            // healthy value is epoch-gated like every other cell read.
+            // healthy value is epoch-tag-gated like every other cell read.
             let mut guard = self
                 .vector_index_cell
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            if let Some(arc) = guard.as_ref() {
+            if let Some((epoch, arc)) = guard.as_ref() {
                 if arc.is_poisoned() {
                     tracing::warn!(
                         name = arc.name(),
                         "Poisoned vector index in shared cell — discarding"
                     );
                     *guard = None;
-                } else if self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch {
+                } else if *epoch == self.checkout_epoch {
                     return Ok(Some(Arc::clone(arc)));
                 }
             }

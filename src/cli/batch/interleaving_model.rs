@@ -12,10 +12,10 @@
 //!    now publishes it via [`super::view::BatchView::publish_if_current`].
 //! 2. **Reader** — a connection thread reading the cell via
 //!    [`super::view::BatchView::read_cell_if_current`]: returns the cached value
-//!    ONLY when `epoch == checkout_epoch`, else `None` (fall back to a fresh
-//!    build). This is the actor whose correctness *matters* — a daemon query
-//!    must never be served a value from a generation other than its own store
-//!    snapshot.
+//!    ONLY when its `EpochCell` tag equals `checkout_epoch`, else `None` (fall
+//!    back to a fresh build). This is the actor whose correctness *matters* — a
+//!    daemon query must never be served a value from a generation other than its
+//!    own store snapshot.
 //! 3. **Invalidator** — a connection thread whose `check_index_staleness`
 //!    detected a new index generation; runs UNDER the outer lock:
 //!    `invalidation_epoch.fetch_add(1)` then `clear_cache_slots(ALL)` with
@@ -35,27 +35,38 @@
 //! Invalidator + Retry; the Publisher and Reader run free, synchronizing with
 //! them only through the epoch atomic and the cell mutex.
 //!
-//! ## The invariant that actually matters
+//! ## The invariant, and what these models now prove
 //!
 //! Production does NOT promise "the cell is never transiently stale": a deferred
 //! clear (the Invalidator's `try_lock` lost to a Publisher holding the cell)
 //! intentionally leaves a stale value in the cell until the sticky retry mops it
-//! up (context.rs:174-183). What it promises is on the READ side
-//! (`read_cell_if_current`, view.rs:510-523):
+//! up (context.rs:174-183). What it must promise is on the READ side:
 //!
 //! > **A Reader must never RECEIVE a value whose generation differs from the
 //! > Reader's own checkout generation.**
 //!
-//! Equivalently: `read_cell_if_current` returns `Some(v)` only when
-//! `v.gen == reader.checkout_gen`. A stale residue in the cell is harmless
-//! because the epoch guard on the *read* discards it; the bug would be a Reader
-//! observing `epoch == checkout_epoch` yet pulling out a value of the wrong
-//! generation. The models below assert exactly that, on every schedule.
+//! ### History: these models found a real race, then proved the fix
 //!
-//! (A weaker structural check — "no stale value durably survives in the cell" —
-//! is a real-but-secondary liveness property the retry provides; it is NOT a
-//! safety invariant because production tolerates the transient residue. The
-//! flagship models assert the read-side safety property.)
+//! In the ORIGINAL protocol the cells held a bare `Option<Arc<T>>` and
+//! `build_view` snapshotted them unconditionally, serving `cached_*` straight
+//! with no epoch gate. These models (run with the now-deleted unconditional
+//! `checkout`) found a sequential-consistency-reachable schedule where a stale
+//! residue — left by a deferred clear that the Publisher's (C) re-check AND the
+//! sticky retry both raced and missed — was snapshotted into `cached_vector_index`
+//! and served against a newer-generation store (silently wrong results). The
+//! `checkout_ungated` + `removing_the_gate_reproduces_the_race` model below is
+//! the committed negative control: it still reproduces that race on demand, so
+//! the suite proves the gate is load-bearing, not decorative.
+//!
+//! The FIX: every cached value now carries the epoch it was
+//! published at (`EpochCell<T> = (u64, Arc<T>)`), and every read — the
+//! `build_view` snapshot, `read_cell_if_current`, and the `vector_index` direct
+//! serve — adopts the value ONLY when its tag equals `checkout_epoch`. A residue
+//! is then detected on read regardless of whether any clear ever ran. The model
+//! `checkout` / `read_cell_if_current` below transcribe the FIXED code, and
+//! Models 1-3 PASS on every interleaving: the stale-generation serve is
+//! impossible by construction. They are the durable regression guard — reverting
+//! the gate (see `checkout_ungated`) turns them red.
 //!
 //! ## Running
 //!
@@ -90,10 +101,11 @@
 use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::{Arc, Mutex};
 
-/// A cache value, tagged with the index generation it was built from. The real
-/// cells hold `Arc<dyn VectorIndex>` etc.; the only property that matters for
-/// the invariant is "which generation does this value belong to", so the model
-/// reduces the payload to its generation tag.
+/// A cache value carrying its publish-epoch tag — the model's stand-in for the
+/// production `EpochCell<T> = (u64, Arc<T>)`. The real cells hold
+/// `Arc<dyn VectorIndex>` etc.; the only property the invariant turns on is
+/// "which generation does this value belong to", so `gen` IS the tag, and the
+/// payload is dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Value {
     gen: u64,
@@ -120,7 +132,8 @@ struct Pending {
 struct Shared {
     /// `BatchContext::invalidation_epoch` — `Arc<AtomicU64>`.
     epoch: AtomicU64,
-    /// One write-back cache cell — `Arc<Mutex<Option<Arc<T>>>>`.
+    /// One write-back cache cell — `Arc<Mutex<Option<EpochCell<T>>>>` in
+    /// production; `Value` here carries the epoch tag.
     cell: Mutex<Option<Value>>,
     /// Outer-lock-protected interior. Production's outer lock is
     /// `Mutex<BatchContext>`; here it guards just the `Pending` the
@@ -145,14 +158,16 @@ impl Shared {
 
 /// Publisher: [`BatchView::publish_if_current`]. Runs OUTSIDE the outer lock.
 /// `checkout_epoch` is the epoch this view snapshotted at checkout; `value` was
-/// built from the matching store snapshot. Faithful transcription of
-/// view.rs:484-508:
+/// built from the matching store snapshot and is published TAGGED with
+/// `checkout_epoch` (here `value.gen == checkout_epoch`, set by the caller —
+/// production writes `(checkout_epoch, Arc<T>)`). Faithful transcription of the
+/// FIXED view.rs publish:
 ///
 /// ```ignore
 /// let mut guard = cell.lock();
-/// if epoch.load(SeqCst) != checkout_epoch { return; }        // (A)
-/// *guard = Some(value);                                       // (B)
-/// if epoch.load(SeqCst) != checkout_epoch { *guard = None; }  // (C)
+/// if epoch.load(SeqCst) != checkout_epoch { return; }              // (A)
+/// *guard = Some((checkout_epoch, value));                          // (B) tagged
+/// if epoch.load(SeqCst) != checkout_epoch { *guard = None; }       // (C)
 /// ```
 fn publish_if_current(shared: &Shared, checkout_epoch: u64, value: Value) {
     let mut guard = shared.cell.lock().unwrap();
@@ -160,7 +175,7 @@ fn publish_if_current(shared: &Shared, checkout_epoch: u64, value: Value) {
     if shared.epoch.load(Ordering::SeqCst) != checkout_epoch {
         return;
     }
-    // (B) publish.
+    // (B) publish, tagged (in the model `value.gen` already equals checkout_epoch).
     *guard = Some(value);
     // (C) deferred-clear re-check: an invalidation that bumped the epoch
     // between (A) and here found the cell locked and deferred its clear to us.
@@ -169,22 +184,23 @@ fn publish_if_current(shared: &Shared, checkout_epoch: u64, value: Value) {
     }
 }
 
-/// Reader: [`BatchView::read_cell_if_current`] (view.rs:517-523). Runs OUTSIDE
-/// the outer lock. Returns the cached value ONLY when no invalidation has run
-/// since the reader's checkout — else `None` (the caller rebuilds from its own
-/// snapshot store).
+/// Reader: the FIXED [`BatchView::read_cell_if_current`] (view.rs:517-523). Runs
+/// OUTSIDE the outer lock. Returns the cached value ONLY when its epoch TAG
+/// equals the reader's `checkout_epoch` — else `None` (the caller rebuilds from
+/// its own snapshot store). The tag comparison subsumes the old "epoch moved
+/// since checkout" check AND catches a stale residue that coexists with the
+/// current epoch (the deferred-clear race the bare counter check missed).
 ///
 /// ```ignore
 /// let guard = cell.lock();
-/// if epoch.load(SeqCst) != checkout_epoch { return None; }
-/// guard.as_ref().map(Arc::clone)
+/// guard.as_ref().filter(|(epoch, _)| *epoch == checkout_epoch).map(...)
 /// ```
 fn read_cell_if_current(shared: &Shared, checkout_epoch: u64) -> Option<Value> {
     let guard = shared.cell.lock().unwrap();
-    if shared.epoch.load(Ordering::SeqCst) != checkout_epoch {
-        return None;
+    match *guard {
+        Some(v) if v.gen == checkout_epoch => Some(v),
+        _ => None,
     }
-    *guard
 }
 
 /// Invalidator: `BatchContext::invalidate_mutable_caches` + `clear_cache_slots`.
@@ -206,28 +222,28 @@ fn invalidate(shared: &Shared) {
 // already-held guard. Keeping it inline keeps the model faithful to the single
 // critical section production actually uses.
 
-/// Checkout: a faithful transcription of `BatchContext::build_view`
+/// Checkout: a faithful transcription of the FIXED `BatchContext::build_view`
 /// (context.rs:1468-1494) — the reader's ACTUAL cell access in production. Runs
 /// UNDER the outer lock, in one critical section:
 ///
 /// 1. `check_index_staleness()` → the sticky-retry branch: if a deferral is
 ///    pending, `clear_cache_slots(pending)` (try_lock-or-defer).
-/// 2. `snapshot_cell(&self.hnsw)` — a BLOCKING `cell.lock()` (NOT try_lock) that
-///    captures whatever is in the cell into `cached_vector_index`. Unconditional
-///    — it does NOT epoch-check (the cached snapshot is later served directly by
-///    `vector_index()` line 530 without an epoch gate).
+/// 2. `snapshot_cell(&self.hnsw, checkout_epoch)` — a BLOCKING `cell.lock()`
+///    that captures the cell value into `cached_vector_index` ONLY when its
+///    epoch TAG equals `checkout_epoch` (the fix). A stale-tagged residue is
+///    dropped, so `cached_vector_index` never holds a foreign generation —
+///    which is what lets `vector_index()` serve it straight.
 /// 3. `checkout_epoch = epoch.load()`.
 ///
-/// Returns `(snapshot, checkout_epoch)`. The invariant the daemon depends on:
-/// the snapshot's generation must equal `checkout_epoch`'s generation — because
-/// `vector_index()` serves `cached_vector_index` straight, against a store
-/// snapshot of `checkout_epoch`'s generation. A mismatch is a stale-serve.
+/// In this model `Value.gen` IS the production `EpochCell` tag (the `u64` a
+/// value is published with). Returns `(snapshot, checkout_epoch)`. The invariant
+/// the daemon depends on: the snapshot's generation equals `checkout_epoch`'s
+/// generation — `vector_index()` serves `cached_vector_index` straight, against
+/// a store snapshot of `checkout_epoch`'s generation.
 ///
-/// The blocking lock at step 2 is load-bearing: it orders AFTER any publisher
-/// holding the cell, so the publisher's own (C) deferred-clear runs (and clears
-/// a now-stale residue) before this checkout can observe it. The model exists to
-/// prove that ordering holds under EVERY interleaving with concurrent
-/// publishers, not just the pinned one.
+/// THE GATE IS THE FIX. The three reproduction models below pass because of the
+/// `v.gen == checkout_epoch` filter here; deleting it (reverting to an
+/// unconditional `*guard`) makes them fail again — this is the regression guard.
 fn checkout(shared: &Shared) -> (Option<Value>, u64) {
     let mut pending = shared.outer.lock().unwrap();
     // (1) check_index_staleness → sticky-retry branch.
@@ -235,14 +251,16 @@ fn checkout(shared: &Shared) -> (Option<Value>, u64) {
     if mask != 0 {
         clear_cache_slots(shared, &mut pending, mask);
     }
-    // (2) snapshot_cell: blocking lock, unconditional capture.
-    let snapshot = {
-        let guard = shared.cell.lock().unwrap();
-        *guard
-    };
+    // (2) snapshot_cell: blocking lock; adopt the value ONLY if its tag matches.
+    let guard = shared.cell.lock().unwrap();
     // (3) capture checkout_epoch (same outer-lock critical section, so no
     // invalidation can have moved the epoch between (2) and here).
     let checkout_epoch = shared.epoch.load(Ordering::SeqCst);
+    // THE FIX — drop a residue tagged with an older generation.
+    let snapshot = match *guard {
+        Some(v) if v.gen == checkout_epoch => Some(v),
+        _ => None,
+    };
     (snapshot, checkout_epoch)
 }
 
@@ -288,28 +306,26 @@ mod tests {
         }
     }
 
-    /// Model 1 — the flagship, fully faithful: a gen-0 Publisher, an
-    /// Invalidator (gen 0→1), and a Reader doing the REAL `build_view` checkout
-    /// (`checkout()`), all racing from a clean start. Loom enumerates every
-    /// interleaving.
+    /// Model 1 — the flagship regression guard, fully faithful: a gen-0
+    /// Publisher, an Invalidator (gen 0→1), and a Reader doing the REAL FIXED
+    /// `build_view` checkout (`checkout()`), all racing from a clean start. Loom
+    /// enumerates every interleaving.
     ///
     /// The invariant: whatever value the Reader's checkout snapshots into its
     /// `cached_vector_index` must be coherent with the `checkout_epoch` it
     /// captures in the SAME outer-lock critical section. This is the property
-    /// `vector_index()` (view.rs:530) relies on when it serves the cached
-    /// snapshot straight, with no epoch gate.
+    /// `vector_index()` (view.rs) relies on when it serves the cached snapshot
+    /// straight.
     ///
     /// This is the schedule a single-threaded test structurally cannot express:
     /// a Publisher publishing OUTSIDE the outer lock while a Reader checks out
     /// UNDER it and an Invalidator bumps the epoch between them.
     ///
-    /// REPRODUCTION (currently FAILS): this is the flagship finding. The cell
-    /// snapshot captured by `build_view` can be a generation older than
-    /// `checkout_epoch`; see the "Root-cause confirmation models" block below.
-    /// `#[ignore]`d so the loom suite is green by default — run explicitly
-    /// (`--ignored`) to reproduce the race.
+    /// PASSES with the `EpochCell` gate in `checkout` — the stale residue carries
+    /// an older tag and is dropped. This is the durable guard: deleting the gate
+    /// (see `checkout_ungated` / `removing_the_gate_reproduces_the_race`) makes
+    /// this red.
     #[test]
-    #[ignore = "REPRODUCTION of the production stale-snapshot race — run with --ignored"]
     fn checkout_snapshot_is_epoch_coherent() {
         loom::model(|| {
             let shared = Shared::new();
@@ -336,21 +352,17 @@ mod tests {
         });
     }
 
-    /// Model 2 — the full read path: a Reader does `checkout()` then a
-    /// `read_cell_if_current` with its OWN captured `checkout_epoch` (the
+    /// Model 2 — the full read path regression guard: a Reader does `checkout()`
+    /// then a `read_cell_if_current` with its OWN captured `checkout_epoch` (the
     /// fallback path `vector_index()`/`base_vector_index()`/`notes()` take when
     /// the checkout snapshot was empty). Both the checkout snapshot AND the
-    /// later cell read must be coherent with the captured epoch, racing a
-    /// gen-0 Publisher and an Invalidator.
+    /// later tag-gated cell read must be coherent with the captured epoch, racing
+    /// a gen-0 Publisher and an Invalidator.
     ///
-    /// REPRODUCTION (currently FAILS): the failure is on the `checkout()`
-    /// snapshot, same root cause as Model 1 — the unconditional `snapshot_cell`
-    /// captures a stale generation. (The epoch-gated `read_cell_if_current`
-    /// fallback itself is safe; `epoch_gated_checkout_snapshot_is_safe` below
-    /// PASSES with exactly that gate applied to the checkout snapshot.)
-    /// `#[ignore]`d so the loom suite is green by default — run with `--ignored`.
+    /// PASSES with the fix: the `checkout` snapshot drops a stale-tagged residue,
+    /// and `read_cell_if_current` (now tag-gated, not bare-epoch-gated) returns a
+    /// value only when its tag equals `checkout_epoch`.
     #[test]
-    #[ignore = "REPRODUCTION of the production stale-snapshot race — run with --ignored"]
     fn full_read_path_is_epoch_coherent() {
         loom::model(|| {
             let shared = Shared::new();
@@ -385,15 +397,14 @@ mod tests {
     /// Publisher and a Reader's checkout race the settling residue. Exercises
     /// the retry-inside-checkout against a fresh legitimate publish.
     ///
-    /// The Reader's checkout must still snapshot an epoch-coherent value — the
-    /// retry in its checkout clears a settled residue, and the blocking snapshot
-    /// orders after any live publisher's self-clear.
+    /// The Reader's checkout must snapshot an epoch-coherent value — the gate in
+    /// `checkout` drops any older-tagged residue regardless of whether the retry
+    /// or the publisher's (C) cleared it.
     ///
-    /// REPRODUCTION (currently FAILS): same root cause as Model 1, reached
-    /// through the multi-publisher deferred-residue path. `#[ignore]`d so the
-    /// loom suite is green by default — run with `--ignored`.
+    /// PASSES with the fix: the multi-publisher deferred-residue path (the most
+    /// adversarial way the race arose) cannot serve a stale value because the tag
+    /// comparison catches it.
     #[test]
-    #[ignore = "REPRODUCTION of the production stale-snapshot race — run with --ignored"]
     fn checkout_with_deferred_residue_is_coherent() {
         loom::model(|| {
             let shared = Shared::new();
@@ -458,43 +469,76 @@ mod tests {
         });
     }
 
-    // ── Root-cause confirmation models ───────────────────────────────────────
+    // ── Negative controls: prove the gate is load-bearing ────────────────────
     //
-    // FINDING. Models 1-3 (`checkout_snapshot_is_epoch_coherent`,
-    // `full_read_path_is_epoch_coherent`, `checkout_with_deferred_residue_is_coherent`)
-    // FAIL. Loom finds a SEQUENTIAL-CONSISTENCY-reachable schedule (so this is
-    // architecture-independent — x86 included, not a weak-memory artifact):
+    // The race the fix closes (the original finding), kept as a committed
+    // negative control so the suite proves the gate matters — Models 1-3 are only
+    // meaningful if removing the gate turns them red. Loom found this on a
+    // SEQUENTIAL-CONSISTENCY-reachable schedule (architecture-independent — x86
+    // included, not a weak-memory artifact):
     //
     //   pub: cell.lock(); (A) load epoch=0 -> ok; (B) cell=gen0;
     //   pub: (C) load epoch=0 -> ok, DO NOT clear   <- runs BEFORE the bump
     //   inv: outer.lock(); fetch_add -> epoch=1; try_lock(cell) FAILS (pub still
     //        holds the cell) -> defer, pending mask set; outer.unlock()
     //   pub: release cell  (still holds the stale gen-0 value)
-    //   chk: outer.lock(); retry: try_lock(cell) FAILS too (a window where the
-    //        cell is held) OR the publisher already released and the residue is
-    //        settled; snapshot_cell BLOCKING-locks -> captures gen-0;
-    //        checkout_epoch = 1
-    //   => build_view's `cached_vector_index` snapshot is gen-0 while
-    //      checkout_epoch is 1; `vector_index()` (view.rs:530) serves that
-    //      snapshot straight, with NO epoch gate, against a gen-1 store snapshot.
+    //   chk: outer.lock(); UNGATED snapshot_cell BLOCKING-locks -> captures
+    //        gen-0; checkout_epoch = 1
+    //   => an UNGATED `build_view` snapshot is gen-0 while checkout_epoch is 1;
+    //      the pre-fix `vector_index()` served that straight against a gen-1
+    //      store snapshot (silently wrong results).
     //
-    // The root cause is a logic race, NOT memory ordering: the publisher's (C)
-    // deferred-clear re-check can pass (epoch still 0) while the publisher's
-    // cell-lock hold extends PAST the invalidator's bump+defer. The (C) check
-    // exists to catch exactly the deferral the invalidator hands it — but the
-    // check and the lock-hold are not atomic w.r.t. the bump, so the deferral
-    // slips through both the publisher's (C) AND (in the contended window) the
-    // sticky retry, and `build_view`'s unconditional `snapshot_cell` then
-    // captures the stale value.
-    //
-    // The two confirmation models below pin the cause. Neither is faithful to
-    // current production — they model candidate fixes so the pass/fail contrast
-    // isolates the defect. Production code is UNCHANGED (the find is the
-    // deliverable; the interleaving-auditor does not fix under cover of a test).
+    // Root cause: a logic race, NOT memory ordering. The publisher's (C)
+    // deferred-clear re-check can pass (epoch still 0) while its cell-lock hold
+    // extends PAST the invalidator's bump+defer, so the deferral slips through
+    // both (C) AND the sticky retry. The `EpochCell` tag fixes it by making every
+    // read prove the value's generation instead of relying on a clear that races.
 
-    /// A SeqCst fence between (B) and (C). Confirms the bug is NOT a missing
-    /// fence: this model still FAILS, because the race is logical (the (C) check
-    /// races the bump in program order), not a reordering a fence could repair.
+    /// The PRE-FIX checkout: an UNGATED snapshot (no tag comparison). Identical
+    /// to the production `build_view` before the `EpochCell` gate. Used by the
+    /// negative controls to show the race reappears the moment the gate is removed.
+    fn checkout_ungated(shared: &Shared) -> (Option<Value>, u64) {
+        let mut pending = shared.outer.lock().unwrap();
+        let mask = pending.mask;
+        if mask != 0 {
+            clear_cache_slots(shared, &mut pending, mask);
+        }
+        // The bug: capture whatever is in the cell, no tag check.
+        let snapshot = *shared.cell.lock().unwrap();
+        let checkout_epoch = shared.epoch.load(Ordering::SeqCst);
+        (snapshot, checkout_epoch)
+    }
+
+    /// Negative control — removing the gate reproduces the race. Same schedule as
+    /// Model 1 but with the UNGATED checkout; loom finds the stale-snapshot
+    /// interleaving and `assert_snapshot_coherent` panics. `#[should_panic]`, so
+    /// this is GREEN exactly while the race is reproducible: if a future change
+    /// to the model's `publish`/`invalidate`/`clear` accidentally made the bug
+    /// unreachable, THIS test would fail and flag that the regression guards
+    /// (Models 1-3) had gone vacuous.
+    #[test]
+    #[should_panic(expected = "STALE SNAPSHOT")]
+    fn removing_the_gate_reproduces_the_race() {
+        loom::model(|| {
+            let shared = Shared::new();
+            let s_pub = Arc::clone(&shared);
+            let publisher = loom::thread::spawn(move || {
+                publish_if_current(&s_pub, 0, Value { gen: 0 });
+            });
+            let s_inv = Arc::clone(&shared);
+            let invalidator = loom::thread::spawn(move || invalidate(&s_inv));
+            let (snapshot, checkout_epoch) = checkout_ungated(&shared);
+            publisher.join().unwrap();
+            invalidator.join().unwrap();
+            assert_snapshot_coherent(snapshot, checkout_epoch);
+        });
+    }
+
+    /// A SeqCst fence between (B) and (C) in the publisher. Documents that the
+    /// fix is the read-side `EpochCell` tag, NOT a publisher-side fence: with the
+    /// UNGATED checkout, even a fenced publisher still loses (the race is logical
+    /// — the (C) check races the bump in program order — not a reordering a fence
+    /// repairs). `#[should_panic]`: GREEN while the fence-doesn't-help race holds.
     fn publish_if_current_fenced(shared: &Shared, checkout_epoch: u64, value: Value) {
         let mut guard = shared.cell.lock().unwrap();
         if shared.epoch.load(Ordering::SeqCst) != checkout_epoch {
@@ -507,14 +551,13 @@ mod tests {
         }
     }
 
-    /// Confirmation A — a fence does NOT fix it. This model FAILS (same stale
-    /// snapshot as Model 1): proof the defect is a logic race in the
-    /// publish/defer/snapshot protocol, not a weak-memory reordering. Marked
-    /// `#[ignore]` so a routine `--cfg cqs_loom` run isn't a known red — un-ignore
-    /// to reproduce the "fences don't help" evidence.
+    /// Negative control — a fence on the publisher is the WRONG fix. With the
+    /// UNGATED checkout, the fenced publisher still leaves a stale residue the
+    /// checkout snapshots. Pins that the `EpochCell` read-side gate, not any
+    /// publisher fence, is what closes the hole.
     #[test]
-    #[ignore = "documents that a SeqCst fence does NOT fix the race — run explicitly to reproduce"]
-    fn fence_does_not_fix_stale_snapshot() {
+    #[should_panic(expected = "STALE SNAPSHOT")]
+    fn fence_is_not_the_fix() {
         loom::model(|| {
             let shared = Shared::new();
             let s_pub = Arc::clone(&shared);
@@ -523,54 +566,7 @@ mod tests {
             });
             let s_inv = Arc::clone(&shared);
             let invalidator = loom::thread::spawn(move || invalidate(&s_inv));
-            let (snapshot, checkout_epoch) = checkout(&shared);
-            publisher.join().unwrap();
-            invalidator.join().unwrap();
-            assert_snapshot_coherent(snapshot, checkout_epoch);
-        });
-    }
-
-    /// A checkout whose cell snapshot is EPOCH-GATED: it captures the cell value
-    /// only when the cell's generation matches the checkout_epoch it is about to
-    /// publish. This is the structural fix shape for the `cached_*` snapshot path
-    /// (equivalently: `vector_index()` line 530 must epoch-gate the cached serve,
-    /// the way `base_vector_index()` already does via `read_cell_if_current`).
-    fn checkout_epoch_gated(shared: &Shared) -> (Option<Value>, u64) {
-        let mut pending = shared.outer.lock().unwrap();
-        let mask = pending.mask;
-        if mask != 0 {
-            clear_cache_slots(shared, &mut pending, mask);
-        }
-        let guard = shared.cell.lock().unwrap();
-        let checkout_epoch = shared.epoch.load(Ordering::SeqCst);
-        // Gate: only adopt the cached value when its generation matches the
-        // epoch this checkout will hand to handlers. A residue of an older
-        // generation is dropped (the handler rebuilds from its store snapshot).
-        let snapshot = match *guard {
-            Some(v) if v.gen == checkout_epoch => Some(v),
-            _ => None,
-        };
-        (snapshot, checkout_epoch)
-    }
-
-    /// Confirmation B — the epoch-gated checkout snapshot FIXES it. This model
-    /// PASSES on every interleaving (same publisher + invalidator race as Model
-    /// 1, only the checkout differs): proof that epoch-gating the cached-snapshot
-    /// serve closes the hole. (`base_vector_index`/`notes`/`file_set` already
-    /// epoch-gate via `read_cell_if_current`; the unguarded path is the
-    /// `cached_vector_index` direct serve at view.rs:530 and the other `cached_*`
-    /// fields snapshotted unconditionally in `build_view`.)
-    #[test]
-    fn epoch_gated_checkout_snapshot_is_safe() {
-        loom::model(|| {
-            let shared = Shared::new();
-            let s_pub = Arc::clone(&shared);
-            let publisher = loom::thread::spawn(move || {
-                publish_if_current(&s_pub, 0, Value { gen: 0 });
-            });
-            let s_inv = Arc::clone(&shared);
-            let invalidator = loom::thread::spawn(move || invalidate(&s_inv));
-            let (snapshot, checkout_epoch) = checkout_epoch_gated(&shared);
+            let (snapshot, checkout_epoch) = checkout_ungated(&shared);
             publisher.join().unwrap();
             invalidator.join().unwrap();
             assert_snapshot_coherent(snapshot, checkout_epoch);
