@@ -325,10 +325,10 @@ pub(super) fn parser_stage(
                             // parse_file_all_with_chunk_calls already emitted
                             // (chunk_id, CallSite) pairs from Pass 2 — no
                             // per-chunk re-parse needed here. Chunk ids come
-                            // back in `path:line:hash` form (from
-                            // `extract_chunk` using the absolute path); apply
-                            // the same id_map we built above so they line up
-                            // with the rewritten chunk ids.
+                            // back in `path:line_start:byte_start:hash8` form
+                            // (from `extract_chunk` using the absolute path);
+                            // apply the same id_map we built above so they line
+                            // up with the rewritten chunk ids.
                             for (id, _) in &mut chunk_calls {
                                 if let Some(new_id) = id_map.get(id) {
                                     *id = new_id.clone();

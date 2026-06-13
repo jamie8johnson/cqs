@@ -559,8 +559,11 @@ pub(crate) fn reindex_files(
                     let rel_norm = cqs::normalize_path(rel_path);
                     for chunk in &mut file_chunks {
                         chunk.file = rel_path.clone();
-                        // Rewrite id: replace absolute path prefix with relative
-                        // ID format: {path}:{line_start}:{content_hash}
+                        // Rewrite id: replace absolute path prefix with relative.
+                        // ID format: {path}:{line_start}:{byte_start}:{hash8}.
+                        // The prefix strip is format-agnostic — it only swaps the
+                        // leading path; the trailing coordinate segments are kept
+                        // verbatim, so a wider id needs no change here.
                         if let Some(rest) = chunk.id.strip_prefix(abs_norm.as_str()) {
                             chunk.id = format!("{}{}", rel_norm, rest);
                         }

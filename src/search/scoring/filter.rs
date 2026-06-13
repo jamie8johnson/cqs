@@ -1,74 +1,9 @@
-//! SQL filter building, glob compilation, and chunk ID parsing.
+//! SQL filter building and glob compilation.
 
 use crate::store::helpers::sql::make_placeholders_offset;
 use crate::store::helpers::SearchFilter;
 
 use super::name_match::is_name_like_query;
-
-/// Extract file path from a chunk ID.
-/// Standard format: `"path:line_start:hash_prefix"` (3 segments from right)
-/// Windowed format: `"path:line_start:hash_prefix:wN"` (4 segments)
-/// Markdown table-window format: `"path:line_start:hash_prefix:tNwM"` (4 segments,
-/// emitted by `parser/markdown/tables.rs::emit_table_window`)
-/// The hash_prefix is always 8 hex chars. Windowed chunk IDs append a window
-/// suffix: either `wN` (generic windowed chunks) or `tNwM` (markdown tables).
-pub(crate) fn extract_file_from_chunk_id(id: &str) -> &str {
-    // Strip last segment
-    let Some(last_colon) = id.rfind(':') else {
-        return id;
-    };
-    let last_seg = &id[last_colon + 1..];
-
-    // Determine how many segments to strip from the right:
-    // - Standard: 2 (hash_prefix, line_start)
-    // - Windowed: 3 (wN or tNwM, hash_prefix, line_start)
-    // Window suffix formats:
-    //   - "w0", "w1", ..., "w99" (generic)
-    //   - "t0w0", "t1w3", ..., "tNwM" (markdown table windows)
-    let segments_to_strip = if is_window_suffix(last_seg) { 3 } else { 2 };
-
-    let mut end = id.len();
-    for _ in 0..segments_to_strip {
-        if let Some(i) = id[..end].rfind(':') {
-            end = i;
-        } else {
-            break;
-        }
-    }
-    &id[..end]
-}
-
-/// Returns `true` if `seg` looks like a window suffix produced by the parser:
-/// either `wN` (generic windowed chunks) or `tNwM` (markdown table windows
-/// from `parser/markdown/tables.rs::emit_table_window`).
-fn is_window_suffix(seg: &str) -> bool {
-    let bytes = seg.as_bytes();
-    // Generic: "wN" — 'w' followed by 1+ ASCII digits. `apply_windowing`
-    // emits a `u32` index, so chunks that produce 100+ windows (legitimate
-    // for very large markdown / data files) must match here too — a length
-    // ceiling would leave the suffix unstripped, corrupting file-based dedup
-    // / glob filtering / SPLADE fusion.
-    if bytes.first() == Some(&b'w') && bytes.len() >= 2 && bytes[1..].iter().all(u8::is_ascii_digit)
-    {
-        return true;
-    }
-    // Table-window: "tNwM" — 't' + digits + 'w' + digits
-    if bytes.first() == Some(&b't') && bytes.len() >= 4 {
-        // Find the 'w' separator after the t-digits
-        let mut i = 1;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        // Need at least one digit after 't', then 'w', then at least one digit
-        if i >= 2 && i < bytes.len() && bytes[i] == b'w' {
-            let rest = &bytes[i + 1..];
-            if !rest.is_empty() && rest.iter().all(u8::is_ascii_digit) {
-                return true;
-            }
-        }
-    }
-    false
-}
 
 /// Compile a glob pattern into a matcher, logging and ignoring invalid patterns.
 /// Returns `None` if the pattern is `None` or invalid (with a warning logged).
@@ -138,13 +73,15 @@ pub(crate) fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         && is_name_like_query(&filter.query_text);
     let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
-    // Select columns: always id + embedding, optionally name for hybrid scoring
-    // or demotion (test function detection needs the name)
+    // Select columns: always id + origin + embedding, optionally name for
+    // hybrid scoring or demotion (test function detection needs the name).
+    // `origin` is the authoritative file path the scoring loop feeds to the
+    // glob/note-boost/importance signals — never a substring parsed from `id`.
     let need_name = use_hybrid || filter.enable_demotion;
     let columns = if need_name {
-        "rowid, id, embedding, name"
+        "rowid, id, origin, embedding, name"
     } else {
-        "rowid, id, embedding"
+        "rowid, id, origin, embedding"
     };
 
     FilterSql {
@@ -184,126 +121,6 @@ mod tests {
         assert!(compile_glob_filter(Some(&pattern)).is_none());
     }
 
-    // ===== extract_file_from_chunk_id tests =====
-
-    #[test]
-    fn test_extract_file_standard_chunk_id() {
-        // Standard: "path:line_start:hash_prefix"
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345"),
-            "src/foo.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_windowed_chunk_id() {
-        // Windowed: "path:line_start:hash_prefix:wN"
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w0"),
-            "src/foo.rs"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w3"),
-            "src/foo.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_nested_path() {
-        assert_eq!(
-            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef"),
-            "src/cli/commands/mod.rs"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef:w1"),
-            "src/cli/commands/mod.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_windowed_chunk_id_w_prefix() {
-        // Windowed IDs use "wN" format (not bare digits)
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w0"),
-            "src/foo.rs"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w12"),
-            "src/foo.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_hash_not_confused_with_window() {
-        // 8-char hex hash should NOT be mistaken for a window index
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:deadbeef"),
-            "src/foo.rs"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_markdown_table_window() {
-        // Markdown table windows produce `:tNwM` suffix
-        // (from src/parser/markdown/tables.rs::emit_table_window)
-        assert_eq!(
-            extract_file_from_chunk_id("docs/x.md:10:abc12345:t0w3"),
-            "docs/x.md"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("docs/x.md:42:abc12345:t1w0"),
-            "docs/x.md"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("docs/foo/bar.md:5:cafebabe:t12w99"),
-            "docs/foo/bar.md"
-        );
-    }
-
-    #[test]
-    fn test_extract_file_window_index_three_or_more_digits() {
-        // Very large chunks can produce 100+ windows. w100+ must pass the
-        // suffix check so the index doesn't leak into the file path,
-        // corrupting file-based dedup / glob filtering / SPLADE fusion.
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w100"),
-            "src/foo.rs"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w999"),
-            "src/foo.rs"
-        );
-        assert_eq!(
-            extract_file_from_chunk_id("docs/foo/bar.md:5:cafebabe:t12w999"),
-            "docs/foo/bar.md"
-        );
-    }
-
-    #[test]
-    fn test_is_window_suffix_recognizes_both_formats() {
-        // Generic wN
-        assert!(is_window_suffix("w0"));
-        assert!(is_window_suffix("w99"));
-        // 100+-window indices must also be recognised.
-        assert!(is_window_suffix("w100"));
-        assert!(is_window_suffix("w12345"));
-        // Table tNwM
-        assert!(is_window_suffix("t0w0"));
-        assert!(is_window_suffix("t12w99"));
-        // Negative: hash prefixes, plain hex
-        assert!(!is_window_suffix("deadbeef"));
-        assert!(!is_window_suffix("abc12345"));
-        assert!(!is_window_suffix("w")); // no digits
-        assert!(!is_window_suffix("t1w")); // no digits after w
-        assert!(!is_window_suffix("tw0")); // no digits after t
-        assert!(!is_window_suffix(""));
-    }
-
-    #[test]
-    fn test_extract_file_no_colons() {
-        assert_eq!(extract_file_from_chunk_id("justanid"), "justanid");
-    }
-
     // ===== build_filter_sql tests =====
 
     #[test]
@@ -313,7 +130,7 @@ mod tests {
         assert!(fsql.conditions.is_empty());
         assert!(fsql.bind_values.is_empty());
         // Default has enable_demotion=true, which requires name column
-        assert_eq!(fsql.columns, "rowid, id, embedding, name");
+        assert_eq!(fsql.columns, "rowid, id, origin, embedding, name");
         assert!(!fsql.use_hybrid);
         assert!(!fsql.use_rrf);
     }
@@ -326,7 +143,7 @@ mod tests {
             ..Default::default()
         };
         let fsql = build_filter_sql(&filter);
-        assert_eq!(fsql.columns, "rowid, id, embedding");
+        assert_eq!(fsql.columns, "rowid, id, origin, embedding");
     }
 
     #[test]
