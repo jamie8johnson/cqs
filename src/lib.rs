@@ -89,6 +89,7 @@ pub mod store;
 pub mod train_data;
 pub mod vendored;
 pub mod worktree;
+pub mod worktree_overlay;
 
 pub mod ci;
 pub mod eval;
@@ -743,7 +744,11 @@ const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
 /// Resolve the per-file size cap, checking `CQS_MAX_FILE_SIZE` first. Zero
 /// falls back to the default — disabling the cap entirely would OOM on
 /// multi-GB artifacts.
-fn max_file_size() -> u64 {
+///
+/// `pub` so the worktree overlay's parse-set filter
+/// (`src/worktree_overlay.rs`) gates delta files by the exact same
+/// discovery cap `cqs index` applies, rather than a near-equivalent.
+pub fn max_file_size() -> u64 {
     std::env::var("CQS_MAX_FILE_SIZE")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())

@@ -278,6 +278,7 @@ src/
     staleness.rs - Proactive staleness warnings for search results
     telemetry.rs - Optional command usage logging (CQS_TELEMETRY=1)
     store.rs    - Store opening utilities, CommandContext, vector index building
+    worktree_overlay_build.rs - Bin-side overlay builder (result-trust §3): `build_overlay` parses+embeds the worktree delta into an in-memory Store via the watch pipeline's `reindex_files`; consumed by the daemon path in a later slice
     watch/      - File watcher + daemon (split from watch.rs in PR #1147)
       mod.rs    - WatchConfig/WatchState, cmd_watch entry point, gitignore + WSL helpers
       socket.rs - Unix-socket daemon client handler (handle_socket_client)
@@ -420,7 +421,8 @@ src/
   suggest.rs    - Auto-suggest notes from code patterns
   config.rs     - Configuration file support
   vendored.rs   - Vendored-content detection (#1221): default prefix list (`vendor`, `node_modules`, `third_party`, `.cargo`, `target`, `dist`, `build`) + path-segment matcher used at index time to flag chunks for the `trust_level: "vendored-code"` downgrade. Override via `[index].vendored_paths` in `.cqs.toml`.
-  worktree.rs   - Git-worktree → main-project-`.cqs/` discovery (#1254). When `cqs` runs from inside a worktree without its own `.cqs/`, `resolve_index_dir` parses the worktree's `.git` file, follows `commondir` to the main project, and serves queries from main's index. Every JSON envelope from that process gets `_meta.worktree_stale: true` so consuming agents know the served snapshot is from main's branch.
+  worktree.rs   - Git-worktree → main-project-`.cqs/` discovery (#1254). When `cqs` runs from inside a worktree without its own `.cqs/`, `resolve_index_dir` parses the worktree's `.git` file, follows `commondir` to the main project, and serves queries from main's index. Every JSON envelope from that process gets `_meta.worktree_stale: true` so consuming agents know the served snapshot is from main's branch. `overlay_root` wraps both worktree-detection shapes (nested + out-of-tree) for the search overlay.
+  worktree_overlay.rs - Worktree search-overlay plumbing (result-trust §3): dirty-delta discovery against the parent's HEAD (`-z --find-renames` name-status parsing, untracked via ls-files), origin-level `masked_origins`, blake3 dirty-state fingerprint, `WorktreeOverlay`/`OverlayStats` types. Embedder-free lib half; the builder lives bin-side (see cli/worktree_overlay_build.rs).
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
     mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), provider.rs (BatchProvider trait, BatchSubmitItem, MockBatchProvider for tests), summary.rs (find_contrastive_neighbors)

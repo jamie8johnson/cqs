@@ -262,6 +262,66 @@ pub fn parent_index_boundary_crossed(cwd: &Path, project_root: &Path) -> Option<
     }
 }
 
+/// Resolve the worktree root to build a search overlay for, or `None`
+/// when no overlay applies.
+///
+/// The worktree search overlay (`src/worktree_overlay.rs`) serves a
+/// worktree's *dirty delta* on top of the parent index. It applies only
+/// when the invocation lives in a worktree whose reads were redirected to
+/// the parent project's index — exactly the two layouts the codebase
+/// already detects:
+///
+///   1. **Nested worktrees** (`.claude/worktrees/<agent>/` under the
+///      parent): caught by [`parent_index_boundary_crossed`], where the
+///      resolved root is a strict ancestor of the enclosing git root.
+///   2. **Out-of-tree worktrees** (`git worktree add ../wt`): caught by
+///      [`lookup_main_cqs_dir`] returning
+///      [`MainIndexLookup::WorktreeUseMain`] — the worktree has no own
+///      `.cqs/` and resolution redirected to main's.
+///
+/// Returns `Some(worktree_root)` (canonicalized) when either half fires
+/// AND the enclosing git root differs from `resolved_root` (a regular
+/// repo where they coincide has no parent index to overlay onto).
+/// Returns `None` otherwise — the safe non-overlay path. Wraps the two
+/// existing predicates so the disjunction lives in one place; the flag
+/// layer in PR-2 calls this to decide whether an overlay is even
+/// eligible.
+///
+/// `resolved_root` is the project root the invocation resolved to (the
+/// CLI's `find_project_root` output / the daemon's served root).
+pub fn overlay_root(cwd: &Path, resolved_root: &Path) -> Option<PathBuf> {
+    // Nested case: the boundary-crossing predicate already returns the
+    // worktree root when the resolver walked up past the worktree's own
+    // `.git` to an ancestor (the parent-index hazard #1814 guards).
+    if let Some(root) = parent_index_boundary_crossed(cwd, resolved_root) {
+        return Some(root);
+    }
+
+    // Out-of-tree case: the worktree is NOT under the parent, so the
+    // boundary predicate's ancestor check never fires. Detect it via the
+    // same `.git`-link resolution `resolve_index_dir` uses. `WorktreeUseMain`
+    // means "this is a worktree with no own index, redirected to main".
+    //
+    // Resolve the enclosing git root FIRST and feed THAT to the lookup:
+    // `lookup_main_cqs_dir` reads `<dir>/.git`, which only exists at the
+    // worktree root. From a subdirectory (`wt/src/`) it would return
+    // `NotWorktree`. Walking up to the `.git`-bearing root makes the
+    // predicate fire from anywhere inside the worktree.
+    let probe = enclosing_git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    if let MainIndexLookup::WorktreeUseMain { worktree_root, .. } = lookup_main_cqs_dir(&probe) {
+        // Guard: the redirect target must actually differ from the
+        // worktree itself (a regular repo never reaches WorktreeUseMain,
+        // but canonicalize resolved_root for a like-for-like compare).
+        let resolved =
+            dunce::canonicalize(resolved_root).unwrap_or_else(|_| resolved_root.to_path_buf());
+        if worktree_root != resolved {
+            return Some(worktree_root);
+        }
+    }
+
+    None
+}
+
 /// Read the worktree's name (the directory under
 /// `<main>/.git/worktrees/<name>/`) for `_meta.worktree_name` in
 /// JSON envelopes. Falls back to the worktree dir's basename when
@@ -669,5 +729,53 @@ mod tests {
         let loose = dir.path().join("loose");
         std::fs::create_dir_all(&loose).unwrap();
         assert_eq!(parent_index_boundary_crossed(&loose, dir.path()), None);
+    }
+
+    /// `overlay_root` fires for the nested worktree shape — the same layout
+    /// `parent_index_boundary_crossed` flags. Returns the worktree root so
+    /// the overlay builder knows which checkout's delta to compute.
+    #[test]
+    fn overlay_root_some_for_nested_worktree() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("workspace");
+        std::fs::create_dir_all(parent.join(".git")).unwrap();
+        std::fs::create_dir_all(parent.join(crate::INDEX_DIR)).unwrap();
+        let wt = parent.join(".claude").join("worktrees").join("agent-x");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /abs/.git/worktrees/agent-x\n").unwrap();
+
+        let canon_parent = dunce::canonicalize(&parent).unwrap();
+        let canon_wt = dunce::canonicalize(&wt).unwrap();
+
+        assert_eq!(
+            overlay_root(&wt, &canon_parent),
+            Some(canon_wt),
+            "nested worktree resolving to its parent index is overlay-eligible"
+        );
+    }
+
+    /// `overlay_root` returns `None` for a regular repo — CWD's git root
+    /// equals the resolved root, so there is no parent index to overlay onto.
+    #[test]
+    fn overlay_root_none_for_regular_repo() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join(crate::INDEX_DIR)).unwrap();
+        let canon_repo = dunce::canonicalize(&repo).unwrap();
+        assert_eq!(overlay_root(&repo, &canon_repo), None);
+        let sub = repo.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(overlay_root(&sub, &canon_repo), None);
+    }
+
+    /// `overlay_root` returns `None` when CWD has no enclosing git root —
+    /// nothing to overlay, and no worktree to compute a delta from.
+    #[test]
+    fn overlay_root_none_without_enclosing_git() {
+        let dir = TempDir::new().unwrap();
+        let loose = dir.path().join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert_eq!(overlay_root(&loose, dir.path()), None);
     }
 }
