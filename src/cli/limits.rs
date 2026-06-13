@@ -71,6 +71,12 @@ pub(crate) const IMPACT_DEPTH_CAP: usize = 10;
 /// because onboard's tour stays shallow by design — a deep tour is noise.
 pub(crate) const ONBOARD_DEPTH_CAP: usize = 5;
 
+/// `--depth` ceiling for `cqs gather`. Bounds the call-graph BFS-expansion
+/// depth around the seed set. Holds the same value as [`ONBOARD_DEPTH_CAP`]
+/// today but is an independent knob — gather and onboard tune separately,
+/// so a future onboard retune must not silently move gather's ceiling.
+pub(crate) const GATHER_DEPTH_CAP: usize = 5;
+
 // ============ reranker pool sizing ============
 
 /// Default over-retrieval multiplier for the cross-encoder reranker.
@@ -321,6 +327,56 @@ mod tests {
         assert_eq!(PLACEMENT_LIMIT_CAP, 10);
         assert_eq!(IMPACT_DEPTH_CAP, 10);
         assert_eq!(ONBOARD_DEPTH_CAP, 5);
+        assert_eq!(GATHER_DEPTH_CAP, 5);
+    }
+
+    /// Structural guard against a half-completed depth-cap sweep: every BFS
+    /// depth clamp in the command layer must take its ceiling from a named
+    /// `*_DEPTH_CAP` constant, not a raw literal. Asserted on source text on
+    /// purpose — gather's literal `5` equals [`ONBOARD_DEPTH_CAP`], so a
+    /// value-only check would stay green while the binding silently drifts.
+    #[test]
+    fn every_bfs_depth_clamp_uses_a_named_cap() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let sites: &[(&str, &str)] = &[
+            ("src/cli/commands/graph/impact.rs", "args.depth.clamp"),
+            ("src/cli/commands/search/onboard.rs", "depth.clamp"),
+            (
+                "src/cli/commands/search/gather.rs",
+                "expand_depth: args.depth.clamp",
+            ),
+        ];
+        let mut offenders: Vec<String> = Vec::new();
+        for (rel, marker) in sites {
+            let path = std::path::Path::new(manifest_dir).join(rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let mut found_any = false;
+            for (lineno, line) in src.lines().enumerate() {
+                if !line.contains(marker) || !line.contains(".clamp(") {
+                    continue;
+                }
+                found_any = true;
+                let after = line.split(".clamp(").nth(1).unwrap_or("");
+                let inner = after.split(')').next().unwrap_or("");
+                let ceiling = inner.split(',').nth(1).map(str::trim).unwrap_or("");
+                if !ceiling.contains("DEPTH_CAP") {
+                    offenders.push(format!(
+                        "{rel}:{}  depth ceiling `{ceiling}` is a raw literal, not a named *_DEPTH_CAP constant",
+                        lineno + 1
+                    ));
+                }
+            }
+            assert!(
+                found_any,
+                "no depth-clamp line matched marker `{marker}` in {rel} — the site moved; update this guard's marker so the family stays enumerated"
+            );
+        }
+        assert!(
+            offenders.is_empty(),
+            "incomplete depth-cap sweep — these BFS depth clamps still ship a raw literal:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     #[test]

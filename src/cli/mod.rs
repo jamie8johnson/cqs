@@ -33,8 +33,8 @@ pub use dispatch::run_with;
 // Shared clamp ceilings for commands that are dispatched from both
 // CLI and batch paths.
 pub(crate) use limits::{
-    GRAPH_LIMIT_CAP, IMPACT_DEPTH_CAP, ONBOARD_DEPTH_CAP, PLACEMENT_LIMIT_CAP, RELATED_LIMIT_MAX,
-    SCOUT_LIMIT_MAX, SIMILAR_LIMIT_MAX,
+    GATHER_DEPTH_CAP, GRAPH_LIMIT_CAP, IMPACT_DEPTH_CAP, ONBOARD_DEPTH_CAP, PLACEMENT_LIMIT_CAP,
+    RELATED_LIMIT_MAX, SCOUT_LIMIT_MAX, SIMILAR_LIMIT_MAX,
 };
 
 // Re-export for watch.rs and commands
