@@ -1090,6 +1090,7 @@ fn test_check_origins_stale_across_batch_boundary() {
             doc: None,
             line_start: 1,
             line_end: 3,
+            byte_start: 0,
             content_hash: hash,
             canonical_hash: String::new(),
             parent_id: None,

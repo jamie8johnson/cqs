@@ -65,6 +65,7 @@ fn insert_callable_chunk(store: &Store, content_hash: &str, name: &str) {
         doc: None,
         line_start: 1,
         line_end: 10,
+        byte_start: 0,
         content_hash: content_hash.to_string(),
         canonical_hash: String::new(),
         window_idx: None,

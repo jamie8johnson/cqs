@@ -264,19 +264,52 @@ pub(super) fn parser_stage(
                             // Rewrite paths to be relative for storage
                             // Normalize path separators to forward slashes for cross-platform consistency
                             let path_str = normalize_path(rel_path);
-                            // Build a map of old IDs -> new IDs for parent_id fixup
+                            // Build a map of old IDs -> new IDs for parent_id fixup.
+                            // MUST reconstruct via the same `chunk_id` helper the
+                            // extract-time site used, including `byte_start`, or the
+                            // map silently fails to remap. `byte_start` makes the id
+                            // injective within a file (same-line byte-identical
+                            // chunks no longer collide), so this map no longer
+                            // collapses distinct chunks onto one entry.
                             let id_map: std::collections::HashMap<String, String> = chunks
                                 .iter()
                                 .map(|chunk| {
-                                    let hash_prefix =
-                                        chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
-                                    let new_id = format!(
-                                        "{}:{}:{}",
-                                        path_str, chunk.line_start, hash_prefix
+                                    let new_id = cqs::parser::chunk_id(
+                                        &path_str,
+                                        chunk.line_start,
+                                        chunk.byte_start,
+                                        &chunk.content_hash,
                                     );
                                     (chunk.id.clone(), new_id)
                                 })
                                 .collect();
+                            // Injectivity guard. Two failure modes, both the
+                            // silent chunk-loss class this id format prevents:
+                            //   - old ids collide -> `id_map` key collapse ->
+                            //     fewer keys than chunks (`id_map.len()`).
+                            //   - new ids collide -> distinct chunks UPSERT onto
+                            //     one `chunks.id` PRIMARY KEY row -> fewer distinct
+                            //     values than keys.
+                            // Check both against `chunks.len()`.
+                            #[cfg(debug_assertions)]
+                            {
+                                let distinct_new: std::collections::HashSet<&String> =
+                                    id_map.values().collect();
+                                debug_assert_eq!(
+                                    id_map.len(),
+                                    chunks.len(),
+                                    "chunk id collision (old ids): {} chunks -> {} keys in {path_str}",
+                                    chunks.len(),
+                                    id_map.len(),
+                                );
+                                debug_assert_eq!(
+                                    distinct_new.len(),
+                                    chunks.len(),
+                                    "chunk id collision (new ids): {} chunks -> {} distinct ids in {path_str}",
+                                    chunks.len(),
+                                    distinct_new.len(),
+                                );
+                            }
                             for chunk in &mut chunks {
                                 chunk.file = rel_path.clone();
                                 if let Some(new_id) = id_map.get(&chunk.id) {
@@ -660,6 +693,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             content_hash: "seed".to_string(),
             canonical_hash: String::new(),
             parent_id: None,
@@ -793,6 +827,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             content_hash: "seed".to_string(),
             canonical_hash: String::new(),
             parent_id: None,
@@ -889,6 +924,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             content_hash: "seed".to_string(),
             canonical_hash: String::new(),
             parent_id: None,
@@ -1142,6 +1178,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             content_hash: "seed".to_string(),
             canonical_hash: String::new(),
             parent_id: None,
@@ -1237,6 +1274,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             content_hash: "seed".to_string(),
             canonical_hash: String::new(),
             parent_id: None,

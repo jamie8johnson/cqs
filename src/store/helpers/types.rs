@@ -95,6 +95,9 @@ impl From<&ChunkSummary> for Chunk {
             doc: cs.doc.clone(),
             line_start: cs.line_start,
             line_end: cs.line_end,
+            // byte_start is an index-time id disambiguator only; the id is
+            // already final on a hydrated Chunk, so it is never consulted here.
+            byte_start: 0,
             content_hash: cs.content_hash.clone(),
             // canonical_hash is an index-time embedding-cache key only; it is
             // never persisted into ChunkSummary and never consulted on a

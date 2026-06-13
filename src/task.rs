@@ -717,6 +717,7 @@ mod tests {
             doc: None,
             line_start,
             line_end,
+            byte_start: 0,
             content_hash: format!("{name}_hash"),
             canonical_hash: String::new(),
             parent_id: None,

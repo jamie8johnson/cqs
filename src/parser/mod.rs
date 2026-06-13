@@ -16,7 +16,7 @@ pub mod l5x;
 pub mod markdown;
 pub mod types;
 
-pub use chunk::{canonical_hash_fallback, collapse_whitespace};
+pub use chunk::{canonical_hash_fallback, chunk_id, collapse_whitespace};
 
 /// The current parser-logic version stamped onto every chunk this build
 /// extracts (`chunk::PARSER_VERSION`). Re-exported so the binary crate's
@@ -938,10 +938,26 @@ impl Parser {
     fn parse_fenced_blocks(
         &self,
         blocks: &[markdown::FencedBlock],
-        _source: &str,
+        source: &str,
         path: &Path,
     ) -> Vec<Chunk> {
         let _span = tracing::info_span!("parse_fenced_blocks", count = blocks.len()).entered();
+
+        // Byte offset of the start of each 1-indexed line in the markdown file.
+        // `line_byte_offset[n]` = byte at which line n begins (line 1 = byte 0).
+        // Used to lift each fenced-block chunk's block-relative `byte_start`
+        // into a file-relative offset so chunk ids stay injective ACROSS blocks
+        // (two blocks could otherwise yield chunks at the same block-relative
+        // byte_start), and so the stored `byte_start` matches the file-relative
+        // meaning the tree-sitter and markdown-section paths use.
+        let mut line_byte_offset: Vec<usize> = Vec::with_capacity(source.len() / 32 + 2);
+        line_byte_offset.push(0); // line 0 sentinel (unused; lines are 1-indexed)
+        line_byte_offset.push(0); // line 1 begins at byte 0
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                line_byte_offset.push(i + 1);
+            }
+        }
         let mut result = Vec::new();
 
         for block in blocks {
@@ -985,6 +1001,14 @@ impl Parser {
 
             // Line offset: fenced block content starts on the line after the opening fence
             let line_offset = block.line_start; // fence is at line_start, content starts at line_start+1
+                                                // File-relative byte offset of the block content's first byte. The
+                                                // opening fence is on `block.line_start`; content begins on the next
+                                                // line. Added to each chunk's block-relative `byte_start` to lift it
+                                                // into file coordinates (keeps ids injective across blocks).
+            let block_byte_offset = line_byte_offset
+                .get(block.line_start as usize + 1)
+                .copied()
+                .unwrap_or(0) as u32;
 
             // Env-overridable per-chunk byte cap.
             let max_chunk_bytes = crate::limits::parser_max_chunk_bytes();
@@ -1008,14 +1032,19 @@ impl Parser {
                                 }
                             }
                         }
-                        // Adjust line numbers to markdown file position
+                        // Adjust line numbers AND byte_start to markdown file
+                        // position (extract_chunk computed them relative to the
+                        // block content), then rebuild the id from the lifted
+                        // coordinates via the shared `chunk_id` helper.
                         chunk.line_start += line_offset;
                         chunk.line_end += line_offset;
-                        // Rebuild ID with adjusted line numbers
-                        let hash_prefix =
-                            chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
-                        chunk.id =
-                            format!("{}:{}:{}", path.display(), chunk.line_start, hash_prefix);
+                        chunk.byte_start = chunk.byte_start.saturating_add(block_byte_offset);
+                        chunk.id = chunk::chunk_id(
+                            &path.display().to_string(),
+                            chunk.line_start,
+                            chunk.byte_start,
+                            &chunk.content_hash,
+                        );
                         result.push(chunk);
                     }
                     Err(e) => {

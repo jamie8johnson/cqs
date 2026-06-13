@@ -43,6 +43,7 @@ fn placement_chunk_with_lang(
         doc: None,
         line_start,
         line_end: line_start + 5,
+        byte_start: 0,
         content_hash: hash,
         canonical_hash: String::new(),
         parent_id: None,

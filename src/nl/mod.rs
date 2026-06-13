@@ -150,7 +150,7 @@ pub fn generate_nl_with_call_context_and_summary(
 /// use std::path::PathBuf;
 ///
 /// let chunk = Chunk {
-///     id: "test.rs:1:abcd1234".to_string(),
+///     id: "test.rs:1:0:abcd1234".to_string(),
 ///     file: PathBuf::from("test.rs"),
 ///     language: Language::Rust,
 ///     chunk_type: ChunkType::Function,
@@ -159,6 +159,7 @@ pub fn generate_nl_with_call_context_and_summary(
 ///     content: "fn parseConfig(path: &str) -> Config { ... }".to_string(),
 ///     line_start: 1,
 ///     line_end: 5,
+///     byte_start: 0,
 ///     doc: Some("/// Parse configuration from file".to_string()),
 ///     content_hash: "abcd1234".to_string(),
 ///     canonical_hash: String::new(),
@@ -589,6 +590,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: Some("/// Load config from path".to_string()),
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -618,6 +620,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: Some(
                 r#"/**
                  * Validates an email address
@@ -664,6 +667,7 @@ mod tests {
             content: content.to_string(),
             line_start: 1,
             line_end: 10,
+            byte_start: 0,
             doc: None,
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -716,6 +720,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: Some("/// Check if calls should be allowed".to_string()),
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -745,6 +750,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: None,
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -776,6 +782,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: None,
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -800,6 +807,7 @@ mod tests {
             content: "{}".to_string(),
             line_start: 1,
             line_end: 1,
+            byte_start: 0,
             doc: Some("/// Check if allowed".to_string()),
             content_hash: "abcd1234".to_string(),
             canonical_hash: String::new(),
@@ -855,6 +863,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 10,
+            byte_start: 0,
             content_hash: String::new(),
             canonical_hash: String::new(),
             parent_id: None,

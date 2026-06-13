@@ -598,6 +598,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 5,
+            byte_start: 0,
             content_hash: "concurrent-hash".to_string(),
             canonical_hash: String::new(),
             window_idx: None,

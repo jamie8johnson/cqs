@@ -31,7 +31,8 @@ pub enum ParserError {
 /// Each chunk represents a single code element extracted by tree-sitter.
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    /// Unique identifier: `{file}:{line_start}:{content_hash}` or `{parent_id}:w{window_idx}`
+    /// Unique identifier: `{file}:{line_start}:{byte_start}:{hash8}` (see
+    /// `parser::chunk::chunk_id`) or `{parent_id}:w{window_idx}` for windows.
     pub id: String,
     /// Source file path (typically absolute during indexing, stored as provided)
     pub file: PathBuf,
@@ -51,6 +52,15 @@ pub struct Chunk {
     pub line_start: u32,
     /// Ending line number (1-indexed)
     pub line_end: u32,
+    /// Start byte offset of this chunk's source element within its file
+    /// (0-indexed). The id disambiguator: byte-distinct chunks of one file
+    /// occupy disjoint byte ranges, so this is unique per chunk within a file
+    /// even when `line_start` and `content_hash` collide (same-line macro twins,
+    /// `struct A; impl A {}`). Deterministic and stable across re-runs of the
+    /// same source; folded into the id by `parser::chunk::chunk_id`. Hydrated-
+    /// from-DB chunks set this to 0 (never consulted off the freshly-parsed
+    /// path; the id is already final).
+    pub byte_start: u32,
     /// BLAKE3 hash of content for change detection
     pub content_hash: String,
     /// BLAKE3 hash of a *comment- and whitespace-normalized* form of the

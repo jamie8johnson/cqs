@@ -709,6 +709,7 @@ mod tests {
             doc: None,
             line_start,
             line_end,
+            byte_start: 0,
             content_hash: name.to_string(),
             canonical_hash: String::new(),
             parent_id: None,

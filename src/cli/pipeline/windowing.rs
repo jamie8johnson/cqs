@@ -80,6 +80,9 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                         }, // Doc only on first window
                         line_start: chunk.line_start,
                         line_end: chunk.line_end,
+                        // Windows inherit the parent's byte_start; the `:w{idx}`
+                        // id suffix disambiguates windows of one parent.
+                        byte_start: chunk.byte_start,
                         content_hash: window_hash,
                         canonical_hash: window_canonical,
                         parent_id: Some(parent_id.clone()),
