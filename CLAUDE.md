@@ -163,6 +163,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Conventions:**
 - Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
+- ⚠️ **FABLE DISABLED 2026-06-12 by US export order (temporary, no timeline).** Until access is restored, **every `fable` below is overridden to `opus`** — wherever this file, a skill, or an agent def says to dispatch fable (reviews, seam-audits, audit finders, orchestration/judge passes), use opus instead. Dispatching fable now fails mid-run and wastes the lane. Revert to the split below when an announcement or a successful fable dispatch confirms it's back; don't assume restoration from silence.
 - Model split: `opus` implements, `fable` orchestrates/reviews/audits. EXCEPTION: security lanes (audit Security category, /red-team, security reviews) stay `opus`. Sonnet only for mechanical test-only tasks; haiku for doc-only edits.
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
