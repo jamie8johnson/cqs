@@ -123,10 +123,11 @@ pub(crate) struct QueryArgs {
     /// text surface drops it regardless. Recording is a side channel — it never
     /// changes scores or order.
     pub record_rank_signals: bool,
-    /// The caller requested the worktree search overlay (`--overlay` flag OR
-    /// `CQS_WORKTREE_OVERLAY=1`), resolved at the adapter boundary like
-    /// `force_base_index`. Off by default. The core itself never reads env; this
-    /// flag is what the daemon's `BatchView::overlay()` (PR-3) consults to decide
+    /// The worktree search overlay is active for this query, resolved at the
+    /// adapter boundary by [`resolve_overlay_active`] (opt-out > opt-in >
+    /// default-on-in-worktree) like `force_base_index`. The core itself
+    /// never reads env; this flag is what the daemon's `BatchView::overlay()`
+    /// (PR-3) consults to decide
     /// whether to build+merge an overlay, and what the CLI-direct adapter
     /// (`cmd_query`) uses to detect overlay-eligibility for the honest-degradation
     /// warn + `_meta.worktree_overlay = "skipped-no-daemon"`.
@@ -171,18 +172,87 @@ impl Default for QueryArgs {
     }
 }
 
-/// `true` when `CQS_WORKTREE_OVERLAY=1` requests the worktree overlay. The
-/// env-var equivalent of `--overlay`, resolved at the adapter boundary (like
+/// Tri-state read of `CQS_WORKTREE_OVERLAY`. `"1"` ⇒ explicit opt-in
+/// (`Some(true)`), `"0"` ⇒ explicit opt-out (`Some(false)`), anything else or
+/// unset ⇒ no signal (`None`). Resolved at the adapter boundary (like
 /// `CQS_FORCE_BASE_INDEX`) so the surface-agnostic core never reads env.
-pub(crate) fn overlay_env_requested() -> bool {
-    std::env::var("CQS_WORKTREE_OVERLAY").as_deref() == Ok("1")
+pub(crate) fn overlay_env_signal() -> Option<bool> {
+    match std::env::var("CQS_WORKTREE_OVERLAY").as_deref() {
+        Ok("1") => Some(true),
+        Ok("0") => Some(false),
+        _ => None,
+    }
+}
+
+/// The single shared overlay-activation resolution used by BOTH the CLI
+/// `QueryArgs::from_cli` adapter and the daemon dispatch-forward decision, so
+/// the two surfaces cannot diverge (result-trust §3 default-on flip).
+///
+/// Precedence (plan §8):
+/// 1. **Explicit opt-OUT wins** — `--no-overlay` OR `CQS_WORKTREE_OVERLAY=0`
+///    ⇒ `false` unconditionally.
+/// 2. **Explicit opt-IN** — `--overlay` OR `CQS_WORKTREE_OVERLAY=1` ⇒ `true`.
+/// 3. **Default** (no explicit signal) ⇒ `true` iff the invocation is in an
+///    overlay-eligible worktree (`overlay_eligible` carries
+///    `cqs::worktree::overlay_root(cwd, root).is_some()`). Off everywhere else,
+///    including the main checkout — so a non-worktree search is byte-identical
+///    to the pre-flip behavior (the recall-gate fence).
+///
+/// `flag_on` is `--overlay`; `flag_off` is `--no-overlay`. The two flags are
+/// clap-`conflicts_with` mutually exclusive, but env can still set both
+/// directions, so opt-out is checked first to keep rule 1 absolute.
+pub(crate) fn resolve_overlay_active(
+    flag_on: bool,
+    flag_off: bool,
+    overlay_eligible: bool,
+) -> bool {
+    resolve_overlay_active_with(flag_on, flag_off, overlay_eligible, overlay_env_signal())
+}
+
+/// Pure precedence core of [`resolve_overlay_active`], with the env signal
+/// passed in so the resolution can be unit-tested without mutating the
+/// process-global `CQS_WORKTREE_OVERLAY` (a race in parallel test runs).
+fn resolve_overlay_active_with(
+    flag_on: bool,
+    flag_off: bool,
+    overlay_eligible: bool,
+    env: Option<bool>,
+) -> bool {
+    // 1. Explicit opt-out wins.
+    if flag_off || env == Some(false) {
+        return false;
+    }
+    // 2. Explicit opt-in.
+    if flag_on || env == Some(true) {
+        return true;
+    }
+    // 3. Default-on in a worktree; off everywhere else.
+    overlay_eligible
+}
+
+/// `true` when this invocation explicitly opts OUT of the overlay (`--no-overlay`
+/// flag OR `CQS_WORKTREE_OVERLAY=0`). Lets the daemon-forward path skip the
+/// worktree probe entirely on the opted-out hot path — the overlay can never
+/// activate, so resolving the project root / reading `.git` per search is waste.
+pub(crate) fn overlay_force_off(flag_off: bool) -> bool {
+    flag_off || overlay_env_signal() == Some(false)
+}
+
+/// `true` when this invocation requested the overlay *explicitly* (a `--overlay`
+/// flag or `CQS_WORKTREE_OVERLAY=1`), as opposed to default-on activation in a
+/// worktree. Drives the no-daemon degradation chattiness (plan §8): an explicit
+/// request that the daemon couldn't honor warns; a default activation degrades
+/// quietly so a default-on feature does not spew a warning on every worktree
+/// query when the daemon is down.
+pub(crate) fn overlay_explicitly_requested(flag_on: bool) -> bool {
+    flag_on || overlay_env_signal() == Some(true)
 }
 
 impl QueryArgs {
     /// Build `QueryArgs` from the top-level CLI struct, resolving the
     /// `CQS_FORCE_BASE_INDEX` env override and the format-dependent JSON
     /// overhead once here at the adapter boundary.
-    fn from_cli(cli: &Cli) -> Self {
+    fn from_cli(cli: &Cli, overlay_eligible: bool) -> Self {
         QueryArgs {
             query: cli.query.clone().unwrap_or_default(),
             limit: cli.limit,
@@ -216,9 +286,10 @@ impl QueryArgs {
             // governs the (cheap) recording post-pass; it matches the wire/MCP
             // default and keeps `from_cli == QueryArgs::default`.
             record_rank_signals: !cli.no_rank_signals,
-            // Flag OR env, resolved once here at the adapter boundary like
-            // `force_base_index`.
-            overlay: cli.overlay || overlay_env_requested(),
+            // Tri-state resolution (opt-out > opt-in > default-on-in-worktree),
+            // resolved once here at the adapter boundary like `force_base_index`.
+            // `overlay_eligible` is the caller's `overlay_root(cwd, root).is_some()`.
+            overlay: resolve_overlay_active(cli.overlay, cli.no_overlay, overlay_eligible),
         }
     }
 
@@ -230,10 +301,10 @@ impl QueryArgs {
     /// disables it. `--include-refs` keeps it (its project half is the real
     /// project store), matching the pre-refactor behavior where a name-only hit
     /// short-circuited to project-only results.
-    fn from_cli_ref(cli: &Cli) -> Self {
+    fn from_cli_ref(cli: &Cli, overlay_eligible: bool) -> Self {
         QueryArgs {
             fts_first: cli.ref_name.is_none(),
-            ..Self::from_cli(cli)
+            ..Self::from_cli(cli, overlay_eligible)
         }
     }
 }
@@ -1183,28 +1254,44 @@ pub(crate) fn cmd_query(
     let store = &ctx.store;
     let root = &ctx.root;
 
+    // Overlay eligibility: `Some(worktree_root)` iff this CWD is an
+    // overlay-eligible worktree (nested or out-of-tree) whose reads redirect to
+    // the parent index. Computed once and reused for the activation decision and
+    // the no-daemon degradation below.
+    let overlay_eligible = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root))
+        .is_some();
+
     // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Reset
     // any per-thread overlay meta left over from a prior in-process search
-    // (chat REPL / batch stdin), then — when an overlay was requested for an
+    // (chat REPL / batch stdin), then — when an overlay would be active for an
     // eligible worktree but we reached the in-process CLI path (no daemon
-    // answered; phase 1 builds overlays daemon-side only) — warn and mark the
-    // envelope so the agent knows results reflect the parent index, not the
-    // worktree. The CLI `SearchCtx::overlay()` returns `None`, so no overlay
-    // merge happens here; this is purely the honest-skip signal.
+    // answered; phase 1 builds overlays daemon-side only) — mark the envelope so
+    // the agent knows results reflect the parent index, not the worktree. The
+    // CLI `SearchCtx::overlay()` returns `None`, so no overlay merge happens
+    // here; this is purely the honest-skip signal.
+    //
+    // Chattiness (plan §8, the default-on flip): an EXPLICIT request the
+    // daemon couldn't honor warns (the agent asked — tell them it didn't
+    // happen). A DEFAULT activation (default-on in a worktree, no explicit flag)
+    // degrades QUIETLY at debug level — a default-on feature must not spew a
+    // warning on every worktree query when the daemon is down. Both still set
+    // `SkippedNoDaemon` so JSON consumers can see it either way.
     cqs::worktree_overlay::clear_overlay_meta();
-    if cli.overlay || overlay_env_requested() {
-        let eligible = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root))
-            .is_some();
-        if eligible {
+    if overlay_eligible && resolve_overlay_active(cli.overlay, cli.no_overlay, overlay_eligible) {
+        if overlay_explicitly_requested(cli.overlay) {
             tracing::warn!(
                 "overlay skipped: daemon not running (results reflect the parent index)"
             );
-            cqs::worktree_overlay::set_overlay_meta(
-                cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon,
+        } else {
+            tracing::debug!(
+                "overlay default-on in worktree skipped: daemon not running (results reflect the parent index)"
             );
         }
+        cqs::worktree_overlay::set_overlay_meta(
+            cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon,
+        );
     }
 
     // Name-only mode: search by function/struct name, skip embedding entirely.
@@ -1222,14 +1309,14 @@ pub(crate) fn cmd_query(
         // Non-ref name-only routes through the shared core (which performs the
         // FTS-by-name lookup + assembly). `--include-refs` is ignored on the
         // name-only path, matching prior behavior.
-        let args = QueryArgs::from_cli(cli);
+        let args = QueryArgs::from_cli(cli, overlay_eligible);
         let output = query_core(ctx, &args)?;
         return render_query_output(cli, root, store, output);
     }
 
     // Plain (non-ref, non-multi-index) search routes through the shared core.
     if cli.ref_name.is_none() && !cli.include_refs {
-        let args = QueryArgs::from_cli(cli);
+        let args = QueryArgs::from_cli(cli, overlay_eligible);
         let output = query_core(ctx, &args)?;
         return render_query_output(cli, root, store, output);
     }
@@ -1240,7 +1327,7 @@ pub(crate) fn cmd_query(
     // `--include-refs` merges all references with the project results. The
     // fan-out consumes the same `PreparedQuery` the plain path's
     // `retrieve_project` does.
-    let args = QueryArgs::from_cli_ref(cli);
+    let args = QueryArgs::from_cli_ref(cli, overlay_eligible);
     // `--ref`-scoped searches one reference store and never reads the project
     // index, so skip the project-surface resolution. `--include-refs` fans out
     // over the project store (`retrieve_project`), so it resolves the full
@@ -1891,7 +1978,7 @@ mod tests {
     fn query_args_default_matches_clap_defaults() {
         use clap::Parser;
         let cli = crate::cli::Cli::try_parse_from(["cqs", "q"]).unwrap();
-        let from_clap = QueryArgs::from_cli(&cli);
+        let from_clap = QueryArgs::from_cli(&cli, false);
         let expected = QueryArgs {
             query: "q".to_string(),
             ..QueryArgs::default()
@@ -1912,7 +1999,7 @@ mod tests {
     fn from_cli_ref_disables_fts_first_for_ref_scoped() {
         use clap::Parser;
         let cli = crate::cli::Cli::try_parse_from(["cqs", "q", "--ref", "stdlib"]).unwrap();
-        let ref_args = QueryArgs::from_cli_ref(&cli);
+        let ref_args = QueryArgs::from_cli_ref(&cli, false);
         assert!(
             !ref_args.fts_first,
             "--ref scoped must disable project-store FTS-first"
@@ -1920,7 +2007,7 @@ mod tests {
         // The only intended divergence from from_cli is fts_first.
         let expected = QueryArgs {
             fts_first: false,
-            ..QueryArgs::from_cli(&cli)
+            ..QueryArgs::from_cli(&cli, false)
         };
         assert_eq!(ref_args, expected);
     }
@@ -1932,12 +2019,12 @@ mod tests {
     fn from_cli_ref_keeps_fts_first_for_include_refs() {
         use clap::Parser;
         let cli = crate::cli::Cli::try_parse_from(["cqs", "q", "--include-refs"]).unwrap();
-        let ref_args = QueryArgs::from_cli_ref(&cli);
+        let ref_args = QueryArgs::from_cli_ref(&cli, false);
         assert!(
             ref_args.fts_first,
             "--include-refs keeps project FTS-first (its project half is the real store)"
         );
-        assert_eq!(ref_args, QueryArgs::from_cli(&cli));
+        assert_eq!(ref_args, QueryArgs::from_cli(&cli, false));
     }
 
     /// The `QueryOutput` envelope is a plain data carrier: an empty result set
@@ -1953,6 +2040,72 @@ mod tests {
         assert!(out.results.is_empty());
         assert_eq!(out.query, "nothing");
         assert!(out.token_info.is_none());
+    }
+
+    // ─── Overlay activation resolution (the default-on flip) ─────────────────
+    //
+    // Hermetic precedence tests over the pure `resolve_overlay_active_with`
+    // (env passed in, never mutating the process-global `CQS_WORKTREE_OVERLAY`).
+    mod overlay_resolution {
+        use super::super::resolve_overlay_active_with;
+
+        // (flag_on, flag_off, eligible, env) → expected.
+        #[test]
+        fn opt_out_flag_wins_over_every_opt_in() {
+            // --no-overlay beats --overlay (clap forbids the combo, but the
+            // resolver must still order opt-out first), beats env=1, beats
+            // default-on eligibility.
+            assert!(!resolve_overlay_active_with(true, true, true, Some(true)));
+            assert!(!resolve_overlay_active_with(false, true, true, None));
+            assert!(!resolve_overlay_active_with(true, true, false, None));
+        }
+
+        #[test]
+        fn env_zero_opts_out_over_flag_and_default() {
+            // CQS_WORKTREE_OVERLAY=0 beats --overlay and default-on.
+            assert!(!resolve_overlay_active_with(true, false, true, Some(false)));
+            assert!(!resolve_overlay_active_with(
+                false,
+                false,
+                true,
+                Some(false)
+            ));
+        }
+
+        #[test]
+        fn opt_in_flag_or_env_activates_regardless_of_eligibility() {
+            // --overlay turns it on even outside a worktree (eligible=false).
+            assert!(resolve_overlay_active_with(true, false, false, None));
+            // env=1 likewise.
+            assert!(resolve_overlay_active_with(false, false, false, Some(true)));
+        }
+
+        #[test]
+        fn default_on_iff_worktree_eligible() {
+            // No explicit signal at all: on in a worktree, off everywhere else.
+            assert!(
+                resolve_overlay_active_with(false, false, true, None),
+                "default-on must fire in an eligible worktree"
+            );
+            assert!(
+                !resolve_overlay_active_with(false, false, false, None),
+                "default must stay OFF outside a worktree (recall-gate fence)"
+            );
+        }
+    }
+
+    /// `overlay_explicitly_requested` is true for an explicit `--overlay` flag
+    /// and for `CQS_WORKTREE_OVERLAY=1`, and false for a bare default activation
+    /// — it gates the no-daemon degradation chattiness. Tested via the flag arg
+    /// only (the env half is covered by the resolution tests); the env read here
+    /// reflects whatever the test runner's env is, so we assert only the
+    /// flag-true ⇒ true direction, which is env-independent.
+    #[test]
+    fn overlay_explicit_request_flag_is_explicit() {
+        assert!(
+            super::overlay_explicitly_requested(true),
+            "--overlay is always an explicit request"
+        );
     }
 
     // ─── Worktree-overlay mask + merge logic (result-trust §3, plan §7) ──────

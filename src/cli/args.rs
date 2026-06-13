@@ -221,13 +221,22 @@ pub(crate) struct SearchArgs {
     pub no_rank_signals: bool,
 
     /// Overlay the worktree's uncommitted/committed delta on top of the parent
-    /// index so results reflect this checkout's edits, not main's. Off by
-    /// default; `CQS_WORKTREE_OVERLAY=1` is the env-var equivalent. Phase 1
+    /// index so results reflect this checkout's edits, not main's. Default-on
+    /// when run from a worktree; off in the main checkout. Tri-state env
+    /// `CQS_WORKTREE_OVERLAY`: `1` forces on, `0` forces off, unset = default.
+    /// `--overlay` forces on; `--no-overlay` forces off (opt-out wins). Phase 1
     /// builds overlays on the daemon path only — a CLI-direct search (no daemon)
-    /// degrades honestly, serving the parent index with a `_meta.worktree_overlay
-    /// = "skipped-no-daemon"` marker. Requires `--json` to forward to the daemon.
-    #[arg(long)]
+    /// serves the parent index with a `_meta.worktree_overlay =
+    /// "skipped-no-daemon"` marker. Requires `--json` to forward to the daemon.
+    #[arg(long, conflicts_with = "no_overlay")]
     pub overlay: bool,
+
+    /// Opt out of the worktree search overlay even when run from a worktree
+    /// (where it is default-on). The explicit-off counterpart of
+    /// `--overlay`; equivalent to `CQS_WORKTREE_OVERLAY=0`. Opt-out wins over
+    /// every opt-in signal.
+    #[arg(long, conflicts_with = "overlay")]
+    pub no_overlay: bool,
 
     /// Wire-only: the absolute worktree root to build the overlay for. Hidden
     /// from `--help` — it is computed by the CLI (`cqs::worktree::overlay_root`)

@@ -64,8 +64,12 @@ fn init_and_index(dir: &Path) {
     );
 }
 
-/// #14 — the regression fence. In a regular repo (no parent worktree to overlay
-/// onto), `--overlay` must produce byte-identical output to a flag-off search.
+/// #14 — the regression fence (default-on flip). In a regular repo /
+/// main checkout (no parent worktree to overlay onto), the overlay must stay OFF
+/// whether or not `--overlay` is passed — `overlay_root` returns None, so the
+/// default-on path never fires. Both `--overlay` and the no-flag default must be
+/// byte-identical to an explicit flag-off search. This is the recall-gate fence:
+/// `cqs eval` runs from the main checkout and must be unaffected by the flip.
 /// `retrieve_project` is on every search path, so an `apply_overlay` that
 /// mutated the inactive path would corrupt all searches.
 #[test]
@@ -79,21 +83,36 @@ fn overlay_no_worktree_no_overlay() {
     .unwrap();
     init_and_index(dir.path());
 
-    let off = run_json(cqs(dir.path()).args(["widget total", "--json", "-n", "5"]));
+    // A regular `tempfile::TempDir` is not a git worktree, so `overlay_root`
+    // returns None regardless of flag — default-on cannot fire here.
+    let default_run = run_json(cqs(dir.path()).args(["widget total", "--json", "-n", "5"]));
+    let explicit_off =
+        run_json(cqs(dir.path()).args(["widget total", "--json", "-n", "5", "--no-overlay"]));
     let on = run_json(cqs(dir.path()).args(["widget total", "--json", "-n", "5", "--overlay"]));
 
     assert_eq!(
-        off, on,
-        "--overlay in a regular repo must be byte-identical to flag-off; \
-         off={off}\non={on}"
+        default_run, on,
+        "main-checkout default vs --overlay must be byte-identical (default-on \
+         never fires outside a worktree); default={default_run}\non={on}"
     );
-    // And no overlay meta on either (regular repo → not eligible).
-    assert!(
-        on.get("_meta")
-            .and_then(|m| m.get("worktree_overlay"))
-            .is_none(),
-        "regular repo must emit no worktree_overlay meta; got {on}"
+    assert_eq!(
+        default_run, explicit_off,
+        "main-checkout default vs --no-overlay must be byte-identical; \
+         default={default_run}\nexplicit_off={explicit_off}"
     );
+    // And no overlay meta on any (regular repo → not eligible).
+    for (label, v) in [
+        ("default", &default_run),
+        ("--overlay", &on),
+        ("--no-overlay", &explicit_off),
+    ] {
+        assert!(
+            v.get("_meta")
+                .and_then(|m| m.get("worktree_overlay"))
+                .is_none(),
+            "regular repo ({label}) must emit no worktree_overlay meta; got {v}"
+        );
+    }
 }
 
 /// Index the parent corpus inside the `worktree_fixture` so reads from the
@@ -136,18 +155,66 @@ fn overlay_cli_direct_degrades_honestly() {
     );
 }
 
-/// Flag-off from the worktree emits NO worktree_overlay meta (only the
-/// pre-existing `worktree_stale` signal). Confirms the meta is opt-in.
+/// Default-on flip: a NO-FLAG search from an eligible worktree now
+/// activates the overlay by default. With the daemon disabled it degrades to
+/// `skipped-no-daemon` (CLI-direct can't build, phase 1) — but QUIETLY: a
+/// default-on feature must NOT warn on every worktree query when the daemon is
+/// down. The skip meta is still present so JSON consumers can see it.
 #[test]
-fn overlay_off_from_worktree_emits_no_overlay_meta() {
+fn overlay_default_on_from_worktree_skips_no_daemon_quietly() {
     let (_holder, _parent, wt) = fixture_with_parent_index();
 
-    let v = run_json(cqs(&wt).args(["alpha", "--json", "-n", "5"]));
+    let out = cqs(&wt)
+        .args(["alpha", "--json", "-n", "5"]) // no --overlay flag
+        .output()
+        .expect("spawn cqs from worktree");
     assert!(
-        v.get("_meta")
+        out.status.success(),
+        "default-on worktree search failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v.get("_meta").and_then(|m| m.get("worktree_overlay")),
+        Some(&Value::String("skipped-no-daemon".into())),
+        "default-on overlay from a worktree must mark skipped-no-daemon; got {v}"
+    );
+    // QUIET degradation: the explicit-request warn must NOT appear for a default
+    // activation. (Debug-level skip line is fine; the `warn!` line is not.)
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("overlay skipped: daemon not running"),
+        "default-on degradation must be quiet (no warn); got stderr: {stderr}"
+    );
+}
+
+/// Opt-out beats default-on. From the same eligible worktree, `--no-overlay`
+/// and `CQS_WORKTREE_OVERLAY=0` each suppress the default-on activation, so no
+/// `worktree_overlay` meta is emitted at all (the overlay never engaged).
+#[test]
+fn overlay_opt_out_beats_default_on_from_worktree() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+
+    // --no-overlay flag.
+    let v_flag = run_json(cqs(&wt).args(["alpha", "--json", "-n", "5", "--no-overlay"]));
+    assert!(
+        v_flag
+            .get("_meta")
             .and_then(|m| m.get("worktree_overlay"))
             .is_none(),
-        "flag-off search must emit no worktree_overlay meta; got {v}"
+        "--no-overlay must suppress default-on (no overlay meta); got {v_flag}"
+    );
+
+    // CQS_WORKTREE_OVERLAY=0 env opt-out.
+    let mut cmd = cqs(&wt);
+    cmd.env("CQS_WORKTREE_OVERLAY", "0");
+    let v_env = run_json(cmd.args(["alpha", "--json", "-n", "5"]));
+    assert!(
+        v_env
+            .get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "CQS_WORKTREE_OVERLAY=0 must suppress default-on (no overlay meta); got {v_env}"
     );
 }
 

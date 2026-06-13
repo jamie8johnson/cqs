@@ -936,6 +936,22 @@ mod tests {
         assert!(result.is_err(), "--json and --format should conflict");
     }
 
+    /// Default-on flip: `--overlay` and `--no-overlay` are mutually
+    /// exclusive on the top-level search surface — clap must reject the combo so
+    /// an ambiguous opt-in+opt-out never reaches the resolver.
+    #[test]
+    fn test_overlay_and_no_overlay_conflict_top_level() {
+        let ok_on = Cli::try_parse_from(["cqs", "q", "--overlay"]);
+        assert!(ok_on.is_ok(), "--overlay alone parses");
+        let ok_off = Cli::try_parse_from(["cqs", "q", "--no-overlay"]);
+        assert!(ok_off.is_ok(), "--no-overlay alone parses");
+        let conflict = Cli::try_parse_from(["cqs", "q", "--overlay", "--no-overlay"]);
+        assert!(
+            conflict.is_err(),
+            "--overlay and --no-overlay must conflict"
+        );
+    }
+
     #[test]
     fn test_review_json_flag() {
         let cli = Cli::try_parse_from(["cqs", "review", "--json"]).unwrap();
