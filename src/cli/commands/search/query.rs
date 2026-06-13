@@ -2132,6 +2132,38 @@ mod tests {
             );
         }
 
+        // ── Risk #8: a NOTE-BOOSTED parent hit on a masked origin must not
+        // resurrect. The overlay store has no notes; note boosts are a
+        // parent-store scoring prior. The mask filters on origin membership
+        // alone, independent of score — so even a hit pushed to the top of the
+        // pool by a note boost (modeled here as score 1.0, well above the
+        // overlay leg) is dropped if its origin is in the delta. Notes are
+        // project-level priors; the mask must win.
+        #[test]
+        fn overlay_note_boosted_masked_origin_does_not_resurrect() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/a.rs changed; the overlay re-indexed `live_fn`. The parent's
+            // `note_boosted_fn` on src/a.rs carries a maxed score (the note
+            // boost), but its origin is masked.
+            let overlay = overlay_with(&[("src/a.rs", "live_fn", 0)], &["src/a.rs"]);
+            let project = vec![
+                UnifiedResult::Code(project_result("src/a.rs", "note_boosted_fn", 1.0)),
+                UnifiedResult::Code(project_result("src/b.rs", "untouched", 0.4)),
+            ];
+            let prepared = prepared_with(one_hot(5)); // overlay leg empty
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                !got.contains(&"note_boosted_fn".to_string()),
+                "a note-boosted (score 1.0) parent hit on a masked origin must \
+                 still be masked — the mask is score-independent; got {got:?}"
+            );
+            assert!(
+                got.contains(&"untouched".to_string()),
+                "the unmasked hit survives; got {got:?}"
+            );
+        }
+
         // ── #2/#3: rename within a file — old name masked, new name from overlay
         #[test]
         fn overlay_rename_within_file_surfaces_new_name() {

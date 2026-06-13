@@ -53,6 +53,45 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
     Ok((languages, include_types, exclude_types))
 }
 
+/// Reset per-thread overlay state and (when requested) validate + stamp the
+/// worktree overlay request for this dispatch.
+///
+/// Called at the TOP of `dispatch_search` (the single search entry — the
+/// `--ref` / `--include-refs` path delegates to `dispatch_search_with_refs`
+/// from inside it, so this runs exactly once per search), BEFORE the core
+/// runs, on the daemon worker thread that will serve the query:
+///
+/// 1. **`clear_overlay_meta()` unconditionally.** A daemon worker thread is
+///    reused across queries; an error path that bails before `write_json_line`
+///    must not leak the previous query's `_meta.worktree_overlay` into the
+///    next request on this thread. Set-and-take must straddle the same thread —
+///    clearing here is the matched bookend to the envelope's `take` after a
+///    successful dispatch. (The dispatch threading model: each connection runs
+///    its handlers synchronously on one thread; `query_core` calls
+///    `ctx.overlay()` on this same thread, which sets the meta, and the
+///    envelope `take`s it on this same thread.)
+/// 2. **Validate + stamp `--overlay-root`** when overlay was requested (flag
+///    OR env) and a `--overlay-root` rode the wire. Validation is the security
+///    seam ([`BatchView::set_validated_overlay_request`]); a rejection bubbles
+///    up as a wire error rather than silently degrading. With no
+///    `--overlay-root`, the request stays `None` (the overlay is a no-op for
+///    this query — e.g. a daemon search from the project root itself).
+fn prepare_overlay_request(ctx: &BatchView, args: &SearchArgs) -> Result<()> {
+    cqs::worktree_overlay::clear_overlay_meta();
+    if !(args.overlay || overlay_env_requested()) {
+        return Ok(());
+    }
+    if let Some(root) = &args.overlay_root {
+        // Reject (wire error) if the path is not a worktree of this project.
+        ctx.set_validated_overlay_request(root)?;
+    } else {
+        tracing::debug!(
+            "overlay requested but no --overlay-root on the wire — serving parent index"
+        );
+    }
+    Ok(())
+}
+
 /// Translate the daemon's [`SearchArgs`] into the surface-agnostic
 /// [`QueryArgs`] the shared core consumes.
 ///
@@ -153,6 +192,12 @@ pub(in crate::cli::batch) fn dispatch_search(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query = %args.query).entered();
 
+    // Reset per-thread overlay meta and validate+stamp the overlay request
+    // BEFORE any branch can return — including the `--include-refs` delegate
+    // below, whose project half overlays too (plan §9). A foreign --overlay-root
+    // is rejected here as a wire error.
+    prepare_overlay_request(ctx, args)?;
+
     // Accepted for CLI parity; the batch JSON doesn't surface line-context or
     // parent expansion. Assigning to `_` documents the intentional drop and
     // keeps clippy quiet. (`no_stale_check` IS honored — it gates the
@@ -161,7 +206,11 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     // `--ref` / `--include-refs` keep their reference-index retrieval in the
     // adapter (the core models only the single-store project path); they
-    // serialize through the shared tagged-value builder below.
+    // serialize through the shared tagged-value builder below. The overlay
+    // request is already stamped above, so `--include-refs`'s project leg
+    // (which flows through `retrieve_project`) picks it up; the `--ref`-scoped
+    // path never calls `retrieve_project`, so it stays parent-truth by
+    // construction (plan §9).
     if args.ref_name.is_some() || args.include_refs {
         return dispatch_search_with_refs(ctx, args);
     }
@@ -1121,6 +1170,395 @@ mod tests {
         assert!(
             json.get("_meta").is_none(),
             "fresh index must emit no _meta key (skip-when-empty); got: {json}"
+        );
+    }
+
+    // ─── Worktree overlay (result-trust §3, PR-3 daemon path) ────────────────
+
+    use std::process::Command as StdCommand;
+
+    /// Run `git` in `dir`, panicking with stderr on failure.
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = StdCommand::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()));
+        assert!(
+            out.status.success(),
+            "git {args:?} in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Build a `BatchContext` whose project root is a real git repo with a
+    /// committed corpus, plus a linked worktree. Returns
+    /// `(holder, ctx, parent_root, worktree_root)`. The index has one chunk so
+    /// `create_test_context` opens cleanly; the corpus content is irrelevant to
+    /// the validation tests, which only exercise the overlay-root path check.
+    fn overlay_ctx() -> (TempDir, BatchContext, PathBuf, PathBuf) {
+        let dir = TempDir::new().expect("tempdir");
+        // Parent repo lives at <tmp>/parent so the worktree can be a sibling.
+        let parent = dir.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir parent/src");
+        std::fs::write(parent.join("src/lib.rs"), "pub fn alpha() -> i32 { 1 }\n")
+            .expect("write lib.rs");
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        // Linked worktree.
+        let wt = dir.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+
+        // Build the index under parent/.cqs so create_test_context's
+        // root == parent.
+        let cqs_dir = parent.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join("index.db");
+        {
+            let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            emb_vec[0] = 1.0;
+            let embedding = Embedding::new(emb_vec);
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init store");
+            let chunk = make_chunk(
+                "src/lib.rs:1:aaaa0001",
+                "src/lib.rs",
+                Language::Rust,
+                ChunkType::Function,
+                "alpha",
+                "fn alpha() -> i32",
+                "fn alpha() -> i32 { 1 }",
+            );
+            store
+                .upsert_chunks_batch(&[(chunk, embedding)], Some(0))
+                .expect("upsert");
+        }
+
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        let parent = dunce::canonicalize(&parent).unwrap_or(parent);
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+        (dir, ctx, parent, wt)
+    }
+
+    /// #16 (security pin) — a `--overlay-root` that is NOT a worktree of the
+    /// served project is rejected with a wire error before any file is read.
+    /// An unvalidated path would be an arbitrary-directory read+embed primitive
+    /// over the socket.
+    #[test]
+    fn overlay_daemon_rejects_foreign_root() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // A directory that exists but is NOT a worktree of this project (a
+        // bare tempdir sibling). Rejection must be loud.
+        let foreign = holder.path().join("foreign");
+        std::fs::create_dir_all(&foreign).expect("mkdir foreign");
+        let err = view
+            .set_validated_overlay_request(&foreign)
+            .expect_err("foreign overlay-root must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not a worktree of the served project"),
+            "expected a foreign-root rejection; got: {msg}"
+        );
+        // The request must NOT have been stamped.
+        assert!(
+            view.overlay_request.borrow().is_none(),
+            "a rejected overlay-root must leave overlay_request unset"
+        );
+
+        // A non-existent path is rejected at canonicalize (also not a read
+        // primitive).
+        let missing = holder.path().join("does-not-exist");
+        assert!(
+            view.set_validated_overlay_request(&missing).is_err(),
+            "a non-existent overlay-root must be rejected"
+        );
+    }
+
+    /// The genuine worktree of the served project passes validation and is
+    /// stamped onto the per-dispatch request.
+    #[test]
+    fn overlay_daemon_accepts_own_worktree() {
+        let (_holder, ctx, _parent, wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("own worktree must validate");
+        assert_eq!(
+            view.overlay_request.borrow().as_deref(),
+            Some(wt.as_path()),
+            "validated worktree must be stamped onto overlay_request"
+        );
+    }
+
+    /// `prepare_overlay_request` clears any leftover per-thread overlay meta at
+    /// the top of dispatch — an error path on a prior query must not leak its
+    /// `_meta.worktree_overlay` into the next request on a reused worker thread.
+    #[test]
+    fn overlay_prepare_clears_stale_meta() {
+        let (_holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // Simulate a prior query having left meta on this thread.
+        cqs::worktree_overlay::set_overlay_meta(
+            cqs::worktree_overlay::OverlayMeta::SkippedDeltaTooLarge,
+        );
+        // A no-overlay search must clear it (flag off → early return after clear).
+        let args = parse_search_args(&["alpha", "--name-only"]);
+        prepare_overlay_request(&view, &args).expect("prepare");
+        assert!(
+            cqs::worktree_overlay::take_overlay_meta().is_none(),
+            "prepare_overlay_request must clear leftover overlay meta"
+        );
+    }
+
+    /// `prepare_overlay_request` rejects a foreign `--overlay-root` as a wire
+    /// error (the dispatch-path counterpart of `overlay_daemon_rejects_foreign_root`).
+    #[test]
+    fn overlay_prepare_rejects_foreign_root() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+        let foreign = holder.path().join("foreign2");
+        std::fs::create_dir_all(&foreign).expect("mkdir");
+        let args = parse_search_args(&[
+            "alpha",
+            "--name-only",
+            "--overlay",
+            "--overlay-root",
+            foreign.to_str().unwrap(),
+        ]);
+        let err = prepare_overlay_request(&view, &args)
+            .expect_err("foreign overlay-root must bubble up as a wire error");
+        assert!(
+            format!("{err:#}").contains("not a worktree of the served project"),
+            "expected foreign-root rejection from the dispatch path"
+        );
+    }
+
+    /// #13 — repeat-query cache hit + fingerprint-invalidates-on-edit, driven
+    /// through the real `BatchView::overlay()` path with a real embedder.
+    /// Gated behind `slow-tests` (cold-loads the embedder via the daemon
+    /// embedder slot). Asserts:
+    ///   - first `overlay()` builds (stats.build_ms recorded, chunks indexed);
+    ///   - second `overlay()` within the debounce reuses the SAME build (same
+    ///     fingerprint, returned Arc points at the cached store) without
+    ///     re-running git;
+    ///   - editing the worktree file changes the fingerprint, so a forced
+    ///     re-validation (debounce 0) rebuilds with a different fingerprint.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_repeat_query_cache_hit_and_invalidates_on_edit() {
+        use crate::cli::commands::search::search_ctx::SearchCtx;
+        let (_holder, ctx, _parent, wt) = overlay_ctx();
+
+        // Install a real embedder into the context's embedder slot so
+        // BatchView::overlay() can build.
+        let embedder = match cqs::Embedder::new_cpu(cqs::embedder::ModelConfig::resolve(None, None))
+        {
+            Ok(e) => std::sync::Arc::new(e),
+            Err(e) => {
+                eprintln!("skipping overlay cache-hit e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        assert!(ctx.adopt_embedder(embedder), "embedder slot must be empty");
+
+        // Dirty the worktree (lane-new file).
+        std::fs::write(
+            wt.join("src/feature.rs"),
+            "pub fn brand_new_overlay_symbol() -> i32 { 7 }\n",
+        )
+        .expect("write feature.rs");
+
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+
+        // First resolve: builds.
+        let ov1 = view.overlay().expect("first overlay build");
+        let fp1 = ov1.fingerprint;
+        assert!(ov1.stats.chunks_indexed > 0, "overlay indexed the new file");
+
+        // Second resolve within the debounce window: same cached build (the
+        // returned Arc points at the same `WorktreeOverlay` instance — no
+        // rebuild, no second git run).
+        let ov2 = view.overlay().expect("second overlay (cache hit)");
+        assert_eq!(
+            ov2.fingerprint, fp1,
+            "cache hit reuses the same fingerprint"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&ov1, &ov2),
+            "cache hit must return the same cached overlay instance"
+        );
+
+        // Edit the worktree file, then force re-validation (debounce 0) via a
+        // direct LRU call: the fingerprint must change and trigger a rebuild.
+        std::fs::write(
+            wt.join("src/feature.rs"),
+            "pub fn brand_new_overlay_symbol() -> i32 { 999 }\n",
+        )
+        .expect("edit feature.rs");
+        let parser = cqs::parser::Parser::new().expect("parser");
+        let embedder_ref = view.embedder().expect("embedder");
+        let rebuilt = super::super::super::view::get_overlay_via_lru(
+            &view.overlays,
+            &wt,
+            &view.root,
+            &parser,
+            embedder_ref,
+            None,
+            std::time::Duration::from_millis(0),
+        )
+        .expect("rebuild after edit")
+        .expect("non-clean worktree");
+        assert_ne!(
+            rebuilt.fingerprint, fp1,
+            "editing the worktree file must move the overlay fingerprint"
+        );
+    }
+
+    /// Carried pin 5b — the masked_origins↔chunk.file path-representation e2e
+    /// against REAL producer output. A real git delta in a real worktree, the
+    /// parent index built by the SAME pipeline (`overlay_reindex_files` =
+    /// `reindex_files`, real embedder), and the overlay built daemon-side via
+    /// `build_overlay`, must mask the parent's ACTUAL indexed origins. The unit
+    /// tests hand-build both sides; only this end-to-end run catches a
+    /// representation mismatch between git's repo-relative paths and the store's
+    /// `normalize_path`'d origins.
+    ///
+    /// Scenario: parent `src/lib.rs` defines `alpha`; the worktree DELETES
+    /// `alpha` from `src/lib.rs` (function-deleted-from-modified-file, the
+    /// origin-level mask falsifier, plan #3). After the overlay merge, a search
+    /// for `alpha` must NOT return the parent's now-dead `src/lib.rs:alpha` hit.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_masks_real_parent_origin_for_deleted_function() {
+        let dir = TempDir::new().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir");
+        // Two functions in the parent so masking `src/lib.rs` is observable
+        // (we assert `alpha` disappears while the overlay leg can still answer).
+        std::fs::write(
+            parent.join("src/lib.rs"),
+            "pub fn alpha_unique_token() -> i32 { 1 }\npub fn beta_unique_token() -> i32 { 2 }\n",
+        )
+        .expect("write lib.rs");
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let embedder = match cqs::Embedder::new_cpu(cqs::embedder::ModelConfig::resolve(None, None))
+        {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping overlay masking e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        let parser = cqs::parser::Parser::new().expect("parser");
+
+        // Build the parent index with the SAME pipeline the overlay uses (real
+        // embedder), so both sides of the mask share path representation.
+        let cqs_dir = parent.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join("index.db");
+        {
+            let store = Store::open(&index_path).expect("open store");
+            let model_info =
+                ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+            store.init(&model_info).expect("init store");
+            // set_dim must follow init (init's metadata write doesn't update the
+            // already-read dim field).
+            let mut store = store;
+            store.set_dim(model_info.dimensions);
+            crate::cli::watch::overlay_reindex_files(
+                &parent,
+                &store,
+                &[PathBuf::from("src/lib.rs")],
+                &parser,
+                &embedder,
+                None,
+                true,
+            )
+            .expect("index parent");
+        }
+
+        // Linked worktree; DELETE `alpha` from src/lib.rs (modify, not remove).
+        let wt = dir.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+        std::fs::write(
+            wt.join("src/lib.rs"),
+            "pub fn beta_unique_token() -> i32 { 2 }\n",
+        )
+        .expect("edit wt lib.rs (delete alpha)");
+
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        assert!(
+            ctx.adopt_embedder(std::sync::Arc::new(embedder)),
+            "embedder slot empty"
+        );
+        let view = ctx.build_view(None);
+
+        // Sanity: WITHOUT the overlay, the parent's dead `alpha` is retrievable.
+        let baseline = dispatch_search(
+            &view,
+            &parse_search_args(&["alpha_unique_token", "--name-only"]),
+        )
+        .expect("baseline search");
+        let baseline_has_alpha = baseline["results"]
+            .as_array()
+            .map(|rs| {
+                rs.iter()
+                    .any(|r| r["name"] == "alpha_unique_token" && r["file"] == "src/lib.rs")
+            })
+            .unwrap_or(false);
+        assert!(
+            baseline_has_alpha,
+            "sanity: parent index must contain src/lib.rs:alpha_unique_token; got {baseline}"
+        );
+
+        // WITH the overlay: stamp the worktree, then the dead parent hit must
+        // be masked (origin src/lib.rs is in the delta).
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+        let overlaid = dispatch_search(
+            &view,
+            &parse_search_args(&[
+                "alpha_unique_token",
+                "--name-only",
+                "--overlay",
+                "--overlay-root",
+                wt.to_str().unwrap(),
+            ]),
+        )
+        .expect("overlaid search");
+        let overlaid_has_dead_alpha = overlaid["results"]
+            .as_array()
+            .map(|rs| {
+                rs.iter()
+                    .any(|r| r["name"] == "alpha_unique_token" && r["file"] == "src/lib.rs")
+            })
+            .unwrap_or(false);
+        assert!(
+            !overlaid_has_dead_alpha,
+            "the overlay must mask the parent's dead src/lib.rs:alpha_unique_token \
+             (origin-level mask over REAL producer paths); got {overlaid}"
         );
     }
 }

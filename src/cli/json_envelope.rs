@@ -602,8 +602,39 @@ fn daemon_payload_to_cli_text_with(
         // Trailing newline for parity with the in-process `println!` paths.
         Ok(format!("{}\n", serde_json::to_string_pretty(&v)?))
     } else {
+        // v1 full envelope. `Envelope::ok` fills `_meta` from the CLIENT's
+        // process state (`EnvelopeMeta::current` → worktree_stale/name) but
+        // CANNOT see the DAEMON's per-query signals (`stale_origins`,
+        // `worktree_overlay`) — those were computed in the server process and
+        // ride the wire in `meta`. Without merging them here the v1 surface
+        // silently drops the overlay outcome and the staleness set that the
+        // bare-payload branch above preserves. Serialize the envelope to a
+        // Value, then fold the daemon meta into its `_meta` object (client
+        // process-level keys first, daemon per-query keys layered on top —
+        // they never collide with worktree_stale/name).
         let env = Envelope::ok(payload);
-        Ok(format!("{}\n", format_envelope_to_string(&env)?))
+        let mut env_value = serde_json::to_value(&env)?;
+        if let (Some(daemon_meta), Some(obj)) = (meta, env_value.as_object_mut()) {
+            if let Some(daemon_obj) = daemon_meta.as_object() {
+                let merged = match obj.remove("_meta") {
+                    Some(serde_json::Value::Object(mut m)) => {
+                        for (k, v) in daemon_obj {
+                            m.insert(k.clone(), v.clone());
+                        }
+                        m
+                    }
+                    // `_meta` absent (client meta empty) → the daemon meta is
+                    // the whole block.
+                    _ => daemon_obj.clone(),
+                };
+                if !merged.is_empty() {
+                    obj.insert("_meta".to_string(), serde_json::Value::Object(merged));
+                }
+            }
+        }
+        // Route through `format_envelope_to_string` so the NaN/Infinity
+        // sanitize-retry path still covers a payload with non-finite floats.
+        Ok(format!("{}\n", format_envelope_to_string(&env_value)?))
     }
 }
 
@@ -905,6 +936,61 @@ mod tests {
         per.insert("stale_origins".to_string(), serde_json::json!(["src/a.rs"]));
         let v = merged_meta_value(per).expect("non-empty per-response meta must emit _meta");
         assert_eq!(v["stale_origins"], serde_json::json!(["src/a.rs"]));
+    }
+
+    /// The v1-envelope daemon presentation path must FOLD the daemon's
+    /// per-query `_meta` (computed server-side: `worktree_overlay`,
+    /// `stale_origins`) into the envelope — the bare-payload branch already
+    /// does, and the v1 branch used to silently drop it (it rebuilt `_meta`
+    /// from the CLIENT process state, which can't see the daemon's overlay
+    /// outcome). Regression fence for the worktree-overlay daemon path.
+    #[test]
+    fn daemon_v1_envelope_folds_daemon_overlay_meta() {
+        let payload = serde_json::json!({"query": "q", "results": [], "total": 0});
+        let daemon_meta = serde_json::json!({
+            "worktree_overlay": {"files": 2, "chunks": 5},
+            "stale_origins": ["src/a.rs"],
+        });
+        let s = daemon_payload_to_cli_text_with(
+            EnvelopeShape::V1Envelope,
+            &payload,
+            Some(&daemon_meta),
+        )
+        .expect("v1 daemon presentation");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(
+            v["_meta"]["worktree_overlay"],
+            serde_json::json!({"files": 2, "chunks": 5}),
+            "v1 envelope must carry the daemon's worktree_overlay; got {v}"
+        );
+        assert_eq!(
+            v["_meta"]["stale_origins"],
+            serde_json::json!(["src/a.rs"]),
+            "v1 envelope must carry the daemon's stale_origins; got {v}"
+        );
+        // The payload still lives under `data`.
+        assert_eq!(v["data"]["query"], "q");
+    }
+
+    /// No daemon `_meta` ⇒ the v1 envelope is unchanged from the plain
+    /// `Envelope::ok` shape (the merge is a no-op when there's nothing to fold).
+    #[test]
+    fn daemon_v1_envelope_without_meta_is_plain() {
+        let payload = serde_json::json!({"query": "q", "results": []});
+        let s = daemon_payload_to_cli_text_with(EnvelopeShape::V1Envelope, &payload, None)
+            .expect("v1 daemon presentation");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v["data"]["query"], "q");
+        assert_eq!(v["version"], 1);
+        // The v1 envelope always carries a `_meta` object (empty in clean
+        // process state — `Envelope::ok`'s serde-skip drops the inner fields,
+        // not the block). The merge must not introduce any per-query keys when
+        // the daemon sent none.
+        assert_eq!(
+            v["_meta"],
+            serde_json::json!({}),
+            "no daemon meta + clean process state ⇒ empty _meta block; got {v}"
+        );
     }
 
     #[test]
