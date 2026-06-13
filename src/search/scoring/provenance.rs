@@ -122,11 +122,13 @@ pub(crate) struct RankSignalInputs<'a> {
 /// and no score mutation.
 pub(crate) fn signals_for(result: &SearchResult, ctx: &RankSignalCtx<'_>) -> Vec<RankSignal> {
     let name = result.chunk.name.as_str();
-    let file = result.chunk.id.as_str();
-    // The scoring path keys note/name/importance on the file portion of the
-    // chunk id (`extract_file_from_chunk_id`); name matching keys on the chunk
-    // name. Use the same `origin`-derived file the candidate scoring used.
-    let file_part = super::filter::extract_file_from_chunk_id(file);
+    // The scoring path keys note/importance on the chunk's file path (the
+    // authoritative `origin` column); name matching keys on the chunk name.
+    // `result.chunk.file` is hydrated directly from `chunks.origin`
+    // (`ChunkSummary::from(ChunkRow)`), so it is the SAME path the candidate
+    // scoring fed to those signals — never re-derived from the id (the id is
+    // `path:line_start:byte_start:hash8` and is not a reliable path source).
+    let file_part = result.chunk.file.to_str().unwrap_or_default();
 
     // Whether the result went through the dense scoring fold. On the RRF path a
     // result with no dense rank arrived only via the FTS leg; its score is pure

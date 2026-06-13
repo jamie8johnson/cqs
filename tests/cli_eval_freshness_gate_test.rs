@@ -196,6 +196,7 @@ fn setup_project() -> (TempDir, PathBuf) {
         doc: None,
         line_start: 1,
         line_end: 1,
+        byte_start: 0,
         content_hash: blake3::hash(b"fn stub() {}").to_hex().to_string(),
         canonical_hash: String::new(),
         parent_id: None,

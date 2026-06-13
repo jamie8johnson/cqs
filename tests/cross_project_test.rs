@@ -50,6 +50,7 @@ fn insert_chunk_and_call(
         doc: None,
         line_start: 1,
         line_end: 5,
+        byte_start: 0,
         content_hash: format!("hash_{}", caller),
         canonical_hash: String::new(),
         window_idx: None,

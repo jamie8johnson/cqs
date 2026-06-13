@@ -19,9 +19,9 @@ use crate::store::{NoteSummary, Store, StoreError};
 
 use super::mmr::{mmr_lambda_from_env, mmr_rerank, MmrCandidate};
 use super::scoring::{
-    apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter,
-    extract_file_from_chunk_id, rrf_fuse, score_candidate, signals_for, BoundedScoreHeap,
-    NameMatcher, NoteBoost, RankSignalCtx, RankSignalInputs, ScoringContext,
+    apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter, rrf_fuse,
+    score_candidate, signals_for, BoundedScoreHeap, NameMatcher, NoteBoost, RankSignalCtx,
+    RankSignalInputs, ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
 
@@ -289,10 +289,10 @@ impl<Mode> Store<Mode> {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
-                    let file_part = extract_file_from_chunk_id(&row.id);
-
+                    // Use the authoritative `origin` column, matching the
+                    // indexed path (which scores from `candidate.origin`).
                     if let Some(score) =
-                        score_candidate(embedding, row.name.as_deref(), file_part, &scoring_ctx)
+                        score_candidate(embedding, row.name.as_deref(), &row.origin, &scoring_ctx)
                     {
                         score_heap.push(row.id.clone(), score);
                     }
@@ -389,26 +389,26 @@ impl<Mode> Store<Mode> {
                 vec![]
             } else {
                 tracing::debug!(fts_query = %fts_query, "FTS MATCH query");
-                // Shared gated FTS query (`fts_match_ids`) — carries the
+                // Shared gated FTS query (`fts_match_id_origins`) — carries the
                 // `needs_embedding = 0` visibility gate so zero-vec sentinel
                 // chunks from a partial `--llm-summaries` reindex can't
-                // surface through the keyword leg.
-                let fts_all: Vec<String> = self
-                    .fts_match_ids(&fts_query, limit.saturating_mul(3))
+                // surface through the keyword leg. Returns each id with its
+                // `origin` (authoritative file path) for the glob filter.
+                let fts_all: Vec<(String, String)> = self
+                    .fts_match_id_origins(&fts_query, limit.saturating_mul(3))
                     .await?;
                 // Apply path filter to FTS results (the glob filter isn't
-                // expressible in the FTS query). Reuses the caller's
+                // expressible in the FTS query). Glob matches the real `origin`,
+                // never a substring parsed out of the id. Reuses the caller's
                 // pre-compiled glob matcher.
                 if let Some(gm) = glob_matcher {
                     fts_all
                         .into_iter()
-                        .filter(|id| {
-                            let file = extract_file_from_chunk_id(id);
-                            gm.is_match(file)
-                        })
+                        .filter(|(_id, origin)| gm.is_match(origin))
+                        .map(|(id, _origin)| id)
                         .collect()
                 } else {
-                    fts_all
+                    fts_all.into_iter().map(|(id, _origin)| id).collect()
                 }
             };
             if signal_inputs.is_some() {
@@ -1198,6 +1198,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 5,
+            byte_start: 0,
             content_hash: hash,
             canonical_hash: String::new(),
             parent_id: None,

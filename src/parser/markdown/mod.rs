@@ -66,6 +66,9 @@ struct ChunkFields<'a> {
     content: String,
     line_start: u32,
     line_end: u32,
+    /// File-relative start byte offset (the id disambiguator — see
+    /// [`crate::parser::types::Chunk::byte_start`]).
+    byte_start: u32,
     content_hash: String,
     parent_id: Option<String>,
 }
@@ -87,6 +90,7 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
         doc: None,
         line_start: fields.line_start,
         line_end: fields.line_end,
+        byte_start: fields.byte_start,
         content_hash: fields.content_hash,
         parent_id: fields.parent_id,
         window_idx: None,
@@ -178,8 +182,8 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             .to_string();
         let content = source.to_string();
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
-        let id = format!("{}:1:{}", path.display(), hash_prefix);
+        // Whole-file chunk: starts at line 1, byte 0.
+        let id = super::chunk::chunk_id(&path.display().to_string(), 1, 0, &content_hash);
 
         let mut chunks = vec![make_markdown_chunk(ChunkFields {
             path,
@@ -189,12 +193,15 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content,
             line_start: 1,
             line_end: lines.len() as u32,
+            byte_start: 0,
             content_hash,
             parent_id: None,
         })];
+        let line_byte_offsets = compute_line_byte_offsets(source);
         extract_table_chunks(
             &TableContext {
                 lines: &lines,
+                line_byte_offsets: &line_byte_offsets,
                 section_start: 0,
                 section_end: lines.len(),
                 section_name: &name,
@@ -212,10 +219,10 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         let h = &headings[0];
         let content = source.to_string();
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
         let line_start = 1;
         let line_end = lines.len() as u32;
-        let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
+        // Whole-file chunk: starts at line 1, byte 0.
+        let id = super::chunk::chunk_id(&path.display().to_string(), line_start, 0, &content_hash);
 
         let mut chunks = vec![make_markdown_chunk(ChunkFields {
             path,
@@ -225,12 +232,15 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content,
             line_start,
             line_end,
+            byte_start: 0,
             content_hash,
             parent_id: None,
         })];
+        let line_byte_offsets = compute_line_byte_offsets(source);
         extract_table_chunks(
             &TableContext {
                 lines: &lines,
+                line_byte_offsets: &line_byte_offsets,
                 section_start: 0,
                 section_end: lines.len(),
                 section_name: &h.text,
@@ -277,8 +287,18 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         )
         .to_string();
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
-        let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
+        // File-relative start byte of the section (the id disambiguator).
+        // Sections occupy disjoint line ranges, so this is unique per section.
+        let byte_start = line_byte_offsets
+            .get(section.line_start)
+            .copied()
+            .unwrap_or(0) as u32;
+        let id = super::chunk::chunk_id(
+            &path.display().to_string(),
+            line_start,
+            byte_start,
+            &content_hash,
+        );
 
         // Build breadcrumb signature
         let signature = build_breadcrumb(title_text, &section.heading_stack);
@@ -291,6 +311,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content,
             line_start,
             line_end,
+            byte_start,
             content_hash,
             parent_id: None,
         }));
@@ -299,6 +320,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         extract_table_chunks(
             &TableContext {
                 lines: &lines,
+                line_byte_offsets: &line_byte_offsets,
                 section_start: section.line_start,
                 section_end: section.line_end,
                 section_name: &section.name,

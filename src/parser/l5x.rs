@@ -116,17 +116,21 @@ fn parse_st_regions(
                 // fall back to whitespace-collapse only.
                 let canonical = super::chunk::canonical_hash_fallback(&content);
                 all_chunks.push(Chunk {
-                    id: format!(
-                        "{}:{}:{}",
-                        path.display(),
+                    // Synthetic whole-routine chunk: one per region, and each
+                    // region has a distinct `line_start`, so `byte_start` 0 is
+                    // safe — `line_start` alone disambiguates across regions.
+                    id: super::chunk::chunk_id(
+                        &path.display().to_string(),
                         region.line_start,
-                        &content_hash[..8]
+                        0,
+                        &content_hash,
                     ),
                     name: name.clone(),
                     chunk_type: ChunkType::Function,
                     content,
                     file: path.to_path_buf(),
                     line_start: region.line_start,
+                    byte_start: 0,
                     // line_end is inclusive 1-indexed. saturating_add so a high
                     // `region.line_start` plus a large line_count clamps at
                     // u32::MAX instead of overflowing.
@@ -211,13 +215,17 @@ fn extract_st_chunk(
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
     // Tree-precise: the ST node is available, so strip comment descendants.
     let canonical = super::chunk::canonical_hash(node, &content);
+    // Region-relative start byte. Combined with the file-relative `line_start`
+    // it is injective file-wide: distinct ST chunks within a region have
+    // distinct offsets, and regions occupy disjoint line ranges.
+    let byte_start = node.byte_range().start as u32;
 
     Ok(Chunk {
-        id: format!(
-            "{}:{}:{}",
-            file_path.display(),
+        id: super::chunk::chunk_id(
+            &file_path.display().to_string(),
             line_start,
-            &content_hash[..8]
+            byte_start,
+            &content_hash,
         ),
         name: mutable_name,
         chunk_type: mutable_type,
@@ -225,6 +233,7 @@ fn extract_st_chunk(
         file: file_path.to_path_buf(),
         line_start,
         line_end,
+        byte_start,
         language,
         signature,
         doc: None,

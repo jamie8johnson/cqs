@@ -216,6 +216,7 @@ fn seed_chunk(name: &str, file: &str, hash: &str) -> Chunk {
         doc: None,
         line_start: 1,
         line_end: 5,
+        byte_start: 0,
         content_hash: hash.to_string(),
         canonical_hash: String::new(),
         parent_id: None,

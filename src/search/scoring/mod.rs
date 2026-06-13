@@ -22,7 +22,7 @@ pub(crate) use candidate::{
 };
 #[cfg(test)]
 pub(crate) use config::ScoringConfig;
-pub(crate) use filter::{build_filter_sql, compile_glob_filter, extract_file_from_chunk_id};
+pub(crate) use filter::{build_filter_sql, compile_glob_filter};
 pub(crate) use fusion::rrf_fuse;
 pub use fusion::set_rrf_k_from_config;
 pub(crate) use name_match::NameMatcher;

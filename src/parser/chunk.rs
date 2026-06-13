@@ -19,7 +19,37 @@ use super::Parser;
 /// store-side UPSERT clause must include
 /// `OR chunks.parser_version != excluded.parser_version` so the bump
 /// triggers a refresh.
-pub const PARSER_VERSION: u32 = 7;
+pub const PARSER_VERSION: u32 = 8;
+
+/// Build the canonical chunk id from its identifying coordinates.
+///
+/// Format: `{path}:{line_start}:{byte_start}:{hash8}`.
+///
+/// Invariant — **injectivity within a file**: two byte-distinct chunks of the
+/// same file must produce distinct ids. `line_start` + `hash8` alone is NOT
+/// injective: two source elements can begin on the same line (`struct A; impl
+/// A {}` — both line 1) and two byte-distinct elements can share an identical
+/// full `content_hash` (`m!{} m!{}` — two macro invocations on one line are
+/// byte-identical, so even the 64-char hash collides). `byte_start` — the
+/// element's start byte offset in the file — is the disambiguator: tree-sitter
+/// nodes (and markdown sections) occupy disjoint byte ranges, so `byte_start`
+/// is unique per chunk within a file, deterministic, and stable across re-runs
+/// of the same source. It is reconstructed identically at the indexing
+/// pipeline's re-id step (path absolute→relative rewrite) from the persisted
+/// [`Chunk::byte_start`] field, so extract-time and re-id ids match exactly.
+///
+/// Single-sourcing this format here is load-bearing: extract-time and re-id
+/// MUST agree byte-for-byte or the re-id `old_id → new_id` map silently fails
+/// to remap and `parent_id`/call-edge rewrites point at stale ids.
+pub fn chunk_id(
+    path_display: &str,
+    line_start: u32,
+    byte_start: u32,
+    content_hash: &str,
+) -> String {
+    let hash_prefix = content_hash.get(..8).unwrap_or(content_hash);
+    format!("{path_display}:{line_start}:{byte_start}:{hash_prefix}")
+}
 
 /// Collapse every run of ASCII/Unicode whitespace in `s` to a single space,
 /// then trim. Pure string normalization — no tree required.
@@ -249,13 +279,23 @@ impl Parser {
             tracing::debug!(parent_type = %ptn, method = %name, "Extracted parent type for method");
         }
 
-        // Content hash for deduplication (BLAKE3 produces 64 hex chars)
-        // ID collision requires same path + line_start + 8-hex-char prefix (32 bits).
-        // For injection, outer container chunks at the same line are REMOVED before
-        // inner chunks are added, so no collision between outer/inner at the same line.
+        // Content hash for deduplication (BLAKE3 produces 64 hex chars). The id
+        // is `{path}:{line_start}:{byte_start}:{hash8}`; `byte_start` makes it
+        // injective within a file. `line_start` + `hash8` alone is NOT: two
+        // elements can begin on one line (`struct A; impl A {}`) and two
+        // byte-distinct elements can share an identical full `content_hash`
+        // (`m!{} m!{}` — same-line macro twins are byte-identical), so even the
+        // full hash collides. `byte_start` (the node's file-relative start
+        // offset) is unique per node within a file and breaks both cases. See
+        // `chunk_id`.
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
-        let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
+        let byte_start = node.byte_range().start as u32;
+        let id = chunk_id(
+            &path.display().to_string(),
+            line_start,
+            byte_start,
+            &content_hash,
+        );
 
         // Comment- and whitespace-normalized hash for embedding cache reuse.
         // Tree-precise: strips all comment descendants of `node`.
@@ -272,6 +312,7 @@ impl Parser {
             doc,
             line_start,
             line_end,
+            byte_start,
             content_hash,
             canonical_hash: canonical,
             parent_id: None,

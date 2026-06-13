@@ -1038,6 +1038,7 @@ fn method_chunk(
         doc: None,
         line_start: line,
         line_end: line + 1,
+        byte_start: 0,
         content_hash: hash,
         canonical_hash: String::new(),
         parent_id: None,

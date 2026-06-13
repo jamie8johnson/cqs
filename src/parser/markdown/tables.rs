@@ -34,6 +34,11 @@ struct TableSpan {
 /// Context for table chunk extraction, replacing scattered arguments.
 pub(super) struct TableContext<'a> {
     pub lines: &'a [&'a str],
+    /// File-relative byte offset of the start of each 0-indexed source line,
+    /// with a trailing sentinel == `source.len()` (see
+    /// `compute_line_byte_offsets`). Used to give each table chunk an injective
+    /// file-relative `byte_start` for its id.
+    pub line_byte_offsets: &'a [usize],
     pub section_start: usize,
     pub section_end: usize,
     pub section_name: &'a str,
@@ -50,6 +55,9 @@ struct TableWindowContext<'a> {
     parent_id: &'a str,
     line_start: u32,
     line_end: u32,
+    /// File-relative start byte of the table (shared by every window of it;
+    /// windows are further disambiguated by the `:t{idx}w{widx}` id suffix).
+    byte_start: u32,
     table_idx: usize,
     path: &'a Path,
 }
@@ -75,15 +83,19 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
 
         let table_line_start = abs_table_start as u32 + 1; // 1-indexed
         let table_line_end = (ctx.section_start + span.end) as u32; // 1-indexed
+        let table_byte_start = ctx
+            .line_byte_offsets
+            .get(abs_table_start)
+            .copied()
+            .unwrap_or(0) as u32; // file-relative start byte (id disambiguator)
 
         if table_content.len() <= MAX_TABLE_CHARS {
             let table_hash = blake3::hash(table_content.as_bytes()).to_hex().to_string();
-            let thash_prefix = table_hash.get(..8).unwrap_or(&table_hash);
-            let table_id = format!(
-                "{}:{}:{}",
-                ctx.path.display(),
+            let table_id = super::super::chunk::chunk_id(
+                &ctx.path.display().to_string(),
                 table_line_start,
-                thash_prefix
+                table_byte_start,
+                &table_hash,
             );
             chunks.push(Chunk {
                 id: table_id,
@@ -97,6 +109,7 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
                 doc: None,
                 line_start: table_line_start,
                 line_end: table_line_end,
+                byte_start: table_byte_start,
                 content_hash: table_hash,
                 parent_id: Some(ctx.section_id.to_string()),
                 window_idx: None,
@@ -117,6 +130,7 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
                 parent_id: ctx.section_id,
                 line_start: table_line_start,
                 line_end: table_line_end,
+                byte_start: table_byte_start,
                 table_idx,
                 path: ctx.path,
             };
@@ -154,15 +168,16 @@ fn emit_table_window(
     content.push('\n');
     content.push_str(&rows.join("\n"));
     let whash = blake3::hash(content.as_bytes()).to_hex().to_string();
-    let whash_prefix = whash.get(..8).unwrap_or(&whash);
-    let wid = format!(
-        "{}:{}:{}:t{}w{}",
-        ctx.path.display(),
+    // Injective base (`chunk_id`) plus a `:t{idx}w{widx}` suffix that
+    // disambiguates the row-wise windows of one table (which share line_start +
+    // byte_start). Multiple tables in a section get distinct base byte_starts.
+    let base = super::super::chunk::chunk_id(
+        &ctx.path.display().to_string(),
         ctx.line_start,
-        whash_prefix,
-        ctx.table_idx,
-        window_idx
+        ctx.byte_start,
+        &whash,
     );
+    let wid = format!("{}:t{}w{}", base, ctx.table_idx, window_idx);
     chunks.push(Chunk {
         id: wid,
         file: ctx.path.to_path_buf(),
@@ -175,6 +190,7 @@ fn emit_table_window(
         doc: None,
         line_start: ctx.line_start,
         line_end: ctx.line_end,
+        byte_start: ctx.byte_start,
         content_hash: whash,
         parent_id: Some(ctx.parent_id.to_string()),
         window_idx: Some(window_idx),

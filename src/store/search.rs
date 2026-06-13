@@ -14,6 +14,10 @@ use crate::nl::normalize_for_fts;
 pub(crate) struct BruteForceRow {
     pub rowid: i64,
     pub id: String,
+    /// Authoritative file path (the `chunks.origin` column). The scoring loop
+    /// passes this to `score_candidate` for glob/note-boost/importance — never
+    /// a substring parsed out of `id` (the id is not a reliable path source).
+    pub origin: String,
     pub embedding_bytes: Vec<u8>,
     pub name: Option<String>,
 }
@@ -60,6 +64,7 @@ impl<Mode> Store<Mode> {
             .map(|row| BruteForceRow {
                 rowid: row.get::<i64, _>("rowid"),
                 id: row.get("id"),
+                origin: row.get("origin"),
                 embedding_bytes: row.get("embedding"),
                 name: if need_name { row.get("name") } else { None },
             })
@@ -121,8 +126,29 @@ impl<Mode> Store<Mode> {
         fts_query: &str,
         limit: usize,
     ) -> Result<Vec<String>, StoreError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT f.id FROM chunks_fts f \
+        Ok(self
+            .fts_match_id_origins(fts_query, limit)
+            .await?
+            .into_iter()
+            .map(|(id, _origin)| id)
+            .collect())
+    }
+
+    /// Like [`Self::fts_match_ids`] but also returns each chunk's `origin`
+    /// (authoritative file path) alongside its id, in the same bm25 order.
+    ///
+    /// The RRF keyword leg needs the origin to apply the caller's `--path`
+    /// glob: the glob must match the real file path, not a substring parsed
+    /// out of the chunk id (the id is `path:line_start:byte_start:hash8` and
+    /// is NOT a reliable path source). The JOIN to `chunks` is already present
+    /// for the `needs_embedding` gate, so `c.origin` is free.
+    pub(crate) async fn fts_match_id_origins(
+        &self,
+        fts_query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT f.id, c.origin FROM chunks_fts f \
              JOIN chunks c ON c.id = f.id \
              WHERE chunks_fts MATCH ?1 AND c.needs_embedding = 0 \
              ORDER BY bm25(chunks_fts) LIMIT ?2",
@@ -132,7 +158,7 @@ impl<Mode> Store<Mode> {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        Ok(rows)
     }
 
     /// Search for chunks by name (definition search).

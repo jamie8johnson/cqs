@@ -236,6 +236,7 @@ mod tests {
             doc: None,
             line_start: 1,
             line_end: 10,
+            byte_start: 0,
             content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
             canonical_hash: canonical.to_string(),
             parent_id: None,

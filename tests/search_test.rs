@@ -61,6 +61,7 @@ fn chunk_with_path(name: &str, file: &str, lang: Language) -> cqs::Chunk {
         doc: None,
         line_start: 1,
         line_end: 5,
+        byte_start: 0,
         content_hash: hash,
         canonical_hash: String::new(),
         parent_id: None,
@@ -552,6 +553,153 @@ fn test_search_filtered_glob_pattern() {
 
     assert_eq!(results.len(), 1, "Glob should filter to src/ only");
     assert_eq!(results[0].chunk.name, "src_fn");
+}
+
+// ===== Regression: 4-field chunk ids on the brute-force path =====
+//
+// `search_filtered` with no index is the BRUTE-FORCE path — the exact surface
+// the worktree overlay and any index-empty/non-indexed corpus use. These tests
+// build chunks with REAL 4-field ids (`path:line_start:byte_start:hash8`, via
+// `cqs::parser::chunk_id`) so they exercise the post-PARSER_VERSION-8 format.
+//
+// The prior `extract_file_from_chunk_id` recovered the path by stripping a
+// FIXED count of `:`-segments from the id; the 4-field id has one extra segment,
+// so it returned `path:line_start` and silently broke glob `--path` (rejected
+// everything) and note boosts (mention match failed) on this path. The fix
+// scores from the authoritative `origin` column. These pin that: a 4-field-id
+// corpus must honor `--path` and note boosts on brute-force.
+
+/// Build a chunk whose id uses the real 4-field format the parser now emits.
+fn chunk_with_real_id(name: &str, file: &str, byte_start: u32, lang: Language) -> cqs::Chunk {
+    let content = format!("fn {}() {{ /* body */ }}", name);
+    let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+    let id = cqs::parser::chunk_id(file, 1, byte_start, &hash);
+    cqs::Chunk {
+        id,
+        file: PathBuf::from(file),
+        language: lang,
+        chunk_type: ChunkType::Function,
+        name: name.to_string(),
+        signature: format!("fn {}()", name),
+        content,
+        doc: None,
+        line_start: 1,
+        line_end: 5,
+        byte_start,
+        content_hash: hash,
+        canonical_hash: String::new(),
+        parent_id: None,
+        window_idx: None,
+        parent_type_name: None,
+        parser_version: 0,
+    }
+}
+
+#[test]
+fn test_brute_force_glob_filter_with_four_field_id() {
+    let store = TestStore::new();
+    // Real 4-field ids — the id-parse path would have returned `src/lib.rs:1`,
+    // which no glob matches, rejecting every .rs hit.
+    let c1 = chunk_with_real_id("src_fn", "src/lib.rs", 0, Language::Rust);
+    let c2 = chunk_with_real_id("test_fn", "tests/test.rs", 0, Language::Rust);
+    let c3 = chunk_with_real_id("bench_fn", "benches/bench.rs", 0, Language::Rust);
+
+    insert_chunks(&store, &[c1, c2, c3], 1.0);
+
+    let query = mock_embedding(1.0);
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.path_pattern = Some("src/**".to_string());
+        f
+    };
+
+    // No index passed -> brute-force scan.
+    let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
+
+    assert_eq!(
+        results.len(),
+        1,
+        "glob `src/**` must match the real origin on the brute-force path, \
+         not a substring parsed from the 4-field id"
+    );
+    assert_eq!(results[0].chunk.name, "src_fn");
+}
+
+#[test]
+fn test_brute_force_glob_star_rs_with_four_field_id() {
+    let store = TestStore::new();
+    let c1 = chunk_with_real_id("rs_a", "src/a.rs", 0, Language::Rust);
+    let c2 = chunk_with_real_id("rs_b", "src/b.rs", 42, Language::Rust);
+    let c3 = chunk_with_real_id("py_c", "src/c.py", 0, Language::Python);
+
+    insert_chunks(&store, &[c1, c2, c3], 1.0);
+
+    let query = mock_embedding(1.0);
+    let filter = {
+        let mut f = SearchFilter::default();
+        f.path_pattern = Some("**/*.rs".to_string());
+        f
+    };
+
+    let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
+
+    let names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
+    assert_eq!(
+        results.len(),
+        2,
+        "`**/*.rs` must return both .rs hits on brute-force; got {names:?}"
+    );
+    assert!(names.contains(&"rs_a") && names.contains(&"rs_b"));
+    assert!(!names.contains(&"py_c"), "the .py chunk must be excluded");
+}
+
+#[test]
+fn test_brute_force_note_boost_with_four_field_id() {
+    let store = TestStore::new();
+    // Two chunks with real 4-field ids and identical embeddings (same seed) so
+    // the only score differentiator is the note boost.
+    let boosted = chunk_with_real_id("boosted_fn", "src/foo.rs", 0, Language::Rust);
+    let plain = chunk_with_real_id("plain_fn", "src/bar.rs", 0, Language::Rust);
+    insert_chunks(&store, &[boosted, plain], 1.0);
+
+    // Positive-sentiment note mentioning `src/foo.rs`. The boost keys on the
+    // chunk's file path — under the bug it saw `src/foo.rs:1` and never matched.
+    let note = Note {
+        id: "note:0".to_string(),
+        text: "foo is the important entry point".to_string(),
+        sentiment: 1.0,
+        mentions: vec!["src/foo.rs".to_string()],
+        kind: None,
+    };
+    store
+        .upsert_notes_batch(&[note], &PathBuf::from("notes.toml"), 12345)
+        .unwrap();
+
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default(); // enable_demotion default; note boost on
+
+    let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
+    assert_eq!(results.len(), 2, "both chunks should be returned");
+
+    let boosted_score = results
+        .iter()
+        .find(|r| r.chunk.name == "boosted_fn")
+        .map(|r| r.score)
+        .expect("boosted_fn present");
+    let plain_score = results
+        .iter()
+        .find(|r| r.chunk.name == "plain_fn")
+        .map(|r| r.score)
+        .expect("plain_fn present");
+
+    assert!(
+        boosted_score > plain_score,
+        "note mentioning src/foo.rs must boost boosted_fn above plain_fn on the \
+         brute-force path (boosted={boosted_score}, plain={plain_score}); equal \
+         scores mean the note never matched the file path"
+    );
+    // The boosted chunk ranks first (results are score-sorted).
+    assert_eq!(results[0].chunk.name, "boosted_fn");
 }
 
 // ===== #37: search_filtered with language filter =====
