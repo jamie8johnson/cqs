@@ -97,8 +97,12 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
    - `reindex` — rebuild index with stats
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
+   - `land` — land a ready branch: push, PR, pinned CI watch, squash-merge, issue verification, cleanup
+   - `idle` — the idle work loop: enumerate issues + triage rows, classify, pick, dispatch
+   - `archeo` — comment-archaeology sweep: TODO/FIXME/deferral language → issues or trivial fixes
+   - `recall-gate` — retrieval recall gate with dead-gold triage + binary A/B regression test
    - `red-team` — adversarial testing against cqs
-   - `audit` — 16-category code audit with parallel agents
+   - `audit` — code audit with parallel category agents
    - `pr` — WSL-safe PR creation (always --body-file)
    - `release` — version bump, changelog, publish, GitHub release
 
@@ -184,6 +188,8 @@ cqs read --focus <function>
 ```
 
 ### Full command reference
+- `cqs scout "description"` — pre-investigation dashboard: search + callers/tests counts + staleness + notes
+- `cqs task "description"` — one-shot implementation context: scout + code + impact + placement + notes
 - `cqs explain <fn>` — function card: signature, callers, callees, similar
 - `cqs callers <fn>` / `cqs callees <fn>` — call graph navigation (add `--cross-project` for multi-repo)
 - `cqs deps <type>` — type dependencies
@@ -216,6 +222,16 @@ cqs read --focus <function>
 - `cqs gc` — clean stale index entries
 
 Run `cqs watch --serve` in a separate terminal (or a systemd user service) to keep the index fresh AND serve fast daemon queries; `cqs index` for one-time refresh. `CQS_NO_DAEMON=1` forces CLI mode.
+
+### Result trust — what you can act on without re-reading
+
+cqs results carry calibration metadata. Act on it directly instead of paying a defensive re-read tax for what's already answered:
+
+- **Edge provenance** (`edge_kind` on `callers`/`callees`/`impact` entries): `call` is syntactic ground truth; `macro_heuristic` / `doc_reference` are guesses (a token-tree match or a mention in prose, not a real call). Weight a heuristic edge lower than a `call` edge without opening the file. Absent ⇒ `call`.
+- **Dead verdicts** (`cqs dead --verdict`): the tool classifies its own output — `test-only` / `low-confidence-live` / `known-gap` / `dead`. Trust the verdict; only `dead` is a confident absence claim. Use `Type::method` qualified queries to disambiguate same-named functions.
+- **Ranking provenance** (`rank_signals` per JSON result): why a hit ranked — `dense` (concept match) / `fts` (literal-string match) / `name_match` / `note_boost`. A concept match justifies reading the chunk; a string match on a conceptual query is a known false friend; a `note_boost` is a prior opinion, not evidence. Suppress with `--no-rank-signals` on tight-budget calls.
+
+When working inside a git worktree, `cqs search` (and a bare query) is **overlay-aware by default** — it reflects *your* uncommitted/committed edits, not the parent branch's index (opt out with `--no-overlay` or `CQS_WORKTREE_OVERLAY=0`). The overlay is search-only: graph and scout commands (`callers`, `impact`, `scout`, `gather`, `dead`, …) still serve the parent index in a worktree, so re-read the actual files before acting on their output there.
 
 ## Audit Mode
 
