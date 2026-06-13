@@ -387,6 +387,149 @@ fn test_search_hybrid_index_guided_agrees_with_brute_force() {
     );
 }
 
+// ===== SPLADE sparse leg surfaces in rank_signals =====
+//
+// The sparse (SPLADE) leg is consumed inside `search_hybrid` before
+// `finalize_results`, so its per-result rank is threaded out to the recording
+// seam. These pin (a) bit-identical scores with recording on vs off on the
+// SPLADE path, and (b) that a chunk the sparse leg contributed to records a
+// `sparse` signal.
+
+/// Build a SPLADE filter + index + sparse query over a seeded corpus, run
+/// `search_hybrid` with recording off and on, and assert the (id, score)
+/// sequence is byte-for-byte identical — the recorder is a pure side channel
+/// even on the hybrid fusion path.
+#[test]
+fn search_hybrid_splade_rank_signals_bit_identical() {
+    use cqs::splade::index::SpladeIndex;
+
+    let store = TestStore::new();
+    let c1 = test_chunk("spladeAlpha", "fn spladeAlpha() { a }");
+    let c2 = test_chunk("spladeBeta", "fn spladeBeta() { b }");
+    let c3 = test_chunk("spladeGamma", "fn spladeGamma() { c }");
+    let ids = insert_chunks(&store, &[c1, c2, c3], 1.0);
+
+    // SPLADE index keyed by the real chunk ids so the fused path resolves them.
+    let splade_index = SpladeIndex::build(vec![
+        (ids[0].clone(), vec![(1, 0.5), (2, 0.3)]),
+        (ids[1].clone(), vec![(1, 0.9), (3, 0.4)]),
+        (ids[2].clone(), vec![(2, 0.8)]),
+    ]);
+    let sparse_query: cqs::splade::SparseVector = vec![(1, 1.0), (2, 1.0)];
+
+    let query = mock_embedding(1.0);
+    let mock = MockIndex::new(
+        ids.iter()
+            .map(|id| IndexResult {
+                id: id.clone(),
+                score: 0.9,
+            })
+            .collect(),
+    );
+
+    let mk = |record: bool| {
+        let mut f = SearchFilter::default();
+        f.enable_splade = true;
+        f.splade_alpha = 0.5;
+        f.record_rank_signals = record;
+        f
+    };
+
+    let off = store
+        .search_hybrid(
+            &query,
+            &mk(false),
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    let on = store
+        .search_hybrid(
+            &query,
+            &mk(true),
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+
+    assert_eq!(off.len(), on.len(), "SPLADE result count changed");
+    for (a, b) in off.iter().zip(on.iter()) {
+        assert_eq!(a.chunk.id, b.chunk.id, "SPLADE result order changed");
+        assert_eq!(
+            a.score.to_bits(),
+            b.score.to_bits(),
+            "SPLADE score bits changed for {} (off={}, on={})",
+            a.chunk.id,
+            a.score,
+            b.score
+        );
+    }
+    assert!(
+        off.iter().all(|r| r.rank_signals.is_empty()),
+        "recording-off SPLADE run must carry no rank_signals"
+    );
+}
+
+/// The `sparse` signal is recorded for a result the sparse leg ranked.
+#[test]
+fn search_hybrid_records_sparse_signal() {
+    use cqs::splade::index::SpladeIndex;
+
+    let store = TestStore::new();
+    let c1 = test_chunk("sparseHit", "fn sparseHit() { a }");
+    let c2 = test_chunk("sparseOther", "fn sparseOther() { b }");
+    let ids = insert_chunks(&store, &[c1, c2], 1.0);
+
+    let splade_index = SpladeIndex::build(vec![
+        (ids[0].clone(), vec![(7, 0.9)]),
+        (ids[1].clone(), vec![(7, 0.2)]),
+    ]);
+    let sparse_query: cqs::splade::SparseVector = vec![(7, 1.0)];
+
+    let query = mock_embedding(1.0);
+    let mock = MockIndex::new(
+        ids.iter()
+            .map(|id| IndexResult {
+                id: id.clone(),
+                score: 0.9,
+            })
+            .collect(),
+    );
+    let mut filter = SearchFilter::default();
+    filter.enable_splade = true;
+    filter.splade_alpha = 0.5;
+    filter.record_rank_signals = true;
+
+    let results = store
+        .search_hybrid(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+
+    // Every result here came through the sparse leg (both chunks carry token 7),
+    // so the top sparse hit must record a `sparse` signal.
+    let any_sparse = results
+        .iter()
+        .any(|r| r.rank_signals.iter().any(|s| s.signal == "sparse"));
+    assert!(
+        any_sparse,
+        "a SPLADE query must record the sparse leg; signals: {:?}",
+        results
+            .iter()
+            .map(|r| (&r.chunk.name, &r.rank_signals))
+            .collect::<Vec<_>>()
+    );
+}
+
 // ===== #37: search_filtered with glob =====
 
 #[test]

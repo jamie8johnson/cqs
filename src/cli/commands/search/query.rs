@@ -680,6 +680,17 @@ pub(crate) fn prepare_query<'a>(
 
     let audit_mode = ctx.audit_state();
 
+    // Audit-mode suppresses note-sentiment boosting so note priors don't steer
+    // the ranking during a review. Set on the filter after the filter is
+    // built but before retrieval so both the scoring fold and the rank_signals
+    // recorder see it. Note display suppression is handled separately at the
+    // read / envelope layer.
+    let filter = {
+        let mut f = filter;
+        f.suppress_note_boost = audit_mode.is_active();
+        f
+    };
+
     let search_limit = if args.pattern.is_some() {
         effective_limit * 3
     } else {
