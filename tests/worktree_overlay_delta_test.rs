@@ -13,6 +13,11 @@ mod common;
 use common::{git_in, worktree_fixture};
 use cqs::worktree::overlay_root;
 use cqs::worktree_overlay::{discover_delta, fingerprint, DeltaStatus};
+
+/// These tests exercise the delta record + content terms of the overlay
+/// fingerprint; the notes-revision term is held at a fixed token so the
+/// content-sensitivity assertions isolate the delta.
+const NO_NOTES: [u8; 32] = [0u8; 32];
 use std::path::PathBuf;
 
 /// Helper: does `masked_origins` contain a repo-relative path?
@@ -175,9 +180,9 @@ fn fingerprint_stable_across_repeated_discovery() {
     )
     .unwrap();
     let d1 = discover_delta(&wt, &parent).expect("discover 1");
-    let fp1 = fingerprint(&wt, &d1);
+    let fp1 = fingerprint(&wt, &d1, &NO_NOTES);
     let d2 = discover_delta(&wt, &parent).expect("discover 2");
-    let fp2 = fingerprint(&wt, &d2);
+    let fp2 = fingerprint(&wt, &d2, &NO_NOTES);
     assert_eq!(fp1, fp2, "fingerprint stable when nothing changed");
 }
 
@@ -189,7 +194,7 @@ fn fingerprint_changes_on_edit_and_reverts() {
 
     // Clean baseline.
     let d_clean = discover_delta(&wt, &parent).expect("discover clean");
-    let fp_clean = fingerprint(&wt, &d_clean);
+    let fp_clean = fingerprint(&wt, &d_clean, &NO_NOTES);
 
     // Edit → fingerprint moves.
     std::fs::write(
@@ -198,14 +203,14 @@ fn fingerprint_changes_on_edit_and_reverts() {
     )
     .unwrap();
     let d_edit = discover_delta(&wt, &parent).expect("discover edit");
-    let fp_edit = fingerprint(&wt, &d_edit);
+    let fp_edit = fingerprint(&wt, &d_edit, &NO_NOTES);
     assert_ne!(fp_clean, fp_edit, "edit must move the fingerprint");
 
     // Revert to byte-identical original → back to the clean fingerprint
     // (working tree == parent HEAD → file falls out of the delta).
     std::fs::write(&lib, original).unwrap();
     let d_revert = discover_delta(&wt, &parent).expect("discover revert");
-    let fp_revert = fingerprint(&wt, &d_revert);
+    let fp_revert = fingerprint(&wt, &d_revert, &NO_NOTES);
     assert!(
         d_revert.masked_origins.is_empty(),
         "reverted file is no longer in the delta"
@@ -229,7 +234,7 @@ fn fingerprint_content_sensitive_for_same_record_set() {
     )
     .unwrap();
     let d1 = discover_delta(&wt, &parent).expect("discover 1");
-    let fp1 = fingerprint(&wt, &d1);
+    let fp1 = fingerprint(&wt, &d1, &NO_NOTES);
 
     std::fs::write(
         &lib,
@@ -237,7 +242,7 @@ fn fingerprint_content_sensitive_for_same_record_set() {
     )
     .unwrap();
     let d2 = discover_delta(&wt, &parent).expect("discover 2");
-    let fp2 = fingerprint(&wt, &d2);
+    let fp2 = fingerprint(&wt, &d2, &NO_NOTES);
 
     assert_ne!(
         fp1, fp2,

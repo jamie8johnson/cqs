@@ -317,6 +317,66 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Content-identity digest over the notes table — a deterministic token
+    /// that changes iff the notes change. Used by the worktree search overlay to
+    /// fold notes into its cache identity (the `fingerprint`): a parent notes
+    /// mutation must invalidate the overlay's LRU entry so the rebuilt shadow
+    /// store carries the fresh sentiment, rather than serving a stale
+    /// `note_boost` until the deferrable overlay-clear runs.
+    ///
+    /// Digests `(id, text, sentiment, mentions)` for every row, ordered by `id`
+    /// so git/insert ordering cannot perturb the result. The field set is the
+    /// note identity that determines a boost outcome — `sentiment` and
+    /// `mentions` drive the multiplier directly, and `text` is folded in so a
+    /// text-only `notes update` (which a reader would still expect to count as
+    /// "the notes changed") also flips the token. Timestamp columns
+    /// (`created_at` / `updated_at` / `file_mtime`) are deliberately excluded:
+    /// they can churn without a meaningful note change and would over-invalidate.
+    ///
+    /// This is NOT `data_version`: `data_version` bumps on every index.db write
+    /// (code reindex, chunk upserts, …), so folding it into the fingerprint would
+    /// rebuild the overlay on unrelated parent changes even when the worktree
+    /// delta is unchanged — a perf regression. This token changes only when the
+    /// notes themselves change.
+    ///
+    /// An empty notes table yields a stable, fixed digest (the domain-separated
+    /// header with no rows), so the clean / no-notes case is deterministic.
+    pub fn notes_revision(&self) -> Result<[u8; 32], StoreError> {
+        let _span = tracing::debug_span!("notes_revision").entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> =
+                sqlx::query("SELECT id, text, sentiment, mentions FROM notes ORDER BY id")
+                    .fetch_all(&self.pool)
+                    .await?;
+
+            let mut hasher = blake3::Hasher::new();
+            // Domain separation: distinguishes this preimage from any other
+            // blake3 digest in the codebase and pins the field layout.
+            hasher.update(b"cqs-notes-revision-v1\0");
+            for row in &rows {
+                let id: String = row.get(0);
+                let text: String = row.get(1);
+                let sentiment: f64 = row.get(2);
+                // `mentions` is stored as a JSON array string; hash the raw
+                // stored bytes (NULL → empty) — byte-stable and order-stable
+                // because the column is written canonically.
+                let mentions: Option<String> = row.try_get(3).unwrap_or(None);
+
+                hasher.update(id.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(text.as_bytes());
+                hasher.update(b"\0");
+                // Fixed-width little-endian bits of the f64 so two equal
+                // sentiments always hash identically (avoids float-format drift).
+                hasher.update(&sentiment.to_le_bytes());
+                hasher.update(b"\0");
+                hasher.update(mentions.as_deref().unwrap_or("").as_bytes());
+                hasher.update(b"\0");
+            }
+            Ok(*hasher.finalize().as_bytes())
+        })
+    }
+
     /// Get note statistics (total, warnings, patterns).
     /// Uses `SENTIMENT_NEGATIVE_THRESHOLD` (-0.3) and `SENTIMENT_POSITIVE_THRESHOLD` (0.3)
     /// to classify notes. These thresholds work with discrete sentiment values
@@ -407,6 +467,119 @@ mod tests {
     }
     // Sentiment threshold positioning relative to the discrete values is a
     // compile-time `const` assertion next to the constants in `crate::note`.
+
+    /// The notes-revision token is the overlay's notes cache-identity. Empty
+    /// table → a stable, fixed digest; a sentiment change → a different digest;
+    /// a text-only change → a different digest. These are the invalidation
+    /// signals the overlay fingerprint folds in.
+    #[test]
+    fn notes_revision_tracks_note_changes() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("notes.toml");
+
+        // Empty table: stable across repeated reads, equal to a second empty
+        // store's token (the clean / no-notes case).
+        let empty = store.notes_revision().unwrap();
+        assert_eq!(
+            empty,
+            store.notes_revision().unwrap(),
+            "empty-table token must be stable"
+        );
+        let (other_empty_store, _d2) = setup_store();
+        assert_eq!(
+            empty,
+            other_empty_store.notes_revision().unwrap(),
+            "two empty notes tables must yield the same token"
+        );
+
+        // Seed a note: token moves off the empty digest.
+        let mut note = make_note("n1", "load-bearing", -0.5);
+        note.mentions = vec!["src/lib.rs".to_string()];
+        store
+            .upsert_notes_batch(&[note.clone()], source, 100)
+            .unwrap();
+        let after_seed = store.notes_revision().unwrap();
+        assert_ne!(empty, after_seed, "seeding a note must move the token");
+
+        // Sentiment change (the notes-coherence hazard's exact trigger): flips.
+        let mut flipped = note.clone();
+        flipped.sentiment = 0.5;
+        store.upsert_notes_batch(&[flipped], source, 200).unwrap();
+        let after_sentiment = store.notes_revision().unwrap();
+        assert_ne!(
+            after_seed, after_sentiment,
+            "a sentiment change must flip the notes-revision token"
+        );
+
+        // Text-only change (a `notes update` that leaves sentiment+mentions):
+        // still counts as "the notes changed".
+        let mut retext = note;
+        retext.sentiment = 0.5; // keep the sentiment from the prior step
+        retext.text = "rewritten note text".to_string();
+        store.upsert_notes_batch(&[retext], source, 300).unwrap();
+        let after_text = store.notes_revision().unwrap();
+        assert_ne!(
+            after_sentiment, after_text,
+            "a text-only change must flip the notes-revision token"
+        );
+    }
+
+    /// Over-invalidation guard: a parent index write that does NOT touch notes
+    /// must leave the notes-revision token unchanged. This is the property that
+    /// distinguishes the targeted token from `data_version` (which bumps on
+    /// every index.db write). Here a re-read with no intervening notes mutation
+    /// returns the identical token, and re-inserting the byte-identical note set
+    /// is a no-op for the token.
+    #[test]
+    fn notes_revision_stable_across_no_notes_change() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("notes.toml");
+
+        let mut a = make_note("a", "alpha", 0.5);
+        a.mentions = vec!["src/a.rs".to_string()];
+        let mut b = make_note("b", "beta", -1.0);
+        b.mentions = vec!["src/b.rs".to_string()];
+        store
+            .upsert_notes_batch(&[a.clone(), b.clone()], source, 100)
+            .unwrap();
+
+        let token = store.notes_revision().unwrap();
+        // Re-read with no mutation: identical.
+        assert_eq!(
+            token,
+            store.notes_revision().unwrap(),
+            "re-read without a notes change must return the same token"
+        );
+
+        // Re-insert the byte-identical note set (an idempotent write): the
+        // content identity is unchanged, so the token must not move. (mtime is
+        // deliberately excluded from the digest precisely so this holds.)
+        store.upsert_notes_batch(&[a, b], source, 999).unwrap();
+        assert_eq!(
+            token,
+            store.notes_revision().unwrap(),
+            "re-writing identical notes (only mtime differs) must not move the token"
+        );
+    }
+
+    /// Order independence: the token is computed `ORDER BY id`, so the insertion
+    /// order of the same note set cannot perturb it.
+    #[test]
+    fn notes_revision_is_order_independent() {
+        let (s1, _d1) = setup_store();
+        let (s2, _d2) = setup_store();
+        let source = Path::new("notes.toml");
+        let a = make_note("a", "alpha", 0.5);
+        let b = make_note("b", "beta", -0.5);
+        s1.upsert_notes_batch(&[a.clone(), b.clone()], source, 100)
+            .unwrap();
+        s2.upsert_notes_batch(&[b, a], source, 100).unwrap();
+        assert_eq!(
+            s1.notes_revision().unwrap(),
+            s2.notes_revision().unwrap(),
+            "same note set in either insertion order must yield the same token"
+        );
+    }
 
     #[test]
     fn test_replace_notes_replaces_not_appends() {
