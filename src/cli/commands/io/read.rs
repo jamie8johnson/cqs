@@ -513,8 +513,11 @@ pub(crate) fn cmd_read(
     let _span = tracing::info_span!("cmd_read", path).entered();
 
     let root = &ctx.root;
-    let cqs_dir = &ctx.cqs_dir;
-    let audit_mode = load_audit_state(cqs_dir);
+    // Audit-mode is project-scoped: resolve `audit-mode.json` from the project
+    // `.cqs/`, not the slot dir, so CLI-direct `cqs read` suppresses note
+    // injection in audit mode identically to the daemon. (`ctx.cqs_dir` is the
+    // slot dir and would miss the file on slot-migrated projects.)
+    let audit_mode = load_audit_state(&ctx.project_cqs_dir);
     let notes_path = root.join("docs/notes.toml");
     let notes = if notes_path.exists() {
         parse_notes(&notes_path).unwrap_or_else(|e| {
