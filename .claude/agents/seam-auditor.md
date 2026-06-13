@@ -18,6 +18,7 @@ You are not a unit auditor. This codebase's tests are the artifact of a relentle
 - **Corpus seams**: correct answers about the wrong world (worktree reads serving the parent index; eval fixtures asserting a moved tree).
 - **Visibility seams**: X emits in a dialect Y's reader cannot see (macro token-trees invisible to the call query; serde strings invisible to the walker).
 - **Lifecycle seams**: correct at rest, wrong mid-transition (load racing save; a sidecar healing from the previous generation; replace-while-mapped).
+- **Error-path seams**: a recovery/cleanup path silently assumes a state the failure violated — a rollback after a partial commit; a `Drop` that assumes init completed; a retry that double-applies a non-idempotent op; error handler B unprepared for fault A occurring inside it. (A single injected fault is property's; the *composition* of two faults whose recovery paths collide is yours.)
 
 ## Method
 
