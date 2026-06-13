@@ -305,6 +305,9 @@ impl<Mode> Store<Mode> {
                 note_index: &note_boost,
                 name_matcher: name_matcher.as_ref(),
                 enable_demotion: filter.enable_demotion,
+                suppress_note_boost: filter.suppress_note_boost,
+                // Brute-force scan has no sparse leg.
+                sparse_ranks: HashMap::new(),
             });
             let results = self
                 .finalize_results(
@@ -451,8 +454,10 @@ impl<Mode> Store<Mode> {
             })
             .collect();
 
-        // Step 4: Boost container chunks when multiple child methods appear
-        apply_parent_boost(&mut results);
+        // Step 4: Boost container chunks when multiple child methods appear.
+        // Returns the per-result boost multiplier for the `rank_signals`
+        // recorder — empty when no container was boosted.
+        let parent_boosts = apply_parent_boost(&mut results);
 
         // Step 4b: Type boost from adaptive routing.
         //
@@ -529,6 +534,15 @@ impl<Mode> Store<Mode> {
                 dense_ranks.iter().map(|(k, v)| (k.as_str(), *v)).collect();
             let fts_ref: HashMap<&str, usize> =
                 fts_ranks.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let sparse_ref: HashMap<&str, usize> = inputs
+                .sparse_ranks
+                .iter()
+                .map(|(k, v)| (k.as_str(), *v))
+                .collect();
+            let parent_boost_ref: HashMap<&str, f32> = parent_boosts
+                .iter()
+                .map(|(k, v)| (k.as_str(), *v))
+                .collect();
             let signal_ctx = RankSignalCtx {
                 note_index: inputs.note_index,
                 name_matcher: inputs.name_matcher,
@@ -537,6 +551,10 @@ impl<Mode> Store<Mode> {
                 type_boost_factor: type_boost_factor(),
                 dense_ranks: &dense_ref,
                 fts_ranks: &fts_ref,
+                sparse_ranks: &sparse_ref,
+                is_rrf: use_rrf,
+                suppress_note_boost: inputs.suppress_note_boost,
+                parent_boosts: &parent_boost_ref,
             };
             for r in &mut results {
                 r.rank_signals = signals_for(r, &signal_ctx);
@@ -759,6 +777,24 @@ impl<Mode> Store<Mode> {
         for r in fused.iter() {
             fused_map.insert(r.id.clone(), r.score);
         }
+
+        // Capture the sparse leg's per-result rank for the `rank_signals`
+        // recorder. `sparse_results` is already sorted by sparse score
+        // descending (BoundedScoreHeap::into_sorted_vec), so the enumeration
+        // index is the 1-indexed leg rank — the same shape as the dense/FTS leg
+        // maps `finalize_results` builds. Only materialized when recording is
+        // on; this is a side channel that never feeds the score.
+        let sparse_ranks = if filter.record_rank_signals {
+            let mut m: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::with_capacity(sparse_results.len());
+            for (rank, r) in sparse_results.iter().enumerate() {
+                m.entry(r.id.clone()).or_insert(rank + 1);
+            }
+            Some(m)
+        } else {
+            None
+        };
+
         self.search_by_candidate_ids_with_notes(
             &candidate_ids,
             query,
@@ -767,6 +803,7 @@ impl<Mode> Store<Mode> {
             threshold,
             &notes,
             Some(&fused_map),
+            sparse_ranks,
         )
     }
 
@@ -875,6 +912,8 @@ impl<Mode> Store<Mode> {
                 threshold,
                 &notes,
                 fused_scores.as_ref(),
+                // Index-guided dense path has no sparse leg.
+                None,
             );
         }
 
@@ -908,6 +947,7 @@ impl<Mode> Store<Mode> {
             threshold,
             &notes,
             None,
+            None,
         )
     }
 
@@ -927,6 +967,9 @@ impl<Mode> Store<Mode> {
         threshold: f32,
         notes: &[NoteSummary],
         fused_scores: Option<&std::collections::HashMap<String, f32>>,
+        // Per-result sparse (SPLADE) leg rank, threaded from `search_hybrid`
+        // for the `rank_signals` recorder. `None` on the non-SPLADE paths.
+        sparse_ranks: Option<std::collections::HashMap<String, usize>>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         let _span = tracing::info_span!(
             "search_by_candidates",
@@ -1066,6 +1109,8 @@ impl<Mode> Store<Mode> {
                 note_index: &note_boost,
                 name_matcher: name_matcher.as_ref(),
                 enable_demotion: filter.enable_demotion,
+                suppress_note_boost: filter.suppress_note_boost,
+                sparse_ranks: sparse_ranks.unwrap_or_default(),
             });
             self.finalize_results(
                 scored,
@@ -2261,13 +2306,11 @@ mod tests {
     }
 
     /// `rank_signals` is an honest mirror of the scoring that actually ran: the
-    /// `note_boost` entry appears iff a note moved the score. This is the
-    /// audit-mode *complement* the design names — an agent reads note influence
-    /// per-query without disabling notes. Note that audit-mode at the search
-    /// layer forces the hybrid retrieval path but does not zero note boosting
-    /// in store scoring (that suppression is a display-layer concern in `read`
-    /// / the CLI envelope), so the discriminator here is note presence, not the
-    /// audit flag: with no notes seeded, no `note_boost` is recorded.
+    /// `note_boost` entry appears iff a note moved the score. With no notes
+    /// seeded the boost is 1.0, so no `note_boost` is recorded — the
+    /// discriminator here is note presence. (Audit-mode suppression, which
+    /// forces the multiplier to 1.0 even with notes present and omits the
+    /// signal, is pinned separately by `pin_audit_mode_suppresses_note_boost`.)
     #[test]
     fn rank_signals_note_boost_tracks_actual_scoring() {
         let (store, _dir) = setup_store();
@@ -2297,6 +2340,179 @@ mod tests {
             !res.rank_signals.iter().any(|s| s.signal == "note_boost"),
             "no note seeded → no note_boost signal; got {:?}",
             res.rank_signals
+        );
+    }
+
+    /// discriminative-by-default on the `--rrf` path. With several
+    /// chunks that all match the keyword leg, "appeared in FTS" is the norm, so
+    /// the majority of results must carry NO `rank_signals` — `fts` records only
+    /// when its leg rank materially leads the dense rank. Before the fix every
+    /// fused result carried an `fts` signal (cry-wolf); after it, the typical
+    /// result is silent.
+    #[test]
+    fn rrf_discriminative_by_default_majority_silent() {
+        let (store, _dir) = setup_store();
+        // Eight chunks whose names all share the "handler" keyword so every one
+        // appears in the FTS leg for the query below. No notes, no demotion
+        // targets, no type boost — the only candidate signal is `fts`.
+        let names = [
+            "alphaHandler",
+            "betaHandler",
+            "gammaHandler",
+            "deltaHandler",
+            "epsilonHandler",
+            "zetaHandler",
+            "etaHandler",
+            "thetaHandler",
+        ];
+        let emb = mock_embedding(1.0);
+        let chunks: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    make_chunk(
+                        n,
+                        &format!("src/h{i}.rs"),
+                        Language::Rust,
+                        ChunkType::Function,
+                    ),
+                    emb.clone(),
+                )
+            })
+            .collect();
+        store.upsert_chunks_batch(&chunks, Some(1)).unwrap();
+
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: "handler".to_string(),
+            record_rank_signals: true,
+            ..SearchFilter::default()
+        };
+        let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+        assert!(results.len() >= 5, "expected a populated result set");
+
+        let with_signals = results
+            .iter()
+            .filter(|r| !r.rank_signals.is_empty())
+            .count();
+        let fraction = with_signals as f32 / results.len() as f32;
+        assert!(
+            fraction < 0.5,
+            "discriminative-by-default: the majority of RRF results must carry no \
+             signals, but {with_signals}/{} did ({fraction:.2}); signals: {:?}",
+            results.len(),
+            results
+                .iter()
+                .map(|r| (&r.chunk.name, &r.rank_signals))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// HARD GATE: `suppress_note_boost` (the audit-mode signal) makes
+    /// note sentiment genuinely stop moving code rankings. Three runs over the
+    /// same corpus, with a positive note seeded on the target chunk:
+    ///   (a) notes live, suppression off  — note_boost moves the score;
+    ///   (b) suppression on               — boost-free scoring;
+    ///   (c) no notes at all              — the boost-free baseline.
+    /// Assert (b) == (c) bit-for-bit (suppressed == notes-free), (a) != (b)
+    /// (the note actually mattered), and that the suppressed run records NO
+    /// `note_boost` signal even with the note present.
+    #[test]
+    fn pin_audit_mode_suppresses_note_boost() {
+        let (store, dir) = setup_store();
+        let target = make_chunk(
+            "auditTarget",
+            "src/audit_target.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let other = make_chunk(
+            "neighbor",
+            "src/neighbor.rs",
+            Language::Rust,
+            ChunkType::Function,
+        );
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[(target.clone(), emb.clone()), (other.clone(), emb.clone())],
+                Some(1),
+            )
+            .unwrap();
+
+        // Baseline (c): score the corpus with no notes at all.
+        let plain = SearchFilter {
+            record_rank_signals: true,
+            ..SearchFilter::default()
+        };
+        let res_noteless = store.search_filtered(&emb, &plain, 10, 0.0).unwrap();
+        let noteless_target = res_noteless
+            .iter()
+            .find(|r| r.chunk.name == "auditTarget")
+            .expect("target present")
+            .score;
+
+        // Seed a strong positive note on the target.
+        seed_note(&store, dir.path(), 1.0, "auditTarget");
+
+        // (a) notes live, suppression off — the boost moves the score.
+        let live = SearchFilter {
+            record_rank_signals: true,
+            suppress_note_boost: false,
+            ..SearchFilter::default()
+        };
+        let res_live = store.search_filtered(&emb, &live, 10, 0.0).unwrap();
+        let live_target = res_live
+            .iter()
+            .find(|r| r.chunk.name == "auditTarget")
+            .expect("target present")
+            .score;
+        assert!(
+            live_target.to_bits() != noteless_target.to_bits(),
+            "control: a positive note must move the score off the boost-free baseline \
+             (live={live_target}, baseline={noteless_target})"
+        );
+
+        // (b) suppression on — note present but boost forced to 1.0.
+        let suppressed = SearchFilter {
+            record_rank_signals: true,
+            suppress_note_boost: true,
+            ..SearchFilter::default()
+        };
+        let res_suppressed = store.search_filtered(&emb, &suppressed, 10, 0.0).unwrap();
+
+        // (b) == (c): the suppressed scores are bit-identical to the notes-free
+        // baseline, position for position.
+        assert_eq!(
+            res_suppressed.len(),
+            res_noteless.len(),
+            "result count diverged under suppression"
+        );
+        for (s, n) in res_suppressed.iter().zip(res_noteless.iter()) {
+            assert_eq!(s.chunk.id, n.chunk.id, "order diverged under suppression");
+            assert_eq!(
+                s.score.to_bits(),
+                n.score.to_bits(),
+                "suppressed score must equal the notes-free baseline for {} \
+                 (suppressed={}, baseline={})",
+                s.chunk.id,
+                s.score,
+                n.score
+            );
+        }
+
+        // No `note_boost` signal anywhere on the suppressed run, even though a
+        // note is present in the store.
+        assert!(
+            res_suppressed
+                .iter()
+                .all(|r| !r.rank_signals.iter().any(|s| s.signal == "note_boost")),
+            "audit-mode suppression must omit every note_boost signal; got {:?}",
+            res_suppressed
+                .iter()
+                .map(|r| &r.rank_signals)
+                .collect::<Vec<_>>()
         );
     }
 }

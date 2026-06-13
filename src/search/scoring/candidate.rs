@@ -51,9 +51,14 @@ pub(crate) fn chunk_importance(name: &str, file_path: &str) -> f32 {
 /// With 2 children → 1.05×, 3 → 1.10×, 4+ → 1.15×.
 ///
 /// Re-sorts results by score after boosting.
-pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
+///
+/// Returns the per-result parent-boost multiplier keyed by chunk id, for any
+/// result the boost actually multiplied. Empty when no container was boosted.
+/// The map feeds the `rank_signals` recorder (`parent_boost` signal) — it is a
+/// faithful record of the score-moving boost, not a re-derivation.
+pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) -> HashMap<String, f32> {
     if results.len() < 3 {
-        return; // Need at least a container + 2 children
+        return HashMap::new(); // Need at least a container + 2 children
     }
 
     // Compute which result indices need boosting in an immutable-borrow phase
@@ -70,7 +75,7 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         }
         // Only proceed if any parent_type_name appears 2+ times
         if !parent_counts.values().any(|&c| c >= 2) {
-            return;
+            return HashMap::new();
         }
         let cfg = ScoringConfig::current();
         let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
@@ -125,17 +130,20 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
     };
 
     if boosts.is_empty() {
-        return;
+        return HashMap::new();
     }
 
+    let mut applied: HashMap<String, f32> = HashMap::with_capacity(boosts.len());
     for (i, boost) in &boosts {
         results[*i].score *= *boost;
+        applied.insert(results[*i].chunk.id.clone(), *boost);
     }
     results.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)
             .then(a.chunk.id.cmp(&b.chunk.id))
     });
+    applied
 }
 
 /// Bounded min-heap for maintaining top-N search results by score.
@@ -455,6 +463,11 @@ impl ScoreSignal for GlobGate {
 /// of this stanza's legacy arithmetic and must stay fused with the multiply
 /// for bit-identical output. Always enabled on both paths (no-match boost
 /// is 1.0).
+///
+/// Under `filter.suppress_note_boost` (audit-mode) the multiplier is forced
+/// to 1.0 so note sentiment can't move a code score, while the `.max(0.0)`
+/// floor still runs — making the suppressed score bit-identical to a run over
+/// an empty notes table.
 struct NoteBoostSignal;
 
 impl ScoreSignal for NoteBoostSignal {
@@ -463,7 +476,12 @@ impl ScoreSignal for NoteBoostSignal {
     }
 
     fn apply(&self, current: f32, ctx: &ScoringContext<'_>, chunk: &ChunkMeta<'_>) -> Option<f32> {
-        Some(current.max(0.0) * ctx.note_index.boost(chunk.file, chunk.name_or_empty()))
+        let boost = if ctx.filter.suppress_note_boost {
+            1.0
+        } else {
+            ctx.note_index.boost(chunk.file, chunk.name_or_empty())
+        };
+        Some(current.max(0.0) * boost)
     }
 }
 

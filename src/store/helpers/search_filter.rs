@@ -85,6 +85,16 @@ pub struct SearchFilter {
     /// bit-identical with this on or off. Surfaced (skip-when-empty) in the
     /// chunk JSON; the text surface omits it. Suppress via `--no-rank-signals`.
     pub record_rank_signals: bool,
+    /// Suppress note-sentiment boosting during scoring (audit-mode).
+    ///
+    /// Off by default. When set, the `NoteBoostSignal` stage forces its
+    /// multiplier to 1.0 — note sentiment never moves a code score — and the
+    /// `rank_signals` recorder omits any `note_boost` entry. The `.max(0.0)`
+    /// floor that stanza also applies stays in place, so the suppressed score
+    /// is bit-identical to a run over an empty notes table. Wired from
+    /// audit-mode state so audits genuinely examine code without note priors
+    /// steering the ranking (the feature's stated purpose).
+    pub suppress_note_boost: bool,
 }
 
 impl Default for SearchFilter {
@@ -103,6 +113,7 @@ impl Default for SearchFilter {
             type_boost_types: None,
             mmr_lambda: None,
             record_rank_signals: false,
+            suppress_note_boost: false,
         }
     }
 }
