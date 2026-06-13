@@ -366,7 +366,10 @@ fn explain_process_reports_callers_and_callees() {
     // Compose what the CLI's build_explain_data does at the lib level:
     // callers + callees for a target name.
     let callers = f.store.get_callers_full("process").expect("callers");
-    let callees = f.store.get_callees_full("process", None).expect("callees");
+    let callees = f
+        .store
+        .get_callees_full("process", None, None)
+        .expect("callees");
 
     let caller_names: Vec<&str> = callers.iter().map(|c| c.name.as_str()).collect();
     let callee_names: Vec<&str> = callees.iter().map(|c| c.name.as_str()).collect();
@@ -452,7 +455,7 @@ fn explain_data_integrates_callers_callees_similar_and_hints() {
     let callers = f.store.get_callers_full(&chunk.name).expect("callers");
     let callees = f
         .store
-        .get_callees_full(&chunk.name, Some(&chunk.file.to_string_lossy()))
+        .get_callees_full(&chunk.name, Some(&chunk.file.to_string_lossy()), None)
         .expect("callees");
 
     // 3. Similar via semantic search seeded with the chunk's stored

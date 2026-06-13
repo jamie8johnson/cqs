@@ -10,7 +10,7 @@ use crate::store::helpers::{
 use crate::store::Store;
 
 /// One attributed-caller row from `get_callers_attributed`'s merged scan:
-/// `(file, caller_name, caller_line, edge_kind, trust_rank,
+/// `(file, caller_name, caller_line, edge_kind, pick_rank,
 /// caller_parent_type, callee_name)`. Aliased to keep the query under
 /// `clippy::type_complexity`.
 type AttributedCallerRow = (String, String, i64, String, i64, Option<String>, String);
@@ -96,16 +96,20 @@ impl<Mode> Store<Mode> {
         })
     }
 
-    /// Origins (file paths) where a `Type::method` is defined. Used by
-    /// the callees `Type::method` path to scope `get_callees_full` to the
-    /// right definition. Only callable chunk kinds qualify.
-    pub fn get_type_method_origins(
+    /// Definition sites `(origin, line_start)` where a `Type::method` is
+    /// defined. Used by the callees `Type::method` path to scope
+    /// `get_callees_full` to the right definition — both the file AND the
+    /// def's start line, so two same-named methods sharing a file (a `Store`
+    /// and a `StoreBuilder` both defining `build` in `store.rs`) resolve to
+    /// disjoint callee sets rather than merging. Only callable chunk kinds
+    /// qualify.
+    pub fn get_type_method_def_sites(
         &self,
         qualifier_type: &str,
         method: &str,
-    ) -> Result<Vec<String>, StoreError> {
+    ) -> Result<Vec<(String, i64)>, StoreError> {
         let _span = tracing::debug_span!(
-            "get_type_method_origins",
+            "get_type_method_def_sites",
             qualifier_type = %qualifier_type,
             method = %method
         )
@@ -113,16 +117,16 @@ impl<Mode> Store<Mode> {
         self.rt.block_on(async {
             let callable = crate::parser::ChunkType::callable_sql_list();
             let sql = format!(
-                "SELECT DISTINCT origin
+                "SELECT DISTINCT origin, line_start
                  FROM chunks
                  WHERE name = ?1 AND parent_type_name = ?2 AND chunk_type IN ({callable})"
             );
-            let rows: Vec<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(method)
                 .bind(qualifier_type)
                 .fetch_all(&self.pool)
                 .await?;
-            Ok(rows.into_iter().map(|(o,)| o).collect())
+            Ok(rows.into_iter().collect())
         })
     }
 
@@ -209,10 +213,22 @@ impl<Mode> Store<Mode> {
             } else {
                 qualified.as_str()
             };
+            // `pick_rank` is the collapse key: `rank_case * 2` plus a 0/1
+            // qualified-vs-bare tiebreaker (exact-qualified ⇒ 0). The GROUP BY
+            // bare-column rule then sources `edge_kind`, `parent_type_name`, and
+            // `callee_name` from the row with the minimum `pick_rank`. The
+            // tiebreaker makes that selection deterministic when a bare code
+            // edge and an exact-qualified doc edge tie on trust rank at the same
+            // call site: the exact edge wins, so the SelfType-vs-ambiguous label
+            // is stable across runs rather than picked arbitrarily by SQLite.
+            // `pick_rank` preserves trust order (qualified-first within a rank),
+            // so it also leads the ORDER BY.
             let sql = format!(
                 "SELECT fc.file, fc.caller_name, fc.caller_line, fc.edge_kind,
-                        MIN({rank_case}) AS trust_rank, c.parent_type_name,
-                        fc.callee_name
+                        MIN({rank_case} * 2
+                            + (CASE WHEN fc.callee_name = ?2 THEN 0 ELSE 1 END))
+                          AS pick_rank,
+                        c.parent_type_name, fc.callee_name
                  FROM function_calls fc
                  LEFT JOIN chunks c
                    ON c.origin = fc.file
@@ -220,7 +236,7 @@ impl<Mode> Store<Mode> {
                   AND c.line_start = fc.caller_line
                  WHERE fc.callee_name = ?1 OR fc.callee_name = ?2
                  GROUP BY fc.file, fc.caller_name, fc.caller_line
-                 ORDER BY trust_rank, fc.file, fc.caller_line"
+                 ORDER BY pick_rank, fc.file, fc.caller_line"
             );
             let rows: Vec<AttributedCallerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
                 .bind(bare_bind)
@@ -273,10 +289,17 @@ impl<Mode> Store<Mode> {
     /// When `file` is provided, scopes to callees of that function in that specific file.
     /// When `None`, returns callees across all files (backwards compatible, but ambiguous
     /// for common names like `new`, `parse`, `from_str`).
+    /// When `caller_line` is provided, additionally scopes to the definition
+    /// starting at that line (`function_calls.caller_line` is the caller's
+    /// `line_start`). This disambiguates two same-named methods sharing a file —
+    /// e.g. a `Store` and a `StoreBuilder` both defining `build` in `store.rs` —
+    /// which `(caller_name, file)` alone would merge. `None` keeps the
+    /// file-or-global scope.
     pub fn get_callees_full(
         &self,
         caller_name: &str,
         file: Option<&str>,
+        caller_line: Option<i64>,
     ) -> Result<Vec<CalleeInfo>, StoreError> {
         let _span = tracing::debug_span!("get_callees_full", function = %caller_name).entered();
         self.rt.block_on(async {
@@ -289,7 +312,9 @@ impl<Mode> Store<Mode> {
             let sql = format!(
                 "SELECT callee_name, call_line, edge_kind, MIN({rank_case}) AS trust_rank
                  FROM function_calls
-                 WHERE caller_name = ?1 AND (?2 IS NULL OR file = ?2)
+                 WHERE caller_name = ?1
+                   AND (?2 IS NULL OR file = ?2)
+                   AND (?3 IS NULL OR caller_line = ?3)
                  GROUP BY callee_name, call_line
                  ORDER BY trust_rank, call_line"
             );
@@ -297,6 +322,7 @@ impl<Mode> Store<Mode> {
                 sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
                     .bind(caller_name)
                     .bind(file)
+                    .bind(caller_line)
                     .fetch_all(&self.pool)
                     .await?;
 
