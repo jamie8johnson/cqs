@@ -1679,4 +1679,215 @@ mod tests {
             Err(SpladeIndexPersistError::GenerationMismatch { disk: 2, store: 1 })
         ));
     }
+
+    // ====== Property-based round-trip: save -> load is structural identity ======
+    //
+    // The hand-written round-trip tests (`test_persist_roundtrip`,
+    // `test_streaming_save_roundtrips_through_load`) each pin one fixed
+    // 3-chunk / handful-of-token index and compare weights with
+    // `(a - b).abs() < f32::EPSILON`. That comparison structurally CANNOT
+    // distinguish:
+    //   - `+0.0` from `-0.0` (they compare equal under subtraction),
+    //   - one NaN bit pattern from another (NaN - NaN = NaN, `< EPSILON` is
+    //     false — the approx compare would actually FALSE-FAIL on NaN, so the
+    //     fixtures avoid NaN entirely and never test it),
+    //   - a weight that decoded to a nearby-but-different f32.
+    // The codec's contract is BIT-EXACT (`f32::to_le_bytes` /
+    // `f32::from_le_bytes`), so the property asserts `to_bits()` identity —
+    // a strictly sharper invariant the example suite cannot express.
+    //
+    // Invariant (one line):
+    //   for every valid index i:  load(save(i)).id_map == i.id_map
+    //                       AND   load(save(i)).postings ≡_bits i.postings
+    mod roundtrip_proptest {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A weight strategy whose coverage claim is: hits every f32 class the
+        /// LE codec must survive bit-exactly — ordinary finite values, the two
+        /// signed zeros, the f32 extrema, the smallest subnormal, and the
+        /// non-finite values (±inf, a NaN). `prop_oneof` keeps the boundary
+        /// classes at non-trivial probability instead of relying on
+        /// `prop::num::f32::ANY` (which emits NaN/inf only rarely).
+        ///
+        /// DISTRUST: `ANY` alone would almost never sample `-0.0` or a
+        /// subnormal, so the boundary that actually bites a float codec
+        /// (sign-of-zero, NaN bit pattern) would go unexercised. The explicit
+        /// `just(...)` arms force them.
+        fn weight_strategy() -> impl Strategy<Value = f32> {
+            prop_oneof![
+                4 => prop::num::f32::ANY,
+                1 => Just(0.0_f32),
+                1 => Just(-0.0_f32),
+                1 => Just(f32::MIN),
+                1 => Just(f32::MAX),
+                1 => Just(f32::MIN_POSITIVE),
+                1 => Just(f32::from_bits(1)), // smallest positive subnormal
+                1 => Just(f32::INFINITY),
+                1 => Just(f32::NEG_INFINITY),
+                1 => Just(f32::NAN),
+            ]
+        }
+
+        /// A chunk-id strategy. Coverage claim: empty string, ASCII, and
+        /// multi-byte UTF-8 (so `id.len()` byte-length prefix vs char count
+        /// can't silently diverge), bounded to 0..12 chars so shrinking stays
+        /// fast. The `\\PC*` class is proptest's "any non-control unicode
+        /// scalar", which reaches astral-plane codepoints (4-byte UTF-8).
+        fn id_strategy() -> impl Strategy<Value = String> {
+            prop_oneof![
+                1 => Just(String::new()),
+                3 => "[a-zA-Z0-9_:./-]{0,12}",
+                2 => "\\PC{0,8}",
+            ]
+        }
+
+        /// A single chunk's sparse vector. Coverage claim: empty vector
+        /// (a chunk that contributed no tokens), up to 6 (token_id, weight)
+        /// pairs, token_ids spanning the full u32 range via `prop::num::u32::ANY`
+        /// (so 0 and u32::MAX are reachable), weights from `weight_strategy`.
+        /// Allows DUPLICATE token_ids within one vector on purpose — `build`
+        /// pushes each occurrence as its own posting, and the codec must
+        /// preserve that multiplicity and order.
+        fn sparse_strategy() -> impl Strategy<Value = Vec<(u32, f32)>> {
+            prop::collection::vec((prop::num::u32::ANY, weight_strategy()), 0..6)
+        }
+
+        /// A whole index input: 0..8 chunks (0 covers the empty-index codec
+        /// path that no fixture exercises). chunk_ids are NOT required unique —
+        /// `build` doesn't dedup, so two identical ids are two id_map slots,
+        /// and the codec must round-trip both.
+        fn index_input_strategy() -> impl Strategy<Value = Vec<(String, Vec<(u32, f32)>)>> {
+            prop::collection::vec((id_strategy(), sparse_strategy()), 0..8)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 256,
+                // Deterministic: a CI failure reproduces from the seed printed
+                // in the panic + the committed `.proptest-regressions` file.
+                ..ProptestConfig::default()
+            })]
+
+            /// load(save(idx)) is a bit-exact structural identity for EVERY
+            /// validly-built index. The fixture tests can express the
+            /// approximate version of this for one hand-picked index; the
+            /// property expresses the exact version for the whole input space,
+            /// including empty indexes, unicode/empty ids, duplicate ids,
+            /// duplicate tokens, and the full f32 boundary set.
+            #[test]
+            fn prop_splade_save_load_roundtrip_bit_exact(
+                input in index_input_strategy(),
+                generation in prop::num::u64::ANY,
+            ) {
+                let original = SpladeIndex::build(
+                    input.iter().map(|(id, sv)| (id.clone(), sv.clone())).collect(),
+                );
+
+                let dir = tempfile::TempDir::new().unwrap();
+                let path = dir.path().join("splade.index.bin");
+
+                original.save(&path, generation)?;
+                let loaded = SpladeIndex::load(&path, generation)?
+                    .ok_or_else(|| {
+                        TestCaseError::fail("load returned Ok(None) for a file we just wrote")
+                    })?;
+
+                // id_map is insertion-ordered on both sides — exact equality.
+                prop_assert_eq!(
+                    &loaded.id_map, &original.id_map,
+                    "id_map diverged across save/load"
+                );
+
+                // Same token set.
+                prop_assert_eq!(
+                    loaded.postings.len(), original.postings.len(),
+                    "unique-token count diverged across save/load"
+                );
+
+                // Per token: same posting multiplicity, same order, same
+                // chunk_idx, and BIT-EXACT weight (the assertion the fixtures
+                // cannot make).
+                for (token_id, orig_postings) in &original.postings {
+                    let loaded_postings = loaded.postings.get(token_id).ok_or_else(|| {
+                        TestCaseError::fail(format!("token {token_id} lost on round-trip"))
+                    })?;
+                    prop_assert_eq!(
+                        loaded_postings.len(), orig_postings.len(),
+                        "posting-list length diverged for token {}", token_id
+                    );
+                    for (a, b) in loaded_postings.iter().zip(orig_postings.iter()) {
+                        prop_assert_eq!(a.0, b.0, "chunk_idx diverged for token {}", token_id);
+                        prop_assert!(
+                            a.1.to_bits() == b.1.to_bits(),
+                            "weight bit pattern diverged for token {}: \
+                             loaded {:#010x} != original {:#010x} \
+                             (loaded={}, original={})",
+                            token_id, a.1.to_bits(), b.1.to_bits(), a.1, b.1
+                        );
+                    }
+                }
+            }
+
+            /// The two read backings (mmap vs forced-heap) of the SAME on-disk
+            /// file must decode to bit-identical indexes for EVERY valid input.
+            /// `test_load_mmap_matches_heap` asserts this for one fixture with
+            /// an approximate weight compare; the property generalizes it over
+            /// the input space with bit-exact weights. Serial because it
+            /// toggles `CQS_SPLADE_NO_MMAP`.
+            #[test]
+            #[serial_test::serial]
+            fn prop_splade_mmap_matches_heap_bit_exact(
+                input in index_input_strategy(),
+            ) {
+                // Skip the empty case: an all-empty index produces a 64-byte
+                // header-only file whose mmap/heap paths are trivially equal
+                // and the env toggle adds no coverage. Non-empty inputs
+                // exercise the body decode under both backings.
+                prop_assume!(!input.is_empty());
+
+                let original = SpladeIndex::build(
+                    input.iter().map(|(id, sv)| (id.clone(), sv.clone())).collect(),
+                );
+                let dir = tempfile::TempDir::new().unwrap();
+                let path = dir.path().join("splade.index.bin");
+                original.save(&path, 1)?;
+
+                let prev = std::env::var("CQS_SPLADE_NO_MMAP").ok();
+
+                std::env::remove_var("CQS_SPLADE_NO_MMAP");
+                let via_mmap = SpladeIndex::load(&path, 1)?
+                    .ok_or_else(|| TestCaseError::fail("mmap load returned None"))?;
+
+                std::env::set_var("CQS_SPLADE_NO_MMAP", "1");
+                let via_heap = SpladeIndex::load(&path, 1)?
+                    .ok_or_else(|| TestCaseError::fail("heap load returned None"))?;
+
+                match prev {
+                    Some(v) => std::env::set_var("CQS_SPLADE_NO_MMAP", v),
+                    None => std::env::remove_var("CQS_SPLADE_NO_MMAP"),
+                }
+
+                prop_assert_eq!(&via_mmap.id_map, &via_heap.id_map, "mmap/heap id_map diverged");
+                prop_assert_eq!(
+                    via_mmap.postings.len(), via_heap.postings.len(),
+                    "mmap/heap token count diverged"
+                );
+                for (token_id, mmap_list) in &via_mmap.postings {
+                    let heap_list = via_heap.postings.get(token_id).ok_or_else(|| {
+                        TestCaseError::fail(format!("token {token_id} present in mmap, absent in heap"))
+                    })?;
+                    prop_assert_eq!(mmap_list.len(), heap_list.len(), "mmap/heap posting len diverged");
+                    for (a, b) in mmap_list.iter().zip(heap_list.iter()) {
+                        prop_assert_eq!(a.0, b.0, "mmap/heap chunk_idx diverged");
+                        prop_assert!(
+                            a.1.to_bits() == b.1.to_bits(),
+                            "mmap/heap weight bits diverged: {:#010x} != {:#010x}",
+                            a.1.to_bits(), b.1.to_bits()
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
