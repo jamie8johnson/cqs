@@ -29,15 +29,6 @@ use cqs::store::{CalleeInfo, CallerInfo, ReadOnly, Store};
 use super::notes_text;
 use super::KindFallbackOutput;
 
-/// Error message when `--edge-kind` is combined with `--cross-project`. The
-/// cross-project path loads a `CallGraph` that discards edge kinds (kinds are
-/// not threaded through the multi-index merge), so applying the filter would
-/// silently return the unfiltered superset. Honest refusal until kinds are
-/// threaded through `CallGraph` (tracked as a follow-up). Shared verbatim by
-/// CLI and daemon so the parity test can pin the exact string.
-pub(crate) const EDGE_KIND_CROSS_PROJECT_ERR: &str =
-    "edge-kind filtering is not supported with --cross-project";
-
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
 
 /// Input for [`callers_core`] / [`callees_core`]. Both commands take the
@@ -636,6 +627,12 @@ pub(crate) fn callers_cross_core(
     let mut callers = cross_ctx
         .get_callers_cross(&args.name)
         .context("Failed to load cross-project callers")?;
+    // Edge-kind filter (§1, cross-project): provenance is now threaded through
+    // the in-memory CallGraph, so the filter applies cross-project exactly as it
+    // does single-project — BEFORE the cap so `--limit` pages the filtered set.
+    if let Some(want) = args.edge_kind {
+        callers.retain(|c| c.caller.edge_kind == want);
+    }
     let total = callers.len();
     callers.truncate(limit);
     let entries: Vec<CallerEntry> = callers
@@ -645,8 +642,8 @@ pub(crate) fn callers_cross_core(
             file: normalize_path(&c.caller.file).to_string(),
             line_start: c.caller.line,
             project: c.project.clone(),
-            // Cross-project edges come from the in-memory CallGraph (no
-            // edge_kind tracking) — always the default `call`, rendered omitted.
+            // Edge provenance threaded through the cross-project CallGraph,
+            // skip-when-default (a `call` edge renders omitted).
             edge_kind: edge_kind_field(c.caller.edge_kind),
             // Cross-project has no Type::method resolution (no parent_type_name
             // in the merged CallGraph) — never attributed.
@@ -677,6 +674,10 @@ pub(crate) fn callees_cross_core(
     let mut callees = cross_ctx
         .get_callees_cross(&args.name)
         .context("Failed to load cross-project callees")?;
+    // Edge-kind filter (§1, cross-project): see `callers_cross_core`.
+    if let Some(want) = args.edge_kind {
+        callees.retain(|c| c.edge_kind == want);
+    }
     let total = callees.len();
     callees.truncate(limit);
     let calls: Vec<CalleeEntry> = callees
@@ -685,9 +686,9 @@ pub(crate) fn callees_cross_core(
             name: c.name.clone(),
             line_start: c.line,
             project: c.project.clone(),
-            // Cross-project callees come from the in-memory CallGraph (no
-            // edge_kind) — default `call`, rendered omitted.
-            edge_kind: String::new(),
+            // Edge provenance threaded through the cross-project CallGraph,
+            // skip-when-default (a `call` edge renders omitted).
+            edge_kind: edge_kind_field(c.edge_kind),
         })
         .collect();
     Ok(CalleesOutput {
@@ -714,10 +715,6 @@ pub(crate) fn cmd_callers(
     let store = &ctx.store;
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
-    if cross_project && edge_kind.is_some() {
-        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
-    }
-
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let output = callers_cross_core(
@@ -737,12 +734,18 @@ pub(crate) fn cmd_callers(
             println!("Functions that call '{}' (cross-project):", name);
             println!();
             for c in &output.callers {
+                let kind_suffix = if c.edge_kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", c.edge_kind.dimmed())
+                };
                 println!(
-                    "  {} ({}:{}) [{}]",
+                    "  {} ({}:{}) [{}]{}",
                     c.name.cyan(),
                     c.file,
                     c.line_start,
-                    c.project.dimmed()
+                    c.project.dimmed(),
+                    kind_suffix
                 );
             }
             println!();
@@ -931,10 +934,6 @@ pub(crate) fn cmd_callees(
     // See cmd_callers — same clamp range.
     let limit = limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
-    if cross_project && edge_kind.is_some() {
-        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
-    }
-
     if cross_project {
         let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(&ctx.root)?;
         let output = callees_cross_core(
@@ -955,7 +954,12 @@ pub(crate) fn cmd_callees(
                 println!("  (no function calls found)");
             } else {
                 for c in &output.calls {
-                    println!("  {} [{}]", c.name, c.project.dimmed());
+                    let kind_suffix = if c.edge_kind.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", c.edge_kind.dimmed())
+                    };
+                    println!("  {} [{}]{}", c.name, c.project.dimmed(), kind_suffix);
                 }
             }
             println!();

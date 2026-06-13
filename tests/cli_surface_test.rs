@@ -732,48 +732,129 @@ fn session_callees_lists_seeded_callee() {
     );
 }
 
-/// `--edge-kind` + `--cross-project` is an honest refusal on the CLI
-/// surface — the cross-project path discards edge kinds, so the filter would
-/// silently return the unfiltered superset. The guard fires after the store
-/// opens, so the fixture seeds a real index first.
+/// `--edge-kind` + `--cross-project` now FILTERS rather than refusing: edge
+/// provenance is threaded through the in-memory cross-project `CallGraph`, so
+/// the filter applies the same way it does single-project. The seeded
+/// `producer → consumer` edge is `call`, so `--edge-kind call` keeps `producer`
+/// in the cross-project callers and `--edge-kind macro_heuristic` drops it.
 #[test]
-fn callers_edge_kind_with_cross_project_is_refused() {
+fn callers_edge_kind_with_cross_project_filters() {
     let dir = TempDir::new().unwrap();
     seed_session_project(dir.path());
-    cqs()
+
+    // edge-kind=call keeps the seeded call edge.
+    let out = cqs()
         .args([
             "callers",
             "consumer",
             "--cross-project",
             "--edge-kind",
             "call",
+            "--json",
         ])
+        .env("CQS_NO_DAEMON", "1")
         .current_dir(dir.path())
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "edge-kind filtering is not supported with --cross-project",
-        ));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payload: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out).unwrap().trim()).expect("callers JSON");
+    let data = &payload["data"];
+    let callers = data["callers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("callers must be an array, got: {payload}"));
+    assert!(
+        callers.iter().any(|c| c["name"] == "producer"),
+        "edge-kind=call must keep producer, got: {payload}"
+    );
+
+    // edge-kind=macro_heuristic filters the call edge out.
+    let out = cqs()
+        .args([
+            "callers",
+            "consumer",
+            "--cross-project",
+            "--edge-kind",
+            "macro_heuristic",
+            "--json",
+        ])
+        .env("CQS_NO_DAEMON", "1")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payload: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out).unwrap().trim()).expect("callers JSON");
+    assert!(
+        payload["data"]["callers"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
+        "edge-kind=macro_heuristic must drop the call edge, got: {payload}"
+    );
 }
 
 #[test]
-fn callees_edge_kind_with_cross_project_is_refused() {
+fn callees_edge_kind_with_cross_project_filters() {
     let dir = TempDir::new().unwrap();
     seed_session_project(dir.path());
-    cqs()
+
+    // edge-kind=call keeps the seeded producer → consumer edge.
+    let out = cqs()
         .args([
             "callees",
             "producer",
             "--cross-project",
             "--edge-kind",
             "call",
+            "--json",
         ])
+        .env("CQS_NO_DAEMON", "1")
         .current_dir(dir.path())
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "edge-kind filtering is not supported with --cross-project",
-        ));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payload: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out).unwrap().trim()).expect("callees JSON");
+    let data = &payload["data"];
+    let calls = data["calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("calls must be an array, got: {payload}"));
+    assert!(
+        calls.iter().any(|c| c["name"] == "consumer"),
+        "edge-kind=call must keep consumer, got: {payload}"
+    );
+
+    // edge-kind=fn_pointer drops the call edge.
+    let out = cqs()
+        .args([
+            "callees",
+            "producer",
+            "--cross-project",
+            "--edge-kind",
+            "fn_pointer",
+            "--json",
+        ])
+        .env("CQS_NO_DAEMON", "1")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payload: serde_json::Value =
+        serde_json::from_str(String::from_utf8(out).unwrap().trim()).expect("callees JSON");
+    assert!(
+        payload["data"]["calls"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
+        "edge-kind=fn_pointer must drop the call edge, got: {payload}"
+    );
 }
 
 #[test]

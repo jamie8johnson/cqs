@@ -21,7 +21,7 @@ use crate::cli::args::{
 use crate::cli::commands::{
     callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
     parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs,
-    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs, EDGE_KIND_CROSS_PROJECT_ERR,
+    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
 use cqs::parser::CallEdgeKind;
 
@@ -109,9 +109,6 @@ pub(in crate::cli::batch) fn dispatch_callers(
     )
     .entered();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
-    if cross_project && edge_kind.is_some() {
-        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
-    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -161,9 +158,6 @@ pub(in crate::cli::batch) fn dispatch_callees(
     )
     .entered();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
-    if cross_project && edge_kind.is_some() {
-        anyhow::bail!("{}", EDGE_KIND_CROSS_PROJECT_ERR);
-    }
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -629,41 +623,66 @@ mod tests {
         }
     }
 
-    /// `--edge-kind` + `--cross-project` is an honest refusal on the daemon
-    /// surface too — the cross-project path discards edge kinds. Both
-    /// `dispatch_callers` and `dispatch_callees` error with the shared message;
-    /// the parity assertion pins that the CLI constant and the daemon error
-    /// string are the same text on both commands.
+    /// `--edge-kind` + `--cross-project` now filters rather than refusing:
+    /// edge provenance is threaded through the in-memory `CallGraph`,
+    /// so the daemon cross-project callers/callees apply the kind filter the
+    /// same way the single-project path does. The seeded edge is `call`, so
+    /// `--edge-kind call` keeps it and `--edge-kind macro_heuristic` drops it.
     #[test]
-    fn dispatch_edge_kind_with_cross_project_is_refused() {
+    fn dispatch_edge_kind_with_cross_project_filters() {
         let (_dir, ctx) = seed_call_graph_ctx();
-        let view = ctx.build_view(None);
 
-        let callers_args = CallersArgs {
-            name: "callee_fn".into(),
-            cross_project: true,
-            limit_arg: crate::cli::args::LimitArg { limit: 10 },
-            edge_kind: Some("call".to_string()),
-        };
-        let callers_err = dispatch_callers(&view, &callers_args)
-            .expect_err("edge-kind + cross-project must be refused")
-            .to_string();
-        assert_eq!(callers_err, EDGE_KIND_CROSS_PROJECT_ERR);
+        // `--edge-kind call` keeps the seeded call edge on both surfaces.
+        let callers_keep = dispatch_callers(
+            &ctx.build_view(None),
+            &CallersArgs {
+                name: "callee_fn".into(),
+                cross_project: true,
+                limit_arg: crate::cli::args::LimitArg { limit: 10 },
+                edge_kind: Some("call".to_string()),
+            },
+        )
+        .expect("dispatch_callers cross + edge-kind call");
+        let callers = callers_keep["callers"].as_array().expect("callers array");
+        assert!(
+            callers.iter().any(|c| c["name"] == "caller_fn"),
+            "edge-kind=call must keep the seeded call edge, got: {callers_keep}"
+        );
 
-        let callees_args = CallersArgs {
-            name: "caller_fn".into(),
-            cross_project: true,
-            limit_arg: crate::cli::args::LimitArg { limit: 10 },
-            edge_kind: Some("call".to_string()),
-        };
-        let callees_err = dispatch_callees(&view, &callees_args)
-            .expect_err("edge-kind + cross-project must be refused")
-            .to_string();
-        assert_eq!(callees_err, EDGE_KIND_CROSS_PROJECT_ERR);
+        let callees_keep = dispatch_callees(
+            &ctx.build_view(None),
+            &CallersArgs {
+                name: "caller_fn".into(),
+                cross_project: true,
+                limit_arg: crate::cli::args::LimitArg { limit: 10 },
+                edge_kind: Some("call".to_string()),
+            },
+        )
+        .expect("dispatch_callees cross + edge-kind call");
+        let calls = callees_keep["calls"].as_array().expect("calls array");
+        assert!(
+            calls.iter().any(|c| c["name"] == "callee_fn"),
+            "edge-kind=call must keep the seeded call edge, got: {callees_keep}"
+        );
 
-        // Parity: the same constant the CLI bails with (cmd_callers /
-        // cmd_callees both `bail!(EDGE_KIND_CROSS_PROJECT_ERR)`).
-        assert_eq!(callers_err, callees_err);
+        // `--edge-kind macro_heuristic` filters the seeded call edge out.
+        let callers_drop = dispatch_callers(
+            &ctx.build_view(None),
+            &CallersArgs {
+                name: "callee_fn".into(),
+                cross_project: true,
+                limit_arg: crate::cli::args::LimitArg { limit: 10 },
+                edge_kind: Some("macro_heuristic".to_string()),
+            },
+        )
+        .expect("dispatch_callers cross + edge-kind macro_heuristic");
+        assert!(
+            callers_drop["callers"]
+                .as_array()
+                .expect("callers array")
+                .is_empty(),
+            "edge-kind=macro_heuristic must drop the call edge, got: {callers_drop}"
+        );
     }
 
     #[test]

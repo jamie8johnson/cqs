@@ -56,8 +56,16 @@ pub fn analyze_impact_cross(
     )
     .entered();
 
-    // BFS: reverse traversal across all projects
+    // BFS: reverse traversal across all projects.
+    //
+    // `visited` records depth + project per name. `edge_provenance` captures the
+    // metadata of the edge that FIRST discovered each caller — its file, caller
+    // line, and `edge_kind` — threaded through the in-memory `CallGraph`.
+    // The discovering edge is a stable choice: BFS visits each name once, and the
+    // file/line/kind describe that caller's own definition, independent of which
+    // callee surfaced it.
     let mut visited: HashMap<String, (usize, String)> = HashMap::new(); // name -> (depth, project)
+    let mut edge_provenance: HashMap<String, crate::store::CallerInfo> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
     visited.insert(name.to_string(), (0, String::new()));
@@ -85,48 +93,46 @@ pub fn analyze_impact_cross(
                 }
 
                 visited.insert(caller.caller.name.clone(), (d + 1, caller.project.clone()));
+                edge_provenance.insert(caller.caller.name.clone(), caller.caller.clone());
                 queue.push_back((caller.caller.name.clone(), d + 1));
             }
         }
     }
 
-    // Build transitive callers (everything at depth > 0, excluding target)
-    // TODO: resolve file/line from CallGraph (cross-project stores don't track source locations in edges yet)
-    let caller_count = visited
-        .iter()
-        .filter(|(n, (d, _))| *d > 0 && n.as_str() != name)
-        .count();
-    if caller_count > 0 {
-        tracing::warn!(
-            count = caller_count,
-            "Cross-project callers have empty file/line; resolve from CallGraph when edge metadata is available"
-        );
-    }
+    // Build transitive callers (everything at depth > 0, excluding target),
+    // carrying the source location of the discovering edge.
     let mut transitive_callers: Vec<TransitiveCaller> = visited
         .iter()
         .filter(|(n, (d, _))| *d > 0 && n.as_str() != name)
-        .map(|(n, (d, _))| TransitiveCaller {
-            name: n.clone(),
-            file: std::path::PathBuf::new(),
-            line: 0,
-            depth: *d,
+        .map(|(n, (d, _))| {
+            let prov = edge_provenance.get(n);
+            TransitiveCaller {
+                name: n.clone(),
+                file: prov.map(|c| c.file.clone()).unwrap_or_default(),
+                line: prov.map(|c| c.line).unwrap_or(0),
+                depth: *d,
+            }
         })
         .collect();
     transitive_callers.sort_by_key(|tc| tc.depth);
 
-    // Build direct callers (depth == 1)
+    // Build direct callers (depth == 1), threading edge_kind + source location
+    // from the discovering edge's provenance.
     let callers = visited
         .iter()
         .filter(|(_, (d, _))| *d == 1)
-        .map(|(n, _)| super::types::CallerDetail {
-            name: n.clone(),
-            file: std::path::PathBuf::new(),
-            line: 0,
-            call_line: 0,
-            snippet: None,
-            // Cross-project edges come from the in-memory CallGraph (no
-            // edge_kind tracking) — default `call`.
-            edge_kind: crate::parser::CallEdgeKind::Call,
+        .map(|(n, _)| {
+            let prov = edge_provenance.get(n);
+            super::types::CallerDetail {
+                name: n.clone(),
+                file: prov.map(|c| c.file.clone()).unwrap_or_default(),
+                line: prov.map(|c| c.line).unwrap_or(0),
+                call_line: 0,
+                snippet: None,
+                edge_kind: prov
+                    .map(|c| c.edge_kind)
+                    .unwrap_or(crate::parser::CallEdgeKind::Call),
+            }
         })
         .collect();
 
@@ -362,6 +368,65 @@ mod tests {
             !caller_names.contains("deep"),
             "deep is at depth 2, beyond limit"
         );
+    }
+
+    /// Build a NamedStore with one fully-attributed edge so cross-project impact
+    /// can be checked for threaded provenance.
+    fn make_named_store_typed(
+        name: &str,
+        caller: &str,
+        callee: &str,
+        kind: crate::parser::CallEdgeKind,
+        file: &str,
+        caller_line: i64,
+    ) -> NamedStore {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let model_info = crate::store::helpers::ModelInfo::default();
+        let store = Store::<crate::store::ReadOnly>::open_readonly_after_init(&db_path, |store| {
+            store.init(&model_info)?;
+            store.block_on(async {
+                sqlx::query(
+                    "INSERT INTO function_calls (file, caller_name, callee_name, caller_line, call_line, edge_kind)
+                     VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                )
+                .bind(file)
+                .bind(caller)
+                .bind(callee)
+                .bind(caller_line)
+                .bind(kind.as_str())
+                .execute(store.pool())
+                .await
+            })?;
+            Ok(())
+        })
+        .unwrap();
+        let _keep = dir.keep();
+        NamedStore::new(name.to_string(), store, db_path)
+    }
+
+    /// Cross-project impact's direct callers carry the edge's provenance (kind +
+    /// source location) threaded through the in-memory CallGraph, no longer
+    /// hardcoded to default-`call` with empty file/line.
+    #[test]
+    fn cross_project_impact_direct_caller_carries_provenance() {
+        use crate::parser::CallEdgeKind;
+        let store = make_named_store_typed(
+            "proj_a",
+            "caller_a",
+            "target",
+            CallEdgeKind::FnPointer,
+            "src/a.rs",
+            42,
+        );
+        let mut ctx = CrossProjectContext::new(vec![store]);
+        let result = analyze_impact_cross(&mut ctx, "target", 3, false, false).unwrap();
+        assert_eq!(result.callers.len(), 1);
+        let c = &result.callers[0];
+        assert_eq!(c.name, "caller_a");
+        assert_eq!(c.edge_kind, CallEdgeKind::FnPointer);
+        assert_eq!(c.file, std::path::PathBuf::from("src/a.rs"));
+        assert_eq!(c.line, 42);
     }
 
     // ===== Cross-project trace tests =====

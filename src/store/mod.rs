@@ -68,6 +68,9 @@ pub use calls::cross_project::{
 /// In-memory call graph (forward + reverse adjacency lists).
 pub use helpers::CallGraph;
 
+/// Per-edge provenance (kind + source location) for an in-memory [`CallGraph`].
+pub use helpers::CallEdgeMeta;
+
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
 

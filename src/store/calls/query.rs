@@ -357,12 +357,27 @@ impl<Mode> Store<Mode> {
             // Cap is env-overridable via CQS_CALL_GRAPH_MAX_EDGES so
             // monorepos above 500K edges can lift the ceiling.
             let max_edges = crate::limits::call_graph_max_edges() as i64;
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT ?1",
-            )
-            .bind(max_edges)
-            .fetch_all(&self.pool)
-            .await?;
+            // Collapse duplicate (caller, callee) rows to the single
+            // most-trusted edge in SQL: `MIN(rank_case)` picks the lowest trust
+            // rank (call < serde < macro < fn-pointer < doc-reference) and the
+            // sibling bare columns (`edge_kind`, `file`, `caller_line`,
+            // `call_line`) take their value from that min-rank row (SQLite
+            // bare-column rule), so the in-memory edge metadata mirrors the
+            // local `get_callers_full` collapse rather than picking an arbitrary
+            // kind. Names are read directly from the GROUP BY keys.
+            let rank_case = crate::parser::CallEdgeKind::rank_case_sql("edge_kind");
+            let sql = format!(
+                "SELECT caller_name, callee_name, edge_kind, file, caller_line, call_line,
+                        MIN({rank_case}) AS trust_rank
+                 FROM function_calls
+                 GROUP BY caller_name, callee_name
+                 LIMIT ?1"
+            );
+            let rows: Vec<(String, String, String, String, i64, i64, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(max_edges)
+                    .fetch_all(&self.pool)
+                    .await?;
 
             let edge_count = rows.len();
             if edge_count as i64 >= max_edges {
@@ -384,9 +399,13 @@ impl<Mode> Store<Mode> {
                 std::sync::Arc<str>,
                 Vec<std::sync::Arc<str>>,
             > = std::collections::HashMap::new();
+            let mut edges: std::collections::HashMap<
+                (std::sync::Arc<str>, std::sync::Arc<str>),
+                crate::store::helpers::CallEdgeMeta,
+            > = std::collections::HashMap::new();
 
             // String interner: each unique name is allocated once as Arc<str>,
-            // then shared across forward and reverse maps.
+            // then shared across forward, reverse, and the edge-metadata map.
             let mut interner: std::collections::HashMap<String, std::sync::Arc<str>> =
                 std::collections::HashMap::new();
             let mut intern = |s: String| -> std::sync::Arc<str> {
@@ -396,17 +415,33 @@ impl<Mode> Store<Mode> {
                     .clone()
             };
 
-            for (caller, callee) in rows {
+            for (caller, callee, kind, file, caller_line, call_line, _rank) in rows {
                 let caller = intern(caller);
                 let callee = intern(callee);
                 reverse
                     .entry(callee.clone())
                     .or_default()
                     .push(caller.clone());
-                forward.entry(caller).or_default().push(callee);
+                forward
+                    .entry(caller.clone())
+                    .or_default()
+                    .push(callee.clone());
+                edges.insert(
+                    (caller, callee),
+                    crate::store::helpers::CallEdgeMeta {
+                        edge_kind: crate::parser::CallEdgeKind::from_str_or_default(&kind),
+                        file,
+                        caller_line: crate::store::helpers::clamp_line_number(caller_line),
+                        call_line: crate::store::helpers::clamp_line_number(call_line),
+                    },
+                );
             }
 
-            Ok::<_, StoreError>(CallGraph { forward, reverse })
+            Ok::<_, StoreError>(CallGraph {
+                forward,
+                reverse,
+                edges,
+            })
         })?;
         let arc = std::sync::Arc::new(graph);
         let _ = self.call_graph_cache.set(std::sync::Arc::clone(&arc));
