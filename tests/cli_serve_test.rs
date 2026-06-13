@@ -13,15 +13,31 @@
 //! existing unit test.
 //!
 //! This integration test exercises the full layer stack in production
-//! order: spawn `cqs serve --port 0`, parse the listening banner to
-//! extract port + auth token, issue three HTTP requests against the live
+//! order: spawn `cqs serve --port 0 --no-auth`, parse the listening
+//! banner to extract the port, issue HTTP requests against the live
 //! server.
 //!
-//! Pinned contracts:
-//!   * `/health` returns 200 to a request bearing the per-launch token.
-//!   * `/health` returns 401 to a request *without* the token.
-//!   * `/api/graph` returns 200 + a valid JSON envelope (with
-//!     `_meta.version`) to an authenticated request.
+//! The round-trip runs against a `--no-auth` server *by design*. The
+//! per-launch auth token is unrecoverable from a non-TTY launch — it is
+//! `AuthToken::random()` per start, withheld from the non-TTY banner so it
+//! never lands in journald/container logs, and has no injection channel
+//! (no env, no flag). A piped-stdout child
+//! (which is the only thing a test harness can spawn without a pty crate)
+//! therefore cannot authenticate. Rather than re-open that leak, this test
+//! covers the auth-independent half of the layer stack (bind → axum accept
+//! → routing → JSON shape) and leaves the auth half to unit coverage.
+//!
+//! End-to-end auth-composition coverage (401 on missing/wrong token,
+//! 200 with Bearer, 200 with cookie, the `?token=…` → 303 + Set-Cookie
+//! redirect handoff, per-port cookie scoping, cross-instance rejection)
+//! lives in `src/serve/tests.rs` — those tower-layer tests drive the real
+//! middleware stack via `tower::ServiceExt::oneshot`, so they exercise the
+//! same auth layer this binary runs, just without the process boundary.
+//!
+//! Pinned contracts (auth-independent):
+//!   * `/health` returns 200 from the live `--no-auth` server.
+//!   * `/api/graph` returns 200 + a JSON object with `nodes` / `edges`
+//!     arrays.
 //!
 //! `Drop` on the harness sends SIGTERM to the child so the server tears
 //! down even if a panic skips an explicit teardown.
@@ -85,26 +101,28 @@ fn setup_indexed_project() -> TempDir {
 struct ServeHarness {
     child: Option<Child>,
     addr: String,
-    token: String,
 }
 
 impl ServeHarness {
     fn spawn(workdir: &std::path::Path) -> Self {
         // PB-V1.30.1-2 path: `--port 0` resolves to an ephemeral port via
         // `TcpListener::bind`. The banner captures the actual port the
-        // kernel assigned plus the per-launch token.
+        // kernel assigned. `--no-auth` is required here: the per-launch
+        // token is withheld from the non-TTY banner and has no injection
+        // channel, so a piped-stdout child can't authenticate — see the
+        // module header for why this is auth-independent coverage.
         let mut child = Command::new(cqs_path())
-            .args(["serve", "--port", "0"])
+            .args(["serve", "--port", "0", "--no-auth"])
             .current_dir(workdir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn cqs serve");
 
-        // The token-bearing banner lands on stderr when stdout isn't a TTY
-        // (P1.13 / SEC). Walk both streams concurrently with a short
-        // timeout — we don't know which one the runtime picks under
-        // assert_cmd's process control.
+        // The `--no-auth` "listening on" banner lands on stdout. Walk both
+        // streams concurrently with a short timeout — we don't depend on
+        // which one the runtime picks under assert_cmd's process control,
+        // and the loud `WARN: --no-auth in use` line goes to stderr.
         let stdout = child.stdout.take().expect("child stdout");
         let stderr = child.stderr.take().expect("child stderr");
         let (tx, rx) = mpsc::channel::<String>();
@@ -114,7 +132,7 @@ impl ServeHarness {
         let banner = recv_banner(&rx, Duration::from_secs(15))
             .unwrap_or_else(|| panic!("timed out waiting for `cqs serve` listening banner"));
 
-        let (addr, token) = parse_banner(&banner);
+        let addr = parse_banner(&banner);
 
         // Give the axum accept loop a moment to enter `.poll_accept()`
         // after `TcpListener::bind` succeeds. The banner fires before
@@ -125,7 +143,6 @@ impl ServeHarness {
         Self {
             child: Some(child),
             addr,
-            token,
         }
     }
 }
@@ -165,8 +182,11 @@ fn recv_banner(rx: &mpsc::Receiver<String>, timeout: Duration) -> Option<String>
     rx.recv_timeout(timeout).ok()
 }
 
-fn parse_banner(banner: &str) -> (String, String) {
-    // Banner shape (auth on): `cqs serve listening on http://<bind>/?token=<token>`
+fn parse_banner(banner: &str) -> String {
+    // Banner shape (`--no-auth`): `cqs serve listening on http://<bind>/`.
+    // The auth-on non-TTY banner withholds the token, so there is nothing
+    // to parse out of it — this harness runs `--no-auth` and only needs the
+    // bind address.
     let url = banner
         .split("listening on ")
         .nth(1)
@@ -174,22 +194,16 @@ fn parse_banner(banner: &str) -> (String, String) {
         .trim()
         .to_string();
     let url = url.strip_prefix("http://").unwrap_or(&url).to_string();
-    let (addr, query) = url
-        .split_once("/?token=")
-        .unwrap_or_else(|| panic!("banner missing `/?token=`: {banner}"));
-    (addr.to_string(), query.to_string())
+    url.trim_end_matches('/').to_string()
 }
 
 /// Issue a raw HTTP/1.1 GET request against `addr` (host:port). Returns
 /// `(status_code, body)`. Hand-rolled rather than pulling in `reqwest`
-/// or `ureq` as a dev-dep — the test does three GET round-trips, no
-/// JSON body, no fancy auth schemes.
-///
-/// `bearer` plumbs an `Authorization: Bearer <token>` header when set;
-/// pass `None` for unauthenticated. Bearer is the API-client auth
-/// channel (`?token=…` triggers the cookie-handoff 303 redirect that
-/// the API surface isn't supposed to deal with — see auth.rs:622).
-fn http_get(addr: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
+/// or `ureq` as a dev-dep — the test does two GET round-trips, no JSON
+/// body. No auth header: the harness runs `--no-auth`, and the auth
+/// channels (Bearer / cookie / `?token=`) are exercised in
+/// `src/serve/tests.rs`.
+fn http_get(addr: &str, path: &str) -> (u16, String) {
     let mut stream =
         TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect to {addr} failed: {e}"));
     stream
@@ -200,11 +214,8 @@ fn http_get(addr: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
     // isn't known when `allowed_host_set` runs), so the actual ephemeral
     // port is *not* on the allowlist. Bare `127.0.0.1` is, and matches
     // every loopback request without per-port bookkeeping.
-    let auth_line = bearer
-        .map(|t| format!("Authorization: Bearer {t}\r\n"))
-        .unwrap_or_default();
     let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth_line}Connection: close\r\nAccept-Encoding: identity\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAccept-Encoding: identity\r\n\r\n"
     );
     stream.write_all(req.as_bytes()).expect("write request");
     stream.flush().expect("flush");
@@ -245,41 +256,34 @@ fn http_get(addr: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
     (status, body)
 }
 
-/// Pin the full layer-composition contract: live server answers an
-/// authenticated request, refuses an unauthenticated one, and returns
-/// a JSON envelope on the API surface.
+/// Pin the auth-independent layer-composition contract: a live
+/// `--no-auth` server binds, accepts, routes, and returns a JSON envelope
+/// on the API surface. The auth-on path (401 / Bearer / cookie / `?token=`
+/// redirect) is covered by the tower-layer tests in `src/serve/tests.rs`
+/// — see the module header for why end-to-end auth can't run here (the
+/// per-launch token is unrecoverable from a non-TTY launch).
 #[test]
 #[serial]
 fn cqs_serve_full_layer_stack_round_trip() {
     let dir = setup_indexed_project();
     let harness = ServeHarness::spawn(dir.path());
 
-    // 1. Authenticated `/health` → 200 (Bearer header).
-    let (status, body) = http_get(&harness.addr, "/health", Some(&harness.token));
+    // 1. `/health` → 200 (no-auth server, no credentials needed).
+    let (status, body) = http_get(&harness.addr, "/health");
     assert_eq!(
         status, 200,
-        "authenticated /health must return 200, got {status} body={body}"
+        "/health must return 200, got {status} body={body}"
     );
 
-    // 2. Unauthenticated `/health` → 401.
-    let (status, body) = http_get(&harness.addr, "/health", None);
-    assert_eq!(
-        status, 401,
-        "unauthenticated /health must return 401, got {status} body={body}"
-    );
-
-    // 3. Authenticated `/api/graph` → 200 + a JSON object with `nodes`
-    //    and `edges` arrays. The `cqs serve` API surface emits raw JSON
-    //    rather than the CLI's `_meta` envelope (different consumer:
-    //    Cytoscape-shaped data goes straight to the browser). We pin
-    //    only the shape, not the payload — the seeded project is tiny,
-    //    and graph-builder fidelity is covered by `src/serve/tests.rs`.
-    //    The contract under test is the *layer stack composition*.
-    let (status, body) = http_get(&harness.addr, "/api/graph", Some(&harness.token));
-    assert_eq!(
-        status, 200,
-        "authenticated /api/graph must return 200, got {status}"
-    );
+    // 2. `/api/graph` → 200 + a JSON object with `nodes` and `edges`
+    //    arrays. The `cqs serve` API surface emits raw JSON rather than
+    //    the CLI's `_meta` envelope (different consumer: Cytoscape-shaped
+    //    data goes straight to the browser). We pin only the shape, not
+    //    the payload — the seeded project is tiny, and graph-builder
+    //    fidelity is covered by `src/serve/tests.rs`. The contract under
+    //    test is the *layer stack composition* (bind → accept → route).
+    let (status, body) = http_get(&harness.addr, "/api/graph");
+    assert_eq!(status, 200, "/api/graph must return 200, got {status}");
     let json: serde_json::Value = serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("/api/graph body not JSON: {e}\nbody={body}"));
     assert!(
