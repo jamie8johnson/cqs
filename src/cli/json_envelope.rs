@@ -68,6 +68,14 @@ pub struct EnvelopeMeta {
     /// repo without re-deriving from CWD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_name: Option<String>,
+    /// Per-query worktree-search-overlay outcome (result-trust §3). Skip-when-
+    /// default: present only when the current search requested an overlay.
+    /// `{"files": N, "chunks": M}` when the overlay merged into results, or a
+    /// `"skipped-*"` reason string when it was eligible but skipped. Read once
+    /// from the thread-local set by the search path, so it is per-query rather
+    /// than per-process (the daemon serves many searches per process).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_overlay: Option<serde_json::Value>,
 }
 
 impl EnvelopeMeta {
@@ -80,14 +88,18 @@ impl EnvelopeMeta {
         Self {
             worktree_stale: cqs::worktree::is_worktree_stale(),
             worktree_name: cqs::worktree::current_worktree_name(),
+            // Per-query, take-on-read: the search path sets the thread-local
+            // before emission, and a single `current()` per envelope consumes
+            // it. Absent ⇒ no overlay requested ⇒ key omitted.
+            worktree_overlay: cqs::worktree_overlay::take_overlay_meta().map(|m| m.to_json()),
         }
     }
 
     /// `true` when every field is at its default (not a stale worktree,
-    /// no worktree name). Drives "skip `_meta` when empty" emission in the
-    /// slim envelope shape.
+    /// no worktree name, no overlay outcome). Drives "skip `_meta` when empty"
+    /// emission in the slim envelope shape.
     pub fn is_empty(&self) -> bool {
-        !self.worktree_stale && self.worktree_name.is_none()
+        !self.worktree_stale && self.worktree_name.is_none() && self.worktree_overlay.is_none()
     }
 }
 
@@ -274,6 +286,9 @@ fn meta_value_for_envelope(meta: &EnvelopeMeta) -> serde_json::Value {
                 "worktree_name".to_string(),
                 serde_json::Value::String(name.clone()),
             );
+        }
+        if let Some(overlay) = &meta.worktree_overlay {
+            m.insert("worktree_overlay".to_string(), overlay.clone());
         }
         serde_json::Value::Object(m)
     })

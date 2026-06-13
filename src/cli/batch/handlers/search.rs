@@ -5,8 +5,8 @@ use anyhow::{bail, Result};
 use super::super::BatchView;
 use crate::cli::args::SearchArgs;
 use crate::cli::commands::search::query::{
-    merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped, Prepared,
-    ProjectSurface, QueryArgs,
+    merge_references, overlay_env_requested, prepare_query, query_core, retrieve_project,
+    retrieve_ref_scoped, Prepared, ProjectSurface, QueryArgs,
 };
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
@@ -107,6 +107,10 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
         // The daemon surface is always JSON, so provenance is on unless the
         // caller suppresses it for a tight token budget.
         record_rank_signals: !args.no_rank_signals,
+        // Overlay opt-in (flag OR env). The daemon's `BatchView::overlay()`
+        // (PR-3) consults this to decide whether to resolve+build an overlay
+        // for the request's worktree root.
+        overlay: args.overlay || overlay_env_requested(),
     }
 }
 

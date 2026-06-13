@@ -187,6 +187,79 @@ impl std::fmt::Debug for WorktreeOverlay {
     }
 }
 
+// ─── `_meta.worktree_overlay` envelope state ────────────────────────────────
+//
+// The overlay's outcome for a single search is surfaced as the skip-when-default
+// `_meta.worktree_overlay` envelope field. Unlike `worktree_stale` (a genuine
+// once-per-process fact — a CLI process either resolved to a worktree or it did
+// not), the overlay outcome is *per query*: the daemon serves many searches from
+// one process and must not leak one query's overlay state into the next. So this
+// is a thread-local cell the search path sets explicitly per invocation, read by
+// the JSON envelope, and cleared at the start of each search.
+
+/// The `_meta.worktree_overlay` outcome for one search. Serializes to the wire
+/// shape the plan §7.5 pins: an `{files, chunks}` object when the overlay is
+/// active, or one of the skip-reason strings when it was eligible but skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayMeta {
+    /// Overlay merged into results. `files` = mask-set size, `chunks` = overlay
+    /// chunks indexed. Wire shape: `{"files": N, "chunks": M}`.
+    Active { files: usize, chunks: usize },
+    /// Overlay was requested + eligible but no daemon answered, so the CLI-direct
+    /// path served the parent index. Wire shape: `"skipped-no-daemon"`.
+    SkippedNoDaemon,
+    /// Overlay was requested but the worktree delta exceeded
+    /// [`overlay_max_files`]. Wire shape: `"skipped-delta-too-large"`.
+    SkippedDeltaTooLarge,
+}
+
+impl OverlayMeta {
+    /// Render to the `_meta.worktree_overlay` JSON value (object for the active
+    /// case, string for the skip cases).
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            OverlayMeta::Active { files, chunks } => {
+                serde_json::json!({ "files": files, "chunks": chunks })
+            }
+            OverlayMeta::SkippedNoDaemon => serde_json::Value::String("skipped-no-daemon".into()),
+            OverlayMeta::SkippedDeltaTooLarge => {
+                serde_json::Value::String("skipped-delta-too-large".into())
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// Per-query overlay outcome for the current thread, read by the JSON
+    /// envelope and overwritten/cleared by the search path each invocation.
+    static OVERLAY_META: std::cell::RefCell<Option<OverlayMeta>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record the overlay outcome for the current search so the JSON envelope can
+/// surface it as `_meta.worktree_overlay`. The search path calls this exactly
+/// once per query (after deciding active / skip); the envelope reads it via
+/// [`take_overlay_meta`].
+pub fn set_overlay_meta(meta: OverlayMeta) {
+    OVERLAY_META.with(|cell| *cell.borrow_mut() = Some(meta));
+}
+
+/// Clear any overlay outcome left over from a previous query on this thread.
+/// Called at the start of each search so a daemon worker thread never leaks one
+/// query's overlay state into the next (the default-OFF, no-overlay case must
+/// emit no `worktree_overlay` key).
+pub fn clear_overlay_meta() {
+    OVERLAY_META.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Read (and clear) the overlay outcome recorded for the current search.
+/// `None` when no overlay was requested/eligible — the envelope then omits the
+/// `worktree_overlay` key entirely (skip-when-default). Clears on read so the
+/// next query starts from a clean slate even if it never sets the cell.
+pub fn take_overlay_meta() -> Option<OverlayMeta> {
+    OVERLAY_META.with(|cell| cell.borrow_mut().take())
+}
+
 /// Run `git -C <dir> <args...>` capturing stdout bytes. `-z` outputs embed
 /// NUL separators, so stdout is returned raw rather than as a `String`.
 fn git_capture(dir: &Path, args: &[&str], context: &str) -> Result<Vec<u8>, OverlayError> {
