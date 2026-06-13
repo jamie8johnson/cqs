@@ -837,6 +837,127 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    /// Regression guard for the SQL positional-cutoff defect: every
+    /// `CREATE TABLE` / `CREATE VIRTUAL TABLE` in the project's own
+    /// `src/schema.sql` must surface as a chunk, not a positional prefix or
+    /// suffix of them. The grammar (tree-sitter-sequel-tsql) emits ERROR
+    /// nodes on valid SQLite DDL it doesn't model — `IF NOT EXISTS`,
+    /// `AUTOINCREMENT`, `USING fts5(...)`, `CREATE TRIGGER` — so this pins
+    /// that the chunk query keeps matching `create_table` siblings across
+    /// those recovery points instead of resuming at the first clean statement.
+    #[test]
+    fn schema_sql_chunks_every_create_table() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/schema.sql"))
+                .unwrap();
+
+        // Ground truth from the file text: names declared by CREATE [VIRTUAL]
+        // TABLE [IF NOT EXISTS] <name>.
+        let declared = sql_declared_table_names(&source);
+        assert!(
+            declared.len() >= 11,
+            "fixture drift: expected schema.sql to declare >=11 tables, found {}: {declared:?}",
+            declared.len()
+        );
+
+        let parser = Parser::new().unwrap();
+        let chunks = parser
+            .parse_source(
+                &source,
+                Language::Sql,
+                std::path::Path::new("src/schema.sql"),
+            )
+            .unwrap();
+        let chunked: std::collections::HashSet<&str> =
+            chunks.iter().map(|c| c.name.as_str()).collect();
+
+        let missing: Vec<&String> = declared
+            .iter()
+            .filter(|n| !chunked.contains(n.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "schema.sql tables not chunked (positional-cutoff regression): {missing:?}; \
+             chunked names = {:?}",
+            chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Self-contained early-error-recovery shape: a table, then a
+    /// parse-stressing construct the SQL grammar can't model (a
+    /// `CREATE VIRTUAL TABLE ... USING fts5(...)` that yields ERROR nodes),
+    /// then more tables. All three tables must chunk — an ERROR node between
+    /// `create_table` siblings must not truncate the match stream. Guards the
+    /// recovery contract independently of `src/schema.sql`'s content, which
+    /// drifts as the real schema evolves.
+    #[test]
+    fn sql_tables_around_error_recovery_all_chunk() {
+        let content = "\
+CREATE TABLE IF NOT EXISTS early (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    val TEXT NOT NULL
+);
+
+-- fts5 virtual table: the grammar emits ERROR nodes for USING fts5(...)
+CREATE VIRTUAL TABLE IF NOT EXISTS early_fts USING fts5(
+    id UNINDEXED,
+    body,
+    tokenize='unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS late (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+";
+        let file = write_temp_file(content, "sql");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let names: std::collections::HashSet<&str> =
+            chunks.iter().map(|c| c.name.as_str()).collect();
+        for expected in ["early", "early_fts", "late"] {
+            assert!(
+                names.contains(expected),
+                "table {expected:?} dropped across an error-recovery boundary; got {:?}",
+                chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Extract table names from `CREATE [VIRTUAL] TABLE [IF NOT EXISTS] <name>`
+    /// statements via line scan — the file-text ground truth the chunk query
+    /// is checked against. Case-insensitive on keywords; the trailing name is
+    /// read off the original-case text so the chunk-name comparison is exact.
+    fn sql_declared_table_names(source: &str) -> Vec<String> {
+        // Strip a case-insensitive keyword prefix, returning the remainder of
+        // the ORIGINAL-case string (so the table name keeps its real casing).
+        fn strip_kw<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+            let s = s.trim_start();
+            if s.len() >= kw.len() && s[..kw.len()].eq_ignore_ascii_case(kw) {
+                Some(&s[kw.len()..])
+            } else {
+                None
+            }
+        }
+
+        let mut names = Vec::new();
+        for line in source.lines() {
+            let after_create =
+                strip_kw(line, "CREATE VIRTUAL TABLE ").or_else(|| strip_kw(line, "CREATE TABLE "));
+            let Some(rest) = after_create else { continue };
+            let rest = strip_kw(rest, "IF NOT EXISTS ").unwrap_or_else(|| rest.trim_start());
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     /// Tests for the comment-/whitespace-canonical embedding-cache hash
     /// (`canonical_hash`). Verifies that comment-only and formatting-only
     /// edits produce the SAME canonical hash (so the embedding is reused),
