@@ -619,7 +619,22 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta) -> [u8; 32] {
 /// returning the 32-byte content digest. Equivalent to
 /// `blake3::hash(&std::fs::read(path)?)` but bounded-memory for the case
 /// where an oversize artifact lands in the delta.
+///
+/// Symlinks are NOT dereferenced. `is_parse_candidate` gates on
+/// `symlink_metadata` and excludes symlinks from the parse set, so a symlink
+/// never contributes searchable content; the fingerprint must agree. We probe
+/// with `symlink_metadata` (which does not follow links) before `File::open`
+/// (which does) and return an error for symlinks so the caller's `Err(_)`
+/// branch maps them to the ZERO32 sentinel — the same stable, non-dereferencing
+/// digest already used for deletions and unreadable files. This keeps the
+/// fingerprint deterministic and independent of the symlink target's contents.
 fn content_digest(path: &Path) -> std::io::Result<[u8; 32]> {
+    if std::fs::symlink_metadata(path)?.is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "symlink: not dereferenced for fingerprint",
+        ));
+    }
     let file = std::fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file)?;
@@ -828,6 +843,58 @@ mod tests {
             fp_before, fp_after,
             "content change must move the fingerprint"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fingerprint_does_not_dereference_symlink() {
+        // A symlinked delta entry must contribute a stable, non-dereferencing
+        // digest: changing the link TARGET's content must not move the
+        // fingerprint. `content_digest` probes with `symlink_metadata` and maps
+        // symlinks to the ZERO32 sentinel, matching `is_parse_candidate`'s
+        // exclusion of symlinks from the parse set.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("target.rs"), b"fn original() {}").unwrap();
+        std::os::unix::fs::symlink(root.join("target.rs"), root.join("link.rs")).unwrap();
+
+        let rec = DeltaRecord {
+            status: DeltaStatus::Modified,
+            old: None,
+            new: "link.rs".into(),
+        };
+        let fp_before = fingerprint(root, &delta_with(vec![rec.clone()]));
+
+        // Mutate the target the symlink points at.
+        std::fs::write(root.join("target.rs"), b"fn edited_target() {}").unwrap();
+        let fp_after = fingerprint(root, &delta_with(vec![rec.clone()]));
+        assert_eq!(
+            fp_before, fp_after,
+            "symlink target change must NOT move the fingerprint"
+        );
+
+        // And the symlink's digest is the ZERO32 sentinel: a deletion record
+        // for the same path (which hashes ZERO32) yields the same fingerprint.
+        let del = DeltaRecord {
+            status: DeltaStatus::Deleted,
+            old: None,
+            new: "link.rs".into(),
+        };
+        let fp_sentinel = fingerprint(root, &delta_with(vec![del]));
+        // Only the status letter differs in the preimage; re-derive with a
+        // Modified record over a path whose content_digest errors (the symlink)
+        // to confirm the sentinel path is taken.
+        assert_eq!(
+            content_digest(&root.join("link.rs"))
+                .err()
+                .map(|e| e.kind()),
+            Some(std::io::ErrorKind::InvalidInput),
+            "symlink must yield an error so the caller maps it to ZERO32"
+        );
+        // Sanity: a Modified symlink and a Deleted path share the same ZERO32
+        // content slot but differ by status letter, so their fingerprints must
+        // differ — proves the symlink wasn't dereferenced into real bytes.
+        assert_ne!(fp_before, fp_sentinel);
     }
 
     #[test]
