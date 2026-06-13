@@ -11,6 +11,7 @@
 mod common;
 
 use common::{git_in, worktree_fixture};
+use cqs::worktree::overlay_root;
 use cqs::worktree_overlay::{discover_delta, fingerprint, DeltaStatus};
 use std::path::PathBuf;
 
@@ -241,5 +242,52 @@ fn fingerprint_content_sensitive_for_same_record_set() {
     assert_ne!(
         fp1, fp2,
         "same record set, different content → different fingerprint"
+    );
+}
+
+// ===== overlay_root predicate: out-of-tree worktree (real git) =====
+//
+// `worktree_fixture()` builds an OUT-OF-TREE worktree (`tmp/wt` sibling to
+// `tmp/parent`), which the nested-only `parent_index_boundary_crossed`
+// predicate cannot detect. These pin that `overlay_root` resolves it via the
+// `.git`-link `lookup_main_cqs_dir` half — from the worktree root AND from a
+// subdirectory (the F2 regression: the half must walk up to the `.git`-
+// bearing root, not read `cwd/.git` directly).
+//
+// `lookup_main_cqs_dir` only returns `WorktreeUseMain` when the MAIN project
+// has a `.cqs/` and the worktree does not, so the fixture's parent gets one.
+
+#[test]
+fn overlay_root_some_for_out_of_tree_worktree_root() {
+    let (_tmp, parent, wt) = worktree_fixture();
+    std::fs::create_dir_all(parent.join(".cqs")).unwrap();
+
+    // The resolver redirected the worktree's reads to the parent's index, so
+    // `resolved_root` is the parent. Canonicalize for a byte-exact compare
+    // against the predicate's canonicalized worktree root.
+    let got = overlay_root(&wt, &parent);
+    let want = dunce::canonicalize(&wt).unwrap_or(wt);
+    assert_eq!(
+        got,
+        Some(want),
+        "out-of-tree worktree root is overlay-eligible"
+    );
+}
+
+#[test]
+fn overlay_root_some_from_out_of_tree_subdirectory() {
+    let (_tmp, parent, wt) = worktree_fixture();
+    std::fs::create_dir_all(parent.join(".cqs")).unwrap();
+
+    // cwd is a subdirectory of the worktree (`wt/src/`), not the root.
+    // `lookup_main_cqs_dir` reads `<dir>/.git`, which only exists at the
+    // worktree root — so the predicate must walk up first (the F2 fix).
+    let subdir = wt.join("src");
+    let got = overlay_root(&subdir, &parent);
+    let want = dunce::canonicalize(&wt).unwrap_or(wt);
+    assert_eq!(
+        got,
+        Some(want),
+        "a subdirectory inside an out-of-tree worktree is still overlay-eligible"
     );
 }

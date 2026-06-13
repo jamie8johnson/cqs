@@ -99,10 +99,7 @@ pub(crate) fn build_overlay(
         global_cache,
         /* quiet */ true,
     )
-    .map_err(|e| cqs::worktree_overlay::OverlayError::Git {
-        context: "reindex_files".to_string(),
-        message: e.to_string(),
-    })?;
+    .map_err(|e| cqs::worktree_overlay::OverlayError::Build(e.to_string()))?;
     if !errors.is_empty() {
         // Per-file failures are non-fatal: the origin is still masked (the
         // overlay is the authority for it), it just contributes no hits.

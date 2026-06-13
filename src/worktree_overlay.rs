@@ -93,6 +93,12 @@ pub enum OverlayError {
     /// Store construction / pipeline error (surfaced by the bin-side builder).
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
+
+    /// The parse+embed pipeline (`reindex_files`) failed while building the
+    /// overlay. Distinct from [`OverlayError::Git`] so the message doesn't
+    /// misattribute a pipeline failure to a git invocation.
+    #[error("overlay build failed: {0}")]
+    Build(String),
 }
 
 /// Git name-status record kinds we care about (subset of git's status
@@ -240,9 +246,12 @@ pub fn parent_head_oid(parent_root: &Path) -> Result<String, OverlayError> {
 pub fn parse_name_status_z(raw: &[u8]) -> Vec<DeltaRecord> {
     // Split on NUL into owned, lossy-decoded fields. Git paths are bytes;
     // we normalize to UTF-8 (lossy) because the rest of cqs keys origins by
-    // String paths. A non-UTF-8 path is astronomically rare in a source tree
-    // and degrades to a replacement-char origin that simply won't match the
-    // parent index — safe (it just won't mask), never a panic.
+    // String paths. This matches the parent index's own path handling:
+    // chunk origins are stored via `normalize_path`, which is `to_string_lossy`-
+    // based (`src/lib.rs`), so a non-UTF-8 path lossy-decodes to the SAME
+    // replacement-char string on both sides — masking stays byte-exact and
+    // correct even for the (astronomically rare) non-UTF-8 source path. Never
+    // a panic.
     let fields: Vec<String> = raw
         .split(|&b| b == 0)
         .filter(|f| !f.is_empty())
@@ -258,7 +267,13 @@ pub fn parse_name_status_z(raw: &[u8]) -> Vec<DeltaRecord> {
             'R' | 'C' => {
                 // status, old, new — three fields.
                 if i + 2 >= fields.len() {
-                    // Truncated record; stop rather than mis-pair.
+                    // Truncated record; stop rather than mis-pair. Fail loud:
+                    // a truncated -z stream means a malformed git output, not
+                    // a clean end.
+                    tracing::warn!(
+                        status = %status_field,
+                        "truncated rename/copy record in -z name-status — dropping tail"
+                    );
                     break;
                 }
                 let old = normalize_str(&fields[i + 1]);
@@ -277,6 +292,10 @@ pub fn parse_name_status_z(raw: &[u8]) -> Vec<DeltaRecord> {
             }
             'M' | 'A' | 'D' | 'T' => {
                 if i + 1 >= fields.len() {
+                    tracing::warn!(
+                        status = %status_field,
+                        "truncated single-path record in -z name-status — dropping tail"
+                    );
                     break;
                 }
                 let new = normalize_str(&fields[i + 1]);
@@ -299,7 +318,15 @@ pub fn parse_name_status_z(raw: &[u8]) -> Vec<DeltaRecord> {
                 // Modified — conservatively masking an origin is always safe
                 // (it just means the overlay is the authority for it). If
                 // there's no following field, stop.
+                tracing::warn!(
+                    status = %status_field,
+                    "unrecognized status letter in -z name-status — masking its path as modified"
+                );
                 if i + 1 >= fields.len() {
+                    tracing::warn!(
+                        status = %status_field,
+                        "truncated unknown-status record in -z name-status — dropping tail"
+                    );
                     break;
                 }
                 let new = normalize_str(&fields[i + 1]);
@@ -496,8 +523,15 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta) -> [u8; 32] {
             DeltaStatus::Deleted => hasher.update(&ZERO32),
             _ => {
                 let abs = worktree_root.join(&rec.new);
-                match std::fs::read(&abs) {
-                    Ok(bytes) => hasher.update(blake3::hash(&bytes).as_bytes()),
+                // Stream the file through blake3 rather than slurping it into
+                // a Vec: the parse-set size cap gates only what gets indexed,
+                // not what the fingerprint hashes — an oversize artifact in
+                // the delta would otherwise be RAM-loaded on every recompute.
+                // `update_reader` over a plain `File` yields the same digest
+                // as `blake3::hash(&bytes)` would, so the fingerprint value is
+                // unchanged for in-bounds files.
+                match content_digest(&abs) {
+                    Ok(digest) => hasher.update(&digest),
                     Err(_) => hasher.update(&ZERO32),
                 }
             }
@@ -506,6 +540,17 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta) -> [u8; 32] {
     }
 
     *hasher.finalize().as_bytes()
+}
+
+/// Stream a file's bytes through blake3 without loading it into memory,
+/// returning the 32-byte content digest. Equivalent to
+/// `blake3::hash(&std::fs::read(path)?)` but bounded-memory for the case
+/// where an oversize artifact lands in the delta.
+fn content_digest(path: &Path) -> std::io::Result<[u8; 32]> {
+    let file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Git status letter for a record, for the fingerprint preimage.
@@ -713,9 +758,31 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn overlay_max_files_env_override() {
+        let prev = std::env::var("CQS_OVERLAY_MAX_FILES").ok();
+
         // Default when unset.
         std::env::remove_var("CQS_OVERLAY_MAX_FILES");
         assert_eq!(overlay_max_files(), DEFAULT_OVERLAY_MAX_FILES);
+
+        // A positive override is honored verbatim.
+        std::env::set_var("CQS_OVERLAY_MAX_FILES", "42");
+        assert_eq!(overlay_max_files(), 42);
+
+        // Zero falls back to the default (the guard must never be disabled —
+        // an unbounded delta would build a multi-second overlay on the query
+        // path).
+        std::env::set_var("CQS_OVERLAY_MAX_FILES", "0");
+        assert_eq!(overlay_max_files(), DEFAULT_OVERLAY_MAX_FILES);
+
+        // Garbage falls back to the default too.
+        std::env::set_var("CQS_OVERLAY_MAX_FILES", "not-a-number");
+        assert_eq!(overlay_max_files(), DEFAULT_OVERLAY_MAX_FILES);
+
+        match prev {
+            Some(v) => std::env::set_var("CQS_OVERLAY_MAX_FILES", v),
+            None => std::env::remove_var("CQS_OVERLAY_MAX_FILES"),
+        }
     }
 }

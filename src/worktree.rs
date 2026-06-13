@@ -301,7 +301,14 @@ pub fn overlay_root(cwd: &Path, resolved_root: &Path) -> Option<PathBuf> {
     // boundary predicate's ancestor check never fires. Detect it via the
     // same `.git`-link resolution `resolve_index_dir` uses. `WorktreeUseMain`
     // means "this is a worktree with no own index, redirected to main".
-    if let MainIndexLookup::WorktreeUseMain { worktree_root, .. } = lookup_main_cqs_dir(cwd) {
+    //
+    // Resolve the enclosing git root FIRST and feed THAT to the lookup:
+    // `lookup_main_cqs_dir` reads `<dir>/.git`, which only exists at the
+    // worktree root. From a subdirectory (`wt/src/`) it would return
+    // `NotWorktree`. Walking up to the `.git`-bearing root makes the
+    // predicate fire from anywhere inside the worktree.
+    let probe = enclosing_git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    if let MainIndexLookup::WorktreeUseMain { worktree_root, .. } = lookup_main_cqs_dir(&probe) {
         // Guard: the redirect target must actually differ from the
         // worktree itself (a regular repo never reaches WorktreeUseMain,
         // but canonicalize resolved_root for a like-for-like compare).

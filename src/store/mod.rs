@@ -1057,6 +1057,13 @@ impl Store<ReadWrite> {
                 // in-memory database survives idle periods.
                 .min_connections(1)
                 .idle_timeout(None)
+                // sqlx 0.9 defaults max_lifetime to 30 min: past that the
+                // pool RETIRES the connection and min_connections=1 replaces
+                // it with a fresh one — a brand-new EMPTY `:memory:` database.
+                // A cached overlay with a stable fingerprint would then serve
+                // zero hits while still masking the parent's, silently
+                // vanishing changed files from search. Disable retirement.
+                .max_lifetime(None)
                 .after_connect(move |conn, _meta| {
                     let pragma = cache_pragma.clone();
                     Box::pin(async move {
@@ -2464,6 +2471,13 @@ mod tests {
             opts.get_idle_timeout(),
             None,
             "idle_timeout must be None so the reaper never destroys the in-memory DB"
+        );
+        assert_eq!(
+            opts.get_max_lifetime(),
+            None,
+            "max_lifetime must be None — sqlx's 30-min default would retire the \
+             pinned connection and min_connections=1 would replace it with a \
+             fresh EMPTY :memory: database"
         );
     }
 
