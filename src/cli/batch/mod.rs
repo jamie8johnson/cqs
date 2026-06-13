@@ -15,6 +15,13 @@ mod session;
 mod view;
 
 pub(crate) use commands::{dispatch, BatchInput};
+// Re-exported at the module root for the daemon-translate two-path equivalence
+// proptest in `cli::dispatch` (parses the translated tail through the real
+// batch `search` parser and compares `SearchArgs` against the top-level `Cli`
+// parse). Production reaches `BatchCmd` via the local `commands::` path, so the
+// root re-export is test-only.
+#[cfg(test)]
+pub(crate) use commands::BatchCmd;
 pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
 
 use std::cell::{Cell, RefCell};
