@@ -32,11 +32,10 @@ exclude = [
 ]
 
 [lints.rust]
-# `cqs_loom` is the private cfg that gates the loom model in
-# `src/cli/batch/interleaving_model.rs` (set via `RUSTFLAGS="--cfg cqs_loom"`).
-# A private name (not the bare `loom` cfg loom's docs suggest) keeps the flag
-# off the dependency graph; declaring it here keeps `--all-targets` clippy clean
-# instead of warning `unexpected cfg condition name`.
+# `cqs_loom` is the private cfg that gates the loom concurrency models (set via
+# `RUSTFLAGS="--cfg cqs_loom"`). A private name (not the bare `loom` cfg loom's
+# docs suggest) keeps the flag off the dependency graph; declaring it here keeps
+# `--all-targets` clippy clean instead of warning `unexpected cfg condition name`.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cqs_loom)'] }
 
 [dependencies]
@@ -338,14 +337,14 @@ serial_test = "3"
 # Used only under `cfg(test)` behind the `llm-summaries` feature.
 httpmock = "0.8"
 
-# Permutation/model checker for the daemon cache-invalidation epoch protocol
-# (#1826 interleaving-auditor). Pulled in ONLY under our private `--cfg cqs_loom`
-# so a normal build/test never compiles it; the loom model lives in
-# `src/cli/batch/interleaving_model.rs` (itself `#![cfg(cqs_loom)]`-gated). A
-# PRIVATE cfg name (not the bare `loom` loom docs suggest) is deliberate: the
-# bare `loom` cfg propagates through RUSTFLAGS to the whole dependency graph and
-# breaks crates with their own `cfg(loom)` paths (concurrent-queue). Run:
-#   RUSTFLAGS="--cfg cqs_loom" cargo test --features cuda-index --lib interleaving_model
+# Permutation/model checker for the concurrency models (#1826 interleaving-auditor).
+# Pulled in ONLY under our private `--cfg cqs_loom` so a normal build/test never
+# compiles it; the loom models live in `*_interleaving_model.rs` modules (each
+# `#![cfg(cqs_loom)]`-gated). A PRIVATE cfg name (not the bare `loom` loom docs
+# suggest) is deliberate: the bare `loom` cfg propagates through RUSTFLAGS to the
+# whole dependency graph and breaks crates with their own `cfg(loom)` paths
+# (concurrent-queue). Run:
+#   RUSTFLAGS="--cfg cqs_loom" cargo test --features cuda-index --bin cqs reconcile_interleaving_model
 [target.'cfg(cqs_loom)'.dev-dependencies]
 loom = "0.7"
 
