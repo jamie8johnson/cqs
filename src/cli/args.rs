@@ -94,6 +94,40 @@ pub(crate) struct LimitArg {
     pub limit: usize,
 }
 
+/// The worktree-overlay tri-state flags, flattened into the commands whose SEED
+/// retrieval the overlay shadows (Part A): `scout`, `gather`, `task`. The
+/// `search` command carries the same three flags inline ([`SearchArgs`]); this
+/// is the shared subset for the seed-overlaid graph-adjacent commands. Each
+/// resolves activation through the same `resolve_overlay_active` precedence the
+/// search surface uses, so no two surfaces can diverge.
+#[derive(Args, Debug, Clone, Default)]
+pub(crate) struct OverlayArgs {
+    /// Overlay the worktree's uncommitted/committed delta on top of the parent
+    /// index so the SEED search reflects this checkout's edits, not main's.
+    /// Default-on when run from a worktree; off in the main checkout. Tri-state
+    /// env `CQS_WORKTREE_OVERLAY`: `1` forces on, `0` forces off, unset =
+    /// default. `--overlay` forces on; `--no-overlay` forces off (opt-out wins).
+    /// Phase 1 builds overlays on the daemon path only. The call-graph
+    /// expansion stays on parent-truth — a `_meta.overlay_graph = "seed-only"`
+    /// marker says so. Requires `--json` to forward to the daemon.
+    #[arg(long, conflicts_with = "no_overlay")]
+    pub overlay: bool,
+
+    /// Opt out of the worktree seed overlay even when run from a worktree
+    /// (where it is default-on). The explicit-off counterpart of `--overlay`;
+    /// equivalent to `CQS_WORKTREE_OVERLAY=0`. Opt-out wins over every opt-in.
+    #[arg(long, conflicts_with = "overlay")]
+    pub no_overlay: bool,
+
+    /// Wire-only: the absolute worktree root to build the overlay for. Hidden
+    /// from `--help` — computed by the CLI (`cqs::worktree::overlay_root`) and
+    /// appended to the daemon-forwarded args, never set by a human. The daemon
+    /// VALIDATES it (canonicalize + `resolve_main_project_dir == served root`)
+    /// before reading any of its files.
+    #[arg(long, hide = true)]
+    pub overlay_root: Option<std::path::PathBuf>,
+}
+
 /// Arguments for semantic search: the flagship command. Shared between CLI
 /// `search` (top-level + `cqs search …`) and batch `search`.
 ///
@@ -285,6 +319,9 @@ pub(crate) struct GatherArgs {
     /// Cross-index gather: seed from reference, bridge into project code
     #[arg(long = "ref")]
     pub ref_name: Option<String>,
+    /// Worktree-overlay tri-state for the seed search (Part A).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `impact` and batch `impact`.
@@ -334,6 +371,9 @@ pub(crate) struct ScoutArgs {
     /// Dependency (default: 0.10). Lower yields more ModifyTargets.
     #[arg(long, value_parser = parse_finite_f32)]
     pub min_gap_ratio: Option<f32>,
+    /// Worktree-overlay tri-state for the seed search (Part A).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `context` and batch `context`.
@@ -595,6 +635,9 @@ pub(crate) struct TaskArgs {
     /// Compact output (~200 tokens): files, at-risk functions, test coverage
     #[arg(long)]
     pub brief: bool,
+    /// Worktree-overlay tri-state for the scout-seed search (Part A).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `read` and batch `read`.

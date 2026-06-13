@@ -187,6 +187,88 @@ impl std::fmt::Debug for WorktreeOverlay {
     }
 }
 
+impl WorktreeOverlay {
+    /// Merge this overlay into a `SearchResult`-level parent result set — the
+    /// seed-search analogue of the binary's `UnifiedResult`-level
+    /// `apply_overlay` (Part A). Used by the `scout` / `gather` / `task`
+    /// seed sites, whose retrieval consumes `Vec<SearchResult>` directly rather
+    /// than the `UnifiedResult` the search surface produces.
+    ///
+    /// Three steps, mirroring `apply_overlay` so the two surfaces shadow the
+    /// parent index identically:
+    ///
+    /// 1. **Mask**: drop every parent hit whose `chunk.file` is in
+    ///    `masked_origins`. Origin-level, name-agnostic — a function deleted
+    ///    from a still-present file (its origin is in the delta but no overlay
+    ///    chunk shares its name) is correctly dropped, where `(origin, name)`
+    ///    shadowing would resurrect it.
+    /// 2. **Fan out**: search the overlay store with the *same* `query_embedding`
+    ///    + `filter` at `limit` / `threshold`, brute-force (`index = None` — the
+    ///    overlay holds at most a few hundred chunks). A fan-out failure is
+    ///    logged and degrades to the masked parent set (never a hard error on
+    ///    the query path).
+    /// 3. **Merge**: concatenate, sort by score descending (id tiebreak — the
+    ///    same total order `reference::merge_results` uses), and truncate to
+    ///    `limit`.
+    ///
+    /// Records the `Active { files, chunks }` envelope meta whenever it runs
+    /// (including the all-masked / no-overlay-hit empty case — the overlay still
+    /// shaped the answer). The BFS / call-graph expansion downstream of the seed
+    /// stays on parent-truth in Part A; the seed sites emit a `seed-only`
+    /// `_meta.overlay_graph` marker to make that honest.
+    pub fn merge_seed_results(
+        &self,
+        parent: Vec<crate::store::SearchResult>,
+        query_embedding: &crate::Embedding,
+        filter: &crate::store::SearchFilter,
+        limit: usize,
+        threshold: f32,
+    ) -> Vec<crate::store::SearchResult> {
+        let _span = tracing::info_span!(
+            "overlay_merge_seed_results",
+            masked = self.masked_origins.len(),
+            chunks = self.stats.chunks_indexed
+        )
+        .entered();
+
+        // 1. Mask: drop parent hits whose origin is in the delta.
+        let mut merged: Vec<crate::store::SearchResult> = parent
+            .into_iter()
+            .filter(|sr| !self.masked_origins.contains(&sr.chunk.file))
+            .collect();
+
+        // 2. Fan out over the overlay store (brute force; best-effort).
+        match self
+            .store
+            .search_filtered_with_index(query_embedding, filter, limit, threshold, None)
+        {
+            Ok(hits) => merged.extend(hits),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "overlay seed search failed; serving masked parent seeds only"
+                );
+            }
+        }
+
+        // 3. Merge by score (highest first), id tiebreak — the same total order
+        //    `reference::merge_results` uses. Truncate to the requested limit.
+        merged.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk.id.cmp(&b.chunk.id))
+        });
+        merged.truncate(limit);
+
+        set_overlay_meta(OverlayMeta::Active {
+            files: self.stats.files_in_delta,
+            chunks: self.stats.chunks_indexed,
+        });
+
+        merged
+    }
+}
+
 // ─── `_meta.worktree_overlay` envelope state ────────────────────────────────
 //
 // The overlay's outcome for a single search is surfaced as the skip-when-default
@@ -977,6 +1059,189 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("CQS_OVERLAY_MAX_FILES", v),
             None => std::env::remove_var("CQS_OVERLAY_MAX_FILES"),
+        }
+    }
+
+    // ── merge_seed_results: the SearchResult-level seed overlay (Part A) ──
+    //
+    // Mirrors the `overlay_merge` unit module in `query.rs`, but at the
+    // `SearchResult` granularity the scout/gather/task seed sites consume.
+    // Embedder-free: chunks are seeded with hand-built one-hot embeddings, so
+    // the brute-force overlay search runs without loading a model.
+    mod merge_seed_results {
+        use super::*;
+        use crate::parser::{Chunk, ChunkType, Language};
+        use crate::store::{ChunkSummary, ModelInfo, SearchResult};
+        use crate::{Embedding, SearchFilter};
+
+        /// One-hot embedding (`1.0` at `slot`). Distinct slots are near-
+        /// orthogonal, so a query at `slot` retrieves only the chunk seeded
+        /// there from the brute-force overlay store.
+        fn one_hot(slot: usize) -> Embedding {
+            let mut v = vec![0.0_f32; crate::EMBEDDING_DIM];
+            v[slot] = 1.0;
+            Embedding::new(v)
+        }
+
+        /// A project-side seed `SearchResult` for `(file, name, score)`.
+        fn project_result(file: &str, name: &str, score: f32) -> SearchResult {
+            let summary = ChunkSummary {
+                id: format!("{file}:{name}"),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 2,
+                content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                window_idx: None,
+                parent_id: None,
+                parent_type_name: None,
+                parser_version: 0,
+                vendored: false,
+            };
+            SearchResult::new(summary, score)
+        }
+
+        /// Build a `WorktreeOverlay` whose in-memory store holds one chunk per
+        /// `(file, name, slot)` triple, with `masked_origins` exactly `masked`.
+        fn overlay_with(seeds: &[(&str, &str, usize)], masked: &[&str]) -> WorktreeOverlay {
+            let mut store = Store::open_memory().expect("open_memory");
+            store.init(&ModelInfo::default()).expect("init store");
+            store.set_dim(crate::EMBEDDING_DIM);
+            for (file, name, slot) in seeds {
+                let chunk = Chunk {
+                    id: format!("{file}:{name}"),
+                    file: PathBuf::from(file),
+                    language: Language::Rust,
+                    chunk_type: ChunkType::Function,
+                    name: name.to_string(),
+                    signature: format!("fn {name}()"),
+                    content: format!("fn {name}() {{}}"),
+                    doc: None,
+                    line_start: 1,
+                    line_end: 2,
+                    byte_start: 0,
+                    content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                    canonical_hash: String::new(),
+                    parent_id: None,
+                    window_idx: None,
+                    parent_type_name: None,
+                    parser_version: 0,
+                };
+                store
+                    .upsert_chunks_batch(&[(chunk, one_hot(*slot))], Some(0))
+                    .expect("seed overlay chunk");
+            }
+            WorktreeOverlay {
+                store,
+                masked_origins: masked.iter().map(PathBuf::from).collect(),
+                fingerprint: [0u8; 32],
+                worktree_root: PathBuf::from("/wt"),
+                stats: OverlayStats {
+                    files_in_delta: masked.len(),
+                    chunks_indexed: seeds.len(),
+                    build_ms: 0,
+                },
+            }
+        }
+
+        fn names(results: &[SearchResult]) -> Vec<String> {
+            results.iter().map(|r| r.chunk.name.clone()).collect()
+        }
+
+        /// A worktree-ADDED file surfaces as a seed: the overlay holds a chunk
+        /// the parent index never had (a new file), and `merge_seed_results`
+        /// merges it into the parent seed set. This is the Part A headline — the
+        /// scout/gather seed reflects the worktree's new file.
+        #[test]
+        fn added_file_surfaces_as_seed() {
+            clear_overlay_meta();
+            // Overlay has a brand-new file `src/new.rs` at slot 0; its origin is
+            // in the delta (added). Parent seeds have an unrelated hit.
+            let overlay = overlay_with(&[("src/new.rs", "fresh_fn", 0)], &["src/new.rs"]);
+            let parent = vec![project_result("src/old.rs", "existing_fn", 0.5)];
+            let merged =
+                overlay.merge_seed_results(parent, &one_hot(0), &SearchFilter::default(), 10, 0.0);
+            let got = names(&merged);
+            assert!(
+                got.contains(&"fresh_fn".to_string()),
+                "worktree-added file must surface as a seed; got {got:?}"
+            );
+            assert!(
+                got.contains(&"existing_fn".to_string()),
+                "untouched parent seed must survive; got {got:?}"
+            );
+        }
+
+        /// Origin-level masking: a function deleted from a still-present edited
+        /// file (its origin is in the delta, no overlay chunk shares its name)
+        /// is dropped from the seed set — the `(origin, name)`-shadowing
+        /// falsifier `apply_overlay` also guards, at SearchResult granularity.
+        #[test]
+        fn masks_dead_function_in_edited_file() {
+            clear_overlay_meta();
+            let overlay = overlay_with(&[("src/a.rs", "live_fn", 0)], &["src/a.rs"]);
+            let parent = vec![
+                project_result("src/a.rs", "dead_fn", 0.9),
+                project_result("src/b.rs", "untouched", 0.5),
+            ];
+            // Query a slot the overlay can't answer (slot 5) so the overlay leg
+            // is empty and can't reintroduce `dead_fn`.
+            let merged =
+                overlay.merge_seed_results(parent, &one_hot(5), &SearchFilter::default(), 10, 0.0);
+            let got = names(&merged);
+            assert!(
+                !got.contains(&"dead_fn".to_string()),
+                "deleted function in an edited file must be masked; got {got:?}"
+            );
+            assert!(
+                got.contains(&"untouched".to_string()),
+                "a hit in an unmodified file must survive; got {got:?}"
+            );
+        }
+
+        /// The merge records the `Active {files, chunks}` envelope meta whenever
+        /// it runs (the seed sites' `_meta.worktree_overlay` source).
+        #[test]
+        fn records_active_meta() {
+            clear_overlay_meta();
+            let overlay = overlay_with(&[("src/x.rs", "f", 0)], &["src/x.rs"]);
+            let _ = overlay.merge_seed_results(
+                vec![project_result("src/y.rs", "g", 0.5)],
+                &one_hot(0),
+                &SearchFilter::default(),
+                10,
+                0.0,
+            );
+            match take_overlay_meta() {
+                Some(OverlayMeta::Active { files, chunks }) => {
+                    assert_eq!(files, 1, "files_in_delta surfaced");
+                    assert_eq!(chunks, 1, "chunks_indexed surfaced");
+                }
+                other => panic!("expected Active overlay meta, got {other:?}"),
+            }
+        }
+
+        /// Merge ordering: a higher-scoring overlay hit outranks a lower-scoring
+        /// parent hit, and the result truncates to `limit`.
+        #[test]
+        fn merges_by_score_and_truncates() {
+            clear_overlay_meta();
+            let overlay = overlay_with(&[("src/new.rs", "high", 0)], &["src/new.rs"]);
+            let parent = vec![
+                project_result("src/old.rs", "mid", 0.6),
+                project_result("src/old2.rs", "low", 0.3),
+            ];
+            // The overlay's one-hot self-match scores ~1.0 (> 0.6 > 0.3).
+            let merged =
+                overlay.merge_seed_results(parent, &one_hot(0), &SearchFilter::default(), 2, 0.0);
+            assert_eq!(merged.len(), 2, "truncated to limit=2");
+            assert_eq!(merged[0].chunk.name, "high", "overlay hit ranks first");
+            assert_eq!(merged[1].chunk.name, "mid", "lowest-scoring hit dropped");
         }
     }
 }

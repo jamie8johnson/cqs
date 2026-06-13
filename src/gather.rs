@@ -480,6 +480,8 @@ pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
 ///
 /// Embeds the query internally (or uses `opts.query_embedding` if pre-computed).
 /// Loads the call graph internally. For pre-loaded graph, use [`gather_with_graph`].
+/// Serves the parent index for the seed search; for worktree-overlaid seeds use
+/// [`gather_with_overlay`].
 pub fn gather<Mode>(
     store: &Store<Mode>,
     embedder: &Embedder,
@@ -487,18 +489,43 @@ pub fn gather<Mode>(
     opts: &GatherOptions,
     root: &Path,
 ) -> Result<GatherResult, AnalysisError> {
+    gather_with_overlay(store, embedder, description, opts, root, None)
+}
+
+/// Like [`gather`] but accepts an optional worktree search overlay (
+/// Part A). `Some` shadows the parent index for the SEED search; `None` is
+/// byte-identical to [`gather`]. Only the daemon path (from an eligible
+/// worktree) passes `Some` — see `dispatch_gather`. The BFS expansion stays on
+/// parent-truth (the adapter emits a `seed-only` `_meta.overlay_graph` marker).
+pub fn gather_with_overlay<Mode>(
+    store: &Store<Mode>,
+    embedder: &Embedder,
+    description: &str,
+    opts: &GatherOptions,
+    root: &Path,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
+) -> Result<GatherResult, AnalysisError> {
     let query_embedding = match &opts.query_embedding {
         Some(emb) => emb.clone(),
         None => embedder.embed_query(description)?,
     };
     let graph = store.get_call_graph()?;
-    gather_with_graph(store, &query_embedding, description, opts, root, &graph)
+    gather_with_graph_overlay(
+        store,
+        &query_embedding,
+        description,
+        opts,
+        root,
+        &graph,
+        overlay,
+    )
 }
 
 /// Like [`gather`] but accepts a pre-loaded call graph.
 ///
 /// Use when the caller already has the graph (e.g., batch mode or `task()`
-/// which shares the graph across phases).
+/// which shares the graph across phases). Serves the parent index for the seed
+/// search; for worktree-overlaid seeds use [`gather_with_graph_overlay`].
 pub fn gather_with_graph<Mode>(
     store: &Store<Mode>,
     query_embedding: &crate::Embedding,
@@ -506,6 +533,24 @@ pub fn gather_with_graph<Mode>(
     opts: &GatherOptions,
     root: &Path,
     graph: &CallGraph,
+) -> Result<GatherResult, AnalysisError> {
+    gather_with_graph_overlay(store, query_embedding, query_text, opts, root, graph, None)
+}
+
+/// Like [`gather_with_graph`] but accepts an optional worktree search overlay
+/// (Part A). `Some` shadows the parent index for the SEED search so a
+/// worktree-added/edited file surfaces as a gather seed; `None` is byte-
+/// identical to [`gather_with_graph`]. The BFS / call-graph expansion stays on
+/// parent-truth — only the seed is overlaid (Part B extends the graph).
+#[allow(clippy::too_many_arguments)]
+pub fn gather_with_graph_overlay<Mode>(
+    store: &Store<Mode>,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    opts: &GatherOptions,
+    root: &Path,
+    graph: &CallGraph,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
 ) -> Result<GatherResult, AnalysisError> {
     let _span = tracing::info_span!(
         "gather",
@@ -530,6 +575,21 @@ pub fn gather_with_graph<Mode>(
         opts.seed_limit,
         opts.seed_threshold,
     )?;
+
+    // Worktree overlay (Part A): shadow the parent index for the SEED
+    // search before BFS expansion. Inactive (`None`) ⇒ no-op. The expansion
+    // below walks the parent call graph — only the seeds reflect the worktree
+    // delta (the `seed-only` `_meta.overlay_graph` marker).
+    let seed_results = match overlay {
+        Some(ov) => ov.merge_seed_results(
+            seed_results,
+            query_embedding,
+            &filter,
+            opts.seed_limit,
+            opts.seed_threshold,
+        ),
+        None => seed_results,
+    };
     tracing::debug!(seed_count = seed_results.len(), "Seed search complete");
     if seed_results.is_empty() {
         return Ok(GatherResult {

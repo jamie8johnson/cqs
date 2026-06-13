@@ -207,8 +207,9 @@ pub use store::{HnswKind, ModelInfo, SearchFilter, Store};
 pub use diff::{semantic_diff, DiffEntry, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index_with_index, gather_max_nodes, gather_with_graph, GatherDirection,
-    GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index_with_index, gather_max_nodes, gather_with_graph,
+    gather_with_graph_overlay, gather_with_overlay, GatherDirection, GatherOptions, GatherResult,
+    GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
 };
 /// Cross-project call graph types and context.
 pub mod cross_project {
@@ -243,13 +244,14 @@ pub use project::{
 };
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
-    scout, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions, ScoutResult,
-    ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
+    scout, scout_with_options, scout_with_overlay, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
+    ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
 pub use task::{
-    extract_modify_targets, task, task_with_resources, FunctionRisk, TaskResult, TaskSummary,
+    extract_modify_targets, task, task_with_resources, task_with_resources_overlay, FunctionRisk,
+    TaskResult, TaskSummary,
 };
 pub use where_to_add::{
     suggest_placement, suggest_placement_with_options, FileSuggestion, LanguagePatternDef,

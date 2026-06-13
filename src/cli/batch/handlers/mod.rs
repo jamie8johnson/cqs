@@ -35,3 +35,73 @@ pub(super) use misc::{
     dispatch_status, dispatch_task, dispatch_wait_fresh, dispatch_where,
 };
 pub(super) use search::dispatch_search;
+
+use super::BatchView;
+use anyhow::Result;
+use std::path::Path;
+
+/// Reset per-thread overlay state and (when requested) validate + stamp the
+/// worktree overlay request for this dispatch, from the raw tri-state fields.
+///
+/// The surface-agnostic core of the search handler's `prepare_overlay_request`,
+/// shared so the seed-overlaid graph-adjacent commands (`scout` / `gather` /
+/// `task`) honor the same activation precedence and the same
+/// security validation as `search`. Called at the TOP of each overlay-capable
+/// dispatcher, BEFORE the core runs, on the daemon worker thread that serves
+/// the query:
+///
+/// 1. **`clear_overlay_meta()` unconditionally** — a reused worker thread must
+///    not leak the previous query's `_meta.worktree_overlay` into this one.
+/// 2. **Validate + stamp `--overlay-root`** when overlay is active (wire flag
+///    OR the daemon's own env; `overlay_eligible = false` because default-on is
+///    a client-side decision the daemon never makes — it only ever sees an
+///    overlay the client forwarded). With no `--overlay-root` the request stays
+///    `None` (no-op for this query). A foreign root is rejected as a wire error.
+pub(super) fn prepare_overlay_request_fields(
+    ctx: &BatchView,
+    overlay: bool,
+    no_overlay: bool,
+    overlay_root: Option<&Path>,
+) -> Result<()> {
+    cqs::worktree_overlay::clear_overlay_meta();
+    let active =
+        crate::cli::commands::search::query::resolve_overlay_active(overlay, no_overlay, false);
+    if !active {
+        return Ok(());
+    }
+    if let Some(root) = overlay_root {
+        // Reject (wire error) if the path is not a worktree of this project.
+        ctx.set_validated_overlay_request(root)?;
+    } else {
+        tracing::debug!(
+            "overlay requested but no --overlay-root on the wire — serving parent index"
+        );
+    }
+    Ok(())
+}
+
+/// Inject the `_meta.overlay_graph = "seed-only"` marker into a dispatcher's
+/// serialized payload (Part A). Called by `scout` / `gather` / `task`
+/// when the worktree overlay shadowed the SEED search but the downstream call-
+/// graph expansion still reflects parent-truth — the marker makes that honest
+/// so a consumer knows the seeds are overlaid while the graph is not.
+///
+/// Skip-when-absent: only call this when an overlay was actually applied; with
+/// no overlay the payload carries no marker. Writes into a reserved top-level
+/// `_meta` object the daemon envelope lifts onto the wire `_meta` (sibling of
+/// `data`), the same channel `worktree_overlay` and `stale_origins` use; the
+/// two coexist (`merged_meta_value` merges the per-response entry with the
+/// process-level `worktree_overlay`).
+pub(super) fn attach_overlay_graph_meta(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        let meta = obj
+            .entry("_meta")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(meta_obj) = meta.as_object_mut() {
+            meta_obj.insert(
+                "overlay_graph".to_string(),
+                serde_json::Value::String("seed-only".to_string()),
+            );
+        }
+    }
+}

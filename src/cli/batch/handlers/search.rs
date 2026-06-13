@@ -77,24 +77,17 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
 ///    `--overlay-root`, the request stays `None` (the overlay is a no-op for
 ///    this query — e.g. a daemon search from the project root itself).
 fn prepare_overlay_request(ctx: &BatchView, args: &SearchArgs) -> Result<()> {
-    cqs::worktree_overlay::clear_overlay_meta();
-    // The default-on flip is decided CLIENT-side: the client applies the
-    // tri-state resolution and forwards a `--overlay` flag (+ `--overlay-root`)
-    // whenever it activates. The daemon has no client cwd, so it never does
-    // default-on itself — `overlay_eligible = false` — but it still honors an
-    // explicit `--no-overlay` / `=0` opt-out that rode the wire (opt-out wins).
-    if !daemon_overlay_active(args) {
-        return Ok(());
-    }
-    if let Some(root) = &args.overlay_root {
-        // Reject (wire error) if the path is not a worktree of this project.
-        ctx.set_validated_overlay_request(root)?;
-    } else {
-        tracing::debug!(
-            "overlay requested but no --overlay-root on the wire — serving parent index"
-        );
-    }
-    Ok(())
+    // Delegate to the surface-agnostic core shared with the seed-overlaid
+    // graph-adjacent commands. `SearchArgs` carries the overlay tri-
+    // state inline; the helper applies the same activation precedence
+    // (`resolve_overlay_active(.., overlay_eligible = false)`) and the same
+    // `--overlay-root` validation.
+    super::prepare_overlay_request_fields(
+        ctx,
+        args.overlay,
+        args.no_overlay,
+        args.overlay_root.as_deref(),
+    )
 }
 
 /// Translate the daemon's [`SearchArgs`] into the surface-agnostic
@@ -1581,6 +1574,223 @@ mod tests {
             !overlaid_has_dead_alpha,
             "the overlay must mask the parent's dead src/lib.rs:alpha_unique_token \
              (origin-level mask over REAL producer paths); got {overlaid}"
+        );
+    }
+
+    // ── Part A: seed-overlaid scout / gather end-to-end ────────────────
+    //
+    // The seed-overlay counterpart of the search e2e above, driven through
+    // `dispatch_scout` / `dispatch_task`. Parent index has `alpha`; the worktree
+    // ADDS a new file with a new symbol. The scout/gather/task SEED retrieval
+    // must surface the worktree's new symbol (which the parent index never had),
+    // and the payload must carry the honest `_meta.overlay_graph = "seed-only"`
+    // marker (the BFS/graph phases still reflect parent-truth). Gated behind
+    // `slow-tests` (real embedder for the dense seed search).
+
+    #[cfg(feature = "slow-tests")]
+    fn parse_scout_args(cli_args: &[&str]) -> crate::cli::args::ScoutArgs {
+        let mut full = vec!["scout"];
+        full.extend_from_slice(cli_args);
+        let input = BatchInput::try_parse_from(&full).expect("clap parse failed");
+        match input.cmd {
+            BatchCmd::Scout { args, .. } => args,
+            other => panic!("Expected Scout, got {:?}", other),
+        }
+    }
+
+    /// Build a parent index (real pipeline) + linked worktree that ADDS a new
+    /// file, then adopt a real embedder onto a fresh context. Returns
+    /// `(dir, ctx, worktree_root)` ready for an overlaid dispatch, or `None`
+    /// when the embedder can't init (CI-without-model → skip).
+    #[cfg(feature = "slow-tests")]
+    fn seed_overlay_ctx_with_added_file() -> Option<(TempDir, BatchContext, PathBuf)> {
+        let dir = TempDir::new().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir");
+        std::fs::write(
+            parent.join("src/lib.rs"),
+            "pub fn parent_only_token() -> i32 { 1 }\n",
+        )
+        .expect("write lib.rs");
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let embedder = match cqs::Embedder::new_cpu(cqs::embedder::ModelConfig::resolve(None, None))
+        {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping seed-overlay e2e: embedder init failed: {e}");
+                return None;
+            }
+        };
+        let parser = cqs::parser::Parser::new().expect("parser");
+
+        let cqs_dir = parent.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join("index.db");
+        {
+            let store = Store::open(&index_path).expect("open store");
+            let model_info =
+                ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+            store.init(&model_info).expect("init store");
+            let mut store = store;
+            store.set_dim(model_info.dimensions);
+            crate::cli::watch::overlay_reindex_files(
+                &parent,
+                &store,
+                &[PathBuf::from("src/lib.rs")],
+                &parser,
+                &embedder,
+                None,
+                true,
+            )
+            .expect("index parent");
+        }
+
+        // Linked worktree that ADDS a brand-new file the parent never indexed.
+        let wt = dir.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+        std::fs::write(
+            wt.join("src/feature.rs"),
+            "/// Compute the new widget total for this lane.\n\
+             pub fn lane_new_widget_total() -> i32 {\n    \
+             let widget_total = 42;\n    \
+             widget_total\n\
+             }\n",
+        )
+        .expect("write feature.rs");
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        assert!(
+            ctx.adopt_embedder(std::sync::Arc::new(embedder)),
+            "embedder slot empty"
+        );
+        Some((dir, ctx, wt))
+    }
+
+    /// Part A headline (inverts the old `overlay_scout_not_overlaid` scope
+    /// guard): the scout SEED is overlaid. A worktree-added file's symbol
+    /// surfaces as a scout seed, and the payload carries the `seed-only`
+    /// `_meta.overlay_graph` marker.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_scout_seed_overlaid() {
+        let Some((_dir, ctx, wt)) = seed_overlay_ctx_with_added_file() else {
+            return;
+        };
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+
+        let args = parse_scout_args(&[
+            "lane new widget total",
+            "--overlay",
+            "--overlay-root",
+            wt.to_str().unwrap(),
+        ]);
+        let json = crate::cli::batch::handlers::misc::dispatch_scout(&view, &args)
+            .expect("dispatch_scout");
+
+        // The worktree-added symbol surfaces as a scout seed (file group).
+        let surfaced = json["file_groups"]
+            .as_array()
+            .map(|groups| {
+                groups.iter().any(|g| {
+                    g["chunks"].as_array().is_some_and(|chunks| {
+                        chunks.iter().any(|c| c["name"] == "lane_new_widget_total")
+                    })
+                })
+            })
+            .unwrap_or(false);
+        assert!(
+            surfaced,
+            "scout seed must surface the worktree-added symbol (overlaid seed); got {json}"
+        );
+        // The honest seed-only marker rides the payload `_meta`.
+        assert_eq!(
+            json["_meta"]["overlay_graph"], "seed-only",
+            "scout must carry _meta.overlay_graph = seed-only when overlaid; got {json}"
+        );
+    }
+
+    /// Sibling pin: the task pipeline (scout → gather → impact → placement) also
+    /// overlays its scout SEED and carries the `seed-only` marker. Asserts the
+    /// marker; the scout-phase symbol surfacing is covered by the scout test.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_task_seed_overlaid_marker() {
+        let Some((_dir, ctx, wt)) = seed_overlay_ctx_with_added_file() else {
+            return;
+        };
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+
+        let mut full = vec![
+            "task",
+            "lane new widget total",
+            "--overlay",
+            "--overlay-root",
+            wt.to_str().unwrap(),
+        ];
+        let input = BatchInput::try_parse_from(&full).expect("clap parse");
+        let args = match input.cmd {
+            BatchCmd::Task { args, .. } => args,
+            other => panic!("Expected Task, got {other:?}"),
+        };
+        full.clear();
+        let json =
+            crate::cli::batch::handlers::misc::dispatch_task(&view, &args).expect("dispatch_task");
+        assert_eq!(
+            json["_meta"]["overlay_graph"], "seed-only",
+            "task must carry _meta.overlay_graph = seed-only when overlaid; got {json}"
+        );
+    }
+
+    /// Sibling pin: `gather`'s SEED is overlay-wired. The payload carries the
+    /// `seed-only` marker (proof the overlay engaged through `gather_core` →
+    /// `gather_with_overlay` → `merge_seed_results`). Symbol-surfacing through
+    /// `merge_seed_results` itself is asserted by `overlay_scout_seed_overlaid`
+    /// (the IDENTICAL lib codepath) and by the `merge_seed_results` unit tests
+    /// in `worktree_overlay.rs`; gather's seed search applies its own dense
+    /// `seed_threshold` (0.3) on top, so whether a given synthetic symbol clears
+    /// it is an embedder-scoring concern, not a wiring one — pinning a specific
+    /// score here would be flaky.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_gather_seed_overlaid() {
+        let Some((_dir, ctx, wt)) = seed_overlay_ctx_with_added_file() else {
+            return;
+        };
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+
+        let input = BatchInput::try_parse_from([
+            "gather",
+            "Compute the new widget total for this lane",
+            "--overlay",
+            "--overlay-root",
+            wt.to_str().unwrap(),
+        ])
+        .expect("clap parse");
+        let args = match input.cmd {
+            BatchCmd::Gather { args, .. } => args,
+            other => panic!("Expected Gather, got {other:?}"),
+        };
+        let json = crate::cli::batch::handlers::misc::dispatch_gather(&view, &args)
+            .expect("dispatch_gather");
+
+        assert_eq!(
+            json["_meta"]["overlay_graph"], "seed-only",
+            "gather must carry _meta.overlay_graph = seed-only when overlaid; got {json}"
         );
     }
 }

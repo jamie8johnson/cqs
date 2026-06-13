@@ -137,6 +137,10 @@ pub fn scout<Mode>(
 }
 
 /// Run scout analysis with configurable search parameters.
+///
+/// Serves the parent index for the seed search — the CLI-direct / eval / no-
+/// daemon path. For worktree-overlaid seeds (daemon path) use
+/// [`scout_with_overlay`].
 pub fn scout_with_options<Mode>(
     store: &Store<Mode>,
     embedder: &Embedder,
@@ -144,6 +148,23 @@ pub fn scout_with_options<Mode>(
     root: &Path,
     limit: usize,
     opts: &ScoutOptions,
+) -> Result<ScoutResult, AnalysisError> {
+    scout_with_overlay(store, embedder, task, root, limit, opts, None)
+}
+
+/// Like [`scout_with_options`] but accepts an optional worktree search overlay
+/// (Part A). `Some` shadows the parent index for the SEED search so a
+/// worktree-added/edited file surfaces as a scout seed; `None` is byte-identical
+/// to [`scout_with_options`]. Only the daemon path (from an eligible worktree)
+/// passes `Some` — see `dispatch_scout`.
+pub fn scout_with_overlay<Mode>(
+    store: &Store<Mode>,
+    embedder: &Embedder,
+    task: &str,
+    root: &Path,
+    limit: usize,
+    opts: &ScoutOptions,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
 ) -> Result<ScoutResult, AnalysisError> {
     let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
     let query_embedding = embedder.embed_query(task)?;
@@ -165,6 +186,7 @@ pub fn scout_with_options<Mode>(
         graph: &graph,
         test_chunks: &test_chunks,
         reachability: None,
+        overlay,
     })
 }
 
@@ -182,6 +204,13 @@ pub(crate) struct ScoutResources<'a, Mode> {
     /// the forward BFS (e.g. `cqs task`). `None` means `scout_core` computes it
     /// on demand inside `compute_hints_batch`.
     pub reachability: Option<&'a std::collections::HashMap<std::sync::Arc<str>, usize>>,
+    /// Worktree search overlay to shadow the parent index for the SEED search
+    /// (Part A). `Some` only on the daemon path from an eligible worktree;
+    /// `None` (CLI-direct / clean worktree / main checkout) serves the parent
+    /// index unchanged. Applied to the seed `search_filtered` result before
+    /// grouping; the downstream BFS/call-graph hints stay on parent-truth (the
+    /// `seed-only` `_meta.overlay_graph` marker the adapter emits says so).
+    pub overlay: Option<&'a crate::worktree_overlay::WorktreeOverlay>,
 }
 
 /// Core scout implementation accepting pre-loaded resources.
@@ -218,6 +247,22 @@ pub(crate) fn scout_core<Mode>(
         opts.search_limit,
         opts.search_threshold,
     )?;
+
+    // Worktree overlay (Part A): shadow the parent index for the SEED
+    // search so a worktree-added/edited file surfaces as a scout seed. Inactive
+    // (`None`) ⇒ no-op returning the parent seeds unchanged. The downstream
+    // grouping, caller counts, staleness, and BFS hints all reflect parent
+    // truth — the seeds are overlaid, the graph is not (Part B).
+    let results = match res.overlay {
+        Some(ov) => ov.merge_seed_results(
+            results,
+            query_embedding,
+            &filter,
+            opts.search_limit,
+            opts.search_threshold,
+        ),
+        None => results,
+    };
 
     tracing::debug!(search_results = results.len(), "Scout search complete");
 
@@ -743,6 +788,7 @@ mod tests {
             graph: &graph,
             test_chunks: &test_chunks,
             reachability: None,
+            overlay: None,
         })
         .unwrap();
 
@@ -821,6 +867,7 @@ mod tests {
             graph: &graph,
             test_chunks: &test_chunks,
             reachability: None,
+            overlay: None,
         })
         .unwrap();
 

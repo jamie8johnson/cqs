@@ -9,9 +9,11 @@
 //! - **#15** `overlay_cli_direct_degrades_honestly`: from a worktree, no daemon,
 //!   `--overlay` serves the parent index and marks
 //!   `_meta.worktree_overlay = "skipped-no-daemon"` + warns.
-//! - **#19** `overlay_scout_not_overlaid`: `cqs scout` from a worktree emits NO
-//!   `worktree_overlay` meta — the scope guard (the overlay hook is
-//!   `retrieve_project` + the FTS short-circuits, which scout bypasses).
+//! - `overlay_scout_cli_direct_serves_parent` (inverts the old
+//!   `overlay_scout_not_overlaid` scope guard): scout's seed is overlay-capable
+//!   now, but only on the DAEMON path. CLI-direct (no daemon) serves the parent
+//!   index — no `worktree_overlay` / `overlay_graph` meta. The active seed-
+//!   overlay path is covered daemon-side in `handlers/search.rs`.
 //!
 //! Gated behind `slow-tests`: each runs `cqs init`/`index`, which cold-loads
 //! the embedder. The pure mask/merge/meta logic is covered unconditionally by
@@ -218,17 +220,26 @@ fn overlay_opt_out_beats_default_on_from_worktree() {
     );
 }
 
-/// #19 — scope guard. `cqs scout` from a worktree, even with `--overlay`
-/// requested, emits NO `worktree_overlay` meta: scout's seed retrieval bypasses
-/// `query_core`/`retrieve_project` (the only overlay hook), so the overlay
-/// cannot apply to it. A half-worktree graph/scout answer would be a new
-/// calibration lie; the architecture excludes it.
+/// Part A — scout's seed IS overlay-capable now (this inverts the old
+/// `overlay_scout_not_overlaid` scope guard). The seed retrieval routes through
+/// the worktree overlay on the DAEMON path. This CLI-direct test (daemon
+/// disabled) pins the honest CLI-direct behavior: scout serves the PARENT index
+/// — it cannot build an overlay without a daemon (phase 1, like search). The
+/// active seed-overlay path (a worktree-added symbol surfacing as a scout/gather
+/// seed + the `_meta.overlay_graph = "seed-only"` marker) is covered by the
+/// daemon-side end-to-end tests `overlay_scout_seed_overlaid` /
+/// `overlay_gather_seed_overlaid` in `src/cli/batch/handlers/search.rs`.
+///
+/// CLI-direct scout emits NO `worktree_overlay` meta (it didn't overlay) and NO
+/// `overlay_graph` marker (the marker rides only when the overlay was applied).
+/// Note the asymmetry with `search`, which marks `skipped-no-daemon` on
+/// CLI-direct — scout's CLI-direct honest-degradation marker is deferred (see
+/// the lane report's residual note).
 #[test]
-fn overlay_scout_not_overlaid() {
+fn overlay_scout_cli_direct_serves_parent() {
     let (_holder, _parent, wt) = fixture_with_parent_index();
 
-    // scout takes no --overlay flag; request it via the env equivalent to prove
-    // the env path also doesn't leak into scout.
+    // Request the overlay via the env equivalent; CLI-direct still can't build.
     let mut cmd = cqs(&wt);
     cmd.env("CQS_WORKTREE_OVERLAY", "1");
     let v = run_json(cmd.args(["scout", "alpha", "--json"]));
@@ -236,6 +247,12 @@ fn overlay_scout_not_overlaid() {
         v.get("_meta")
             .and_then(|m| m.get("worktree_overlay"))
             .is_none(),
-        "scout must never carry worktree_overlay meta (scope guard); got {v}"
+        "CLI-direct scout serves the parent index — no worktree_overlay meta; got {v}"
+    );
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("overlay_graph"))
+            .is_none(),
+        "CLI-direct scout did not overlay — no overlay_graph marker; got {v}"
     );
 }

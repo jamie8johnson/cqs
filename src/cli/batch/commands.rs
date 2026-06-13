@@ -672,6 +672,44 @@ mod tests {
         );
     }
 
+    /// Part A: scout/gather/task accept the same overlay tri-state via the
+    /// flattened `OverlayArgs` — `--overlay` / `--no-overlay` parse and conflict,
+    /// and the hidden `--overlay-root` rides the wire.
+    #[test]
+    fn test_parse_seed_overlay_flags() {
+        for cmd in ["scout", "gather", "task"] {
+            let on = BatchInput::try_parse_from([cmd, "q", "--overlay", "--overlay-root", "/wt"])
+                .unwrap();
+            let (overlay, no_overlay, root) = match on.cmd {
+                BatchCmd::Scout { ref args, .. } => (
+                    args.overlay.overlay,
+                    args.overlay.no_overlay,
+                    args.overlay.overlay_root.clone(),
+                ),
+                BatchCmd::Gather { ref args, .. } => (
+                    args.overlay.overlay,
+                    args.overlay.no_overlay,
+                    args.overlay.overlay_root.clone(),
+                ),
+                BatchCmd::Task { ref args, .. } => (
+                    args.overlay.overlay,
+                    args.overlay.no_overlay,
+                    args.overlay.overlay_root.clone(),
+                ),
+                _ => panic!("unexpected command for {cmd}"),
+            };
+            assert!(overlay, "{cmd} --overlay sets the flag");
+            assert!(!no_overlay);
+            assert_eq!(root.as_deref(), Some(std::path::Path::new("/wt")));
+
+            let conflict = BatchInput::try_parse_from([cmd, "q", "--overlay", "--no-overlay"]);
+            assert!(
+                conflict.is_err(),
+                "{cmd} --overlay and --no-overlay must conflict"
+            );
+        }
+    }
+
     #[test]
     fn test_parse_callers() {
         let input = BatchInput::try_parse_from(["callers", "my_func"]).unwrap();
@@ -987,6 +1025,7 @@ mod tests {
                 search_limit: None,
                 search_threshold: None,
                 min_gap_ratio: None,
+                overlay: crate::cli::args::OverlayArgs::default(),
             },
             output: TextJsonArgs { json: false },
         };

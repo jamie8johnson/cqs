@@ -9,7 +9,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::store::{ReadOnly, Store};
-use cqs::{scout_with_options, Embedder, ScoutOptions};
+use cqs::{scout_with_options, scout_with_overlay, Embedder, ScoutOptions};
 
 // ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
 
@@ -65,11 +65,12 @@ pub(crate) fn scout_core(
     embedder: &Embedder,
     root: &std::path::Path,
     args: &ScoutArgs,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
 ) -> Result<(serde_json::Value, Option<(usize, usize)>)> {
     let _span = tracing::info_span!("scout_core", query = %args.query).entered();
     let limit = args.limit.clamp(1, crate::cli::SCOUT_LIMIT_MAX);
     let opts = scout_options_from_args(args);
-    let result = scout_with_options(store, embedder, &args.query, root, limit, &opts)?;
+    let result = scout_with_overlay(store, embedder, &args.query, root, limit, &opts, overlay)?;
 
     let (content_map, token_info) = if let Some(budget) = args.tokens {
         let named_items = crate::cli::commands::scout_scored_names(&result);
@@ -155,7 +156,8 @@ pub(crate) fn cmd_scout(
             search_threshold,
             min_gap_ratio,
         };
-        let (output, _token_info) = scout_core(store, embedder, root, &args)?;
+        // CLI surface serves the parent index (overlay is daemon-only, ).
+        let (output, _token_info) = scout_core(store, embedder, root, &args, None)?;
         crate::cli::json_envelope::emit_json(&output)?;
         return Ok(());
     }

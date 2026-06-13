@@ -130,7 +130,9 @@ pub fn task<Mode>(
 /// Like [`task`] but accepts pre-loaded call graph and test chunks.
 ///
 /// Use this in batch mode where `BatchContext` caches these resources across
-/// commands, avoiding repeated loading per pipeline stage.
+/// commands, avoiding repeated loading per pipeline stage. Serves the parent
+/// index for the scout seed; for worktree-overlaid seeds use
+/// [`task_with_resources_overlay`].
 pub fn task_with_resources<Mode>(
     store: &Store<Mode>,
     embedder: &Embedder,
@@ -139,6 +141,34 @@ pub fn task_with_resources<Mode>(
     limit: usize,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
+) -> Result<TaskResult, AnalysisError> {
+    task_with_resources_overlay(
+        store,
+        embedder,
+        description,
+        root,
+        limit,
+        graph,
+        test_chunks,
+        None,
+    )
+}
+
+/// Like [`task_with_resources`] but accepts an optional worktree search overlay
+/// (Part A). `Some` shadows the parent index for the scout SEED search;
+/// `None` is byte-identical to [`task_with_resources`]. Only the daemon path
+/// (from an eligible worktree) passes `Some` — see `dispatch_task`. The
+/// downstream gather/impact/placement phases stay on parent-truth.
+#[allow(clippy::too_many_arguments)]
+pub fn task_with_resources_overlay<Mode>(
+    store: &Store<Mode>,
+    embedder: &Embedder,
+    description: &str,
+    root: &Path,
+    limit: usize,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
 ) -> Result<TaskResult, AnalysisError> {
     let _span = tracing::info_span!("task", description_len = description.len(), limit).entered();
 
@@ -155,6 +185,7 @@ pub fn task_with_resources<Mode>(
         limit,
         graph,
         test_chunks,
+        overlay,
     )
 }
 
@@ -171,6 +202,7 @@ pub(crate) fn task_core<Mode>(
     limit: usize,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
 ) -> Result<TaskResult, AnalysisError> {
     let _span =
         tracing::info_span!("task_core", description_len = description.len(), limit).entered();
@@ -187,7 +219,10 @@ pub(crate) fn task_core<Mode>(
         crate::impact::DEFAULT_MAX_TEST_SEARCH_DEPTH,
     );
 
-    // 2. Scout phase
+    // 2. Scout phase — overlaid seed search (Part A). The subsequent
+    // gather/impact/placement phases fetch by name from the parent store, so
+    // they stay on parent-truth; only the scout seed reflects the worktree
+    // delta (the `seed-only` `_meta.overlay_graph` marker the adapter emits).
     let scout = scout_core(&ScoutResources {
         store,
         query_embedding,
@@ -198,6 +233,7 @@ pub(crate) fn task_core<Mode>(
         graph,
         test_chunks,
         reachability: Some(&reachability),
+        overlay,
     })?;
     tracing::debug!(
         file_groups = scout.file_groups.len(),
@@ -790,6 +826,7 @@ mod tests {
             10,
             &graph,
             &test_chunks,
+            None,
         )
         .unwrap();
 
