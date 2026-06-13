@@ -1223,4 +1223,449 @@ mod tests {
         assert!(!gate_is_json(&["notes", "list"]));
         assert!(gate_is_json(&["notes", "list", "--json"]));
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PROPERTY: bare-query daemon-vs-CLI VALUE-LEVEL two-path equivalence.
+    //
+    // The command-core architecture's central correctness claim is that the
+    // daemon path and the CLI path agree for any valid invocation. For the
+    // bare-query path that decomposes into:
+    //
+    //   • CLI-direct (daemon down): clap parses the argv into the top-level
+    //     `Cli` struct; the search knobs live in `Cli`'s own fields.
+    //   • Daemon-up: `translate_cli_args_to_batch(argv, false, spec)` rewrites
+    //     the argv into `("search", tail)`, and the daemon re-parses `tail`
+    //     with the batch `search` parser into `SearchArgs`.
+    //
+    // For the two surfaces to converge, the `SearchArgs` the batch parser
+    // produces from the *translated* tail must carry the SAME value for every
+    // shared knob as the `Cli` struct the top-level parser produced from the
+    // *original* argv. This is a VALUE equivalence — `translate` then re-parse
+    // ≡ direct parse — at the typed-Args level, end-to-end through the real
+    // clap parsers (not a structural token-presence check).
+    //
+    // Why the seed `tests/proptest_translate.rs` can NOT express this: that
+    // file is an integration test, where `BatchInput` / `SearchArgs` are
+    // `pub(crate)`-unreachable (it says so in its reachability note). It can
+    // only assert STRUCTURAL invariants on the translated token vector — "the
+    // value flag's value travels next to its flag", "no process-local flag
+    // leaks". Those pass even when a value is mangled in a way that re-parses
+    // to a *different* `SearchArgs` field. This property closes that gap: it
+    // lives in the binary crate, drives the translated tail through the actual
+    // batch `search` clap parser, and compares the resulting `SearchArgs`
+    // field-by-field against the `Cli` parse. A hand-written example test could
+    // pin one argv → one expected `SearchArgs`; it could not search the
+    // combinatorial flag-cluster / spelling / spacing space the way this does.
+    //
+    // The generator deliberately covers the corners the example tests skip:
+    // every shared knob in spaced/attached/short/long spelling, repeated knobs
+    // (clap last-wins), interleaved process-local flags (`--json`/`-v`/`-q`/
+    // `--model X`/`--slot X` — must vanish on both surfaces), combined-short
+    // bool clusters (`-qv` family), empty and maximal knob sets, and unicode /
+    // glob-ish values. If a flag is exposed on only one surface it would show
+    // up as a documented asymmetry below — but the shared-knob set IS exactly
+    // `SEARCH_KNOB_ARG_IDS`, pinned by `forwarded_search_knob_spellings_are_
+    // accepted_by_batch_search`, so there is no asymmetry to encode for the
+    // knobs compared here.
+
+    use proptest::prelude::*;
+
+    /// The live set of top-level subcommand names. A bare-query word that
+    /// equals one of these flips clap from the bare-query path to the
+    /// subcommand path (`cqs ci …` is the `ci` subcommand, not a search for
+    /// "ci"), so the generator must avoid them. Derived from the clap
+    /// definition so a new subcommand is excluded automatically.
+    fn subcommand_names() -> std::collections::BTreeSet<String> {
+        Cli::command()
+            .get_subcommands()
+            .map(|s| s.get_name().to_string())
+            .collect()
+    }
+
+    /// A free-text query word: leading-dash-free, no `=`, non-empty after trim,
+    /// and not a subcommand name (which would re-route the parse off the
+    /// bare-query path). clap binds this as the positional `query` on both
+    /// surfaces. The first whitespace-free segment is what clap would treat as
+    /// the leading token, so the subcommand-collision check uses that segment.
+    fn eq_query_word() -> impl Strategy<Value = String> {
+        let subs = subcommand_names();
+        "[a-zA-Z0-9_./áé🚀][a-zA-Z0-9_./ ]{0,10}"
+            .prop_map(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() {
+                    "q".to_string()
+                } else {
+                    t
+                }
+            })
+            .prop_filter("query word collides with a subcommand name", move |q| {
+                let first = q.split_whitespace().next().unwrap_or(q);
+                !subs.contains(first)
+            })
+    }
+
+    /// A non-dash-leading value for a value-taking knob (so clap never
+    /// re-scans it as a flag). Includes glob-ish and unicode bytes.
+    fn eq_str_value() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9_./*áé][a-zA-Z0-9_./*-]{0,6}".boxed()
+    }
+
+    /// Emit one shared search knob as the argv tokens a human would type,
+    /// across spelling (short/long) and spacing (spaced/attached) variants.
+    /// Values are clap-valid for the knob's `value_parser` so the only thing
+    /// under test is the translator, never a clap rejection. Each arm returns
+    /// the token group so spaced pairs stay contiguous.
+    fn eq_search_knob() -> impl Strategy<Value = Vec<String>> {
+        prop_oneof![
+            // `-n` / `--limit`: nonzero usize (value_parser = parse_nonzero_usize).
+            (1u32..9999).prop_flat_map(|n| {
+                prop_oneof![
+                    Just(vec!["-n".to_string(), n.to_string()]),
+                    Just(vec!["--limit".to_string(), n.to_string()]),
+                    Just(vec![format!("-n={n}")]),
+                    Just(vec![format!("--limit={n}")]),
+                ]
+            }),
+            // `-t` / `--threshold`: finite f32.
+            (0u32..100).prop_flat_map(|h| {
+                let val = format!("0.{:02}", h);
+                prop_oneof![
+                    Just(vec!["-t".to_string(), val.clone()]),
+                    Just(vec!["--threshold".to_string(), val.clone()]),
+                    Just(vec![format!("-t={val}")]),
+                ]
+            }),
+            // `--name-boost`: unit f32 [0,1].
+            (0u32..=100)
+                .prop_map(|h| { vec!["--name-boost".to_string(), format!("0.{:02}", h.min(99))] }),
+            // `--lang` / `-l`: scope flag, string value.
+            eq_str_value().prop_flat_map(|v| prop_oneof![
+                Just(vec!["--lang".to_string(), v.clone()]),
+                Just(vec!["-l".to_string(), v.clone()]),
+                Just(vec![format!("--lang={v}")]),
+            ]),
+            // `--path` / `-p`: scope flag, glob-ish value.
+            eq_str_value().prop_flat_map(|v| prop_oneof![
+                Just(vec!["--path".to_string(), v.clone()]),
+                Just(vec!["-p".to_string(), v.clone()]),
+                Just(vec![format!("--path={v}")]),
+            ]),
+            // `--pattern`: string value.
+            eq_str_value().prop_map(|v| vec!["--pattern".to_string(), v]),
+            // `--include-type` / `--exclude-type`: Option<Vec<String>>.
+            eq_str_value().prop_map(|v| vec!["--include-type".to_string(), v]),
+            eq_str_value().prop_map(|v| vec!["--exclude-type".to_string(), v]),
+            // `--ref`: string value.
+            eq_str_value().prop_map(|v| vec!["--ref".to_string(), v]),
+            // `--tokens`: nonzero usize.
+            (1u32..99999).prop_map(|n| vec!["--tokens".to_string(), n.to_string()]),
+            // `--context` / `-C`: usize.
+            (0u32..999).prop_flat_map(|n| prop_oneof![
+                Just(vec!["--context".to_string(), n.to_string()]),
+                Just(vec!["-C".to_string(), n.to_string()]),
+            ]),
+            // `--splade-alpha`: finite f32.
+            (0u32..=100)
+                .prop_map(|h| vec!["--splade-alpha".to_string(), format!("0.{:02}", h.min(99))]),
+            // `--reranker`: value-enum (none|onnx).
+            prop_oneof![Just("none"), Just("onnx")]
+                .prop_map(|m| vec!["--reranker".to_string(), m.to_string()]),
+            // Boolean search knobs (no value). Each forwards verbatim.
+            Just(vec!["--rrf".to_string()]),
+            Just(vec!["--name-only".to_string()]),
+            Just(vec!["--include-docs".to_string()]),
+            Just(vec!["--splade".to_string()]),
+            Just(vec!["--no-content".to_string()]),
+            Just(vec!["--expand-parent".to_string()]),
+            Just(vec!["--include-refs".to_string()]),
+            Just(vec!["--no-stale-check".to_string()]),
+            Just(vec!["--no-demote".to_string()]),
+            Just(vec!["--no-rank-signals".to_string()]),
+        ]
+    }
+
+    /// A process-local flag (interleaved into the argv): it must vanish on the
+    /// daemon path (stripped by `translate`) and the CLI path's `Cli` parse
+    /// captures it in a non-`SearchArgs` field, so it is invisible to the
+    /// equivalence comparison either way. Generating these tests that the
+    /// translator's strip never collaterally drops an adjacent search knob.
+    fn eq_process_local() -> impl Strategy<Value = Vec<String>> {
+        prop_oneof![
+            Just(vec!["--json".to_string()]),
+            Just(vec!["-v".to_string()]),
+            Just(vec!["-q".to_string()]),
+            Just(vec!["--verbose".to_string()]),
+            Just(vec!["--quiet".to_string()]),
+            eq_str_value().prop_map(|v| vec!["--model".to_string(), v]),
+            eq_str_value().prop_map(|v| vec!["--slot".to_string(), v]),
+            eq_str_value().prop_map(|v| vec![format!("--model={v}")]),
+            // Combined-short bool cluster — clap accepts daemon-down; the
+            // translator must expand it so the batch parser accepts the tail.
+            Just(vec!["-qv".to_string()]),
+            Just(vec!["-vq".to_string()]),
+        ]
+    }
+
+    /// Map every top-level `Cli` flag spelling → (canonical clap arg ID,
+    /// takes_value, is_append). Built once from the live clap definition so a
+    /// new flag is classified without hand-mirroring. Used by the equivalence
+    /// generator's dedup to keep only the LAST occurrence of a
+    /// single-occurrence flag (mirroring the CLI surface, which rejects
+    /// repeats), while letting the `Append` knobs repeat.
+    fn cli_flag_table() -> std::collections::HashMap<String, (String, bool, bool)> {
+        let app = Cli::command();
+        let mut table = std::collections::HashMap::new();
+        for arg in app.get_arguments() {
+            if arg.is_positional() {
+                continue;
+            }
+            let id = arg.get_id().as_str().to_string();
+            let takes_value = matches!(
+                arg.get_action(),
+                clap::ArgAction::Set | clap::ArgAction::Append
+            );
+            let is_append = matches!(arg.get_action(), clap::ArgAction::Append);
+            for spelling in spellings(arg) {
+                table.insert(spelling, (id.clone(), takes_value, is_append));
+            }
+        }
+        table
+    }
+
+    /// The set of canonical flag IDs a token *occupies*, for duplicate
+    /// detection. A normal flag occupies its own ID. A combined-short bool
+    /// cluster (`-qv`) occupies the IDs of every component short (`-q`→quiet,
+    /// `-v`→verbose) because clap expands it that way — so `-qv` then a
+    /// separate `-q` is a duplicate `quiet` and the CLI rejects it. Returns the
+    /// occupied IDs plus whether the token is a value-taking flag in spaced
+    /// form (so the caller knows to consume the following value token).
+    fn occupied_flag_ids(
+        tok: &str,
+        table: &std::collections::HashMap<String, (String, bool, bool)>,
+    ) -> (Vec<(String, bool)>, bool) {
+        // (vec of (id, is_append), takes_following_value)
+        let key = tok.split_once('=').map(|(k, _)| k).unwrap_or(tok);
+        if let Some((id, takes_value, is_append)) = table.get(key) {
+            let attached = tok.contains('=');
+            let takes_following = *takes_value && !attached;
+            return (vec![(id.clone(), *is_append)], takes_following);
+        }
+        // Combined-short cluster: `-xy…` where each char is a bool short. Map
+        // each component short `-x` to its ID. Only treat it as a cluster when
+        // EVERY component is a known bool short (a value short ends the cluster
+        // in clap, but the generator only emits bool clusters `-qv`/`-vq`).
+        if let Some(rest) = tok.strip_prefix('-') {
+            if rest.len() >= 2 && !rest.starts_with('-') && !rest.contains('=') {
+                let mut ids = Vec::new();
+                let mut all_known_bools = true;
+                for ch in rest.chars() {
+                    let short = format!("-{ch}");
+                    match table.get(&short) {
+                        Some((id, false, is_append)) => ids.push((id.clone(), *is_append)),
+                        _ => {
+                            all_known_bools = false;
+                            break;
+                        }
+                    }
+                }
+                if all_known_bools && !ids.is_empty() {
+                    return (ids, false);
+                }
+            }
+        }
+        (Vec::new(), false)
+    }
+
+    /// Drop earlier occurrences of any single-occurrence top-level flag,
+    /// keeping the last (clap last-wins for value flags; bools idempotent).
+    /// `Append` flags (`--include-type`/`--exclude-type`) are left untouched
+    /// so they can legitimately repeat. A combined-short cluster occupies every
+    /// component short's ID (clap expands it), so a cluster duplicating a later
+    /// individual bool is dropped — the CLI surface would reject the repeat.
+    /// A spaced value flag carries its value token; an attached (`--flag=val`)
+    /// or bool flag is a single token. The bare-query positional (a non-dash
+    /// token) always survives.
+    fn dedup_single_occurrence_flags(argv: &[String]) -> Vec<String> {
+        let table = cli_flag_table();
+        // group = (start, len, occupied single-occurrence IDs).
+        let mut groups: Vec<(usize, usize, Vec<String>)> = Vec::new();
+        // For each single-occurrence ID, the index of the LAST group occupying
+        // it — that group is the keeper; earlier occupants are dropped.
+        let mut last_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut i = 0;
+        while i < argv.len() {
+            let tok = &argv[i];
+            let (ids, takes_following) = occupied_flag_ids(tok, &table);
+            let len = if takes_following && i + 1 < argv.len() {
+                2
+            } else {
+                1
+            };
+            // Append IDs don't participate in dedup.
+            let single_ids: Vec<String> = ids
+                .into_iter()
+                .filter(|(_, is_append)| !*is_append)
+                .map(|(id, _)| id)
+                .collect();
+            for id in &single_ids {
+                last_index.insert(id.clone(), groups.len());
+            }
+            groups.push((i, len, single_ids));
+            i += len;
+        }
+        // Emit a group iff it is the LAST occurrence for EVERY single-occurrence
+        // ID it occupies (a cluster occupying two IDs survives only if it's the
+        // last for both; otherwise dropping is the safe CLI-valid choice).
+        let mut out = Vec::with_capacity(argv.len());
+        for (gi, (start, len, ids)) in groups.iter().enumerate() {
+            let is_last_for_all = ids.iter().all(|id| last_index.get(id) == Some(&gi));
+            if !ids.is_empty() && !is_last_for_all {
+                continue;
+            }
+            out.extend_from_slice(&argv[*start..*start + *len]);
+        }
+        out
+    }
+
+    /// Parse a bare-query argv into the top-level `Cli` (the CLI-direct path).
+    fn parse_cli(argv: &[String]) -> Option<Cli> {
+        use clap::Parser as _;
+        let mut full = vec!["cqs".to_string()];
+        full.extend_from_slice(argv);
+        Cli::try_parse_from(full).ok()
+    }
+
+    /// Translate a bare-query argv and re-parse the tail through the real batch
+    /// `search` parser (the daemon path). Returns the extracted `SearchArgs`.
+    fn parse_daemon_search_args(
+        argv: &[String],
+        spec: &cqs::daemon_translate::CliArgSpec,
+    ) -> Option<crate::cli::args::SearchArgs> {
+        use clap::Parser as _;
+        let (cmd, tail) = cqs::daemon_translate::translate_cli_args_to_batch(argv, false, spec);
+        if cmd != "search" {
+            return None;
+        }
+        let mut batch_argv = vec!["search".to_string()];
+        batch_argv.extend(tail);
+        let input = crate::cli::batch::BatchInput::try_parse_from(batch_argv).ok()?;
+        match input.cmd {
+            crate::cli::batch::BatchCmd::Search { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// VALUE-LEVEL EQUIVALENCE: for any bare-query argv composed of a
+        /// query word plus an arbitrary interleaving of shared search knobs
+        /// and process-local flags, the daemon path's re-parsed `SearchArgs`
+        /// carries the SAME value for every shared knob as the CLI path's
+        /// top-level `Cli` parse.
+        ///
+        ///   ∀ argv. let cli = Cli::parse(argv);
+        ///           let sa  = SearchArgs::parse(translate(argv).tail);
+        ///           ∀ knob ∈ SEARCH_KNOB_ARG_IDS. cli.knob == sa.knob
+        ///
+        /// A falsifier is a translator bug: an invocation the two surfaces
+        /// answer differently. Both parsers are the production clap
+        /// definitions; the spec is the production-derived one.
+        #[test]
+        fn daemon_bare_query_search_args_equals_cli_parse(
+            query in eq_query_word(),
+            knobs in proptest::collection::vec(eq_search_knob(), 0..6),
+            locals in proptest::collection::vec(eq_process_local(), 0..3),
+            // Interleave seed: how many knob groups go before the first local.
+            split in 0usize..=6,
+        ) {
+            let spec = cli_arg_spec();
+
+            // Assemble argv: query first (bare positional), then knobs and
+            // locals interleaved at `split`. Both regions are top-level on the
+            // bare-query path, so ordering relative to the query is free.
+            let mut argv: Vec<String> = vec![query.clone()];
+            let knob_split = split.min(knobs.len());
+            for g in &knobs[..knob_split] {
+                argv.extend(g.iter().cloned());
+            }
+            for g in &locals {
+                argv.extend(g.iter().cloned());
+            }
+            for g in &knobs[knob_split..] {
+                argv.extend(g.iter().cloned());
+            }
+
+            // The top-level `Cli` parser rejects a REPEATED occurrence of any
+            // single-occurrence flag (every `Set` arg and bool, e.g.
+            // `--limit`/`--reranker`/`--quiet`/`--slot`); only the `Append`
+            // knobs `--include-type`/`--exclude-type` may repeat. A repeated
+            // single-occurrence flag is therefore not a valid CLI invocation,
+            // so it can never reach the translator through the documented
+            // daemon-forward path (clap-down rejects it first). Drop later
+            // occurrences here so the generator emits only argv the CLI surface
+            // accepts — the in-scope input space — rather than leaning on
+            // proptest's reject ceiling (which trips at high case counts and
+            // would mask the generator emitting out-of-scope inputs).
+            //
+            // (Sub-threshold asymmetry, noted not asserted: the batch
+            // `SearchArgs` parser accepts a repeated `--limit` last-wins where
+            // `Cli` rejects it. Benign — unreachable via translate because the
+            // CLI gate rejects the invocation before translation runs.)
+            let argv = dedup_single_occurrence_flags(&argv);
+
+            // Both surfaces must accept the (now valid) argv.
+            let Some(cli) = parse_cli(&argv) else {
+                // The generator excludes every documented source of CLI-reject
+                // (conflicts_with pairs, repeated single-occurrence flags via
+                // dedup, subcommand-name query words), so a reject here is a
+                // generator-coverage surprise — surface it rather than swallow
+                // it so it can't silently shrink the explored input space.
+                return Err(TestCaseError::reject("CLI parse rejected the argv"));
+            };
+            let Some(sa) = parse_daemon_search_args(&argv, &spec) else {
+                prop_assert!(
+                    false,
+                    "daemon path failed to produce SearchArgs for argv={:?}",
+                    argv
+                );
+                unreachable!()
+            };
+
+            // The query positional must match.
+            prop_assert_eq!(
+                &sa.query, &cli.query.clone().unwrap_or_default(),
+                "query diverged: argv={:?}", argv
+            );
+
+            // Every shared search knob: compare the parsed value field-by-field.
+            // A divergence here is the bug class the structural seed can't see.
+            prop_assert_eq!(sa.limit_arg.limit, cli.limit, "limit: argv={:?}", argv);
+            prop_assert_eq!(sa.threshold, cli.threshold, "threshold: argv={:?}", argv);
+            prop_assert_eq!(sa.name_boost, cli.name_boost, "name_boost: argv={:?}", argv);
+            prop_assert_eq!(&sa.lang, &cli.lang, "lang: argv={:?}", argv);
+            prop_assert_eq!(&sa.include_type, &cli.include_type, "include_type: argv={:?}", argv);
+            prop_assert_eq!(&sa.exclude_type, &cli.exclude_type, "exclude_type: argv={:?}", argv);
+            prop_assert_eq!(&sa.path, &cli.path, "path: argv={:?}", argv);
+            prop_assert_eq!(&sa.pattern, &cli.pattern, "pattern: argv={:?}", argv);
+            prop_assert_eq!(sa.name_only, cli.name_only, "name_only: argv={:?}", argv);
+            prop_assert_eq!(sa.rrf, cli.rrf, "rrf: argv={:?}", argv);
+            prop_assert_eq!(sa.include_docs, cli.include_docs, "include_docs: argv={:?}", argv);
+            prop_assert_eq!(sa.reranker, cli.reranker, "reranker: argv={:?}", argv);
+            prop_assert_eq!(sa.splade, cli.splade, "splade: argv={:?}", argv);
+            prop_assert_eq!(sa.splade_alpha, cli.splade_alpha, "splade_alpha: argv={:?}", argv);
+            prop_assert_eq!(sa.no_content, cli.no_content, "no_content: argv={:?}", argv);
+            prop_assert_eq!(sa.context, cli.context, "context: argv={:?}", argv);
+            prop_assert_eq!(sa.expand_parent, cli.expand_parent, "expand_parent: argv={:?}", argv);
+            prop_assert_eq!(&sa.ref_name, &cli.ref_name, "ref_name: argv={:?}", argv);
+            prop_assert_eq!(sa.include_refs, cli.include_refs, "include_refs: argv={:?}", argv);
+            prop_assert_eq!(sa.tokens, cli.tokens, "tokens: argv={:?}", argv);
+            prop_assert_eq!(sa.no_stale_check, cli.no_stale_check, "no_stale_check: argv={:?}", argv);
+            prop_assert_eq!(sa.no_demote, cli.no_demote, "no_demote: argv={:?}", argv);
+            prop_assert_eq!(sa.no_rank_signals, cli.no_rank_signals, "no_rank_signals: argv={:?}", argv);
+            prop_assert_eq!(sa.overlay, cli.overlay, "overlay: argv={:?}", argv);
+            prop_assert_eq!(sa.no_overlay, cli.no_overlay, "no_overlay: argv={:?}", argv);
+        }
+    }
 }
