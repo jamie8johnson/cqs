@@ -250,12 +250,14 @@ pub(crate) fn get_all_refs_via_refs_lru(
 /// worktree of `parent_root`) by the caller — this function reads + embeds its
 /// files, so an unvalidated path would be an arbitrary-directory read primitive
 /// (the security seam, plan §8).
-pub(crate) fn get_overlay_via_lru(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn get_overlay_via_lru<M>(
     overlays: &Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>,
     worktree_root: &Path,
     parent_root: &Path,
     parser: &cqs::parser::Parser,
     embedder: &Embedder,
+    parent_store: &Store<M>,
     global_cache: Option<&cqs::cache::EmbeddingCache>,
     debounce: std::time::Duration,
 ) -> Result<Option<Arc<cqs::worktree_overlay::WorktreeOverlay>>, cqs::worktree_overlay::OverlayError>
@@ -321,6 +323,7 @@ pub(crate) fn get_overlay_via_lru(
         parent_root,
         parser,
         embedder,
+        parent_store,
         global_cache,
     )?;
 
@@ -1026,6 +1029,7 @@ impl BatchView {
             &self.root,
             &parser,
             embedder,
+            &self.store,
             cache.as_ref(),
             super::overlay_fp_debounce(),
         ) {

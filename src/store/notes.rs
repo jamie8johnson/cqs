@@ -124,6 +124,108 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Copy every note row from `parent` into this store, preserving the
+    /// note id, text, sentiment, mentions, kind, source file, and mtime.
+    ///
+    /// Notes are project-level metadata keyed on their `mentions` (file +
+    /// name); they do not change with uncommitted code edits. A faithful
+    /// shadow of a parent index — e.g. the worktree search overlay's fresh
+    /// `:memory:` store — must therefore carry the parent's notes so its
+    /// note-boost index computes the same sentiment multiplier and records the
+    /// same `note_boost` provenance the parent would. Without this the overlay
+    /// store's notes table is empty, so a file that is both noted in the
+    /// parent and edited in the worktree (masked out of the parent leg,
+    /// re-served from the overlay leg) loses its note multiplier and its
+    /// `note_boost` signal.
+    ///
+    /// The parent's SQLite notes are the source of truth, not `docs/notes.toml`
+    /// — the file can be stale relative to notes added via `cqs notes add`
+    /// since the last index. Notes copied here already satisfy the discrete-
+    /// sentiment CHECK constraint (they were written through the same schema),
+    /// so the re-insert cannot violate it.
+    ///
+    /// Returns the number of notes copied. A parent with no notes is a no-op.
+    pub fn copy_notes_from<M>(&self, parent: &Store<M>) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("copy_notes_from").entered();
+
+        // Read the parent's full note rows, including source_file + file_mtime
+        // so the shadow preserves them. Grouped by (source_file, file_mtime)
+        // because the batched insert helper stamps one source/mtime per call;
+        // today notes.toml is the only source, but the schema permits several.
+        let rows = parent.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, text, sentiment, mentions, kind, source_file, file_mtime \
+                 FROM notes ORDER BY source_file, created_at",
+            )
+            .fetch_all(&parent.pool)
+            .await?;
+            Ok::<_, StoreError>(rows)
+        })?;
+
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        // (source_file, file_mtime) → notes for that group, insertion order
+        // preserved by the ORDER BY above.
+        let mut groups: Vec<(String, i64, Vec<Note>)> = Vec::new();
+        for row in &rows {
+            let id: String = row.get(0);
+            let text: String = row.get(1);
+            let sentiment: f64 = row.get(2);
+            let mentions_json: Option<String> = row.try_get(3).unwrap_or(None);
+            let kind: Option<String> = row.try_get(4).unwrap_or(None);
+            let source_file: String = row.get(5);
+            let file_mtime: i64 = row.get(6);
+
+            let mentions: Vec<String> = mentions_json
+                .as_deref()
+                .map(|j| {
+                    serde_json::from_str(j).unwrap_or_else(|e| {
+                        tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions during copy");
+                        Vec::new()
+                    })
+                })
+                .unwrap_or_default();
+
+            let note = Note {
+                id,
+                text,
+                sentiment: sentiment as f32,
+                mentions,
+                kind,
+            };
+
+            match groups
+                .iter_mut()
+                .find(|(sf, mt, _)| *sf == source_file && *mt == file_mtime)
+            {
+                Some((_, _, notes)) => notes.push(note),
+                None => groups.push((source_file, file_mtime, vec![note])),
+            }
+        }
+
+        let copied = rows.len();
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            let now = chrono::Utc::now().to_rfc3339();
+            for (source_str, file_mtime, notes) in &groups {
+                insert_notes_with_fts_batched(&mut tx, notes, source_str, *file_mtime, &now)
+                    .await?;
+            }
+            tx.commit().await?;
+            self.invalidate_notes_cache();
+            Ok::<_, StoreError>(())
+        })?;
+
+        tracing::debug!(
+            copied,
+            groups = groups.len(),
+            "copied parent notes into shadow store"
+        );
+        Ok(copied)
+    }
+
     /// Replace all notes for a source file in a single transaction.
     /// Atomically deletes existing notes and inserts new ones, preventing
     /// data loss if the process crashes mid-operation.
@@ -284,6 +386,7 @@ impl<Mode> Store<Mode> {
 mod tests {
     use crate::note::Note;
     use crate::test_helpers::setup_store;
+    use crate::Store;
     use std::path::Path;
 
     /// Creates a new Note with the specified id, text, and sentiment.
@@ -558,5 +661,185 @@ mod tests {
         // INSERT-OR-REPLACE + FTS DELETE/INSERT contract).
         let summaries = store.list_notes_summaries().unwrap();
         assert_eq!(summaries.len(), 500);
+    }
+
+    fn note_with_mentions(id: &str, sentiment: f32, mentions: &[&str]) -> Note {
+        Note {
+            id: id.to_string(),
+            text: format!("note {id}"),
+            sentiment,
+            mentions: mentions.iter().map(|s| s.to_string()).collect(),
+            kind: None,
+        }
+    }
+
+    /// The defect's core fix: a parent note crosses into a fresh shadow store
+    /// (the worktree overlay's `:memory:` store) so the shadow's note-boost
+    /// index computes the SAME multiplier the parent would. A `-0.5` note on a
+    /// file must demote a chunk in that file in BOTH stores — the masked-and-
+    /// re-served overlay hit can no longer skip the sentiment multiplier.
+    #[test]
+    fn test_copy_notes_from_crosses_boost_into_shadow() {
+        let (parent, _pdir) = setup_store();
+        let source = Path::new("docs/notes.toml");
+        parent
+            .upsert_notes_batch(
+                &[note_with_mentions("note:0", -0.5, &["src/fragile.rs"])],
+                source,
+                100,
+            )
+            .unwrap();
+
+        // The parent demotes a chunk in the noted file.
+        let parent_boost = parent
+            .cached_note_boost_index()
+            .unwrap()
+            .boost("src/fragile.rs", "do_thing");
+        assert!(
+            parent_boost < 1.0,
+            "parent must demote the noted file, got {parent_boost}"
+        );
+
+        // A fresh shadow store starts empty — boost is the 1.0 no-op (this is
+        // the bug: the overlay leg would lose the demotion here).
+        let shadow = Store::open_memory().unwrap();
+        shadow
+            .init(&crate::store::helpers::ModelInfo::default())
+            .unwrap();
+        let before = shadow
+            .cached_note_boost_index()
+            .unwrap()
+            .boost("src/fragile.rs", "do_thing");
+        assert_eq!(before, 1.0, "empty shadow has no note opinion");
+
+        // Copy the parent's notes into the shadow → the note crosses.
+        let copied = shadow.copy_notes_from(&parent).unwrap();
+        assert_eq!(copied, 1, "one note copied");
+        assert_eq!(shadow.note_count().unwrap(), 1);
+
+        // The shadow now computes the IDENTICAL boost the parent does.
+        let after = shadow
+            .cached_note_boost_index()
+            .unwrap()
+            .boost("src/fragile.rs", "do_thing");
+        assert_eq!(
+            after, parent_boost,
+            "shadow boost must equal parent boost after copy"
+        );
+
+        // Metadata crossed faithfully (id, sentiment, mentions, kind).
+        let summaries = shadow.list_notes_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "note:0");
+        assert_eq!(summaries[0].sentiment, -0.5);
+        assert_eq!(summaries[0].mentions, vec!["src/fragile.rs".to_string()]);
+
+        // FTS crossed too — note keyword search works in the shadow.
+        assert_eq!(
+            shadow.list_notes_summaries().unwrap().len(),
+            shadow.note_count().unwrap() as usize,
+            "FTS and main table agree in the shadow"
+        );
+    }
+
+    /// Copying from a parent with no notes is a no-op — the clean-worktree /
+    /// no-notes case must leave the shadow's empty notes table untouched and
+    /// its boost at the 1.0 no-op.
+    #[test]
+    fn test_copy_notes_from_empty_parent_is_noop() {
+        let (parent, _pdir) = setup_store();
+        let shadow = Store::open_memory().unwrap();
+        shadow
+            .init(&crate::store::helpers::ModelInfo::default())
+            .unwrap();
+
+        let copied = shadow.copy_notes_from(&parent).unwrap();
+        assert_eq!(copied, 0, "no notes to copy");
+        assert_eq!(shadow.note_count().unwrap(), 0);
+        assert_eq!(
+            shadow
+                .cached_note_boost_index()
+                .unwrap()
+                .boost("src/any.rs", "anything"),
+            1.0,
+            "empty copy leaves the no-op boost"
+        );
+    }
+
+    /// Notes spanning multiple source files all cross, and a positive-sentiment
+    /// note promotes its mention in the shadow — both boost directions survive
+    /// the copy, not just demotion.
+    #[test]
+    fn test_copy_notes_from_multiple_sources_and_signs() {
+        let (parent, _pdir) = setup_store();
+        parent
+            .upsert_notes_batch(
+                &[note_with_mentions("note:0", -1.0, &["src/a.rs"])],
+                Path::new("docs/notes.toml"),
+                100,
+            )
+            .unwrap();
+        parent
+            .upsert_notes_batch(
+                &[note_with_mentions("note:1", 1.0, &["src/b.rs"])],
+                Path::new("design/notes.toml"),
+                200,
+            )
+            .unwrap();
+
+        let shadow = Store::open_memory().unwrap();
+        shadow
+            .init(&crate::store::helpers::ModelInfo::default())
+            .unwrap();
+        let copied = shadow.copy_notes_from(&parent).unwrap();
+        assert_eq!(copied, 2, "both notes across both source files copied");
+        assert_eq!(shadow.note_count().unwrap(), 2);
+
+        let idx = shadow.cached_note_boost_index().unwrap();
+        assert!(
+            idx.boost("src/a.rs", "f") < 1.0,
+            "negative note demotes in shadow"
+        );
+        assert!(
+            idx.boost("src/b.rs", "g") > 1.0,
+            "positive note promotes in shadow"
+        );
+    }
+
+    /// All five discrete sentiment values survive the copy's f64→f32→REAL
+    /// round-trip without tripping the discrete-value CHECK constraint on the
+    /// re-insert. These values are exact in both f32 and f64, so the cast can't
+    /// drift one off-grid — this pins that property so a future float-handling
+    /// change can't silently start rejecting copied notes.
+    #[test]
+    fn test_copy_notes_from_preserves_discrete_sentiments() {
+        let (parent, _pdir) = setup_store();
+        let notes: Vec<Note> = [-1.0_f32, -0.5, 0.0, 0.5, 1.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| note_with_mentions(&format!("note:{i}"), s, &["src/x.rs"]))
+            .collect();
+        parent
+            .upsert_notes_batch(&notes, Path::new("docs/notes.toml"), 100)
+            .unwrap();
+
+        let shadow = Store::open_memory().unwrap();
+        shadow
+            .init(&crate::store::helpers::ModelInfo::default())
+            .unwrap();
+        let copied = shadow
+            .copy_notes_from(&parent)
+            .expect("copy must not violate the discrete-sentiment CHECK");
+        assert_eq!(copied, 5);
+        assert_eq!(shadow.note_count().unwrap(), 5);
+
+        let mut sentiments: Vec<f32> = shadow
+            .list_notes_summaries()
+            .unwrap()
+            .into_iter()
+            .map(|n| n.sentiment)
+            .collect();
+        sentiments.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(sentiments, vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
     }
 }

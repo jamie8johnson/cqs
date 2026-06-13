@@ -40,6 +40,11 @@ use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeO
 /// - `parser` / `embedder`: the session's resident parser + embedder (the
 ///   daemon's, so overlay embeddings are dimension-compatible with prepared
 ///   queries by construction).
+/// - `parent_store`: the resident parent index. Its SQLite notes are copied
+///   into the overlay store so the overlay leg's note-boost index computes the
+///   same sentiment multiplier and records the same `note_boost` provenance the
+///   parent would — notes are project-level metadata keyed on mentions, not on
+///   uncommitted content, so they belong in a faithful shadow.
 /// - `global_cache`: optional embedding cache (see the cache-write note in
 ///   the module docs).
 ///
@@ -51,11 +56,12 @@ use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeO
 // (PR-3) is the production caller. Exercised under `slow-tests` by
 // `build_overlay_indexes_dirty_delta` below.
 #[allow(dead_code)]
-pub(crate) fn build_overlay(
+pub(crate) fn build_overlay<M>(
     worktree_root: &Path,
     parent_root: &Path,
     parser: &CqParser,
     embedder: &Embedder,
+    parent_store: &Store<M>,
     global_cache: Option<&cqs::cache::EmbeddingCache>,
 ) -> Result<Option<WorktreeOverlay>, cqs::worktree_overlay::OverlayError> {
     let _span = tracing::info_span!(
@@ -84,6 +90,24 @@ pub(crate) fn build_overlay(
     let model_info = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
     store.init(&model_info)?;
     store.set_dim(model_info.dimensions);
+
+    // Copy the parent's notes into the shadow store so the overlay leg's
+    // note-boost index demotes/promotes a noted-and-edited file the same way
+    // the parent leg would — and records the `note_boost` provenance. Notes are
+    // keyed on mentions, not on the dirty content the overlay replaces, so the
+    // shadow is faithful only with them. A copy failure is non-fatal: the
+    // overlay still serves correct hits, just without the note multiplier on
+    // the masked-and-re-served files (degrade, don't drop the overlay).
+    match store.copy_notes_from(parent_store) {
+        Ok(n) => {
+            if n > 0 {
+                tracing::debug!(notes = n, "overlay: copied parent notes into shadow store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "overlay: failed to copy parent notes — note boosts will be absent on overlay hits");
+        }
+    }
 
     // Parse + embed the parse set into the overlay store via the incremental
     // pipeline. `reindex_files` tolerates per-file parse failure and rewrites
@@ -191,7 +215,13 @@ mod tests {
         let parent = dunce::canonicalize(&parent).unwrap_or(parent);
         let wt = dunce::canonicalize(&wt).unwrap_or(wt);
 
-        let overlay = build_overlay(&wt, &parent, &parser, &embedder, None)
+        // A minimal parent store (no notes) — this test exercises masking, not
+        // the note copy; the empty-notes case must leave the overlay unchanged.
+        let parent_store = Store::open_memory().expect("parent store");
+        let parent_model = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+        parent_store.init(&parent_model).expect("init parent store");
+
+        let overlay = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
             .expect("build_overlay")
             .expect("non-clean worktree yields Some(overlay)");
 
@@ -206,5 +236,117 @@ mod tests {
             "overlay indexed at least one chunk from the new file"
         );
         assert_eq!(overlay.worktree_root, wt);
+    }
+
+    /// `build_overlay` copies the parent's notes into the shadow store so a
+    /// file that is both noted in the parent AND edited in the worktree keeps
+    /// its note multiplier when re-served from the overlay leg. End-to-end
+    /// through `build_overlay` (not the unit `copy_notes_from`): proves the copy
+    /// is actually wired into the production build, against a real parse+embed.
+    #[test]
+    fn build_overlay_copies_parent_notes_into_shadow() {
+        use cqs::embedder::ModelConfig;
+        use cqs::note::Note;
+
+        let embedder = match cqs::Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Skipping build_overlay notes e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        let parser = CqParser::new().expect("parser");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).unwrap();
+        std::fs::write(parent.join("src/lib.rs"), "pub fn alpha() -> i32 { 1 }\n").unwrap();
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let wt = tmp.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+
+        // Edit lib.rs in the worktree — this masks `src/lib.rs` out of the
+        // parent leg and re-serves it from the overlay. The parent has a -0.5
+        // note on exactly this file.
+        std::fs::write(
+            wt.join("src/lib.rs"),
+            "pub fn alpha() -> i32 { 2 }\npub fn beta() -> i32 { 3 }\n",
+        )
+        .unwrap();
+
+        let parent = dunce::canonicalize(&parent).unwrap_or(parent);
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        // Parent store with a note mentioning the edited file.
+        let parent_store = Store::open_memory().expect("parent store");
+        let parent_model = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+        parent_store.init(&parent_model).expect("init parent store");
+        let note = Note {
+            id: "note:0".to_string(),
+            text: "lib is load-bearing".to_string(),
+            sentiment: -0.5,
+            mentions: vec!["src/lib.rs".to_string()],
+            kind: None,
+        };
+        parent_store
+            .upsert_notes_batch(&[note], std::path::Path::new("docs/notes.toml"), 100)
+            .expect("seed parent note");
+
+        let overlay = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+            .expect("build_overlay")
+            .expect("non-clean worktree yields Some(overlay)");
+
+        // The note crossed into the shadow store's notes table (public API:
+        // `cached_note_boost_index` is lib-crate-private, so assert through the
+        // public notes surface + a real search instead).
+        assert_eq!(
+            overlay.store.note_count().expect("shadow note count"),
+            1,
+            "build_overlay must copy the parent note into the shadow store"
+        );
+        let summaries = overlay
+            .store
+            .list_notes_summaries()
+            .expect("shadow note summaries");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].mentions,
+            vec!["src/lib.rs".to_string()],
+            "the copied note keeps its mention"
+        );
+
+        // End-to-end provenance: a search of the shadow store for the edited
+        // file records `note_boost` with the -0.5 demotion — the multiplier the
+        // empty-notes overlay would have silently dropped.
+        let query_emb = embedder.embed_query("beta function").expect("embed query");
+        let mut filter = cqs::SearchFilter::default();
+        filter.query_text = "beta function".to_string();
+        filter.record_rank_signals = true;
+        let hits = overlay
+            .store
+            .search_filtered_with_index(&query_emb, &filter, 10, 0.0, None)
+            .expect("shadow search");
+        let lib_hit = hits
+            .iter()
+            .find(|r| r.chunk.file == std::path::Path::new("src/lib.rs"))
+            .expect("a chunk from the edited+noted file is retrieved");
+        let note_signal = lib_hit
+            .rank_signals
+            .iter()
+            .find(|s| s.signal == "note_boost")
+            .expect("overlay hit records note_boost provenance");
+        assert!(
+            note_signal.value < 1.0,
+            "note_boost reflects the -0.5 demotion, got {}",
+            note_signal.value
+        );
     }
 }

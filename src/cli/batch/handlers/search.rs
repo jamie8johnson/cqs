@@ -1435,6 +1435,7 @@ mod tests {
             &view.root,
             &parser,
             embedder_ref,
+            &view.store,
             None,
             std::time::Duration::from_millis(0),
         )
