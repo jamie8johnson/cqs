@@ -224,6 +224,129 @@ pub(crate) fn get_all_refs_via_refs_lru(
     Ok(hits)
 }
 
+/// Resolve a worktree overlay through the daemon's overlay LRU (result-trust
+/// §3), building it on a miss and revalidating its fingerprint on a hit.
+///
+/// Mirrors [`get_ref_via_refs_lru`]'s load-outside-lock shape, with the
+/// overlay-specific invalidator (per-entry fingerprint debounce) in place of
+/// the reference's `is_stale` check:
+///
+/// 1. **Hit + fresh** — the entry was fingerprint-validated within
+///    `debounce` → reuse it without re-running git (the WSL-latency guard: two
+///    git spawns per query collapse to one per burst).
+/// 2. **Hit + stale-stamp** — past the debounce → recompute the fingerprint
+///    (discover the live delta, re-hash); on match, touch the stamp and reuse;
+///    on mismatch, rebuild **outside the LRU lock** and `put` the fresh entry
+///    (last-write-wins; identical fingerprints are idempotent).
+/// 3. **Miss** — build outside the lock and `put`.
+///
+/// The build is the embedder-dependent cost; `build_overlay` discovers the
+/// delta, opens an in-memory store, and parses+embeds the dirty files into it.
+/// Returns `Ok(None)` for a clean worktree (nothing to overlay) and
+/// `Err(DeltaTooLarge)` when the delta exceeds the file cap — the caller maps
+/// the latter to `skipped-delta-too-large`.
+///
+/// `worktree_root` MUST already be validated (canonicalized + proven a
+/// worktree of `parent_root`) by the caller — this function reads + embeds its
+/// files, so an unvalidated path would be an arbitrary-directory read primitive
+/// (the security seam, plan §8).
+pub(crate) fn get_overlay_via_lru(
+    overlays: &Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>,
+    worktree_root: &Path,
+    parent_root: &Path,
+    parser: &cqs::parser::Parser,
+    embedder: &Embedder,
+    global_cache: Option<&cqs::cache::EmbeddingCache>,
+    debounce: std::time::Duration,
+) -> Result<Option<Arc<cqs::worktree_overlay::WorktreeOverlay>>, cqs::worktree_overlay::OverlayError>
+{
+    let _span =
+        tracing::info_span!("overlay_get_via_lru", worktree = %worktree_root.display()).entered();
+
+    // Hit path: peek the entry; if its validation stamp is within the debounce
+    // window, reuse without touching git. Clone the Arc out and drop the lock
+    // before any git/build work.
+    let cached: Option<Arc<super::OverlayCacheEntry>> = {
+        let mut cache = overlays.lock().unwrap_or_else(|p| p.into_inner());
+        cache.get(worktree_root).map(Arc::clone)
+    };
+
+    if let Some(entry) = &cached {
+        let within_window = {
+            let stamp = entry
+                .last_validated
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            stamp.elapsed() < debounce
+        };
+        if within_window {
+            tracing::debug!("overlay cache hit (within fingerprint debounce)");
+            return Ok(Some(Arc::clone(&entry.overlay)));
+        }
+
+        // Past the debounce: recompute the fingerprint against the live
+        // worktree state. A match means the delta is unchanged — touch the
+        // stamp and reuse the cached store (no rebuild). A mismatch (or a
+        // discovery error) falls through to a rebuild below.
+        match cqs::worktree_overlay::discover_delta(worktree_root, parent_root) {
+            Ok(delta) => {
+                let fp = cqs::worktree_overlay::fingerprint(worktree_root, &delta);
+                if fp == entry.overlay.fingerprint {
+                    tracing::debug!(
+                        "overlay fingerprint re-validated (unchanged) — reusing cached build"
+                    );
+                    let mut stamp = entry
+                        .last_validated
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    *stamp = Instant::now();
+                    return Ok(Some(Arc::clone(&entry.overlay)));
+                }
+                tracing::debug!("overlay fingerprint changed — rebuilding");
+            }
+            Err(cqs::worktree_overlay::OverlayError::DeltaTooLarge { count, cap }) => {
+                // The worktree drifted past the cap since the cached build.
+                // Surface the skip rather than serving a now-stale overlay.
+                return Err(cqs::worktree_overlay::OverlayError::DeltaTooLarge { count, cap });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "overlay re-validation discover failed — rebuilding");
+            }
+        }
+    }
+
+    // Miss, or hit with a changed fingerprint: build outside the LRU lock.
+    let built = crate::cli::worktree_overlay_build::build_overlay(
+        worktree_root,
+        parent_root,
+        parser,
+        embedder,
+        global_cache,
+    )?;
+
+    let Some(overlay) = built else {
+        // Clean worktree → nothing to overlay. Drop any stale cached entry so a
+        // later edit rebuilds rather than serving the empty/old delta.
+        let mut cache = overlays.lock().unwrap_or_else(|p| p.into_inner());
+        cache.pop(worktree_root);
+        return Ok(None);
+    };
+
+    let overlay = Arc::new(overlay);
+    let entry = Arc::new(super::OverlayCacheEntry {
+        overlay: Arc::clone(&overlay),
+        last_validated: Mutex::new(Instant::now()),
+    });
+    // Last-write-wins: a concurrent builder may have `put` an identical-
+    // fingerprint entry meanwhile; overwriting is idempotent (same delta) and
+    // cheap (the duplicate build is a few hundred chunks).
+    overlays
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .put(worktree_root.to_path_buf(), entry);
+    Ok(Some(overlay))
+}
+
 // ─── BatchView ──────────────────────────────────────────────────────────────
 //
 // Snapshot of the BatchContext fields a daemon-dispatchable handler needs.
@@ -294,6 +417,20 @@ pub(crate) struct BatchView {
     pub(super) splade_encoder_slot: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
     /// Shared refs LRU.
     pub(super) refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
+    /// Shared worktree-overlay LRU (result-trust §3). Same `Arc<Mutex<LruCache>>`
+    /// alias-the-context shape as `refs`. `SearchCtx::overlay()` resolves through
+    /// this via `get_overlay_via_lru` when `overlay_request` is set.
+    pub(super) overlays: Arc<Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>>,
+    /// The validated worktree root to overlay for the *current* dispatch, or
+    /// `None` when no overlay was requested / the request failed validation.
+    /// Set by the search handlers (`dispatch_search` / `dispatch_search_with_refs`)
+    /// from the wire `--overlay-root` after canonicalize + `resolve_main_project_dir
+    /// == root` validation, then read by `SearchCtx::overlay()` inside the shared
+    /// core. A `RefCell` because the view is handed to the core as `&BatchView`
+    /// but the handler must stamp the per-query request onto it first; the view
+    /// is single-threaded per dispatch (handlers run outside the BatchContext
+    /// lock on one connection thread), so interior mutability is sound.
+    pub(super) overlay_request: RefCell<Option<PathBuf>>,
     /// Cheap clones at checkout. A reload mid-flight returns stale data for
     /// the in-flight query.
     pub(super) config: cqs::config::Config,
@@ -769,6 +906,142 @@ impl BatchView {
         cache.get(name).map(Arc::clone)
     }
 
+    /// Validate a client-supplied `--overlay-root` and, if it passes, stamp it
+    /// onto `overlay_request` for the current dispatch (read back by
+    /// `SearchCtx::overlay()`).
+    ///
+    /// **Security seam (plan §8).** The daemon's cwd is the parent project and
+    /// the wire request carries an arbitrary `--overlay-root` string; an
+    /// unvalidated path would let any socket client name a directory whose
+    /// files the daemon then reads + embeds. Validation:
+    ///
+    /// 1. `dunce::canonicalize` the path (rejects non-existent paths and
+    ///    normalizes symlinks / `..` so the equality check below can't be
+    ///    fooled by a path that merely *spells* like a worktree).
+    /// 2. Require `resolve_main_project_dir(canonical) == self.root` — the path
+    ///    must be a real git worktree whose main project is exactly the project
+    ///    this daemon serves. A regular repo (`.git` is a dir) returns `None`
+    ///    and is rejected; a worktree of a *different* project resolves to a
+    ///    different main root and is rejected.
+    ///
+    /// Mirrors `run_git_diff`'s input-validation posture: reject loudly with a
+    /// wire error rather than silently degrade. Returns an error the caller
+    /// surfaces over the socket; on success the request is stamped and `Ok(())`.
+    pub(in crate::cli) fn set_validated_overlay_request(&self, overlay_root: &Path) -> Result<()> {
+        let _span = tracing::info_span!(
+            "overlay_validate_root",
+            requested = %overlay_root.display()
+        )
+        .entered();
+
+        let canonical = dunce::canonicalize(overlay_root).map_err(|e| {
+            tracing::warn!(error = %e, "overlay-root canonicalize failed — rejecting");
+            anyhow::anyhow!(
+                "overlay-root {} is not a readable path: {e}",
+                overlay_root.display()
+            )
+        })?;
+
+        let main = cqs::worktree::resolve_main_project_dir(&canonical);
+        let root_canonical = dunce::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        match main {
+            Some(m) if m == root_canonical => {
+                tracing::debug!(worktree = %canonical.display(), "overlay-root validated");
+                *self.overlay_request.borrow_mut() = Some(canonical);
+                Ok(())
+            }
+            other => {
+                tracing::warn!(
+                    requested = %canonical.display(),
+                    resolved_main = ?other,
+                    served_root = %root_canonical.display(),
+                    "overlay-root is not a worktree of this project — rejecting"
+                );
+                anyhow::bail!(
+                    "overlay-root {} is not a worktree of the served project {}",
+                    canonical.display(),
+                    root_canonical.display()
+                )
+            }
+        }
+    }
+
+    /// Resolve the worktree overlay for the current dispatch through the daemon
+    /// overlay LRU, building + caching it on a miss. Returns `None` when no
+    /// overlay was requested/validated for this query, when the worktree is
+    /// clean (no delta), or when the delta exceeds the file cap — the last case
+    /// also records the `skipped-delta-too-large` envelope meta so the agent
+    /// knows the result reflects the parent index.
+    ///
+    /// The embedder + a fresh parser + the parent's embedding cache drive
+    /// `build_overlay`. The parser is created per call (it is cheap — the watch
+    /// hot path does the same); the cache is the parent project's
+    /// `embeddings_cache.db` (the intentional cross-boundary cache write,
+    /// documented in `worktree_overlay_build`).
+    fn resolve_overlay(&self) -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
+        let worktree_root = self.overlay_request.borrow().clone()?;
+        let _span = tracing::info_span!(
+            "batch_view_resolve_overlay",
+            worktree = %worktree_root.display()
+        )
+        .entered();
+
+        let embedder = match self.embedder() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "overlay skipped: embedder unavailable");
+                return None;
+            }
+        };
+        let parser = match cqs::parser::Parser::new() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "overlay skipped: parser init failed");
+                return None;
+            }
+        };
+
+        // Parent project's embedding cache (best-effort: a cache open failure
+        // just means a slower build, never a skipped overlay).
+        let cache_path = cqs::cache::EmbeddingCache::project_default_path(&self.cqs_dir);
+        let cache = cqs::cache::EmbeddingCache::open(&cache_path).ok();
+
+        match get_overlay_via_lru(
+            &self.overlays,
+            &worktree_root,
+            &self.root,
+            &parser,
+            embedder,
+            cache.as_ref(),
+            super::overlay_fp_debounce(),
+        ) {
+            Ok(Some(ov)) => {
+                tracing::debug!(
+                    files = ov.stats.files_in_delta,
+                    chunks = ov.stats.chunks_indexed,
+                    build_ms = ov.stats.build_ms,
+                    "overlay resolved"
+                );
+                Some(ov)
+            }
+            Ok(None) => {
+                tracing::debug!("overlay: clean worktree, serving parent index");
+                None
+            }
+            Err(cqs::worktree_overlay::OverlayError::DeltaTooLarge { count, cap }) => {
+                tracing::warn!(count, cap, "overlay skipped: delta too large");
+                cqs::worktree_overlay::set_overlay_meta(
+                    cqs::worktree_overlay::OverlayMeta::SkippedDeltaTooLarge,
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "overlay build failed; serving parent index");
+                None
+            }
+        }
+    }
+
     /// Take a deep clone of the latest [`cqs::watch_status::WatchSnapshot`]
     /// the watch loop published. Reads through the shared `Arc<RwLock<...>>`,
     /// holding the read guard only long enough to clone the small struct out.
@@ -953,5 +1226,13 @@ impl crate::cli::commands::search::search_ctx::SearchCtx for BatchView {
                 "Reference '{name}' evicted from cache between prime and borrow — retry the query"
             )
         })
+    }
+
+    fn overlay(&self) -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
+        // The FIRST production `Some` for this seam (the trait default is
+        // `None`; the CLI surface stays `None` in phase 1). Resolved from the
+        // per-dispatch `overlay_request` the search handler validated +
+        // stamped; `None` here means no overlay was requested for this query.
+        self.resolve_overlay()
     }
 }

@@ -200,6 +200,60 @@ fn refs_lru_size() -> std::num::NonZeroUsize {
     std::num::NonZeroUsize::new(size).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
 }
 
+/// Default number of worktree overlays kept in the daemon's overlay LRU. Each
+/// overlay is an in-memory store of one worktree's dirty delta (~1-10 MB: a
+/// few hundred chunks × a 768-1024-dim embedding), so the cap can sit higher
+/// than the refs LRU's 2 (each ref holds a full Store + HNSW, 50-200 MB).
+/// Four covers a handful of concurrent lanes; bump via `CQS_OVERLAYS_LRU_SIZE`.
+const DEFAULT_OVERLAYS_LRU_SIZE: usize = 4;
+
+/// Resolve the overlays-cache LRU size from env, clamping to at least 1 slot.
+fn overlays_lru_size() -> std::num::NonZeroUsize {
+    let size = std::env::var("CQS_OVERLAYS_LRU_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_OVERLAYS_LRU_SIZE);
+    // SAFETY: filter above guarantees size > 0; const fallback is 4.
+    std::num::NonZeroUsize::new(size).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+}
+
+/// Default fingerprint-revalidation debounce for cached overlays, in
+/// milliseconds. Within this window after a validation, an overlay is reused
+/// without re-running the two git spawns + content hashing the fingerprint
+/// needs (≈ the `last_staleness_check` philosophy: bound worst-case staleness
+/// at ~2 s rather than pay the probe on every query). On WSL `/mnt/c`, two git
+/// spawns can be tens of ms; the debounce collapses a burst to one check.
+/// Override via `CQS_OVERLAY_FP_DEBOUNCE_MS`.
+const OVERLAY_FP_DEBOUNCE_MS_DEFAULT: u64 = 2000;
+
+/// Resolve the overlay fingerprint-revalidation debounce honoring
+/// `CQS_OVERLAY_FP_DEBOUNCE_MS`. Zero is honored verbatim (re-validate every
+/// query) — unlike the file-cap guard, a zero debounce is a legitimate
+/// "always re-check" choice, not a footgun: the cost is bounded git work, not
+/// an unbounded build.
+fn overlay_fp_debounce() -> std::time::Duration {
+    std::time::Duration::from_millis(cqs::limits::parse_env_u64(
+        "CQS_OVERLAY_FP_DEBOUNCE_MS",
+        OVERLAY_FP_DEBOUNCE_MS_DEFAULT,
+    ))
+}
+
+/// One slot in the daemon's overlay LRU: the built [`cqs::worktree_overlay::WorktreeOverlay`]
+/// plus the instant its fingerprint was last validated against the worktree's
+/// live dirty state. The debounce stamp lives behind a `Mutex` so a cache hit
+/// (which only *touches* the stamp) needs no `&mut` to the LRU value — the LRU
+/// hands back an `Arc<OverlayCacheEntry>` and the validation path mutates the
+/// stamp through the shared reference.
+pub(crate) struct OverlayCacheEntry {
+    /// The cached overlay (in-memory delta store + mask set + fingerprint).
+    pub(crate) overlay: Arc<cqs::worktree_overlay::WorktreeOverlay>,
+    /// When this entry's fingerprint was last confirmed to match the worktree.
+    /// Within [`overlay_fp_debounce`] of this instant the entry is reused
+    /// without re-running git.
+    pub(crate) last_validated: Mutex<Instant>,
+}
+
 /// Minimum interval between staleness probes (`fs::metadata` on `index.db`
 /// plus one `PRAGMA data_version` on the long-lived probe connection) during
 /// a batch session. `store()` is called on virtually every handler hop, and

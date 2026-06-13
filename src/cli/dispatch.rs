@@ -470,6 +470,17 @@ fn cli_arg_spec() -> cqs::daemon_translate::CliArgSpec {
     )
 }
 
+/// `true` when the worktree overlay was requested for this invocation — the
+/// top-level `--overlay` flag (bare-query search is a top-level `Cli`, not a
+/// subcommand) OR the `CQS_WORKTREE_OVERLAY=1` env equivalent. The same
+/// flag-OR-env disjunction the daemon's `daemon_query_args` resolves; checked
+/// client-side so the overlay-root forward only fires when an overlay is
+/// actually wanted.
+#[cfg(unix)]
+fn overlay_requested_for_forward(cli: &Cli) -> bool {
+    cli.overlay || crate::cli::commands::search::query::overlay_env_requested()
+}
+
 /// Try to forward the current command to a running daemon.
 ///
 /// Returns:
@@ -593,11 +604,48 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
              Set CQS_NO_DAEMON=1 to force CLI mode with the requested model."
         );
     }
-    let (command, cmd_args) = cqs::daemon_translate::translate_cli_args_to_batch(
+    let (command, mut cmd_args) = cqs::daemon_translate::translate_cli_args_to_batch(
         &raw_args,
         cli.command.is_some(),
         &cli_arg_spec(),
     );
+
+    // Worktree-overlay daemon forward (result-trust §3, plan §8). The daemon's
+    // cwd is the parent project and the wire request carries no cwd, so when an
+    // overlay is requested the client must say WHICH worktree. We resolve the
+    // overlay root here (CLI-side `cqs::worktree::overlay_root` over the real
+    // cwd + resolved root) and append the hidden `--overlay-root <abs>` flag
+    // post-translate; the daemon re-validates it (canonicalize +
+    // `resolve_main_project_dir == served root`) before reading any files.
+    //
+    // Forwards only for the `search` command (the only daemon command the
+    // overlay applies to) and only from an eligible worktree. Env-only requests
+    // (`CQS_WORKTREE_OVERLAY=1` without `--overlay`) also append `--overlay`,
+    // because the daemon is a separate long-lived process that does not see the
+    // client's env — without forwarding the flag, an env-only overlay would
+    // silently no-op daemon-up.
+    if command == "search" && overlay_requested_for_forward(cli) {
+        let resolved_root = find_project_root();
+        if let Some(root) = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, &resolved_root))
+        {
+            if !cmd_args.iter().any(|a| a == "--overlay") {
+                cmd_args.push("--overlay".to_string());
+            }
+            cmd_args.push("--overlay-root".to_string());
+            cmd_args.push(root.to_string_lossy().into_owned());
+            tracing::debug!(
+                overlay_root = %root.display(),
+                "forwarding worktree overlay to daemon"
+            );
+        } else {
+            tracing::debug!(
+                "overlay requested but cwd is not an eligible worktree — not forwarding overlay-root"
+            );
+        }
+    }
+
     let request = serde_json::json!({
         "command": command,
         "args": cmd_args,

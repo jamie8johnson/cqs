@@ -228,6 +228,17 @@ pub(crate) struct SearchArgs {
     /// = "skipped-no-daemon"` marker. Requires `--json` to forward to the daemon.
     #[arg(long)]
     pub overlay: bool,
+
+    /// Wire-only: the absolute worktree root to build the overlay for. Hidden
+    /// from `--help` — it is computed by the CLI (`cqs::worktree::overlay_root`)
+    /// and appended to the daemon-forwarded args, never set by a human. The
+    /// daemon's cwd is the parent project and the wire request carries no cwd,
+    /// so the client must say which worktree. The daemon VALIDATES it
+    /// (canonicalize + `resolve_main_project_dir == served root`) before reading
+    /// any of its files — an unvalidated value would be an arbitrary-directory
+    /// read primitive over the socket.
+    #[arg(long, hide = true)]
+    pub overlay_root: Option<std::path::PathBuf>,
 }
 
 impl SearchArgs {

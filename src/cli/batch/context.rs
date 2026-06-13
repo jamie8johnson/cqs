@@ -64,6 +64,7 @@ mod slot {
     pub(super) const SPLADE: u16 = 1 << 6;
     pub(super) const REFS: u16 = 1 << 7;
     pub(super) const CROSS_PROJECT: u16 = 1 << 8;
+    pub(super) const OVERLAYS: u16 = 1 << 9;
     pub(super) const ALL: u16 = u16::MAX;
 }
 
@@ -189,6 +190,17 @@ pub(crate) struct BatchContext {
     // Arc and `get_all_refs` / `get_ref` work on the snapshot path without
     // re-acquiring the outer BatchContext mutex.
     pub(super) refs: Arc<Mutex<lru::LruCache<String, Arc<ReferenceIndex>>>>,
+    /// Worktree-overlay LRU keyed by canonicalized worktree root (result-trust
+    /// §3). Mirrors the refs LRU shape (shared `Arc<Mutex<LruCache>>` so a
+    /// `BatchView` carries a clone and `get_overlay_via_lru` works on the
+    /// snapshot path without re-locking the outer BatchContext mutex), but the
+    /// invalidator differs: refs stale on the *reference's* index.db changing,
+    /// overlays on the *worktree's* dirty state changing (per-entry fingerprint
+    /// debounce in `get_overlay_via_lru`, NOT the parent index epoch — a parent
+    /// rebuild doesn't stale a worktree delta). Cap 4 (overlays are ~1-10 MB
+    /// each vs a ref's 50-200 MB); the `OVERLAYS` slot bit lets explicit
+    /// `refresh` / invalidation clear it as the operator escape hatch.
+    pub(super) overlays: Arc<Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>>,
     /// `Arc<OnceLock<...>>` mirrors the embedder pattern — see field doc above.
     pub(super) splade_encoder: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
     /// `Arc<Mutex<Option<Arc<SpladeIndex>>>>` so BatchView can carry an Arc
@@ -347,6 +359,7 @@ impl BatchContext {
             splade_index: Arc::new(Mutex::new(None)),
             cross_project: Arc::new(Mutex::new(None)),
             refs: Arc::new(Mutex::new(lru::LruCache::new(refs_lru_size()))),
+            overlays: Arc::new(Mutex::new(lru::LruCache::new(super::overlays_lru_size()))),
             root,
             cqs_dir,
             model_config,
@@ -767,6 +780,20 @@ impl BatchContext {
                 Err(_) => {
                     deferred |= slot::REFS;
                     tracing::debug!(slot = "refs", "lock held; deferring invalidation");
+                }
+            }
+        }
+        // Overlay LRU — same `Arc<Mutex<LruCache>>` deferral semantics as
+        // refs. `refresh` and any forced invalidation drop every cached
+        // overlay so the next overlay query rebuilds from the worktree's live
+        // state (the operator escape hatch; the per-entry fingerprint debounce
+        // is the routine invalidator).
+        if mask & slot::OVERLAYS != 0 {
+            match self.overlays.try_lock() {
+                Ok(mut g) => g.clear(),
+                Err(_) => {
+                    deferred |= slot::OVERLAYS;
+                    tracing::debug!(slot = "overlays", "lock held; deferring invalidation");
                 }
             }
         }
@@ -1488,6 +1515,8 @@ impl BatchContext {
             reranker_slot: Arc::clone(&self.reranker),
             splade_encoder_slot: Arc::clone(&self.splade_encoder),
             refs: Arc::clone(&self.refs),
+            overlays: Arc::clone(&self.overlays),
+            overlay_request: RefCell::new(None),
             config,
             audit_state,
             model_config: self.model_config.clone(),
@@ -1501,5 +1530,55 @@ impl BatchContext {
             reconcile_signal: Arc::clone(&self.reconcile_signal),
             fresh_notifier: Arc::clone(&self.fresh_notifier),
         }
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::slot;
+
+    /// Every individual slot bit is a distinct power of two, contiguous from
+    /// `1 << 0` up through the highest defined bit (`OVERLAYS = 1 << 9`), and
+    /// every one is covered by `slot::ALL`. A gap (a skipped bit) or an overlap
+    /// (two slots sharing a bit) would let `invalidate_mutable_caches` /
+    /// `refresh` silently fail to clear a cache — the new `OVERLAYS` bit
+    /// extends this invariant.
+    #[test]
+    fn slot_bits_are_contiguous_powers_of_two_under_all() {
+        // Listed lowest-to-highest; adding a new slot extends this array.
+        let bits = [
+            slot::HNSW,
+            slot::BASE_HNSW,
+            slot::CALL_GRAPH,
+            slot::TEST_CHUNKS,
+            slot::FILE_SET,
+            slot::NOTES,
+            slot::SPLADE,
+            slot::REFS,
+            slot::CROSS_PROJECT,
+            slot::OVERLAYS,
+        ];
+        let mut expected: u16 = 1;
+        let mut union: u16 = 0;
+        for (i, &bit) in bits.iter().enumerate() {
+            assert_eq!(
+                bit, expected,
+                "slot bit #{i} must be 1 << {i} (contiguous, no gaps); got {bit:#b}"
+            );
+            assert_eq!(
+                union & bit,
+                0,
+                "slot bit #{i} overlaps an earlier slot ({bit:#b})"
+            );
+            assert_eq!(
+                slot::ALL & bit,
+                bit,
+                "slot::ALL must cover slot bit #{i} ({bit:#b})"
+            );
+            union |= bit;
+            expected <<= 1;
+        }
+        // OVERLAYS is the current highest bit.
+        assert_eq!(slot::OVERLAYS, 1 << 9, "OVERLAYS must be 1 << 9");
     }
 }
