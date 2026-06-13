@@ -972,6 +972,177 @@ mod tests {
                 canonical_hash_fallback("ab")
             );
         }
+
+        // ====== Property-based: idempotence + metamorphic canonicalization ======
+        //
+        // The hand-written tests above each pin one fixed (base, edited) pair
+        // and assert their canonical hashes match. The properties below assert
+        // the underlying ALGEBRA over a generated input space:
+        //   1. `collapse_whitespace` is idempotent: f(f(x)) == f(x).
+        //   2. `canonical_hash_fallback` is whitespace-invariant: any edit that
+        //      changes only inter-token whitespace preserves the hash.
+        //   3. (metamorphic, through the real parser) inserting a `//` comment
+        //      line or reindenting a function body preserves the chunk's
+        //      `canonical_hash` — for EVERY generated body, not one fixture.
+        mod canon_proptest {
+            use super::*;
+            use proptest::prelude::*;
+
+            /// Whitespace-rich string strategy. Coverage claim: interleaves
+            /// "word" tokens with runs of mixed whitespace drawn from a set
+            /// that spans ASCII (` `, `\t`, `\n`, `\r`) AND Unicode whitespace
+            /// (`\u{00A0}` NBSP, `\u{2003}` EM SPACE, `\u{3000}` IDEOGRAPHIC
+            /// SPACE) — the chars `split_whitespace` treats as separators but
+            /// that a naive `.replace(' ', "")` would miss. Includes the
+            /// all-whitespace and empty cases via the `0..` lower bounds.
+            ///
+            /// DISTRUST: a generator that only emitted ASCII spaces would make
+            /// idempotence trivial (one pass already canonical). The Unicode
+            /// whitespace forces the first pass to actually transform, so the
+            /// second-pass-is-identity claim is non-vacuous.
+            fn whitespacey_string() -> impl Strategy<Value = String> {
+                let ws = prop::sample::select(vec![
+                    " ", "\t", "\n", "\r", "\r\n", "\u{00A0}", "\u{2003}", "\u{3000}", "  \t",
+                ]);
+                let word = "[a-zA-Z0-9_]{0,4}";
+                // Alternate up to 8 (word, whitespace-run) pairs, then a
+                // trailing word. Lower bound 0 covers empty and all-ws inputs.
+                (
+                    prop::collection::vec((word, ws.clone()), 0..8),
+                    "[a-zA-Z0-9_]{0,4}",
+                )
+                    .prop_map(|(pairs, tail)| {
+                        let mut s = String::new();
+                        for (w, sep) in pairs {
+                            s.push_str(&w);
+                            s.push_str(sep);
+                        }
+                        s.push_str(&tail);
+                        s
+                    })
+            }
+
+            proptest! {
+                #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+                /// Idempotence: collapse_whitespace(collapse_whitespace(x))
+                ///            == collapse_whitespace(x), for all x.
+                /// A second application of a normalizer must be the identity —
+                /// example tests apply it once and never probe the fixed point.
+                #[test]
+                fn prop_collapse_whitespace_idempotent(s in whitespacey_string()) {
+                    let once = collapse_whitespace(&s);
+                    let twice = collapse_whitespace(&once);
+                    prop_assert_eq!(&once, &twice, "collapse_whitespace not idempotent on {:?}", s);
+                }
+
+                /// collapse_whitespace output is in canonical form: no leading
+                /// or trailing space, and no run of two consecutive ASCII
+                /// spaces. A cheap oracle that pins WHY idempotence holds.
+                #[test]
+                fn prop_collapse_whitespace_canonical_form(s in whitespacey_string()) {
+                    let c = collapse_whitespace(&s);
+                    prop_assert!(!c.starts_with(' '), "leading space in {:?}", c);
+                    prop_assert!(!c.ends_with(' '), "trailing space in {:?}", c);
+                    prop_assert!(!c.contains("  "), "double space in {:?}", c);
+                }
+
+                /// Whitespace invariance of the no-tree fallback hash: re-spacing
+                /// the inter-token whitespace (any run -> any other non-empty
+                /// run) must not change canonical_hash_fallback. We build two
+                /// strings with the SAME word sequence but DIFFERENT whitespace
+                /// runs and assert equal hashes.
+                #[test]
+                fn prop_fallback_hash_whitespace_invariant(
+                    words in prop::collection::vec("[a-zA-Z0-9_]{1,5}", 1..8),
+                    sep_a in prop::sample::select(vec![" ", "\t", "\n", "  ", "\r\n", "\u{00A0}"]),
+                    sep_b in prop::sample::select(vec![" ", "\t\t", "\n  ", "   ", " \t "]),
+                ) {
+                    let a = words.join(sep_a);
+                    let b = words.join(sep_b);
+                    prop_assert_eq!(
+                        canonical_hash_fallback(&a),
+                        canonical_hash_fallback(&b),
+                        "fallback hash changed under a whitespace-only re-spacing: {:?} vs {:?}",
+                        a, b
+                    );
+                }
+
+                /// Metamorphic, through the REAL tree-sitter parser: inserting
+                /// `//` line comments between the statements of a Rust function
+                /// body, and/or reindenting it, must NOT change the chunk's
+                /// `canonical_hash` (the embedding-reuse cache key). This is the
+                /// property the example tests sample at single fixtures
+                /// (`rust_line_comment_does_not_change_canonical_hash`) lifted
+                /// to a generated family of bodies and comment payloads.
+                #[test]
+                fn prop_comment_and_reindent_preserve_canonical_hash(
+                    // 1..4 simple statements that bind locals and a final expr.
+                    stmt_vals in prop::collection::vec(0i32..1000, 1..4),
+                    // Comment payloads. The class is restricted to printable
+                    // ASCII plus the Latin-1 + general-punctuation Unicode
+                    // ranges, EXCLUDING all control characters. This matters:
+                    // tree-sitter-rust terminates a `//` line_comment at a NUL
+                    // (or other C0 control) byte and emits the control as a
+                    // separate ERROR node, which `collect_comment_ranges` does
+                    // NOT strip — so a control byte in the payload would leak
+                    // into the canonicalized text and (correctly) change the
+                    // hash. That divergence is a grammar fact, not a codec bug:
+                    // the control char is genuinely not part of the comment, so
+                    // including it would make the "comment-only edit" premise
+                    // false and the property too strong — a `\0` in a `//`
+                    // payload parses as an ERROR node, not comment text.
+                    // We therefore generate only payloads that the grammar
+                    // accepts as comment continuation.
+                    comments in prop::collection::vec(
+                        "[ -~\u{00A1}-\u{024F}\u{2010}-\u{2027}]{0,20}",
+                        1..4,
+                    ),
+                    extra_indent in 0usize..6,
+                ) {
+                    // Build the base body: `let a0 = V0; let a1 = V1; ... a0`
+                    let mut base = String::from("fn f() -> i32 {\n");
+                    for (i, v) in stmt_vals.iter().enumerate() {
+                        base.push_str(&format!("    let a{i} = {v};\n"));
+                    }
+                    base.push_str("    a0\n}\n");
+
+                    // Build the edited body: the SAME statement text as base
+                    // (byte-identical `let a{i} = {v};`), but each preceded by a
+                    // `//` comment line and given `extra_indent` additional
+                    // leading spaces. The ONLY differences vs base are (a)
+                    // inserted comment lines and (b) leading-whitespace runs —
+                    // both of which `canonical_hash` must erase. Inter-token
+                    // spacing within a statement is left untouched on purpose:
+                    // changing it (e.g. `0;` -> `0 ;`) is a real textual edit
+                    // that `canonical_hash` is *not* contracted to collapse —
+                    // `collapse_whitespace` merges whitespace runs but never
+                    // inserts a token boundary, so `0;` and `0 ;` hash
+                    // differently. Introducing that here would make the property
+                    // too strong (a generator artifact, not a codec bug).
+                    let pad = " ".repeat(extra_indent);
+                    // Signature with WIDENED whitespace RUNS only (`()  ->  i32`)
+                    // — collapsing runs yields the same `fn f() -> i32` as base,
+                    // so this stays a whitespace-only edit (no new token
+                    // boundary introduced, unlike a space before `;`).
+                    let mut edited = String::from("fn f()  ->  i32 {\n");
+                    for (i, v) in stmt_vals.iter().enumerate() {
+                        let c = &comments[i % comments.len()];
+                        edited.push_str(&format!("{pad}    // {c}\n"));
+                        edited.push_str(&format!("{pad}    let a{i} = {v};\n"));
+                    }
+                    edited.push_str("    // trailing note\n    a0\n}\n");
+
+                    let base_hash = canon_of(&base, "rs", "f");
+                    let edited_hash = canon_of(&edited, "rs", "f");
+                    prop_assert_eq!(
+                        &base_hash, &edited_hash,
+                        "comment-insertion + reindent changed canonical_hash:\nBASE:\n{}\nEDITED:\n{}",
+                        base, edited
+                    );
+                }
+            }
+        }
     }
 
     mod signature_tests {

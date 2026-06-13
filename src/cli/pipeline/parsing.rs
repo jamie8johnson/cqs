@@ -397,18 +397,29 @@ pub(super) fn parser_stage(
         // must be pruned. Count how many chunks each file contributes so the
         // drain loop below can stamp a file's fingerprint only in the batch
         // carrying its LAST chunk, and so we can tell which survivors are
-        // empty. A file with a parse ERROR is excluded — it has no
-        // fingerprint-or-zero-chunk entry here, so its old chunks are left
-        // untouched (the next run retries the parse).
+        // empty. A file with a parse ERROR is excluded from `empty_file_fingerprints`
+        // (the only carrier of the zero-chunk prune+stamp into store_stage): it
+        // has zero chunks because the parse FAILED, not because the file is
+        // genuinely item-free. Including it would prune its last-good chunks
+        // with an empty live set AND stamp its fingerprint current — a
+        // syntax-broken file would lose its real chunks and be sealed
+        // "skip forever" until its bytes change #1835. The v31 drift marker
+        // suppresses the drift re-queue but does NOT undo a prune+stamp, so the
+        // exclusion has to happen here. Excluded files keep their old chunks
+        // untouched and stay UNSTAMPED, so the next run's pre-filter retries
+        // the parse (self-healing).
         let mut remaining_per_file: std::collections::HashMap<PathBuf, usize> =
             std::collections::HashMap::with_capacity(file_fingerprints.len());
         for c in &chunks {
             *remaining_per_file.entry(c.file.clone()).or_insert(0) += 1;
         }
+        let failed_set: std::collections::HashSet<&str> =
+            parse_failed_origins.iter().map(|s| s.as_str()).collect();
         let empty_file_fingerprints: std::collections::HashMap<PathBuf, FileFingerprint> =
             file_fingerprints
                 .iter()
                 .filter(|(rel, _)| !remaining_per_file.contains_key(*rel))
+                .filter(|(rel, _)| !failed_set.contains(normalize_path(rel).as_str()))
                 .map(|(rel, fp)| (rel.clone(), fp.clone()))
                 .collect();
 
@@ -1086,6 +1097,229 @@ mod tests {
                 .iter()
                 .all(|b| !b.file_fingerprints.contains_key(&empty)),
             "zero-chunk file must not be stamped via the chunk path"
+        );
+    }
+
+    /// #1835 Defect A — a survivor that FAILS to parse (zero chunks because the
+    /// parse errored, NOT because the file is genuinely item-free) must NOT be
+    /// routed into `empty_file_fingerprints`. That set is the only carrier of
+    /// the zero-chunk prune+stamp into store_stage; routing a parse-error file
+    /// there would prune its last-good chunks with an empty live set AND stamp
+    /// its fingerprint current — a syntax-broken file would lose its real chunks
+    /// and be sealed "skip forever". The file must instead be left untouched and
+    /// UNSTAMPED so the next run retries the parse (self-healing).
+    ///
+    /// Fixture: seed `broken.rs` with a last-good chunk at a divergent
+    /// fingerprint (so it's a survivor), then remove the file so the parse hits
+    /// an IO error (the same `Err` arm a tree-sitter `ParseFailed` takes). Assert
+    /// the emitted batches carry `broken.rs` in NEITHER `empty_file_fingerprints`
+    /// NOR `file_fingerprints`.
+    #[test]
+    fn parser_stage_parse_error_survivor_not_routed_to_empty_set() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("broken.rs"), "pub fn broken() {}\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Seed a last-good chunk with a DIVERGENT fingerprint so the pre-filter
+        // selects broken.rs as a survivor (fingerprint mismatch), at the current
+        // parser version so the drift selector is not what's keeping it in.
+        let chunk = cqs::Chunk {
+            id: "broken.rs:1:seed".to_string(),
+            file: PathBuf::from("broken.rs"),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: "broken".to_string(),
+            signature: "pub fn broken()".to_string(),
+            content: "pub fn broken() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "seed".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: cqs::parser_version(),
+        };
+        let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+        let divergent_fp = cqs::store::FileFingerprint {
+            mtime: Some(1_000),
+            size: Some(1),
+            content_hash: Some(*blake3::hash(b"old content").as_bytes()),
+        };
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("broken.rs"), divergent_fp);
+        store
+            .upsert_embedded_batch(&[(chunk, emb)], &[], &fps)
+            .unwrap();
+
+        // Force the parse to fail: remove the file so the parser hits an IO
+        // error (same `Err` arm as a tree-sitter ParseFailed).
+        std::fs::remove_file(root.join("broken.rs")).unwrap();
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let parse_errors = Arc::new(AtomicUsize::new(0));
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: false, // incremental — the divergent fingerprint makes it a survivor
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::clone(&parse_errors),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![PathBuf::from("broken.rs")], ctx, tx).unwrap();
+
+        assert!(
+            parse_errors.load(Ordering::Relaxed) >= 1,
+            "broken.rs must have failed to parse for this regression to be meaningful"
+        );
+
+        let batches: Vec<ParsedBatch> = rx.try_iter().collect();
+        let broken = PathBuf::from("broken.rs");
+        assert!(
+            batches
+                .iter()
+                .all(|b| !b.empty_file_fingerprints.contains_key(&broken)),
+            "a parse-error survivor must NOT be routed to empty_file_fingerprints \
+             (else store_stage prunes its last-good chunks + stamps it current)"
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|b| !b.file_fingerprints.contains_key(&broken)),
+            "a parse-error survivor must NOT be stamped via the chunk path either"
+        );
+
+        // The last-good chunk must still be in the index (the parser stage never
+        // pruned it) so search/callers keep working until a successful re-parse.
+        assert_eq!(
+            store.get_chunks_by_origin("broken.rs").unwrap().len(),
+            1,
+            "parse-error survivor keeps its last-good chunks"
+        );
+    }
+
+    /// #1835 Defect A, end-to-end through store_stage: drive the full
+    /// parse → store pipeline for a parse-error survivor and confirm the store
+    /// stage neither prunes its chunks nor stamps its fingerprint, so the
+    /// pre-filter re-selects it next run.
+    #[test]
+    fn parse_error_survivor_keeps_chunks_and_stays_unstamped_through_store() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("broken.rs"), "pub fn broken() {}\n").unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let chunk = cqs::Chunk {
+            id: "broken.rs:1:seed".to_string(),
+            file: PathBuf::from("broken.rs"),
+            language: cqs::language::Language::Rust,
+            chunk_type: cqs::language::ChunkType::Function,
+            name: "broken".to_string(),
+            signature: "pub fn broken()".to_string(),
+            content: "pub fn broken() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "seed".to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: cqs::parser_version(),
+        };
+        let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+        let divergent_fp = cqs::store::FileFingerprint {
+            mtime: Some(1_000),
+            size: Some(1),
+            content_hash: Some(*blake3::hash(b"old content").as_bytes()),
+        };
+        let mut fps = HashMap::new();
+        fps.insert(PathBuf::from("broken.rs"), divergent_fp);
+        store
+            .upsert_embedded_batch(&[(chunk, emb)], &[], &fps)
+            .unwrap();
+
+        std::fs::remove_file(root.join("broken.rs")).unwrap();
+
+        // Drive parser_stage, then feed its output into store_stage so the
+        // prune+stamp decision is exercised exactly as the real pipeline does.
+        let (parse_tx, parse_rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: false,
+            parser: Arc::new(CqParser::new().unwrap()),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![PathBuf::from("broken.rs")], ctx, parse_tx).unwrap();
+
+        // Convert ParsedBatch → EmbeddedBatch (no embedding needed for empties;
+        // there are no chunks here) and run store_stage.
+        let embed_emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
+        let (embed_tx, embed_rx) = unbounded::<super::super::types::EmbeddedBatch>();
+        for pb in parse_rx.try_iter() {
+            embed_tx
+                .send(super::super::types::EmbeddedBatch {
+                    cached_count: 0,
+                    chunk_embeddings: pb
+                        .chunks
+                        .into_iter()
+                        .map(|c| (c, embed_emb.clone()))
+                        .collect(),
+                    relationships: pb.relationships,
+                    file_fingerprints: pb.file_fingerprints,
+                    empty_file_fingerprints: pb.empty_file_fingerprints,
+                    uncached_need_embedding: false,
+                })
+                .unwrap();
+        }
+        drop(embed_tx);
+        let parsed = AtomicUsize::new(0);
+        let embedded = AtomicUsize::new(0);
+        super::super::upsert::store_stage(
+            embed_rx,
+            &store,
+            &parsed,
+            &embedded,
+            &indicatif::ProgressBar::hidden(),
+        )
+        .unwrap();
+
+        // The last-good chunk survived the store stage (no empty-set prune).
+        assert_eq!(
+            store.get_chunks_by_origin("broken.rs").unwrap().len(),
+            1,
+            "store_stage must not prune a parse-error survivor's last-good chunks"
+        );
+        // The fingerprint stays divergent from disk-of-record (it was never
+        // re-stamped this run), so the file re-selects next run. The stored
+        // fingerprint must still be the OLD divergent one, not a fresh stamp.
+        let stored = store.fingerprints_for_origins(&["broken.rs"]).unwrap();
+        let fp = stored.get("broken.rs").expect("origin exists");
+        assert_eq!(
+            fp.mtime,
+            Some(1_000),
+            "parse-error survivor's fingerprint must NOT be re-stamped (stays the \
+             seeded divergent value so the pre-filter re-selects it); got {fp:?}"
         );
     }
 }

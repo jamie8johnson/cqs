@@ -1031,38 +1031,32 @@ impl Store<ReadWrite> {
         })
     }
 
-    /// Atomically upsert one pipeline batch — real-embedding chunks plus
-    /// zero-vec sentinel chunks, spanning any number of files — in a single
-    /// write transaction, and stamp each file's reconcile fingerprint
-    /// (`source_mtime`, `source_size`, `source_content_hash`) in the same
-    /// transaction.
+    /// Atomically upsert chunks — real-embedding plus zero-vec sentinel,
+    /// spanning any number of files — in a single write transaction, and stamp
+    /// each file's reconcile fingerprint (`source_mtime`, `source_size`,
+    /// `source_content_hash`) in the same transaction.
     ///
-    /// This is the bulk-pipeline (`cqs index`) write path. One transaction
-    /// per embedded batch replaces the old transaction-per-file loop, which
-    /// paid a BEGIN/COMMIT plus a content-hash snapshot SELECT per file
-    /// (tens of thousands of transactions of pure overhead on a large
-    /// corpus). Crash-atomicity contract: a crash mid-index may lose whole
-    /// uncommitted batches, but the chunks and FTS rows that DID land always
-    /// committed together — the index is never left with a chunk/FTS desync
-    /// for the rows it contains.
+    /// SECONDARY write path. The bulk `cqs index` store stage now writes through
+    /// the per-FILE fused primitive `upsert_file_fused` (chunks + calls +
+    /// function_calls + prune + stamp, all-or-nothing per file) — the
+    /// orphan-impossible #1835 path. This batch-shaped method remains the write
+    /// path for callers that re-stamp chunks WITHOUT the call-graph dimension:
+    /// the enrichment pass (`enrichment_pass`, which rewrites embeddings for
+    /// already-coherent chunks), the reuse-resolver hydration, and store-level
+    /// tests/seeds. It folds chunks + FTS + fingerprint stamp into one tx so
+    /// those re-writes never desync chunks from FTS.
     ///
-    /// Fingerprint ordering is the key crash-safety guarantee: a file's chunks
-    /// can straddle batches (the parser slices at `embed_batch_size`; a GPU
-    /// failure re-splits a batch). The pipeline stamps a file's fingerprint
-    /// only in the batch carrying its LAST chunk, so for a straddling file the
-    /// fingerprint commits in a LATER transaction than some of the file's
-    /// chunks — deliberately. If the process dies between those commits the
-    /// file is left half-indexed but UNSTAMPED, so the next run's staleness
-    /// pre-filter (`filter_stale_files`) classifies it STALE and re-indexes it
-    /// in full. (The reverse — fingerprint committed before all chunks — was
-    /// the bug this ordering fixes: it would mark a half-indexed file current
-    /// and skip it permanently.) `fingerprints` therefore only ever mentions
-    /// files whose every chunk is present in THIS batch's row sets.
+    /// Crash-atomicity contract: a crash may lose whole uncommitted batches, but
+    /// the chunks and FTS rows that DID land always committed together — the
+    /// index is never left with a chunk/FTS desync for the rows it contains.
     ///
-    /// (The watch path keeps its own per-file fused transaction in
-    /// `upsert_chunks_calls_and_prune` — that boundary is deliberate: a daemon
-    /// tick must commit each file's chunks + calls + function_calls + prune as
-    /// one unit.)
+    /// Fingerprint ordering: a file's chunks can straddle batches, so callers
+    /// stamp a file's fingerprint only in the batch carrying its LAST chunk; the
+    /// stamp then commits no earlier than every one of the file's chunks. If the
+    /// process dies between those commits the file is left UNSTAMPED, so the next
+    /// run's staleness pre-filter (`filter_stale_files`) reclassifies it STALE.
+    /// `fingerprints` therefore only ever mentions files whose every chunk is
+    /// present in THIS batch's row sets.
     ///
     /// `sentinel` chunks are written via the same zero-vec
     /// `needs_embedding=1` contract that `enrichment_pass` and the reuse
@@ -1213,6 +1207,8 @@ impl Store<ReadWrite> {
             prune_file,
             live_ids,
             None,
+            &[],
+            None,
         )
     }
 
@@ -1251,9 +1247,56 @@ impl Store<ReadWrite> {
             prune_file,
             live_ids,
             file_function_calls,
+            &[],
+            None,
         )
     }
 
+    /// Per-FILE fused write for the BULK pipeline (`cqs index`), #1835.
+    ///
+    /// Folds EVERYTHING a single file needs into ONE `begin_write` transaction:
+    /// real-embedding chunks + zero-vec sentinel chunks + their FTS rows +
+    /// per-chunk `calls` + file-level `function_calls` + phantom-chunk prune +
+    /// the reconcile fingerprint stamp (chunk-row columns AND `file_registry`
+    /// shadow). All-or-nothing: a failure anywhere rolls the whole file back to
+    /// its prior coherent state, leaving it UNstamped so the next reconcile
+    /// re-selects and re-indexes it. This is what makes the bulk path
+    /// orphan-impossible in BOTH directions — no chunks-without-calls and no
+    /// calls-without-chunks (the `find_orphaned_function_calls` magnet), and no
+    /// stamp-ahead-of-content (false-DEAD) — the same all-or-nothing shape the
+    /// watch path's `upsert_chunks_calls_and_prune_with_file_calls` has, plus the
+    /// in-tx stamp.
+    ///
+    /// Replaces the old three-transaction bulk sequence (calls → chunks → stamp),
+    /// whose every ordering left a mid-sequence window that stranded a committed
+    /// write. `prune_file`/`live_ids` follow the same contract as the other fused
+    /// methods (empty `live_ids` + `Some(origin)` = the file was emptied; every
+    /// chunk for the origin is pruned). `fingerprint` is always `Some` here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_file_fused(
+        &self,
+        real: &[(Chunk, Embedding)],
+        sentinel: &[Chunk],
+        source_mtime: Option<i64>,
+        calls: &[(String, crate::parser::CallSite)],
+        prune_file: &std::path::Path,
+        live_ids: &[&str],
+        file_function_calls: &[crate::parser::FunctionCalls],
+        fingerprint: &crate::store::chunks::staleness::FileFingerprint,
+    ) -> Result<usize, StoreError> {
+        self.upsert_chunks_calls_and_prune_inner(
+            real,
+            source_mtime,
+            calls,
+            Some(prune_file),
+            live_ids,
+            Some(file_function_calls),
+            sentinel,
+            Some(fingerprint),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn upsert_chunks_calls_and_prune_inner(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -1262,14 +1305,36 @@ impl Store<ReadWrite> {
         prune_file: Option<&std::path::Path>,
         live_ids: &[&str],
         file_function_calls: Option<&[crate::parser::FunctionCalls]>,
+        // #1835: zero-vec sentinel chunks (`needs_embedding=1`) for the bulk
+        // pipeline's `--llm-summaries` skip-first-pass path. The watch path
+        // passes `&[]`. Folded into the same tx as `chunks` so a file's whole
+        // chunk set commits atomically regardless of which half each chunk is in.
+        sentinel: &[Chunk],
+        // #1835: when `Some`, stamp the file's reconcile fingerprint (chunk-row
+        // columns + `file_registry` shadow) INSIDE this transaction, AFTER the
+        // chunk/calls/function_calls/prune writes. This makes the stamp
+        // all-or-nothing with the content it certifies — the bulk path's
+        // orphan-impossible guarantee (a rolled-back tx leaves the file in its
+        // prior coherent state, unstamped, so it re-indexes next run). The watch
+        // path passes `None` and keeps its own post-tx best-effort stamp.
+        // `prune_file` must be `Some` so the stamp has an origin to key on.
+        fingerprint: Option<&crate::store::chunks::staleness::FileFingerprint>,
     ) -> Result<usize, StoreError> {
+        if fingerprint.is_some() {
+            debug_assert!(
+                prune_file.is_some(),
+                "in-tx fingerprint stamp requires prune_file to supply the origin"
+            );
+        }
         let _span = tracing::info_span!(
             "upsert_chunks_calls_and_prune",
             chunks = chunks.len(),
+            sentinel = sentinel.len(),
             calls = calls.len(),
             prune = prune_file.is_some(),
             live_count = live_ids.len(),
-            file_function_calls = file_function_calls.is_some()
+            file_function_calls = file_function_calls.is_some(),
+            stamp = fingerprint.is_some()
         )
         .entered();
         let dim = self.dim;
@@ -1277,18 +1342,32 @@ impl Store<ReadWrite> {
             .iter()
             .map(|(_, emb)| embedding_to_bytes(emb, dim))
             .collect::<Result<Vec<_>, _>>()?;
+        // Sentinel chunks carry a zero-vec embedding stamped `needs_embedding=1`;
+        // the enrichment pass overwrites it later.
+        let zero_vec = Embedding::new(vec![0.0_f32; dim]);
+        let sentinel_pairs: Vec<(Chunk, Embedding)> = sentinel
+            .iter()
+            .map(|c| (c.clone(), zero_vec.clone()))
+            .collect();
+        let sentinel_bytes: Vec<Vec<u8>> = sentinel_pairs
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb, dim))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Same vendored pre-compute as the simpler `upsert_chunks_batch` path.
         let prefixes = self.vendored_prefixes_slice();
-        let vendored_per_chunk: Vec<bool> = chunks
+        let vendored_for = |chunk: &Chunk| {
+            let origin = crate::normalize_path(&chunk.file);
+            crate::vendored::is_vendored_origin(&origin, prefixes)
+        };
+        let vendored_per_chunk: Vec<bool> = chunks.iter().map(|(c, _)| vendored_for(c)).collect();
+        let sentinel_vendored: Vec<bool> = sentinel_pairs
             .iter()
-            .map(|(chunk, _)| {
-                let origin = crate::normalize_path(&chunk.file);
-                crate::vendored::is_vendored_origin(&origin, prefixes)
-            })
+            .map(|(c, _)| vendored_for(c))
             .collect();
 
         let source_mtimes = vec![source_mtime; chunks.len()];
+        let sentinel_mtimes = vec![source_mtime; sentinel_pairs.len()];
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
             let old_hashes = snapshot_content_hashes(&mut tx, chunks).await?;
@@ -1304,6 +1383,20 @@ impl Store<ReadWrite> {
             )
             .await?;
             upsert_fts_conditional(&mut tx, chunks, &old_hashes).await?;
+            if !sentinel_pairs.is_empty() {
+                let sentinel_old = snapshot_content_hashes(&mut tx, &sentinel_pairs).await?;
+                batch_insert_chunks(
+                    &mut tx,
+                    &sentinel_pairs,
+                    &sentinel_bytes,
+                    &sentinel_vendored,
+                    &sentinel_mtimes,
+                    &now,
+                    true, // zero-vec sentinel → needs_embedding=1
+                )
+                .await?;
+                upsert_fts_conditional(&mut tx, &sentinel_pairs, &sentinel_old).await?;
+            }
 
             // Upsert calls: delete old calls for these chunk IDs, insert new ones
             if !calls.is_empty() {
@@ -1461,6 +1554,20 @@ impl Store<ReadWrite> {
             if let (Some(file), Some(fcs)) = (prune_file, file_function_calls) {
                 let file_str = crate::normalize_path(file);
                 crate::store::calls::write_function_calls_in_tx(&mut tx, &file_str, fcs).await?;
+            }
+
+            // #1835: stamp the reconcile fingerprint LAST and INSIDE the same tx
+            // (chunk-row columns + `file_registry` shadow). Because every prior
+            // write — chunks, FTS, calls, function_calls, prune — and this stamp
+            // commit together, a file is NEVER left with content but no stamp
+            // (skip-forever) NOR a stamp but stale content (false-DEAD); a
+            // rolled-back tx reverts to the prior coherent state and the file
+            // re-indexes next run. For a zero-chunk file the chunk-row UPDATE
+            // touches nothing and the registry UPSERT is the load-bearing write,
+            // so `function_calls` for a zero-chunk origin and its registry row
+            // commit atomically (no transient orphan window).
+            if let (Some(file), Some(fp)) = (prune_file, fingerprint) {
+                set_fingerprint_in_tx(&mut tx, &crate::normalize_path(file), fp).await?;
             }
 
             tx.commit().await?;
@@ -1740,6 +1847,105 @@ mod tests {
             callers.iter().any(|c| c.name == "new_fn"),
             "function_calls must record new_fn → callee_alpha: got {:?}",
             callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// #1835 `upsert_file_fused`: the bulk per-file fused write stamps the
+    /// reconcile fingerprint (chunk-row columns + `file_registry` shadow) INSIDE
+    /// the same transaction as chunks/FTS/calls/function_calls/prune. After a
+    /// successful call the staleness reader resolves the file as stamped.
+    #[test]
+    fn upsert_file_fused_stamps_fingerprint_in_tx() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let chunk = make_chunk("fused_fn", "src/f.rs");
+        let pairs = [(chunk.clone(), emb)];
+        let fp = crate::store::chunks::staleness::FileFingerprint {
+            mtime: Some(42),
+            size: Some(7),
+            content_hash: Some(*blake3::hash(b"fused").as_bytes()),
+        };
+        store
+            .upsert_file_fused(
+                &pairs,
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("src/f.rs"),
+                &[chunk.id.as_str()],
+                &[],
+                &fp,
+            )
+            .expect("fused write must succeed");
+
+        let fps = store.fingerprints_for_origins(&["src/f.rs"]).unwrap();
+        let got = fps.get("src/f.rs").expect("origin stamped");
+        assert!(
+            got.content_hash.is_some() && got.size.is_some() && got.mtime.is_some(),
+            "fused write must stamp the full fingerprint in-tx; got {got:?}"
+        );
+    }
+
+    /// #1835 `upsert_file_fused` zero-chunk path: empty chunks + empty live set
+    /// (prune) + function_calls + registry stamp commit atomically. The file has
+    /// NO chunk rows but IS stamped in `file_registry`, and its function_calls
+    /// are not orphaned (the registry row makes the origin "known").
+    #[test]
+    fn upsert_file_fused_zero_chunk_stamps_registry_and_keeps_calls_coherent() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        // Seed a prior chunk so the zero-chunk prune has something to remove.
+        let seed = make_chunk("old_fn", "src/z.rs");
+        store
+            .upsert_chunks_batch(&[(seed.clone(), emb)], Some(1))
+            .unwrap();
+        assert_eq!(store.get_chunks_by_origin("src/z.rs").unwrap().len(), 1);
+
+        // Oversize-function class: zero chunks but a function_calls edge.
+        let fcs = vec![FunctionCalls {
+            name: "oversize".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: "callee".to_string(),
+                line_number: 2,
+                kind: CallEdgeKind::Call,
+            }],
+        }];
+        let fp = crate::store::chunks::staleness::FileFingerprint {
+            mtime: Some(99),
+            size: Some(3),
+            content_hash: Some(*blake3::hash(b"zero").as_bytes()),
+        };
+        store
+            .upsert_file_fused(
+                &[],
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("src/z.rs"),
+                &[], // empty live set → prune all chunks for the origin
+                &fcs,
+                &fp,
+            )
+            .expect("zero-chunk fused write must succeed");
+
+        // Chunks pruned to zero...
+        assert_eq!(
+            store.get_chunks_by_origin("src/z.rs").unwrap().len(),
+            0,
+            "zero-chunk fused write prunes the prior chunk"
+        );
+        // ...but the registry stamp persists (staleness reader resolves it)...
+        let fps = store.fingerprints_for_origins(&["src/z.rs"]).unwrap();
+        let got = fps.get("src/z.rs").expect("registry stamped");
+        assert!(
+            got.content_hash.is_some() && got.size.is_some(),
+            "zero-chunk fused write must stamp the registry; got {got:?}"
+        );
+        // ...and the function_calls are NOT orphaned (registry makes it known).
+        assert!(
+            store.find_orphaned_function_calls().unwrap().is_empty(),
+            "zero-chunk fused write must not leave orphaned function_calls"
         );
     }
 
