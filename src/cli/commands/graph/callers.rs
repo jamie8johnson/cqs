@@ -528,7 +528,7 @@ pub(crate) fn callees_core(
     }
 
     let mut callees = store
-        .get_callees_full(&args.name, None)
+        .get_callees_full(&args.name, None, None)
         .context("Failed to load callees")?;
     if let Some(want) = args.edge_kind {
         callees.retain(|c| c.edge_kind == want);
@@ -541,10 +541,24 @@ pub(crate) fn callees_core(
 }
 
 /// Resolve callees of `Type::method` by scoping `get_callees_full` to
-/// the origin file(s) where the type's method is defined. Callees carry no
-/// receiver-type ambiguity (they are the methods *this* method calls), so no
-/// attribution marker is emitted. A union over multiple defining files (rare)
-/// is deduplicated by `(name, line)`.
+/// the definition site(s) — origin file AND def start line — where the type's
+/// method is defined. Callees carry no receiver-type ambiguity (they are the
+/// methods *this* method calls), so no attribution marker is emitted. A union
+/// over multiple defining sites (rare) is deduplicated by `(origin, name,
+/// line)` — origin is part of the key so two same-named callees at the same
+/// line in different files don't collapse.
+///
+/// Line-level scoping (mirroring the callers side's `(origin, name,
+/// line_start)` join) prevents two same-named methods sharing a file — a
+/// `Store` and a `StoreBuilder` both defining `build` in `store.rs` — from
+/// merging their callees under either `Type::method` query.
+///
+/// When the qualifier has no local definition of `method` (an external /
+/// unknown qualifier like `std::fs::read_to_string`, or a typo like
+/// `Banana::search`), the def-site list is empty and there are no callees to
+/// show. Rather than a bare "no callees", surface the real owners as
+/// disambiguation candidates (the callers side does the same), so the user
+/// learns the qualified forms that actually resolve.
 fn callees_qualified(
     store: &Store<ReadOnly>,
     qual_type: &str,
@@ -552,18 +566,37 @@ fn callees_qualified(
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
 ) -> Result<CalleesCoreOutput> {
-    let origins = store
-        .get_type_method_origins(qual_type, method)
-        .context("Failed to resolve type-method origins")?;
+    let def_sites = store
+        .get_type_method_def_sites(qual_type, method)
+        .context("Failed to resolve type-method def sites")?;
     let name = format!("{qual_type}::{method}");
+
+    // No local def under this qualifier → no callees exist for it. Mirror the
+    // callers side: if the method is defined under OTHER types, the qualifier
+    // is wrong/unknown — surface those owners as candidates instead of an empty
+    // result that reads as "this method calls nothing".
+    if def_sites.is_empty() {
+        let defs = store
+            .count_method_defs_by_type(method)
+            .context("Failed to enumerate method definitions")?;
+        let candidates = defs_to_candidates(&defs, method);
+        return Ok(CalleesCoreOutput::Callees(CalleesOutput {
+            name,
+            calls: Vec::new(),
+            count: 0,
+            total: 0,
+            candidates,
+        }));
+    }
+
     let mut callees: Vec<CalleeInfo> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for origin in &origins {
+    for (origin, line) in &def_sites {
         let part = store
-            .get_callees_full(method, Some(origin))
+            .get_callees_full(method, Some(origin), Some(*line))
             .context("Failed to load callees")?;
         for c in part {
-            if seen.insert((c.name.clone(), c.line)) {
+            if seen.insert((origin.clone(), c.name.clone(), c.line)) {
                 callees.push(c);
             }
         }
@@ -824,14 +857,16 @@ fn print_candidate_lines(candidates: &[DefCandidate]) {
 }
 
 /// Render the caller total line, surfacing a clipped window: when the
-/// `--limit` cap dropped callers, the line reads `Showing N of M caller(s)
-/// (raise --limit to see more)` rather than a bare `Total: N` that hides the
+/// `--limit` cap dropped callers, the line reads `Showing N of M caller(s)`
+/// plus a paging hint, rather than a bare `Total: N` that hides the
 /// truncation. When nothing was dropped it stays `Total: M caller(s)`.
 fn print_caller_total(shown: usize, total: usize) {
     if total > shown {
         println!(
-            "Showing {} of {} caller(s) (raise --limit to see more)",
-            shown, total
+            "Showing {} of {} caller(s) ({})",
+            shown,
+            total,
+            paging_hint(total)
         );
     } else {
         println!("Total: {} caller(s)", total);
@@ -842,11 +877,28 @@ fn print_caller_total(shown: usize, total: usize) {
 fn print_callee_total(shown: usize, total: usize) {
     if total > shown {
         println!(
-            "Showing {} of {} call(s) (raise --limit to see more)",
-            shown, total
+            "Showing {} of {} call(s) ({})",
+            shown,
+            total,
+            paging_hint(total)
         );
     } else {
         println!("Total: {} call(s)", total);
+    }
+}
+
+/// The paging hint for a clipped window. `--limit` can only reach
+/// [`GRAPH_LIMIT_CAP`] entries, so once `total` exceeds the cap the bare
+/// "raise --limit" advice dead-ends — there's no `--limit` value that pages
+/// past it. In that case point at the working escape hatch instead: most of a
+/// hot name's tail is low-trust `doc_reference` edges, so
+/// `--edge-kind doc_reference` (or any other kind) narrows to a slice that fits
+/// under the cap.
+fn paging_hint(total: usize) -> &'static str {
+    if total > crate::cli::GRAPH_LIMIT_CAP {
+        "raise --limit, or narrow with --edge-kind (e.g. doc_reference) to page the rest"
+    } else {
+        "raise --limit to see more"
     }
 }
 
@@ -931,18 +983,29 @@ pub(crate) fn cmd_callees(
         CalleesCoreOutput::Callees(output) => {
             if json {
                 crate::cli::json_envelope::emit_json(&output)?;
+            } else if output.calls.is_empty() {
+                // An unknown qualifier (`Banana::search`) returns empty calls
+                // WITH candidates — the real owners. Mirror cmd_callers so the
+                // user sees the did-you-mean list instead of a bare "no calls".
+                if name.contains("::") && !output.candidates.is_empty() {
+                    println!("'{}' is not a known Type::method — did you mean:", name);
+                    print_candidate_lines(&output.candidates);
+                } else {
+                    println!("Functions called by '{}':", name.cyan());
+                    println!();
+                    println!("  (no function calls found)");
+                    println!();
+                    print_callee_total(output.count, output.total);
+                    print_candidates(&output.candidates);
+                }
             } else {
                 println!("Functions called by '{}':", name.cyan());
                 println!();
-                if output.calls.is_empty() {
-                    println!("  (no function calls found)");
-                } else {
-                    for callee in &output.calls {
-                        if callee.edge_kind.is_empty() {
-                            println!("  {}", callee.name);
-                        } else {
-                            println!("  {} [{}]", callee.name, callee.edge_kind.dimmed());
-                        }
+                for callee in &output.calls {
+                    if callee.edge_kind.is_empty() {
+                        println!("  {}", callee.name);
+                    } else {
+                        println!("  {} [{}]", callee.name, callee.edge_kind.dimmed());
                     }
                 }
                 println!();
@@ -1302,5 +1365,28 @@ mod tests {
         use cqs::store::CallerAttribution;
         assert_eq!(attribution_field(CallerAttribution::SelfType), "");
         assert_eq!(attribution_field(CallerAttribution::Ambiguous), "ambiguous");
+    }
+
+    // ----- Paging hint -----
+
+    /// A clipped window whose total fits under the cap advises `--limit`; a
+    /// window whose total EXCEEDS the cap (where `--limit` dead-ends, since it
+    /// clamps to `GRAPH_LIMIT_CAP`) advises the `--edge-kind` escape hatch
+    /// instead. Pinned so the hint can't silently regress to the dead-end
+    /// wording.
+    #[test]
+    fn paging_hint_switches_to_edge_kind_past_cap() {
+        // Below the cap: a larger --limit can still reach everything.
+        let under = paging_hint(crate::cli::GRAPH_LIMIT_CAP);
+        assert_eq!(under, "raise --limit to see more");
+        assert!(!under.contains("--edge-kind"));
+        // Above the cap: --limit can't page past GRAPH_LIMIT_CAP, so the hint
+        // points at --edge-kind filtering.
+        let over = paging_hint(crate::cli::GRAPH_LIMIT_CAP + 1);
+        assert!(
+            over.contains("--edge-kind"),
+            "past the cap, the hint must mention --edge-kind: {over:?}"
+        );
+        assert!(over.contains("doc_reference"));
     }
 }

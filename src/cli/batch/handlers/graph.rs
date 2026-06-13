@@ -1760,6 +1760,142 @@ mod tests {
         assert_eq!(daemon, core, "CLI==daemon parity for unknown qualifier");
     }
 
+    /// Callees mirror of the unknown-qualifier path: `cqs callees Banana::search`
+    /// (no `Banana` defines `search`) returns empty calls WITH the real owners
+    /// as candidates, rather than a bare "no calls". CLI==daemon agree.
+    #[test]
+    fn callees_unknown_qualifier_lists_real_owners_and_parity() {
+        let (_dir, ctx) = seed_type_method_ctx();
+        let args = CallersArgs {
+            name: "Banana::search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
+        assert_eq!(daemon["count"], 0, "no callees under a bogus qualifier");
+        assert!(
+            daemon["calls"].as_array().unwrap().is_empty(),
+            "calls empty: {daemon}"
+        );
+        let quals: Vec<&str> = daemon["candidates"]
+            .as_array()
+            .expect("unknown qualifier lists the real owners")
+            .iter()
+            .map(|c| c["qualified"].as_str().unwrap())
+            .collect();
+        assert!(quals.contains(&"Store::search"), "candidates: {quals:?}");
+        assert!(quals.contains(&"Index::search"), "candidates: {quals:?}");
+
+        let core_args = CoreCalleesArgs {
+            name: "Banana::search".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callees_core(&ctx.store(), &core_args).expect("callees_core"))
+                .unwrap();
+        assert_eq!(
+            daemon, core,
+            "CLI==daemon parity for callees unknown qualifier"
+        );
+    }
+
+    /// Two same-named methods sharing a file keep disjoint callees: a
+    /// `Store::build` (line 10) and a `StoreBuilder::build` (line 50) both in
+    /// `store.rs` each call a distinct helper. The line-scoped def resolution
+    /// must return only the queried type's callees, not the union — verified
+    /// end-to-end through `callees_core`, with CLI==daemon parity.
+    #[test]
+    fn callees_same_file_same_name_methods_stay_disjoint_and_parity() {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            store
+                .upsert_chunks_batch(
+                    &[
+                        (
+                            type_method_chunk("store.rs", "build", 10, Some("Store")),
+                            embedding.clone(),
+                        ),
+                        (
+                            type_method_chunk("store.rs", "build", 50, Some("StoreBuilder")),
+                            embedding.clone(),
+                        ),
+                    ],
+                    Some(0),
+                )
+                .expect("upsert chunks");
+            // Both defs live in store.rs; upsert_function_calls is per-file
+            // (DELETE-then-insert), so write both in one call.
+            store
+                .upsert_function_calls(
+                    Path::new("store.rs"),
+                    &[
+                        FunctionCalls {
+                            name: "build".to_string(),
+                            line_start: 10,
+                            calls: vec![CallSite {
+                                callee_name: "store_helper".to_string(),
+                                line_number: 11,
+                                kind: CallEdgeKind::Call,
+                            }],
+                        },
+                        FunctionCalls {
+                            name: "build".to_string(),
+                            line_start: 50,
+                            calls: vec![CallSite {
+                                callee_name: "builder_helper".to_string(),
+                                line_number: 51,
+                                kind: CallEdgeKind::Call,
+                            }],
+                        },
+                    ],
+                )
+                .expect("upsert edges");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+
+        let args = CallersArgs {
+            name: "Store::build".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+        };
+        let daemon = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
+        let calls: Vec<&str> = daemon["calls"]
+            .as_array()
+            .expect("calls array")
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            calls,
+            vec!["store_helper"],
+            "Store::build callees must exclude StoreBuilder::build's: {daemon}"
+        );
+
+        let core_args = CoreCalleesArgs {
+            name: "Store::build".into(),
+            limit: 10,
+            edge_kind: None,
+        };
+        let core =
+            serde_json::to_value(callees_core(&ctx.store(), &core_args).expect("callees_core"))
+                .unwrap();
+        assert_eq!(
+            daemon, core,
+            "CLI==daemon parity for same-file disjoint callees"
+        );
+    }
+
     /// `cqs callers Store::open` reaches the exact-qualified doc_reference
     /// edge (markdown stored callee_name "Store::open") alongside attributed
     /// code callers — through the daemon surface, with CLI==daemon parity.

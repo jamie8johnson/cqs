@@ -66,7 +66,7 @@ pub(crate) fn build_explain_data<Mode>(
     // Explain's surface doesn't carry edge_kind, so project CalleeInfo to the
     // (name, line) tuple shape its CalleeEntry expects.
     let chunk_file = chunk.file.to_string_lossy();
-    let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
+    let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file), None) {
         Ok(c) => c.into_iter().map(|ci| (ci.name, ci.line)).collect(),
         Err(e) => {
             tracing::warn!(error = %e, name = chunk.name, "Failed to get callees in explain");

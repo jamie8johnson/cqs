@@ -54,7 +54,7 @@ fn build_contrastive_prefix<Mode>(store: &Store<Mode>, chunk: &ChunkSummary) -> 
     let _span = tracing::debug_span!("build_contrastive_prefix", name = %chunk.name).entered();
 
     let callees = store
-        .get_callees_full(&chunk.name, None)
+        .get_callees_full(&chunk.name, None, None)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, name = %chunk.name, "Failed to get callees for contrastive");
             Vec::new()

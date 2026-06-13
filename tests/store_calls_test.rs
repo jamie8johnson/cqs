@@ -704,7 +704,7 @@ fn edge_kind_round_trips_through_function_calls() {
     assert_eq!(syn_callers[0].edge_kind, CallEdgeKind::Call);
 
     // Callee side: get_callees_full carries the kind too.
-    let callees = store.get_callees_full("caller_fn", None).unwrap();
+    let callees = store.get_callees_full("caller_fn", None, None).unwrap();
     let macro_callee = callees.iter().find(|c| c.name == "macro_callee").unwrap();
     assert_eq!(macro_callee.edge_kind, CallEdgeKind::MacroHeuristic);
 }
@@ -1402,10 +1402,11 @@ fn count_method_defs_groups_by_type() {
     assert!(types.contains("Index"));
 }
 
-/// `get_type_method_origins` resolves the file(s) defining `Type::method`,
-/// scoping the callees `Type::method` path.
+/// `get_type_method_def_sites` resolves the `(file, line_start)` site(s)
+/// defining `Type::method`, scoping the callees `Type::method` path to the
+/// exact definition.
 #[test]
-fn type_method_origins_resolve_def_file() {
+fn type_method_def_sites_resolve_def_file_and_line() {
     let store = TestStore::new();
     store
         .upsert_chunk(
@@ -1416,12 +1417,139 @@ fn type_method_origins_resolve_def_file() {
         .unwrap();
     store
         .upsert_chunk(
-            &method_chunk("index.rs", "search", 10, Some("Index")),
+            &method_chunk("index.rs", "search", 20, Some("Index")),
             &mock_embedding(1.0),
             Some(1),
         )
         .unwrap();
 
-    let origins = store.get_type_method_origins("Store", "search").unwrap();
-    assert_eq!(origins, vec!["store.rs".to_string()]);
+    let sites = store.get_type_method_def_sites("Store", "search").unwrap();
+    assert_eq!(sites, vec![("store.rs".to_string(), 10)]);
+}
+
+/// Two same-named methods sharing a file must keep disjoint callees
+/// under the line-scoped query. A `Store::build` (line 10) and a
+/// `StoreBuilder::build` (line 50) both in `store.rs` each call a distinct
+/// helper; without line scoping `(caller_name, file)` would merge both callee
+/// sets under either `build` query.
+#[test]
+fn callees_line_scope_separates_same_named_methods_in_one_file() {
+    use cqs::parser::FunctionCalls;
+    let store = TestStore::new();
+    // Both defs live in store.rs; `upsert_function_calls` is per-file
+    // (DELETE-then-insert), so write both in one call. Store::build at line 10
+    // calls `store_helper`; StoreBuilder::build at line 50 calls
+    // `builder_helper`.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("store.rs"),
+            &[
+                FunctionCalls {
+                    name: "build".to_string(),
+                    line_start: 10,
+                    calls: vec![CallSite {
+                        callee_name: "store_helper".to_string(),
+                        line_number: 11,
+                        kind: CallEdgeKind::Call,
+                    }],
+                },
+                FunctionCalls {
+                    name: "build".to_string(),
+                    line_start: 50,
+                    calls: vec![CallSite {
+                        callee_name: "builder_helper".to_string(),
+                        line_number: 51,
+                        kind: CallEdgeKind::Call,
+                    }],
+                },
+            ],
+        )
+        .unwrap();
+
+    // Line-scoped: each def sees only its own callee.
+    let store_callees = store
+        .get_callees_full("build", Some("store.rs"), Some(10))
+        .unwrap();
+    let store_names: Vec<&str> = store_callees.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(store_names, vec!["store_helper"], "Store::build callees");
+
+    let builder_callees = store
+        .get_callees_full("build", Some("store.rs"), Some(50))
+        .unwrap();
+    let builder_names: Vec<&str> = builder_callees.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        builder_names,
+        vec!["builder_helper"],
+        "StoreBuilder::build callees"
+    );
+
+    // File-scoped (no line): the old behaviour merges both — the regression the
+    // line scope fixes.
+    let merged = store
+        .get_callees_full("build", Some("store.rs"), None)
+        .unwrap();
+    assert_eq!(merged.len(), 2, "without line scope the two defs merge");
+}
+
+/// A doc chunk mentioning both `` `open()` `` and
+/// `` `Store::open()` `` yields a bare and an exact-qualified edge at the same
+/// `(file, caller_name, caller_line)`. They tie on trust rank (both
+/// `doc_reference`), so the GROUP BY collapse must pick the exact edge
+/// deterministically — otherwise the SelfType-vs-ambiguous label wobbles
+/// between runs. The qualified tiebreaker pins it to SelfType.
+#[test]
+fn attributed_callers_tied_doc_label_is_deterministic() {
+    use cqs::parser::FunctionCalls;
+    let store = TestStore::new();
+    // Store::open is defined in store.rs (so the bare arm participates and the
+    // unqualified `open` edge would otherwise be attributed by parent_type —
+    // here the doc chunk has no enclosing Store, so bare ⇒ Ambiguous).
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "open", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    // One doc chunk, one caller_line, BOTH a bare `open` and an exact
+    // `Store::open` doc_reference edge — the tied-rank collapse case.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("docs.md"),
+            &[FunctionCalls {
+                name: "Usage".to_string(),
+                line_start: 1,
+                calls: vec![
+                    CallSite {
+                        callee_name: "open".to_string(),
+                        line_number: 5,
+                        kind: CallEdgeKind::DocReference,
+                    },
+                    CallSite {
+                        callee_name: "Store::open".to_string(),
+                        line_number: 5,
+                        kind: CallEdgeKind::DocReference,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+    let others = std::collections::HashSet::new();
+    // Run repeatedly: the collapsed label must be SelfType every time (the
+    // exact-qualified edge wins the tie), never the bare-arm Ambiguous.
+    for _ in 0..8 {
+        let (attributed, _excluded) = store
+            .get_callers_attributed("open", "Store", &others, true)
+            .unwrap();
+        let usage = attributed
+            .iter()
+            .find(|a| a.caller.name == "Usage")
+            .expect("the doc caller is present");
+        assert_eq!(
+            usage.attribution,
+            CallerAttribution::SelfType,
+            "exact-qualified edge wins the tie ⇒ stable SelfType label"
+        );
+    }
 }

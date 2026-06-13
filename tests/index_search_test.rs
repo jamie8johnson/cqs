@@ -138,7 +138,7 @@ fn callees_returns_data_for_caller() {
     )]);
     let callees = f
         .store
-        .get_callees_full("outer", None)
+        .get_callees_full("outer", None, None)
         .expect("get_callees_full");
     let names: Vec<&str> = callees.iter().map(|c| c.name.as_str()).collect();
     assert!(
