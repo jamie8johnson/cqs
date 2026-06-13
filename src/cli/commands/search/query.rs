@@ -123,6 +123,14 @@ pub(crate) struct QueryArgs {
     /// text surface drops it regardless. Recording is a side channel — it never
     /// changes scores or order.
     pub record_rank_signals: bool,
+    /// The caller requested the worktree search overlay (`--overlay` flag OR
+    /// `CQS_WORKTREE_OVERLAY=1`), resolved at the adapter boundary like
+    /// `force_base_index`. Off by default. The core itself never reads env; this
+    /// flag is what the daemon's `BatchView::overlay()` (PR-3) consults to decide
+    /// whether to build+merge an overlay, and what the CLI-direct adapter
+    /// (`cmd_query`) uses to detect overlay-eligibility for the honest-degradation
+    /// warn + `_meta.worktree_overlay = "skipped-no-daemon"`.
+    pub overlay: bool,
 }
 
 impl Default for QueryArgs {
@@ -157,8 +165,17 @@ impl Default for QueryArgs {
             // Recording on by default — JSON consumers get provenance unless
             // they opt out; the cost is a post-pass over the final result set.
             record_rank_signals: true,
+            // Overlay off by default; opt-in via `--overlay` / env.
+            overlay: false,
         }
     }
+}
+
+/// `true` when `CQS_WORKTREE_OVERLAY=1` requests the worktree overlay. The
+/// env-var equivalent of `--overlay`, resolved at the adapter boundary (like
+/// `CQS_FORCE_BASE_INDEX`) so the surface-agnostic core never reads env.
+pub(crate) fn overlay_env_requested() -> bool {
+    std::env::var("CQS_WORKTREE_OVERLAY").as_deref() == Ok("1")
 }
 
 impl QueryArgs {
@@ -199,6 +216,9 @@ impl QueryArgs {
             // governs the (cheap) recording post-pass; it matches the wire/MCP
             // default and keeps `from_cli == QueryArgs::default`.
             record_rank_signals: !cli.no_rank_signals,
+            // Flag OR env, resolved once here at the adapter boundary like
+            // `force_base_index`.
+            overlay: cli.overlay || overlay_env_requested(),
         }
     }
 
@@ -390,12 +410,18 @@ pub(crate) fn prepare_query<'a>(
     let store = ctx.store();
     let cqs_dir = ctx.cqs_dir();
 
-    // Name-only path: FTS by name, skip embedding entirely.
+    // Name-only path: FTS by name, skip embedding entirely. With an overlay,
+    // mask the delta's parent name hits and merge the overlay store's name
+    // hits in their place (plan §7.3). The `--name-only` flag has no dense
+    // fallback, so this short-circuits unconditionally — including the
+    // all-masked, no-overlay-hit empty case (correct: a name deleted from a
+    // changed file is genuinely absent from the worktree).
     if args.name_only {
-        let results = store
+        let parent = store
             .search_by_name(query, args.limit)
             .context("Failed to search by name")?;
-        let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
+        let merged = overlay_mask_name_results(ctx.overlay().as_deref(), parent, query, args)?;
+        let unified: Vec<UnifiedResult> = merged.into_iter().map(UnifiedResult::Code).collect();
         return Ok(Prepared::ShortCircuit(unified));
     }
 
@@ -428,7 +454,13 @@ pub(crate) fn prepare_query<'a>(
     // NameOnly-classified queries.
     if let Some(ref c) = classification {
         if args.fts_first && c.strategy == cqs::search::router::SearchStrategy::NameOnly {
-            let results = store.search_by_name(query, args.limit)?;
+            let parent = store.search_by_name(query, args.limit)?;
+            // CRITICAL ORDERING (plan §7.3): mask the overlay's delta hits
+            // BEFORE the `is_empty()` check. An FTS hit set that is entirely
+            // masked (every match lives in a changed file) must fall through to
+            // the dense path — where the overlay leg can still answer — rather
+            // than short-circuiting to an empty result.
+            let results = overlay_mask_name_results(ctx.overlay().as_deref(), parent, query, args)?;
             if !results.is_empty() {
                 tracing::info!(results = results.len(), "NameOnly search succeeded");
                 crate::cli::telemetry::log_routed(
@@ -656,6 +688,19 @@ pub(crate) fn retrieve_project(
     let query = args.query.as_str();
     let store = ctx.store();
 
+    // Worktree overlay (result-trust §3). When present, the project search
+    // over-fetches 2x and the final merge truncates back to `args.limit` —
+    // masking the delta's parent hits can hollow out the top-k, so the
+    // headroom keeps the post-mask result count at full strength (the same
+    // under-fill rationale `search_reference`'s `apply_weight` over-fetch
+    // uses, `reference.rs:257-267`).
+    let overlay = ctx.overlay();
+    let post_limit = if overlay.is_some() {
+        args.limit.saturating_mul(2).max(args.limit)
+    } else {
+        args.limit
+    };
+
     let results = run_project_search(store, args, prepared)?;
 
     // Pattern filter.
@@ -674,20 +719,171 @@ pub(crate) fn retrieve_project(
                 }
             })
             .collect();
-        filtered.truncate(args.limit);
+        filtered.truncate(post_limit);
         filtered
     } else {
         results
     };
 
-    // Cross-encoder re-ranking.
+    // Cross-encoder re-ranking. Note: overlay hits are NOT cross-encoded in
+    // phase 1 (the `--include-refs` + `--rerank` precedent — only the project
+    // half reranks); the overlay merge below layers raw-scored overlay hits on
+    // top of the reranked project pool.
     let results = if let Some(reranker) = prepared.reranker.as_deref() {
-        rerank_unified(reranker, query, results, args.limit)?
+        rerank_unified(reranker, query, results, post_limit)?
     } else {
         results
     };
 
+    // Overlay merge: mask the delta's parent hits, fan out over the overlay
+    // store, and merge the overlay leg in their place (truncating to
+    // `args.limit`). Inactive ⇒ this is a no-op returning `results` unchanged
+    // (the byte-identical-when-inactive regression fence, plan test #14).
+    let results = match overlay {
+        Some(ov) => apply_overlay(args, prepared, results, &ov)?,
+        None => results,
+    };
+
     Ok(results)
+}
+
+/// FTS short-circuit overlay merge (plan §7.3): mask the overlay's delta hits
+/// out of a `search_by_name` parent result set and merge the overlay store's
+/// own name hits in their place.
+///
+/// `overlay = None` ⇒ returns `parent` unchanged (the byte-identical-when-
+/// inactive contract — the name-only / NameOnly-FTS paths see no behavior change
+/// without an overlay). `Some(ov)` ⇒ origin-level mask, then `search_by_name`
+/// against the overlay store, then merge by score (highest first, id tiebreak)
+/// and truncate to `args.limit`. Sets the `Active` envelope meta whenever an
+/// overlay was applied — including the all-masked, no-overlay-hit empty case,
+/// since the overlay still shaped (emptied) the answer.
+///
+/// The caller decides what to do with an empty merged set: `--name-only`
+/// short-circuits on it (no dense fallback); the NameOnly-classified path falls
+/// through to dense (the mask must run *before* its `is_empty` check).
+fn overlay_mask_name_results(
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
+    parent: Vec<cqs::store::SearchResult>,
+    query: &str,
+    args: &QueryArgs,
+) -> Result<Vec<cqs::store::SearchResult>> {
+    let Some(ov) = overlay else {
+        return Ok(parent);
+    };
+    let _span = tracing::info_span!(
+        "overlay_mask_name_results",
+        masked = ov.masked_origins.len()
+    )
+    .entered();
+
+    // Mask: drop parent name hits whose origin is in the delta.
+    let mut merged: Vec<cqs::store::SearchResult> = parent
+        .into_iter()
+        .filter(|sr| !ov.masked_origins.contains(&sr.chunk.file))
+        .collect();
+
+    // Overlay name hits (best-effort: a failure leaves the masked parent set).
+    match ov.store.search_by_name(query, args.limit) {
+        Ok(hits) => merged.extend(hits),
+        Err(e) => {
+            tracing::warn!(error = %e, "overlay search_by_name failed; serving masked parent name hits only");
+        }
+    }
+
+    // Merge by score (highest first), id tiebreak — same ordering
+    // `merge_results` uses for the dense path. Truncate to the requested limit.
+    merged.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.chunk.id.cmp(&b.chunk.id))
+    });
+    merged.truncate(args.limit);
+
+    cqs::worktree_overlay::set_overlay_meta(cqs::worktree_overlay::OverlayMeta::Active {
+        files: ov.stats.files_in_delta,
+        chunks: ov.stats.chunks_indexed,
+    });
+
+    Ok(merged)
+}
+
+/// Merge a [`WorktreeOverlay`] into already-retrieved project results
+/// (result-trust §3, plan §7.2). Origin-level masking + overlay fan-out +
+/// merge, in three steps:
+///
+/// 1. **Mask**: drop every project result whose `chunk.file` is in the
+///    overlay's `masked_origins`. This is unconditional and name-agnostic —
+///    a function deleted from a still-present file (its origin is in the delta
+///    but no overlay chunk shares its name) is correctly dropped, where
+///    `(origin, name)` shadowing would resurrect it (plan §4 test #1).
+/// 2. **Fan out**: search the overlay store with the *same* prepared query
+///    embedding + filter at `args.threshold` / `args.limit`, brute-force
+///    (`index = None` — a few hundred chunks).
+/// 3. **Merge**: reuse [`reference::merge_results`] with the overlay hits as a
+///    `"worktree"` leg (weight 1.0, no `apply_weight` demotion — the worktree
+///    *is* the project, not an external reference), then fold the
+///    `TaggedResult`s back to `Vec<UnifiedResult>` and truncate to `args.limit`.
+///
+/// Records the `_meta.worktree_overlay` outcome (`Active { files, chunks }`)
+/// for the JSON envelope.
+pub(crate) fn apply_overlay(
+    args: &QueryArgs,
+    prepared: &PreparedQuery<'_>,
+    project_results: Vec<UnifiedResult>,
+    overlay: &cqs::worktree_overlay::WorktreeOverlay,
+) -> Result<Vec<UnifiedResult>> {
+    let _span = tracing::info_span!(
+        "apply_overlay",
+        masked = overlay.masked_origins.len(),
+        chunks = overlay.stats.chunks_indexed
+    )
+    .entered();
+
+    // 1. Mask: drop project hits whose origin is in the delta. Origin-level,
+    //    name-agnostic (plan correction #1).
+    let masked: Vec<UnifiedResult> = project_results
+        .into_iter()
+        .filter(|r| match r {
+            UnifiedResult::Code(sr) => !overlay.masked_origins.contains(&sr.chunk.file),
+        })
+        .collect();
+
+    // 2. Fan out over the overlay store with the same prepared query. Brute
+    //    force (`index = None`): the overlay holds at most a few hundred chunks.
+    let overlay_hits = match overlay.store.search_filtered_with_index(
+        &prepared.query_embedding,
+        &prepared.filter,
+        args.limit,
+        args.threshold,
+        None,
+    ) {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::warn!(error = %e, "overlay store search failed; serving masked project results only");
+            Vec::new()
+        }
+    };
+
+    // 3. Merge: overlay hits as a `"worktree"` leg, weight 1.0, no demotion.
+    //    `merge_results` sorts by score, dedups by content hash, truncates.
+    let leg = if overlay_hits.is_empty() {
+        Vec::new()
+    } else {
+        vec![("worktree".to_string(), overlay_hits)]
+    };
+    let merged = reference::merge_results(masked, leg, args.limit);
+
+    // Record the envelope outcome before folding back.
+    cqs::worktree_overlay::set_overlay_meta(cqs::worktree_overlay::OverlayMeta::Active {
+        files: overlay.stats.files_in_delta,
+        chunks: overlay.stats.chunks_indexed,
+    });
+
+    // Fold `TaggedResult` back to `Vec<UnifiedResult>` (the overlay is the
+    // project, so the `"worktree"` source tag is dropped — these are project
+    // results, not reference results).
+    Ok(merged.into_iter().map(|t| t.result).collect())
 }
 
 /// The project-store dense/hybrid retrieval call itself, with no post-filtering.
@@ -956,6 +1152,30 @@ pub(crate) fn cmd_query(
     let cli = ctx.cli;
     let store = &ctx.store;
     let root = &ctx.root;
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Reset
+    // any per-thread overlay meta left over from a prior in-process search
+    // (chat REPL / batch stdin), then — when an overlay was requested for an
+    // eligible worktree but we reached the in-process CLI path (no daemon
+    // answered; phase 1 builds overlays daemon-side only) — warn and mark the
+    // envelope so the agent knows results reflect the parent index, not the
+    // worktree. The CLI `SearchCtx::overlay()` returns `None`, so no overlay
+    // merge happens here; this is purely the honest-skip signal.
+    cqs::worktree_overlay::clear_overlay_meta();
+    if cli.overlay || overlay_env_requested() {
+        let eligible = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root))
+            .is_some();
+        if eligible {
+            tracing::warn!(
+                "overlay skipped: daemon not running (results reflect the parent index)"
+            );
+            cqs::worktree_overlay::set_overlay_meta(
+                cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon,
+            );
+        }
+    }
 
     // Name-only mode: search by function/struct name, skip embedding entirely.
     if cli.name_only {
@@ -1703,5 +1923,404 @@ mod tests {
         assert!(out.results.is_empty());
         assert_eq!(out.query, "nothing");
         assert!(out.token_info.is_none());
+    }
+
+    // ─── Worktree-overlay mask + merge logic (result-trust §3, plan §7) ──────
+    //
+    // Pure mask/merge tests over hand-built `SearchResult` fixtures and a
+    // seeded in-memory overlay store. No embedder/ONNX load (the overlay store
+    // is seeded with explicit embedding vectors), so these run in the default
+    // test set rather than behind `slow-tests`. The full daemon-driven
+    // end-to-end overlay path (real git fixture + real embedder) is PR-3.
+    mod overlay_merge {
+        use super::*;
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        use cqs::parser::{Chunk, ChunkType, Language};
+        use cqs::store::{ChunkSummary, ModelInfo, SearchResult, Store};
+        use cqs::worktree_overlay::{OverlayMeta, OverlayStats, WorktreeOverlay};
+        use cqs::{Embedding, SearchFilter};
+
+        /// One-hot embedding with `1.0` at `slot`, dim `EMBEDDING_DIM`. Two
+        /// distinct slots are near-orthogonal, so a query at `slot` retrieves
+        /// only the chunk seeded at that slot from the brute-force store.
+        fn one_hot(slot: usize) -> Embedding {
+            let mut v = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            v[slot] = 1.0;
+            Embedding::new(v)
+        }
+
+        /// A project-side `SearchResult` for `(file, name, score)` with a unique
+        /// id, content hash derived from the name so the merge dedup is
+        /// predictable.
+        fn project_result(file: &str, name: &str, score: f32) -> SearchResult {
+            let summary = ChunkSummary {
+                id: format!("{file}:{name}"),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 2,
+                content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                window_idx: None,
+                parent_id: None,
+                parent_type_name: None,
+                parser_version: 0,
+                vendored: false,
+            };
+            SearchResult::new(summary, score)
+        }
+
+        /// Build a `WorktreeOverlay` whose in-memory store holds one chunk per
+        /// `(file, name, slot)` triple (seeded with `one_hot(slot)`), and whose
+        /// `masked_origins` is exactly `masked`. `chunks_indexed`/`files_in_delta`
+        /// stats are filled so `apply_overlay`'s `_meta` is exercised.
+        fn overlay_with(seeds: &[(&str, &str, usize)], masked: &[&str]) -> WorktreeOverlay {
+            let mut store = Store::open_memory().expect("open_memory");
+            store
+                .init(&ModelInfo::default())
+                .expect("init overlay store");
+            store.set_dim(cqs::EMBEDDING_DIM);
+
+            for (file, name, slot) in seeds {
+                let chunk = Chunk {
+                    id: format!("{file}:{name}"),
+                    file: PathBuf::from(file),
+                    language: Language::Rust,
+                    chunk_type: ChunkType::Function,
+                    name: name.to_string(),
+                    signature: format!("fn {name}()"),
+                    content: format!("fn {name}() {{}}"),
+                    doc: None,
+                    line_start: 1,
+                    line_end: 2,
+                    content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                    canonical_hash: String::new(),
+                    parent_id: None,
+                    window_idx: None,
+                    parent_type_name: None,
+                    parser_version: 0,
+                };
+                store
+                    .upsert_chunks_batch(&[(chunk, one_hot(*slot))], Some(0))
+                    .expect("seed overlay chunk");
+            }
+
+            let masked_origins: HashSet<PathBuf> = masked.iter().map(PathBuf::from).collect();
+            WorktreeOverlay {
+                store,
+                masked_origins,
+                fingerprint: [0u8; 32],
+                worktree_root: PathBuf::from("/wt"),
+                stats: OverlayStats {
+                    files_in_delta: masked.len(),
+                    chunks_indexed: seeds.len(),
+                    build_ms: 0,
+                },
+            }
+        }
+
+        /// A `PreparedQuery` carrying `emb` + a default filter and nothing else
+        /// (no SPLADE, no index, no reranker) — exactly what `apply_overlay`
+        /// reads (`query_embedding`, `filter`).
+        fn prepared_with(emb: Embedding) -> PreparedQuery<'static> {
+            PreparedQuery {
+                query_embedding: emb,
+                filter: SearchFilter::default(),
+                splade_query: None,
+                splade_index: None,
+                index: None,
+                audit_mode: cqs::audit::AuditMode::default(),
+                search_limit: 10,
+                reranker: None,
+            }
+        }
+
+        fn args_limit(limit: usize) -> QueryArgs {
+            QueryArgs {
+                limit,
+                threshold: 0.0,
+                ..QueryArgs::default()
+            }
+        }
+
+        fn names(results: &[UnifiedResult]) -> Vec<String> {
+            results
+                .iter()
+                .map(|r| {
+                    let UnifiedResult::Code(sr) = r;
+                    sr.chunk.name.clone()
+                })
+                .collect()
+        }
+
+        fn files(results: &[UnifiedResult]) -> Vec<String> {
+            results
+                .iter()
+                .map(|r| {
+                    let UnifiedResult::Code(sr) = r;
+                    sr.chunk.file.to_string_lossy().into_owned()
+                })
+                .collect()
+        }
+
+        // ── Test #1: the adversarial origin-level-masking falsifier ──────────
+        //
+        // A function `dead_fn` was deleted from `src/a.rs` (still present in the
+        // worktree, but `dead_fn` is gone). The origin is in the delta; no
+        // overlay chunk shares the name. Origin-level masking drops the parent
+        // `dead_fn` hit unconditionally — an `(origin, name)` implementation
+        // would let it survive (no overlay counterpart to shadow it).
+        #[test]
+        fn overlay_masks_dead_function_in_modified_file() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/a.rs is in the delta; the overlay re-indexed only `live_fn`
+            // (the surviving function). `dead_fn` has no overlay chunk.
+            let overlay = overlay_with(&[("src/a.rs", "live_fn", 0)], &["src/a.rs"]);
+            let project = vec![
+                UnifiedResult::Code(project_result("src/a.rs", "dead_fn", 0.9)),
+                UnifiedResult::Code(project_result("src/b.rs", "untouched", 0.5)),
+            ];
+            // Query the slot that retrieves nothing from the overlay (so the
+            // overlay leg is empty and can't itself reintroduce `dead_fn`).
+            let prepared = prepared_with(one_hot(5));
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                !got.contains(&"dead_fn".to_string()),
+                "dead function in a modified file must be masked (origin-level, \
+                 not (origin,name)); got {got:?}"
+            );
+            assert!(
+                got.contains(&"untouched".to_string()),
+                "a hit from an unchanged origin survives the mask; got {got:?}"
+            );
+        }
+
+        // ── #2/#3: rename within a file — old name masked, new name from overlay
+        #[test]
+        fn overlay_rename_within_file_surfaces_new_name() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/a.rs changed: `old_name` → `new_name`. Overlay indexed
+            // `new_name` at slot 3; query at slot 3 retrieves it.
+            let overlay = overlay_with(&[("src/a.rs", "new_name", 3)], &["src/a.rs"]);
+            let project = vec![UnifiedResult::Code(project_result(
+                "src/a.rs", "old_name", 0.9,
+            ))];
+            let prepared = prepared_with(one_hot(3));
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                !got.contains(&"old_name".to_string()),
+                "the renamed-away name is masked; got {got:?}"
+            );
+            assert!(
+                got.contains(&"new_name".to_string()),
+                "the overlay's new name is returned; got {got:?}"
+            );
+        }
+
+        // ── #4: a fully-deleted file contributes zero overlay chunks, all masked
+        #[test]
+        fn overlay_deleted_file_fully_masked() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/gone.rs deleted: masked, no overlay chunk.
+            let overlay = overlay_with(&[], &["src/gone.rs"]);
+            let project = vec![
+                UnifiedResult::Code(project_result("src/gone.rs", "ghost", 0.9)),
+                UnifiedResult::Code(project_result("src/keep.rs", "kept", 0.4)),
+            ];
+            let prepared = prepared_with(one_hot(7));
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            assert_eq!(
+                names(&out),
+                vec!["kept".to_string()],
+                "all hits from the deleted origin are masked; the rest survive"
+            );
+        }
+
+        // ── #6: a new (untracked/added) worktree file is searchable and ranks
+        //        alongside parent results.
+        #[test]
+        fn overlay_new_file_searchable() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/new.rs is worktree-only: indexed in the overlay at slot 2,
+            // masked (harmless — parent has no such origin).
+            let overlay = overlay_with(&[("src/new.rs", "brand_new", 2)], &["src/new.rs"]);
+            let project = vec![UnifiedResult::Code(project_result(
+                "src/old.rs",
+                "existing",
+                0.6,
+            ))];
+            let prepared = prepared_with(one_hot(2));
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                got.contains(&"brand_new".to_string()),
+                "the worktree-only file is searchable; got {got:?}"
+            );
+            assert!(
+                got.contains(&"existing".to_string()),
+                "the unchanged parent hit still ranks; got {got:?}"
+            );
+        }
+
+        // ── #12: an unchanged-content chunk inside a changed file yields exactly
+        //         one hit (the overlay's), no duplicate from the parent.
+        #[test]
+        fn overlay_unchanged_chunk_in_changed_file_not_duplicated() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // src/a.rs changed; `stable` is byte-identical in both. Parent has
+            // it; overlay re-indexed it (same content_hash, since the helper
+            // hashes the name). Mask drops the parent copy; merge_results dedup
+            // would also fire if both reached the merge — only one survives.
+            let overlay = overlay_with(&[("src/a.rs", "stable", 4)], &["src/a.rs"]);
+            let project = vec![UnifiedResult::Code(project_result(
+                "src/a.rs", "stable", 0.8,
+            ))];
+            let prepared = prepared_with(one_hot(4));
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let stable_count = names(&out).iter().filter(|n| *n == "stable").count();
+            assert_eq!(
+                stable_count, 1,
+                "exactly one `stable` hit (the overlay's), no parent duplicate"
+            );
+            // And it comes from the overlay store (parent copy was masked).
+            assert_eq!(files(&out), vec!["src/a.rs".to_string()]);
+        }
+
+        // ── Under-fill: masking can hollow the top-k; the merge still fills from
+        //    the overlay + unchanged parent hits up to `limit`.
+        #[test]
+        fn overlay_active_records_meta() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            let overlay = overlay_with(&[("src/a.rs", "live", 1)], &["src/a.rs"]);
+            let project = vec![UnifiedResult::Code(project_result("src/a.rs", "dead", 0.9))];
+            let prepared = prepared_with(one_hot(1));
+            let _ = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let meta = cqs::worktree_overlay::take_overlay_meta();
+            assert_eq!(
+                meta,
+                Some(OverlayMeta::Active {
+                    files: 1,
+                    chunks: 1
+                }),
+                "apply_overlay records the Active envelope meta"
+            );
+        }
+
+        // ── FTS short-circuit masking (plan §7.3) ─────────────────────────────
+
+        // `overlay = None` ⇒ name results pass through byte-identical (the
+        // inactive regression fence for the name path).
+        #[test]
+        fn name_mask_none_overlay_is_identity() {
+            let parent = vec![
+                project_result("src/a.rs", "foo", 0.9),
+                project_result("src/b.rs", "bar", 0.5),
+            ];
+            let before = parent.clone();
+            let out = overlay_mask_name_results(None, parent, "foo", &args_limit(10)).unwrap();
+            assert_eq!(out.len(), before.len());
+            for (a, b) in out.iter().zip(before.iter()) {
+                assert_eq!(a.chunk.id, b.chunk.id);
+                assert_eq!(a.score, b.score);
+            }
+            // No overlay ⇒ no meta recorded.
+            assert!(cqs::worktree_overlay::take_overlay_meta().is_none());
+        }
+
+        // A name hit whose origin is in the delta is masked; the overlay's own
+        // name hit replaces it. Mirrors test #1 on the FTS path.
+        #[test]
+        fn name_mask_drops_delta_origin_keeps_overlay_hit() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // Overlay store holds `target` in the changed file; `search_by_name`
+            // against it finds the overlay copy.
+            let overlay = overlay_with(&[("src/a.rs", "target", 0)], &["src/a.rs"]);
+            let parent = vec![
+                // Parent's stale `target` in the changed file — must be masked.
+                project_result("src/a.rs", "target", 0.9),
+                // Unchanged file — survives.
+                project_result("src/b.rs", "target", 0.4),
+            ];
+            let out = overlay_mask_name_results(Some(&overlay), parent, "target", &args_limit(10))
+                .unwrap();
+            let origins = files(
+                &out.iter()
+                    .cloned()
+                    .map(UnifiedResult::Code)
+                    .collect::<Vec<_>>(),
+            );
+            // The parent src/a.rs copy is masked; the overlay's src/a.rs copy and
+            // the unchanged src/b.rs copy remain. Both origins present, but the
+            // src/a.rs hit is the overlay's (parent's was dropped pre-merge).
+            assert!(origins.contains(&"src/b.rs".to_string()));
+            assert!(origins.contains(&"src/a.rs".to_string()));
+            // Exactly two hits: dedup by content_hash collapses the two
+            // identical-name src/a.rs `target`s? No — parent's was masked before
+            // the overlay hit was added, so there is exactly one src/a.rs hit.
+            let a_count = origins.iter().filter(|o| *o == "src/a.rs").count();
+            assert_eq!(
+                a_count, 1,
+                "one src/a.rs hit (the overlay's); got {origins:?}"
+            );
+            assert_eq!(
+                cqs::worktree_overlay::take_overlay_meta(),
+                Some(OverlayMeta::Active {
+                    files: 1,
+                    chunks: 1
+                })
+            );
+        }
+
+        // All-masked, no-overlay-hit ⇒ empty result. (The caller — `--name-only`
+        // — short-circuits on this; the NameOnly-classified path falls through
+        // to dense. The helper just returns the empty masked set.)
+        #[test]
+        fn name_mask_all_masked_no_overlay_hit_is_empty() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // Overlay masks src/a.rs but holds NO `vanished` chunk.
+            let overlay = overlay_with(&[("src/a.rs", "other", 0)], &["src/a.rs"]);
+            let parent = vec![project_result("src/a.rs", "vanished", 0.9)];
+            let out =
+                overlay_mask_name_results(Some(&overlay), parent, "vanished", &args_limit(10))
+                    .unwrap();
+            assert!(
+                out.is_empty(),
+                "a name that only lived in a changed file, gone from the overlay, \
+                 yields no hit; got {:?}",
+                out.iter().map(|r| r.chunk.name.clone()).collect::<Vec<_>>()
+            );
+        }
+
+        // ── OverlayMeta wire shapes (plan §7.5) ──────────────────────────────
+        #[test]
+        fn overlay_meta_active_is_files_chunks_object() {
+            let v = OverlayMeta::Active {
+                files: 3,
+                chunks: 7,
+            }
+            .to_json();
+            assert_eq!(v["files"], 3);
+            assert_eq!(v["chunks"], 7);
+        }
+
+        #[test]
+        fn overlay_meta_skip_shapes_are_strings() {
+            assert_eq!(
+                OverlayMeta::SkippedNoDaemon.to_json(),
+                serde_json::Value::String("skipped-no-daemon".into())
+            );
+            assert_eq!(
+                OverlayMeta::SkippedDeltaTooLarge.to_json(),
+                serde_json::Value::String("skipped-delta-too-large".into())
+            );
+        }
     }
 }

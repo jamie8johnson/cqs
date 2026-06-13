@@ -135,6 +135,21 @@ pub(crate) trait SearchCtx {
     /// name through its own path (the CLI re-reads config, the daemon hits its
     /// LRU).
     fn reference_by_name(&self, name: &str) -> Result<Arc<ReferenceIndex>>;
+
+    /// The worktree search overlay to shadow the project store with, if any
+    /// (result-trust §3). `Some` only when the surface both supports building
+    /// an overlay AND the caller requested one for an eligible worktree.
+    ///
+    /// Default `None`: the plain single-store path never overlays, and the CLI
+    /// surface returns `None` in phase 1 (overlays build only on the daemon
+    /// path, which resolves+caches them per worktree root — see PR-3). The
+    /// eligibility detection + CLI-direct degradation warn live in the
+    /// `cmd_query` adapter, not here. `query.rs::apply_overlay` consumes this:
+    /// it masks project hits whose origin is in the overlay's delta and merges
+    /// the overlay store's hits in their place.
+    fn overlay(&self) -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
+        None
+    }
 }
 
 // ─── CLI adapter ────────────────────────────────────────────────────────────

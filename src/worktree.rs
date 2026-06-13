@@ -308,13 +308,23 @@ pub fn overlay_root(cwd: &Path, resolved_root: &Path) -> Option<PathBuf> {
     // `NotWorktree`. Walking up to the `.git`-bearing root makes the
     // predicate fire from anywhere inside the worktree.
     let probe = enclosing_git_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    if let MainIndexLookup::WorktreeUseMain { worktree_root, .. } = lookup_main_cqs_dir(&probe) {
-        // Guard: the redirect target must actually differ from the
-        // worktree itself (a regular repo never reaches WorktreeUseMain,
-        // but canonicalize resolved_root for a like-for-like compare).
-        let resolved =
-            dunce::canonicalize(resolved_root).unwrap_or_else(|_| resolved_root.to_path_buf());
-        if worktree_root != resolved {
+    if let MainIndexLookup::WorktreeUseMain {
+        worktree_root,
+        main_root,
+        ..
+    } = lookup_main_cqs_dir(&probe)
+    {
+        // Guard: the redirect target must actually differ from the worktree
+        // itself. Compare against the lookup's own `main_root` (the redirect
+        // target it resolved), NOT the passed `resolved_root`: the CLI's
+        // `find_project_root()` returns the WORKTREE root for a redirected
+        // worktree (the index dir is redirected, the project root is not), so
+        // `resolved_root == worktree_root` here and comparing against it would
+        // wrongly reject every out-of-tree worktree. A regular repo never
+        // reaches this arm (it returns `OwnIndex` above), so `worktree_root !=
+        // main_root` holds exactly when there is a genuine parent index to
+        // overlay onto.
+        if worktree_root != main_root {
             return Some(worktree_root);
         }
     }

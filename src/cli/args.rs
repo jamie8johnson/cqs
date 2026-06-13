@@ -219,6 +219,15 @@ pub(crate) struct SearchArgs {
     /// (saves tokens on tight-budget calls). The text surface never emits it.
     #[arg(long)]
     pub no_rank_signals: bool,
+
+    /// Overlay the worktree's uncommitted/committed delta on top of the parent
+    /// index so results reflect this checkout's edits, not main's. Off by
+    /// default; `CQS_WORKTREE_OVERLAY=1` is the env-var equivalent. Phase 1
+    /// builds overlays on the daemon path only — a CLI-direct search (no daemon)
+    /// degrades honestly, serving the parent index with a `_meta.worktree_overlay
+    /// = "skipped-no-daemon"` marker. Requires `--json` to forward to the daemon.
+    #[arg(long)]
+    pub overlay: bool,
 }
 
 impl SearchArgs {
