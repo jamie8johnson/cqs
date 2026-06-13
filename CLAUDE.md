@@ -140,6 +140,17 @@ Run `cqs --help` for all commands. Key commands: `search`, `impact`, `scout`, `g
 
 Run `cqs watch --serve` to keep the index fresh AND serve daemon queries (3-19ms vs 2s CLI startup). The systemd service already uses `--serve`. CLI commands auto-connect to the daemon when available; set `CQS_NO_DAEMON=1` to force CLI mode.
 
+### Result trust — what you can act on without re-reading (result-trust program, #1821)
+
+cqs results now carry calibration metadata. Act on these directly; don't pay the defensive re-read tax for what's already answered:
+
+- **Edge provenance** (`edge_kind` on `callers`/`callees`/`impact` entries, §1): `call` (syntactic ground truth) / `serde_callback` / `macro_heuristic` (token-tree guess) / `fn_pointer` / `doc_reference` (a mention in prose, not a call). Weight a `macro_heuristic` or `doc_reference` edge lower than a `call` edge without opening the file to check. Absent ⇒ `call`.
+- **Dead verdicts** (`cqs dead --verdict`, §2): the tool classifies its own output — `test-only` / `low-confidence-live` / `known-gap` / `dead`. Trust the verdict instead of re-deriving "is this really dead"; only `dead` is a confident absence claim. Name-ambiguous functions are handled (`Type::method` qualified queries; `total` + "Showing N of M" so a clipped window never reads as a clean zero).
+- **Ranking provenance** (`rank_signals` per result, §4): why a hit ranked — `dense` (concept match) / `fts` (literal-string match) / `name_match` / `note_boost` / `parent_boost` / `sparse`. A concept-match justifies reading the chunk; a string-match on a conceptual query is a known false-friend; a `note_boost` is a prior opinion, not evidence (the audit-mode skepticism, per-query). Skip-when-empty.
+- Already shipped, same family: `trust_level`/`injection_flags` (content), `_meta.stale_origins` (freshness), CLI==daemon parity.
+
+**The one re-read that still earns its keep: worktree corpus-freshness.** In a `.claude/worktrees/` checkout, cqs serves the *parent/main* index by default (#1254), so without the overlay your results reflect main's branch, not your edits. The §3 worktree overlay fixes this but is **opt-in** (`--overlay` / `CQS_WORKTREE_OVERLAY=1`) and in soak (#1855) — until it's default-on, the agent-def "treat results as hints; read the actual files" clause stays load-bearing *for that reason specifically*, not for result quality.
+
 ## Audit Mode
 
 Before audits, fresh-eyes reviews, clear-eyes reviews, or unbiased code assessment:
