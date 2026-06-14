@@ -788,12 +788,15 @@ impl BatchView {
     ///
     /// A cached context is served only when all three hold:
     ///
-    /// 1. **Epoch matches.** A populated cell built after an invalidation
-    ///    belongs to a newer index generation than this view's store snapshot;
-    ///    the epoch guard discards it (same contract as every other cell). A
-    ///    local reindex invalidates via the `CROSS_PROJECT` slot, so the
-    ///    merged graph — which folds in the local project's edges — is never
-    ///    served stale.
+    /// 1. **Epoch tag matches.** The cached entry carries the `checkout_epoch`
+    ///    it was published under (`published_epoch`); a populated cell tagged
+    ///    with a different generation than this view's store snapshot is
+    ///    discarded (same tag contract as every `EpochCell`). Gating on the
+    ///    baked-in tag rather than the live counter rejects a deferred-clear
+    ///    residue that lingers past an invalidation even on the WAL
+    ///    `data_version` path where `is_stale()` is blind. A local reindex
+    ///    invalidates via the `CROSS_PROJECT` slot, so the merged graph — which
+    ///    folds in the local project's edges — is never served stale.
     /// 2. **Fingerprint matches.** The cached entry carries the references-
     ///    config fingerprint it was built from; a `.cqs.toml` / `slot.toml`
     ///    references edit (visible after `CONFIG_RELOAD_INTERVAL`) moves the
@@ -819,8 +822,14 @@ impl BatchView {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             if let Some(cached) = guard.as_ref() {
-                let epoch_ok =
-                    self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch;
+                // Gate on the value's TAG (`published_epoch`), not the live
+                // `invalidation_epoch` counter. A residue from a superseded
+                // generation carries the older tag and is rejected here even
+                // when the live counter has caught up to this reader's
+                // `checkout_epoch` — the deferred-clear-residue interleaving the
+                // bare-counter load missed on the WAL `data_version` path, where
+                // `is_stale()` is blind. Mirrors `read_cell_if_current`.
+                let epoch_ok = cached.published_epoch == self.checkout_epoch;
                 let fingerprint_ok = cached.fingerprint == current_fingerprint;
                 // `is_stale` stats each store's index.db; cheap relative to a
                 // full reopen + graph rebuild, and only runs on the cache-hit
@@ -855,10 +864,31 @@ impl BatchView {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             if self.invalidation_epoch.load(Ordering::SeqCst) == self.checkout_epoch {
+                // Tag the published value with this view's `checkout_epoch` —
+                // the generation its store snapshot belongs to. Every later read
+                // compares the tag against its own checkout_epoch, so a value
+                // that lingers past an invalidation (a deferred clear the
+                // re-check below and the sticky retry both raced and missed) is
+                // detected on read regardless of the live counter. This is the
+                // load-bearing half of the fix; the re-check is best-effort
+                // early clear. Mirrors `publish_if_current`.
                 *guard = Some(super::context::CachedCrossProject {
                     ctx: Arc::clone(&arc),
                     fingerprint: current_fingerprint,
+                    published_epoch: self.checkout_epoch,
                 });
+                // An invalidation may have bumped the epoch between the check
+                // above and the store: it found this cell locked and deferred
+                // the clear to the lock holder. Re-check and perform that
+                // deferred clear here, while the lock is still held — otherwise
+                // the just-published stale value would survive until the next
+                // sticky retry.
+                if self.invalidation_epoch.load(Ordering::SeqCst) != self.checkout_epoch {
+                    *guard = None;
+                    tracing::debug!(
+                        "invalidation raced the cross-project publish — clearing the cell"
+                    );
+                }
             } else {
                 tracing::debug!(
                     "invalidation ran since checkout — not publishing cross-project context"

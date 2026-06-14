@@ -9,6 +9,14 @@
 
 mod commands;
 mod context;
+/// Loom model of the daemon cross-project cache-cell protocol (the
+/// interleaving-auditor lane). Same `--cfg cqs_loom` + test-build gate as the
+/// sibling models. Proves the bare-counter freshness gate served a stale
+/// deferred-clear residue on the WAL `data_version` path, and that the
+/// publish-epoch tag closes every interleaving. See the module docs for the run
+/// command. Absent from a normal build.
+#[cfg(all(cqs_loom, test))]
+mod cross_project_interleaving_model;
 mod handlers;
 /// Loom model of the cache-invalidation epoch protocol (the
 /// interleaving-auditor lane). Compiled only under `--cfg cqs_loom` AND in a
@@ -645,6 +653,7 @@ mod tests {
             *ctx.cross_project.lock().unwrap() = Some(context::CachedCrossProject {
                 ctx: std::sync::Arc::new(Mutex::new(cross)),
                 fingerprint,
+                published_epoch: ctx.invalidation_epoch.load(Ordering::SeqCst),
             });
         }
 
@@ -731,6 +740,11 @@ mod tests {
             ctx: Arc::clone(&stale_arc),
             // Fingerprint that cannot match the real (empty-references) config.
             fingerprint: u64::MAX,
+            // Tag with the current epoch so the rebuild is forced by the
+            // fingerprint mismatch alone, not an epoch-tag mismatch — the view's
+            // `checkout_epoch` equals this (no invalidation between seat and
+            // build_view).
+            published_epoch: ctx.invalidation_epoch.load(Ordering::SeqCst),
         });
 
         let view = ctx.build_view(None);
