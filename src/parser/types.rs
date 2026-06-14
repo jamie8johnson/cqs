@@ -196,6 +196,18 @@ impl CallEdgeKind {
         matches!(self, CallEdgeKind::Call | CallEdgeKind::SerdeCallback)
     }
 
+    /// Whether this edge is an actual invocation of the callee — a real caller
+    /// for dead-code purposes. Every kind EXCEPT `doc_reference` counts: a
+    /// syntactic call, a serde callback, and the two heuristic kinds all reach
+    /// the callee at runtime, while a `doc_reference` is a prose mention that
+    /// invokes nothing. Defined as the complement of `doc_reference` (not an
+    /// allow-list of the other four) so a future non-prose kind is a real caller
+    /// by default — the only edge a function can survive `dead` candidacy on is a
+    /// genuine invocation, never a doc link.
+    pub fn is_real_caller(&self) -> bool {
+        !matches!(self, CallEdgeKind::DocReference)
+    }
+
     /// Explicit trust rank — lower is stronger evidence. See
     /// [`call_edge_trust_rank`] for the ordering rationale.
     pub fn trust_rank(&self) -> u8 {
@@ -221,6 +233,21 @@ impl CallEdgeKind {
         Self::ALL
             .iter()
             .filter(|k| k.is_trusted())
+            .map(|k| format!("'{}'", k.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Comma-separated quoted SQL string list of the `is_real_caller()` kinds —
+    /// every kind except `doc_reference`. The dead-candidate `NOT EXISTS`
+    /// subquery uses this so a function whose only inbound edge is a prose
+    /// `doc_reference` still qualifies as dead. Generated from the enum (single
+    /// source), so it matches the `low-confidence-live` carve-out's view of what
+    /// counts as a real caller.
+    pub fn real_caller_kinds_sql() -> String {
+        Self::ALL
+            .iter()
+            .filter(|k| k.is_real_caller())
             .map(|k| format!("'{}'", k.as_str()))
             .collect::<Vec<_>>()
             .join(", ")
@@ -392,5 +419,38 @@ mod tests {
             let parsed: TypeEdgeKind = s.parse().unwrap();
             assert_eq!(kind, parsed, "Round-trip failed for {s}");
         }
+    }
+
+    /// `is_real_caller` is the complement of `doc_reference`: every other kind
+    /// is a genuine invocation, only a doc reference is inert.
+    #[test]
+    fn is_real_caller_excludes_only_doc_reference() {
+        assert!(CallEdgeKind::Call.is_real_caller());
+        assert!(CallEdgeKind::SerdeCallback.is_real_caller());
+        assert!(CallEdgeKind::MacroHeuristic.is_real_caller());
+        assert!(CallEdgeKind::FnPointer.is_real_caller());
+        assert!(!CallEdgeKind::DocReference.is_real_caller());
+    }
+
+    /// The real-caller SQL list carries every kind except `doc_reference`, and
+    /// stays the union of the trusted + heuristic sets so the dead-candidate
+    /// subquery agrees with the `low-confidence-live` carve-out on what counts.
+    #[test]
+    fn real_caller_kinds_sql_excludes_doc_reference() {
+        let sql = CallEdgeKind::real_caller_kinds_sql();
+        assert!(sql.contains("'call'"));
+        assert!(sql.contains("'serde_callback'"));
+        assert!(sql.contains("'macro_heuristic'"));
+        assert!(sql.contains("'fn_pointer'"));
+        assert!(
+            !sql.contains("doc_reference"),
+            "doc_reference must NOT appear in the real-caller kind set: {sql}"
+        );
+        // Real-caller kind count == ALL minus doc_reference.
+        let real_count = CallEdgeKind::ALL
+            .iter()
+            .filter(|k| k.is_real_caller())
+            .count();
+        assert_eq!(real_count, CallEdgeKind::ALL.len() - 1);
     }
 }
