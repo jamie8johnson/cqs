@@ -5100,4 +5100,629 @@ mod tests {
             }
         });
     }
+
+    // ========================================================================
+    // Part 1: fresh-init ≡ full-migration STRUCTURAL equivalence (the headline).
+    //
+    // The per-step `test_vN_fresh_create_matches_migrated_shape` tests above
+    // each check ONE object's presence via a substring match on its `.sql`
+    // text. None of them compares the WHOLE schema — the full table set, every
+    // column's (name/type/notnull/default), and the full index/trigger set —
+    // between a fresh `init()` DB and a DB migrated all the way from the oldest
+    // supported version (v10). A migration step whose
+    // `ALTER TABLE … ADD COLUMN … DEFAULT` drifts from `schema.sql`'s column
+    // definition (wrong type, wrong default, missing NOT NULL) would leave
+    // migrated DBs structurally different from fresh ones, and no fresh-state
+    // fixture can catch it: current `init()` only ever writes the v31 schema,
+    // so the migrated-from-v10 shape is unreachable except by replaying the
+    // frozen historical DDL through the live migration chain.
+    // ========================================================================
+
+    /// One column's structural identity, comparable across two DBs.
+    /// `(name, type, notnull, default, pk)` — the tuple `PRAGMA table_info`
+    /// returns, minus `cid` (column ORDER differs between ADD COLUMN and a
+    /// fresh CREATE and is not a correctness property; the *set* of columns
+    /// with their definitions is).
+    type ColumnDef = (String, String, i64, Option<String>, i64);
+
+    /// One index's structural identity: `(name, is_unique, ordered column
+    /// list)`. Auto-created PK/UNIQUE indexes (`sqlite_autoindex_*`) are
+    /// included — they're part of the structural shape a query planner sees.
+    type IndexDef = (String, bool, Vec<String>);
+
+    /// Canonical, order-independent structural fingerprint of a SQLite schema:
+    /// every table's column set, every index, every trigger, and the verbatim
+    /// DDL of virtual tables (FTS5), all keyed by name so insertion/ALTER order
+    /// can't perturb the comparison. Built with `BTreeMap`/sorted `Vec` so two
+    /// equal schemas produce byte-identical debug output for a clean diff.
+    #[derive(Debug, PartialEq, Eq)]
+    struct SchemaFingerprint {
+        /// table name → sorted column defs
+        tables: std::collections::BTreeMap<String, Vec<ColumnDef>>,
+        /// sorted index defs (name, unique, columns)
+        indexes: Vec<IndexDef>,
+        /// sorted trigger names
+        triggers: Vec<String>,
+        /// virtual-table (FTS) name → normalized DDL text
+        virtual_tables: std::collections::BTreeMap<String, String>,
+    }
+
+    /// Normalize a DDL string for comparison: strip `-- line comments`,
+    /// collapse all runs of whitespace to a single space, and lowercase, so
+    /// cosmetic formatting differences (and the inline comments SQLite stores
+    /// verbatim in `sqlite_master.sql`) between schema.sql and a migration's
+    /// CREATE don't register as structural drift. Comments are prose, not a
+    /// structural property; the column list / tokenizer options are.
+    fn normalize_ddl(sql: &str) -> String {
+        sql.lines()
+            .map(|line| match line.find("--") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    async fn fingerprint_schema(pool: &SqlitePool) -> SchemaFingerprint {
+        // Regular tables (exclude SQLite internals and FTS shadow tables, which
+        // are an implementation detail of the virtual table).
+        let table_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' \
+               AND name NOT LIKE 'sqlite_%' \
+               AND name NOT LIKE '%_fts_%' \
+               AND name NOT IN ('chunks_fts', 'notes_fts') \
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        let mut tables = std::collections::BTreeMap::new();
+        for (tbl,) in &table_rows {
+            // PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk).
+            // The table name comes from sqlite_master (not user input), so the
+            // dynamic PRAGMA string is safe — AssertSqlSafe documents that.
+            let cols: Vec<(i64, String, String, i64, Option<String>, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("PRAGMA table_info('{tbl}')")))
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            let mut defs: Vec<ColumnDef> = cols
+                .into_iter()
+                .map(|(_cid, name, ty, notnull, dflt, pk)| {
+                    // Normalize the default's whitespace/case so e.g. `0` vs `0`
+                    // and `'call'` vs `'call'` compare cleanly.
+                    let dflt = dflt.map(|d| normalize_ddl(&d));
+                    (name, ty.to_lowercase(), notnull, dflt, pk)
+                })
+                .collect();
+            defs.sort();
+            tables.insert(tbl.clone(), defs);
+        }
+
+        // Indexes. Enumerate via PRAGMA index_list per table to capture the
+        // full structural set the planner sees, including PK/UNIQUE
+        // auto-indexes that don't appear in sqlite_master.
+        let mut indexes: Vec<IndexDef> = Vec::new();
+        for (tbl,) in &table_rows {
+            // PRAGMA index_list: (seq, name, unique, origin, partial). Table /
+            // index names originate from the catalog, not user input.
+            let idx_list: Vec<(i64, String, i64, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("PRAGMA index_list('{tbl}')")))
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            for (_seq, name, unique, _origin, _partial) in idx_list {
+                // PRAGMA index_info: (seqno, cid, name) — name is the column;
+                // NULL for expression columns (none in our schema).
+                let cols: Vec<(i64, i64, Option<String>)> =
+                    sqlx::query_as(sqlx::AssertSqlSafe(format!("PRAGMA index_info('{name}')")))
+                        .fetch_all(pool)
+                        .await
+                        .unwrap();
+                let col_names: Vec<String> = cols
+                    .into_iter()
+                    .map(|(_s, _c, n)| n.unwrap_or_else(|| "<expr>".to_string()))
+                    .collect();
+                indexes.push((name, unique != 0, col_names));
+            }
+        }
+        indexes.sort();
+
+        // Triggers.
+        let trigger_rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        let triggers: Vec<String> = trigger_rows.into_iter().map(|(n,)| n).collect();
+
+        // Virtual tables (FTS5): PRAGMA table_info is unreliable for these, so
+        // compare the normalized CREATE VIRTUAL TABLE DDL directly.
+        let vtab_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_master \
+             WHERE type = 'table' AND sql LIKE '%VIRTUAL TABLE%' \
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let mut virtual_tables = std::collections::BTreeMap::new();
+        for (name, sql) in vtab_rows {
+            virtual_tables.insert(name, normalize_ddl(&sql));
+        }
+
+        SchemaFingerprint {
+            tables,
+            indexes,
+            triggers,
+            virtual_tables,
+        }
+    }
+
+    /// Apply `schema.sql` to a fresh file-backed DB exactly the way
+    /// `Store::init` does (BEGIN/END-aware split), returning the open pool.
+    async fn fresh_init_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+            if stmt.is_empty() {
+                continue;
+            }
+            sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // init() also stamps schema_version; mirror it so the DB is in a
+        // realistic post-init state (the structural comparison ignores rows).
+        sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?1)")
+            .bind(CURRENT_SCHEMA_VERSION.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Build the REAL v10 on-disk schema (verbatim DDL from the original v10
+    /// schema, the same frozen artifact `test_migrate_full_chain_from_real_v10_artifact`
+    /// uses) at `db_path`, stamped at version 10. Returns the open pool ready
+    /// for `migrate(10, CURRENT)`. A real v10 DB carries all the v10 tables,
+    /// indexes, and FTS virtual tables; a faithful artifact must too, or the
+    /// structural comparison against fresh-init would falsely flag the migration.
+    async fn build_real_v10_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS chunks (
+                id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                language TEXT NOT NULL,
+                chunk_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                doc TEXT,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                embedding BLOB NOT NULL,
+                source_mtime INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id TEXT,
+                window_idx INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                caller_id TEXT NOT NULL,
+                callee_name TEXT NOT NULL,
+                line_number INTEGER NOT NULL,
+                FOREIGN KEY (caller_id) REFERENCES chunks(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS function_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file TEXT NOT NULL,
+                caller_name TEXT NOT NULL,
+                caller_line INTEGER NOT NULL,
+                callee_name TEXT NOT NULL,
+                call_line INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS notes (
+                id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                sentiment REAL NOT NULL,
+                mentions TEXT,
+                embedding BLOB NOT NULL,
+                source_file TEXT NOT NULL,
+                file_mtime INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // v10 carried the two FTS virtual tables; no migration step ever ALTERs
+        // them and schema.sql creates them with IF NOT EXISTS, so build BOTH
+        // here verbatim from schema.sql to keep the virtual-table comparison
+        // meaningful (their shapes are frozen since v10).
+        sqlx::query(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                id UNINDEXED, name, signature, content, doc, tokenize='unicode61'
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+                id UNINDEXED, text, tokenize='unicode61'
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The v10 indexes (verbatim from the original v10 schema). A real v10
+        // DB carried ALL of these; no migration step recreates them, so a
+        // faithful v10 artifact MUST include them or the structural comparison
+        // against fresh-init would falsely flag the migration. These survive
+        // every rebuild step untouched (the chunks/calls/function_calls tables
+        // are never DROP/RENAME'd across the chain).
+        for idx_ddl in [
+            "CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id)",
+            "CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name)",
+            "CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file)",
+            "CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name)",
+            "CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name)",
+            "CREATE INDEX IF NOT EXISTS idx_notes_sentiment ON notes(sentiment)",
+        ] {
+            sqlx::query(idx_ddl).execute(&pool).await.unwrap();
+        }
+
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '10')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// HEADLINE GUARD: a fresh `init()` DB and a DB migrated the full chain
+    /// from the oldest supported version (v10) must be STRUCTURALLY IDENTICAL —
+    /// same tables, same columns (name/type/notnull/default), same indexes,
+    /// same triggers, same virtual-table DDL.
+    ///
+    /// This is also a SWEEP over every `ADD COLUMN … DEFAULT` migration step:
+    /// each must mirror its `schema.sql` counterpart exactly. A column whose
+    /// default or type differs between the migrate path and the fresh path is
+    /// the straggler this catches — it would silently diverge migrated DBs from
+    /// fresh ones, and no born-at-HEAD fixture can construct the migrated shape
+    /// (current `init()` only ever writes v31).
+    ///
+    /// Calibration (proving the guard bites): temporarily changing the v30
+    /// migration's `edge_kind` default from `'call'` to `'xcall'`, OR
+    /// `schema.sql`'s `needs_embedding` default from `0` to `1`, makes the two
+    /// fingerprints diverge and this test fails with a precise column diff.
+    #[test]
+    fn test_fresh_init_equals_full_migration_from_v10() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let fresh_dir = tempfile::tempdir().unwrap();
+            let fresh_path = fresh_dir.path().join("fresh.db");
+            let fresh_pool = fresh_init_schema(&fresh_path).await;
+            let fresh_fp = fingerprint_schema(&fresh_pool).await;
+
+            let mig_dir = tempfile::tempdir().unwrap();
+            let mig_path = mig_dir.path().join("migrated_from_v10.db");
+            let v10_pool = build_real_v10_schema(&mig_path).await;
+            let mig_pool = migrate(v10_pool, &mig_path, 10, CURRENT_SCHEMA_VERSION)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("full v10→v{CURRENT_SCHEMA_VERSION} chain must succeed, got: {e:?}")
+                });
+            let mig_fp = fingerprint_schema(&mig_pool).await;
+
+            // Field-by-field comparison with targeted messages so a failure
+            // names the exact divergent surface, not just "not equal".
+            assert_eq!(
+                fresh_fp.tables.keys().collect::<Vec<_>>(),
+                mig_fp.tables.keys().collect::<Vec<_>>(),
+                "table SET differs between fresh init and full migration"
+            );
+            for (tbl, fresh_cols) in &fresh_fp.tables {
+                let mig_cols = mig_fp.tables.get(tbl).unwrap();
+                assert_eq!(
+                    fresh_cols, mig_cols,
+                    "table `{tbl}` column defs differ (name/type/notnull/default/pk).\n\
+                     fresh init: {fresh_cols:#?}\n\
+                     migrated  : {mig_cols:#?}"
+                );
+            }
+            assert_eq!(
+                fresh_fp.indexes, mig_fp.indexes,
+                "index set differs between fresh init and full migration.\n\
+                 fresh: {:#?}\nmigrated: {:#?}",
+                fresh_fp.indexes, mig_fp.indexes
+            );
+            assert_eq!(
+                fresh_fp.triggers, mig_fp.triggers,
+                "trigger set differs between fresh init and full migration"
+            );
+            assert_eq!(
+                fresh_fp.virtual_tables, mig_fp.virtual_tables,
+                "virtual-table (FTS) DDL differs between fresh init and full migration"
+            );
+
+            // Whole-fingerprint equality as the backstop — anything the
+            // field-by-field checks above missed still fails here.
+            assert_eq!(
+                fresh_fp, mig_fp,
+                "fresh-init schema and full-v10-migration schema must be structurally identical"
+            );
+        });
+    }
+
+    // ========================================================================
+    // Part 2: the notes_fts / notes rebuild seam (v28→v29).
+    //
+    // The v28→v29 migration DROPs and recreates the `notes` table (CREATE
+    // notes_v29 → INSERT…SELECT → DROP notes → RENAME), which assigns the
+    // rebuilt `notes` rows FRESH internal rowids, while the manually-managed
+    // `notes_fts` virtual table is left untouched and keeps its OLD rowids.
+    //
+    // Finding: this is SOUND, but NOT because "rowids line up" — they do not.
+    // It is sound because NOTHING in the codebase ever couples `notes` to
+    // `notes_fts` by rowid. `notes_fts` is declared `id UNINDEXED` and every
+    // single access keys on `id` (the three writers in store/notes.rs:
+    // INSERT (id,text), DELETE WHERE id IN (...), DELETE WHERE id IN (SELECT
+    // id FROM notes ...)); and there is NO reader at all — `notes_fts` is
+    // never queried via MATCH anywhere in the tree or its git history. The
+    // v28→v29 rebuild preserves every `id` verbatim, so the id-coupling the
+    // writers depend on is intact across the rebuild even though the rowids
+    // are not.
+    //
+    // The guard below pins that id-coupling invariant across the rebuild: it
+    // builds a v28 notes table with seeded rows + matching FTS rows, runs the
+    // real migration, and asserts (a) every `notes.id` still id-joins to
+    // exactly one matching `notes_fts` row carrying the right text, (b) the
+    // rowids deliberately do NOT line up (documenting WHY id-coupling is the
+    // load-bearing invariant), and (c) the id-keyed delete the writers issue
+    // still removes the correct FTS row. If a future change introduces a
+    // rowid-based notes_fts read, or a migration drops/recreates `notes_fts`
+    // and loses the id rows, this goes red.
+    // ========================================================================
+
+    /// Build a v28-shaped DB: a `notes` table WITHOUT the v29 sentiment CHECK
+    /// (bare REAL), plus the `notes_fts` virtual table, stamped at version 28.
+    async fn setup_v28_notes_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // v28 notes: bare REAL sentiment (no CHECK), `kind` column present
+        // (arrived v25). Matches the pre-v29 on-disk shape.
+        sqlx::query(
+            "CREATE TABLE notes (
+                id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                sentiment REAL NOT NULL,
+                mentions TEXT,
+                embedding BLOB NOT NULL,
+                source_file TEXT NOT NULL,
+                file_mtime INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                kind TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE INDEX idx_notes_sentiment ON notes(sentiment)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE INDEX idx_notes_kind ON notes(kind)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE VIRTUAL TABLE notes_fts USING fts5(id UNINDEXED, text, tokenize='unicode61')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '28')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// SEAM GUARD: the v28→v29 `notes`-table rebuild must keep
+    /// `notes_fts` id-coupled to the rebuilt `notes` rows. Asserts that across
+    /// the rebuild every `notes.id` retains exactly one matching `notes_fts`
+    /// row with the correct text (the id-join every writer depends on), that the
+    /// id-keyed FTS delete still targets the right row, and documents that the
+    /// rowids deliberately do NOT line up (so the invariant is the `id`
+    /// coupling, not rowid identity).
+    #[test]
+    fn test_v28_to_v29_notes_fts_id_coupling_survives_rebuild() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("v28_notes.db");
+        rt.block_on(async {
+            let pool = setup_v28_notes_schema(&db_path).await;
+
+            // Seed notes + matching FTS rows.
+            for (id, text, sent) in [
+                ("note:0", "alpha load bearing", -0.5_f64),
+                ("note:1", "beta important", 0.5),
+                ("note:2", "gamma critical", 1.0),
+            ] {
+                sqlx::query(
+                    "INSERT INTO notes (id, text, sentiment, mentions, embedding, \
+                     source_file, file_mtime, created_at, updated_at, kind) \
+                     VALUES (?1, ?2, ?3, NULL, X'', 'docs/notes.toml', 0, 'a', 'b', NULL)",
+                )
+                .bind(id)
+                .bind(text)
+                .bind(sent)
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
+                    .bind(id)
+                    .bind(text)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            // Churn note:1's FTS row so its FTS internal rowid is reassigned
+            // past the others — guarantees notes.rowid != notes_fts.rowid for
+            // it, so the read path provably cannot rely on rowid equality.
+            sqlx::query("DELETE FROM notes_fts WHERE id = 'note:1'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO notes_fts (id, text) VALUES ('note:1', 'beta important')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Run the real v28→v29 migration (rebuilds the notes table).
+            let pool = migrate(pool, &db_path, 28, 29).await.unwrap();
+
+            // (a) Every notes.id id-joins to exactly one notes_fts row with the
+            //     correct text — the id-join is intact across the rebuild.
+            for (id, want_text) in [
+                ("note:0", "alpha load bearing"),
+                ("note:1", "beta important"),
+                ("note:2", "gamma critical"),
+            ] {
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT f.text FROM notes n JOIN notes_fts f ON n.id = f.id WHERE n.id = ?1",
+                )
+                .bind(id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "id `{id}` must id-join to exactly one notes_fts row after rebuild"
+                );
+                assert_eq!(
+                    rows[0].0, want_text,
+                    "notes_fts text for id `{id}` must match the source note text \
+                     (no stale/mismatched FTS content across the rebuild)"
+                );
+            }
+
+            // (b) The rowids deliberately do NOT line up after the rebuild —
+            //     the rebuilt notes table got fresh rowids while notes_fts kept
+            //     its old ones. This documents WHY id-coupling (not rowid
+            //     identity) is the load-bearing invariant.
+            let mismatched: Vec<(String, i64, i64)> = sqlx::query_as(
+                "SELECT n.id, n.rowid, f.rowid \
+                 FROM notes n JOIN notes_fts f ON n.id = f.id \
+                 WHERE n.rowid != f.rowid",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert!(
+                !mismatched.is_empty(),
+                "expected at least one id whose notes.rowid != notes_fts.rowid after the \
+                 rebuild — if they line up, this test no longer proves the id-coupling \
+                 (vs rowid) is what makes the seam sound"
+            );
+
+            // (c) The id-keyed FTS delete the writers issue still removes the
+            //     correct row (and only it) post-rebuild.
+            sqlx::query("DELETE FROM notes_fts WHERE id IN ('note:1')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (remaining,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM notes_fts WHERE id = 'note:1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(remaining, 0, "id-keyed FTS delete must remove note:1's row");
+            let (others,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM notes_fts WHERE id IN ('note:0', 'note:2')")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(others, 2, "id-keyed delete must not touch the other rows");
+        });
+    }
 }
