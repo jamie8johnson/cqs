@@ -301,12 +301,13 @@ pub(crate) fn build_callees(name: &str, callees: &[CalleeInfo], total: usize) ->
 ///
 /// The plain entry point serves the parent index unchanged (byte-identical to
 /// the pre-overlay behaviour). The worktree-overlay merge lives in
-/// [`callers_overlay`]; this delegates to it with no overlay.
+/// [`callers_overlay`]; this delegates to it with no overlay (so participation
+/// is always `false` and is discarded).
 pub(crate) fn callers_core(
     store: &Store<ReadOnly>,
     args: &CallersArgs,
 ) -> Result<CallersCoreOutput> {
-    callers_overlay(store, args, None)
+    Ok(callers_overlay(store, args, None)?.0)
 }
 
 /// Overlay-aware core for `cqs callers <name>` (single-project, #1858 Part B).
@@ -318,6 +319,17 @@ pub(crate) fn callers_core(
 /// in the delta are dropped, then the overlay's callers are unioned in. The
 /// edge-kind filter and `--limit` cap apply to the merged set.
 ///
+/// Returns `(output, overlay_participated)`. The bool reports whether the
+/// overlay actually consulted the delta for THIS answer — true only when the
+/// merge changed the caller set (a parent row's call-site origin was masked OR
+/// ≥1 overlay row was unioned). It is `false` on every parent-truth path:
+/// `overlay == None`, the `Type::method`-qualified early-return, the
+/// kind-fallback early-return, and an active overlay that touched no origin
+/// relevant to this query. The daemon adapter gates the
+/// `_meta.overlay_graph = "full"` calibration marker on this bool so the marker
+/// never over-claims: `overlay.is_some()` means "the worktree has some dirty
+/// file", NOT "this answer reflects the delta".
+///
 /// The `Type::method`-qualified and kind-fallback paths stay on parent-truth in
 /// Part B PR1 — the merge is wired only for the bare-name call-graph query (the
 /// common surface). Extending the merge to the attributed `Type::method` path is
@@ -326,7 +338,7 @@ pub(crate) fn callers_overlay(
     store: &Store<ReadOnly>,
     args: &CallersArgs,
     overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
-) -> Result<CallersCoreOutput> {
+) -> Result<(CallersCoreOutput, bool)> {
     let _span =
         tracing::info_span!("callers_overlay", name = %args.name, limit = args.limit).entered();
     // Standardised cap. The store query returns every caller; we truncate
@@ -335,19 +347,28 @@ pub(crate) fn callers_overlay(
 
     // `Type::method` receiver-type disambiguation. Resolved read-side
     // from `chunks.parent_type_name`, before kind detection (which classifies
-    // the *bare* name, never the qualified form). Parent-truth in PR1.
+    // the *bare* name, never the qualified form). Parent-truth in PR1 — the
+    // overlay never participates here, so this path reports `false`.
     if let Some((qual_type, method)) = split_type_qualifier(&args.name) {
-        return callers_qualified(store, qual_type, method, args.edge_kind, limit);
+        return Ok((
+            callers_qualified(store, qual_type, method, args.edge_kind, limit)?,
+            false,
+        ));
     }
 
     // Polymorphic-routing kind detection. Dispatch the kind-mismatch
-    // fallback before the call-graph query. Parent-truth in PR1.
+    // fallback before the call-graph query. Parent-truth in PR1 — the kind is
+    // classified from the parent store, so a fallback verdict never reflects
+    // the overlay: report `false`.
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callers(fk);
-        return Ok(CallersCoreOutput::Fallback(KindFallbackOutput::new(
-            &args.name, &chunks, fk, "callers", &text,
-        )));
+        return Ok((
+            CallersCoreOutput::Fallback(KindFallbackOutput::new(
+                &args.name, &chunks, fk, "callers", &text,
+            )),
+            false,
+        ));
     }
 
     let mut callers = store
@@ -355,11 +376,19 @@ pub(crate) fn callers_overlay(
         .context("Failed to load callers")?;
     // Worktree-overlay merge: drop parent callers from delta-touched origins,
     // union the overlay's callers (all from masked origins by construction).
+    // `participated` records whether the merge actually changed the set: the
+    // overlay added ≥1 caller, OR a parent caller's call-site origin was masked.
+    // An active overlay whose delta touches no origin relevant to this query
+    // leaves `participated == false` — the answer is pure parent-truth and must
+    // not be stamped `"full"`.
+    let mut participated = false;
     if let Some(ov) = overlay {
         let ov_callers = ov
             .store
             .get_callers_full(&args.name)
             .context("Failed to load overlay callers")?;
+        participated =
+            !ov_callers.is_empty() || callers.iter().any(|c| ov.masked_origins.contains(&c.file));
         callers = ov.merge_callers(callers, ov_callers);
     }
     // Edge-kind filter (§1): drop edges whose provenance kind doesn't match,
@@ -375,7 +404,7 @@ pub(crate) fn callers_overlay(
     // A bare name with more than one definition advertises the `Type::method`
     // forms the user can re-query with.
     output.candidates = multi_def_candidates(store, &args.name)?;
-    Ok(CallersCoreOutput::Callers(output))
+    Ok((CallersCoreOutput::Callers(output), participated))
 }
 
 /// Split a `Type::method` qualifier into `(type, method)`, or `None` for a
@@ -532,12 +561,13 @@ fn attribution_field(a: cqs::store::CallerAttribution) -> String {
 /// Surface-agnostic core for `cqs callees <name>` (single-project).
 ///
 /// The plain entry point serves the parent index unchanged. The worktree-
-/// overlay merge lives in [`callees_overlay`]; this delegates with no overlay.
+/// overlay merge lives in [`callees_overlay`]; this delegates with no overlay
+/// (participation is always `false` and is discarded).
 pub(crate) fn callees_core(
     store: &Store<ReadOnly>,
     args: &CalleesArgs,
 ) -> Result<CalleesCoreOutput> {
-    callees_overlay(store, args, None)
+    Ok(callees_overlay(store, args, None)?.0)
 }
 
 /// Overlay-aware core for `cqs callees <name>` (single-project, #1858 Part B).
@@ -557,11 +587,19 @@ pub(crate) fn callees_core(
 /// The `x_def_masked` decision is [`WorktreeOverlay::callee_target_def_masked`]
 /// over X's parent definition origins plus an overlay-store def check.
 /// `Type::method` and kind-fallback paths stay on parent-truth in PR1.
+///
+/// Returns `(output, overlay_participated)`. For callees, participation is
+/// exactly `x_def_masked`: the overlay path ran (parent rows dropped, overlay
+/// rows served) only when X's definition lives in the delta. An active overlay
+/// with X unedited returns the parent callees untouched — pure parent-truth,
+/// `false`. The early-return parent-truth paths (`overlay == None`,
+/// `Type::method`-qualified, kind-fallback) all report `false` too. The daemon
+/// adapter gates the `_meta.overlay_graph = "full"` marker on this bool.
 pub(crate) fn callees_overlay(
     store: &Store<ReadOnly>,
     args: &CalleesArgs,
     overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
-) -> Result<CalleesCoreOutput> {
+) -> Result<(CalleesCoreOutput, bool)> {
     let _span =
         tracing::info_span!("callees_overlay", name = %args.name, limit = args.limit).entered();
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
@@ -569,22 +607,31 @@ pub(crate) fn callees_overlay(
     // `Type::method` scoping: callees of the method as defined under
     // the queried type, scoped by the def's origin file(s). Parent-truth in PR1.
     if let Some((qual_type, method)) = split_type_qualifier(&args.name) {
-        return callees_qualified(store, qual_type, method, args.edge_kind, limit);
+        return Ok((
+            callees_qualified(store, qual_type, method, args.edge_kind, limit)?,
+            false,
+        ));
     }
 
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callees(fk);
-        return Ok(CalleesCoreOutput::Fallback(KindFallbackOutput::new(
-            &args.name, &chunks, fk, "callees", &text,
-        )));
+        return Ok((
+            CalleesCoreOutput::Fallback(KindFallbackOutput::new(
+                &args.name, &chunks, fk, "callees", &text,
+            )),
+            false,
+        ));
     }
 
     let mut callees = store
         .get_callees_full(&args.name, None, None)
         .context("Failed to load callees")?;
     // Worktree-overlay merge: the asymmetric callee key. X's callee set is
-    // suspect iff X's DEFINITION lives in a delta-touched file.
+    // suspect iff X's DEFINITION lives in a delta-touched file. `x_def_masked`
+    // IS the participation signal — when false the parent callees are returned
+    // untouched (pure parent-truth) and the overlay is never unioned.
+    let mut participated = false;
     if let Some(ov) = overlay {
         // X's parent definition origins (where X is defined in main).
         let parent_def_origins = store
@@ -593,6 +640,7 @@ pub(crate) fn callees_overlay(
             .into_iter()
             .map(|c| c.file);
         let x_def_masked = ov.callee_target_def_masked(&args.name, parent_def_origins);
+        participated = x_def_masked;
         let ov_callees = if x_def_masked {
             ov.store
                 .get_callees_full(&args.name, None, None)
@@ -610,7 +658,7 @@ pub(crate) fn callees_overlay(
     callees.truncate(limit);
     let mut output = build_callees(&args.name, &callees, total);
     output.candidates = multi_def_candidates(store, &args.name)?;
-    Ok(CalleesCoreOutput::Callees(output))
+    Ok((CalleesCoreOutput::Callees(output), participated))
 }
 
 /// Resolve callees of `Type::method` by scoping `get_callees_full` to
