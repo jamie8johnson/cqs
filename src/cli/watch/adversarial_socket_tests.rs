@@ -858,3 +858,151 @@ fn daemon_handles_deeply_nested_json_without_panic() {
     );
     join_worker(client, handle);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Security guard: foreign `--overlay-root` over the raw socket is an
+// arbitrary-directory read primitive unless validated.
+//
+// `--overlay-root` is a `hide = true` field on `SearchArgs`, so it is NOT
+// reachable from the top-level CLI — clap rejects it there ("unexpected
+// argument"). The CLI's only way to set it is `dispatch.rs`, which RECOMPUTES
+// the value from the real cwd (`cqs::worktree::overlay_root`) and overwrites
+// whatever a human typed. But the daemon parses the wire `args` array straight
+// into `SearchArgs` via `BatchInput::try_parse_from` — so a raw socket client
+// (anyone who can `connect()` the daemon's `$XDG_RUNTIME_DIR/cqs-*.sock`) can
+// send `["search", "q", "--overlay", "--overlay-root", "/etc"]` and bypass the
+// CLI recompute entirely.
+//
+// The ONLY thing between that wire request and the daemon walking + embedding
+// `/etc` (or any directory) is `BatchView::set_validated_overlay_request`,
+// reached via `prepare_overlay_request` at the TOP of `dispatch_search`
+// (before the embedder loads). It requires
+// `resolve_main_project_dir(canonicalize(root)) == served_root` — a plain
+// directory is not a git worktree, resolves to `None`, and is rejected.
+//
+// Boundary invariant (SECURITY.md "Path traversal" + the `overlay_root` doc on
+// `SearchArgs`): NO file under a foreign `--overlay-root` is ever read; the
+// rejection bubbles up as a (redacted) wire error and the response contains
+// nothing from the foreign directory.
+//
+// Why this is the END-TO-END guard the in-process unit tests
+// (`overlay_daemon_rejects_foreign_root`, `overlay_prepare_rejects_foreign_root`
+// in `handlers/search.rs`) cannot be: those call the validation fn / dispatch
+// fn directly. This drives the REAL `handle_socket_client` over a real socket
+// pair — JSON parse → arg validation → `dispatch_via_view` → `dispatch_search`
+// → `prepare_overlay_request` → `set_validated_overlay_request`. It proves the
+// validator is WIRED INTO the wire path with no bypass, which is the property
+// that actually protects a deployed daemon. If a refactor ever moves overlay
+// validation behind the embedder load, off the dispatch entry, or drops it,
+// the in-process tests still pass — this one fails because the planted secret
+// would surface (or, more likely, the daemon would try to read the foreign dir
+// and the no-leak assertion would catch the breach).
+//
+// Calibration: the assertion bites. Replacing the wire `--overlay-root` value
+// with the SERVED project root (a real overlay-eligible path in production)
+// would NOT produce an error envelope — the live daemon test in the same
+// session confirmed a legitimate worktree root returns real overlay results
+// (`worktree_overlay: {chunks, files}`). So "error envelope + no foreign
+// content" is specific to the rejection, not a blanket property of every
+// search.
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn daemon_rejects_foreign_overlay_root_over_socket() {
+    // A throwaway directory that exists (so canonicalize SUCCEEDS — we exercise
+    // the real `resolve_main_project_dir == served_root` arm, not the cheap
+    // ENOENT short-circuit) but is NOT a git worktree of the served project.
+    // It resolves to `None` and must be rejected.
+    let foreign = tempfile::TempDir::new().expect("foreign tempdir");
+    // A uniquely-named "secret" whose content must NEVER appear in any wire
+    // response. If the daemon ever walked the foreign root, this file's content
+    // is exactly what an overlay build would index + relay.
+    const SECRET: &str = "REDTEAM_OVERLAY_ESCAPE_CANARY_8f3a1c5d";
+    std::fs::write(
+        foreign.path().join("leak_me.rs"),
+        format!("pub fn x() {{ let s = \"{SECRET}\"; }}\n"),
+    )
+    .expect("plant secret file");
+    let foreign_path = foreign.path().to_string_lossy().into_owned();
+
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+
+    // Raw wire request: the CLI would never construct this (it recomputes
+    // overlay-root), but a socket client can. `--overlay` activates the
+    // overlay (`daemon_overlay_active`), `--overlay-root <foreign>` is the
+    // attack payload. `--json` matches the daemon's machine path.
+    let request = serde_json::json!({
+        "command": "search",
+        "args": ["x", "--overlay", "--overlay-root", foreign_path, "--json"],
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write overlay-root attack request");
+
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+
+    // 1. The PRIMARY security assertion: the served project's index has no
+    //    chunk containing SECRET (the test store is empty), so the only way
+    //    SECRET could appear in the response is if the daemon walked + indexed
+    //    the foreign directory. It must not. Check the WHOLE response line so a
+    //    leak anywhere in the envelope (results, meta, error text) is caught.
+    assert!(
+        !line.contains(SECRET),
+        "SECURITY: foreign --overlay-root content leaked over the socket — the \
+         daemon read a file under a directory that is not a worktree of the \
+         served project. This is an arbitrary-directory read primitive. \
+         Response: {line}"
+    );
+
+    // 2. The rejection must surface as an error, not a silent degrade to a
+    //    clean (empty) parent-index search. `dispatch_search` returns `Err`
+    //    from `prepare_overlay_request`; the daemon redacts it into the inner
+    //    `output.error` envelope (`internal` / `err-<id>`). We assert an error
+    //    surfaced (either the redacted inner error OR a top-level error
+    //    envelope) so a future change that downgrades the hard reject to a
+    //    warn-and-serve-parent — which would mask the escape attempt — fails
+    //    here. (A warn-and-serve-parent is acceptable ONLY if it still reads
+    //    nothing foreign, which assertion #1 independently guarantees; this
+    //    assertion pins the louder current contract.)
+    let inner_err = resp.pointer("/output/error").is_some();
+    let top_err = resp.get("status").and_then(|v| v.as_str()) == Some("error");
+    assert!(
+        inner_err || top_err,
+        "foreign --overlay-root must be rejected loudly (wire error), not \
+         silently degraded to a parent-index search: {line}"
+    );
+
+    join_worker(client, handle);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Calibration companion to the guard above: a NON-EXISTENT `--overlay-root`
+// is also rejected (the canonicalize-fails arm of validation), confirming the
+// guard's reject path isn't accidentally specific to "exists-but-foreign".
+// Pairing the two arms keeps both validation branches wired to the socket.
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn daemon_rejects_nonexistent_overlay_root_over_socket() {
+    let bogus = "/nonexistent/cqs-redteam-overlay-root-zzz";
+    let (_dir, ctx) = test_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    let request = serde_json::json!({
+        "command": "search",
+        "args": ["x", "--overlay", "--overlay-root", bogus, "--json"],
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write nonexistent overlay-root request");
+
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let inner_err = resp.pointer("/output/error").is_some();
+    let top_err = resp.get("status").and_then(|v| v.as_str()) == Some("error");
+    assert!(
+        inner_err || top_err,
+        "a non-existent --overlay-root must be rejected at the socket boundary \
+         (canonicalize fails), not silently ignored: {line}"
+    );
+    join_worker(client, handle);
+}

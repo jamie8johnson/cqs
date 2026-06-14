@@ -4778,4 +4778,326 @@ mod tests {
             );
         });
     }
+
+    /// FROZEN-ARTIFACT full-chain guard (legacy-state / version-null shape).
+    ///
+    /// Every other migration test in this module hand-builds a *minimal*
+    /// predecessor schema tailored to a single step and runs at most ~3
+    /// contiguous steps (the widest is `migrate(8, 11)` / `migrate(17, 19)`).
+    /// NOTHING exercises the full v10→CURRENT chain over one DB, and nothing
+    /// starts from the *real* on-disk v10 shape (the bespoke per-step DDL omits
+    /// columns the real v10 schema carried, e.g. `chunks.source_mtime`,
+    /// `chunks.window_idx`, the full v10 `notes` column set). A step that
+    /// silently depends on the *real* predecessor shape — or a default backfill
+    /// that's wrong for the *oldest* rows — would pass every per-step test yet
+    /// crash a real user's v10 DB on upgrade. No fixture built by current code
+    /// can construct a v10 DB: current `init()` writes the v31 schema. The only
+    /// way to reach this shape is to freeze the historical DDL, which is what
+    /// this test does — the v10 `CREATE TABLE`s are copied verbatim from git
+    /// commit 73cca226 (`feat: Migrate to sqlx async SQLite + schema v10`).
+    ///
+    /// It also seeds an OFF-GRID note sentiment (`-0.8`) — a value only a
+    /// pre-v29 binary could have written (the v29 CHECK now rejects it, and
+    /// `parse_notes_str` snaps inputs before write), to confirm the v28→v29
+    /// clamp rewrites legacy rows to the nearest discrete value rather than
+    /// tripping its own new CHECK mid-chain.
+    #[test]
+    fn test_migrate_full_chain_from_real_v10_artifact() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy_v10.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // --- The REAL v10 schema, verbatim from commit 73cca226. ---
+            // metadata
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // chunks (v10 shape: source_mtime / created_at / updated_at /
+            // parent_id / window_idx present; NONE of the post-v10 columns)
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    source_mtime INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    parent_id TEXT,
+                    window_idx INTEGER
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    caller_id TEXT NOT NULL,
+                    callee_name TEXT NOT NULL,
+                    line_number INTEGER NOT NULL,
+                    FOREIGN KEY (caller_id) REFERENCES chunks(id) ON DELETE CASCADE
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS function_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file TEXT NOT NULL,
+                    caller_name TEXT NOT NULL,
+                    caller_line INTEGER NOT NULL,
+                    callee_name TEXT NOT NULL,
+                    call_line INTEGER NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // notes (v10 shape: NO `kind` column — that arrives at v25;
+            // sentiment is a bare REAL with NO CHECK — the CHECK arrives at v29)
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY,
+                    text TEXT NOT NULL,
+                    sentiment REAL NOT NULL,
+                    mentions TEXT,
+                    embedding BLOB NOT NULL,
+                    source_file TEXT NOT NULL,
+                    file_mtime INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // --- Populate with realistic legacy rows. ---
+            sqlx::query(
+                "INSERT INTO chunks \
+                 (id, origin, source_type, language, chunk_type, name, signature, \
+                  content, content_hash, doc, line_start, line_end, embedding, \
+                  source_mtime, created_at, updated_at, parent_id, window_idx) \
+                 VALUES \
+                 ('c1', 'src/foo.rs', 'file', 'rust', 'function', 'foo', 'fn foo()', \
+                  'fn foo() {}', 'hashfoo', 'docs', 1, 3, X'00010203', \
+                  1700000000, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // A `calls` row pointing at the chunk (FK target exists).
+            sqlx::query(
+                "INSERT INTO calls (caller_id, callee_name, line_number) \
+                 VALUES ('c1', 'bar', 2)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO function_calls \
+                 (file, caller_name, caller_line, callee_name, call_line) \
+                 VALUES ('src/foo.rs', 'foo', 1, 'bar', 2)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // An OFF-GRID sentiment note: only a pre-v29 binary could write
+            // -0.8 (current code snaps before write AND the v29 CHECK rejects
+            // it). The v28→v29 clamp must rewrite it to the nearest discrete
+            // value (-1.0) so the rebuilt table satisfies its own CHECK.
+            sqlx::query(
+                "INSERT INTO notes \
+                 (id, text, sentiment, mentions, embedding, source_file, \
+                  file_mtime, created_at, updated_at) \
+                 VALUES \
+                 ('note:0', 'legacy off-grid note', -0.8, '[\"src/foo.rs\"]', \
+                  X'', 'docs/notes.toml', 1700000000, \
+                  '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // An on-grid note to confirm well-formed rows survive untouched.
+            sqlx::query(
+                "INSERT INTO notes \
+                 (id, text, sentiment, mentions, embedding, source_file, \
+                  file_mtime, created_at, updated_at) \
+                 VALUES \
+                 ('note:1', 'legacy on-grid note', 0.5, NULL, X'', \
+                  'docs/notes.toml', 1700000000, \
+                  '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '10')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // --- Run the FULL chain v10 → CURRENT over the frozen artifact. ---
+            let pool = migrate(pool, &db_path, 10, CURRENT_SCHEMA_VERSION)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "full v10→v{CURRENT_SCHEMA_VERSION} chain over a REAL v10 artifact \
+                         must succeed, got: {e:?}"
+                    )
+                });
+
+            // Version stamped to current.
+            let (ver,): (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                ver,
+                CURRENT_SCHEMA_VERSION.to_string(),
+                "chain must land on the current version"
+            );
+
+            // Chunk data survived the chain (no row loss across the rebuilds).
+            let (chunk_n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(chunk_n, 1, "the single legacy chunk must survive the chain");
+
+            let (content_hash,): (String,) =
+                sqlx::query_as("SELECT content_hash FROM chunks WHERE id = 'c1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(content_hash, "hashfoo", "chunk payload must be intact");
+
+            // Columns added across the chain exist with correct defaults on the
+            // OLDEST row (these defaults must be right for a v10 row, not just a
+            // v(N-1) row).
+            let (edge_kind,): (String,) =
+                sqlx::query_as("SELECT edge_kind FROM function_calls LIMIT 1")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                edge_kind, "call",
+                "v30 edge_kind default must apply to v10 rows"
+            );
+
+            let (parser_version,): (i64,) =
+                sqlx::query_as("SELECT parser_version FROM chunks WHERE id = 'c1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                parser_version, 0,
+                "v21 parser_version default must be 0 for v10 rows"
+            );
+
+            // The off-grid note was clamp-rewritten to the nearest discrete
+            // value; the rebuilt table's CHECK is satisfied.
+            let (sent0,): (f64,) =
+                sqlx::query_as("SELECT sentiment FROM notes WHERE id = 'note:0'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                sent0, -1.0,
+                "v29 clamp must snap the legacy -0.8 to the nearest discrete value (-1.0)"
+            );
+
+            let (sent1,): (f64,) =
+                sqlx::query_as("SELECT sentiment FROM notes WHERE id = 'note:1'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                sent1, 0.5,
+                "an on-grid legacy note must pass through unchanged"
+            );
+
+            // The v29 CHECK is actually in force on the rebuilt table.
+            let insert_offgrid = sqlx::query(
+                "INSERT INTO notes \
+                 (id, text, sentiment, mentions, embedding, source_file, \
+                  file_mtime, created_at, updated_at, kind) \
+                 VALUES ('note:bad', 't', -0.3, NULL, X'', 'f', 0, 'a', 'b', NULL)",
+            )
+            .execute(&pool)
+            .await;
+            assert!(
+                insert_offgrid.is_err(),
+                "post-chain notes table must enforce the discrete-sentiment CHECK"
+            );
+
+            // file_registry (v29) exists and carries the v31 column.
+            let (reg_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'file_registry'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                reg_sql
+                    .to_lowercase()
+                    .contains("parse_failed_parser_version"),
+                "file_registry must carry the v31 column after the full chain"
+            );
+
+            // Tables created mid-chain exist (type_edges v11, sparse_vectors
+            // v16, llm_summaries v13/v16). A missing one means a step's
+            // `IF NOT EXISTS` masked a real ordering bug.
+            for tbl in ["type_edges", "sparse_vectors", "llm_summaries"] {
+                let present: Option<(String,)> = sqlx::query_as(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name = ?1",
+                )
+                .bind(tbl)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+                assert!(present.is_some(), "{tbl} must exist after the full chain");
+            }
+        });
+    }
 }

@@ -18,6 +18,13 @@ mod handlers;
 /// from a normal build.
 #[cfg(all(cqs_loom, test))]
 mod interleaving_model;
+/// Loom model of the worktree-overlay LRU cross-thread protocol (the
+/// interleaving-auditor lane, #1858 Part A). Same `--cfg cqs_loom` + test-build
+/// gate as `interleaving_model`. Covers the load-outside-lock overlay rebuild
+/// racing a concurrent rebuild / invalidation `clear()`. See the module docs
+/// for the run command. Absent from a normal build.
+#[cfg(all(cqs_loom, test))]
+mod overlay_interleaving_model;
 mod pipeline;
 mod session;
 mod view;

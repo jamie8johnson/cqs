@@ -279,4 +279,54 @@ mod tests {
         assert!(r[0].1 >= r[1].1);
         assert!(r[1].1 >= r[2].1);
     }
+
+    #[test]
+    fn rrf_fuse_wrapper_produces_nonempty_fused_results() {
+        // Adequacy regression (mutation-testing test-fire): the 2-list
+        // `rrf_fuse` wrapper is the production hybrid path
+        // (`search/query.rs` calls it for semantic + FTS fusion). Every
+        // existing test exercising it does so through the proptests, which
+        // assert only properties that an EMPTY vector satisfies vacuously
+        // ("all scores positive", "len <= limit", "sorted descending",
+        // "overlap wins" via `unwrap_or(0.0)`). Mutating the body to
+        // `vec![]` therefore left the whole suite green — the wrapper looked
+        // tested but nothing pinned that it returns the fused results at all.
+        //
+        // This test pins non-emptiness AND the exact fused scores, so a
+        // `vec![]` (or any drop-the-results) mutation goes red.
+        let semantic: &[&str] = &["common", "sem_only"];
+        let fts: Vec<String> = vec!["common".to_string(), "fts_only".to_string()];
+
+        let r = rrf_fuse(semantic, &fts, 10);
+
+        // Non-emptiness: the load-bearing property the proptests can't see.
+        assert!(
+            !r.is_empty(),
+            "rrf_fuse must return fused results for non-empty inputs, got empty"
+        );
+
+        let k = rrf_k();
+        let score_of = |id: &str| r.iter().find(|(i, _)| i == id).map(|(_, s)| *s);
+
+        // "common" is rank 1 in both lists → two rank-1 contributions.
+        let common = score_of("common").expect("common must be present in fused output");
+        let expected_common = 2.0 * (1.0 / (k + 1.0));
+        assert!(
+            (common - expected_common).abs() < 1e-6,
+            "common (rank 1 in both lists) should score {expected_common}, got {common}"
+        );
+
+        // Single-list participants are present at their single rank-2 score.
+        let sem_only = score_of("sem_only").expect("sem_only must be present");
+        let fts_only = score_of("fts_only").expect("fts_only must be present");
+        let expected_single = 1.0 / (k + 2.0);
+        assert!((sem_only - expected_single).abs() < 1e-6);
+        assert!((fts_only - expected_single).abs() < 1e-6);
+
+        // Overlap actually wins (non-vacuously — both sides are real scores).
+        assert!(
+            common > sem_only,
+            "overlapping id must outrank single-list ids: {common} vs {sem_only}"
+        );
+    }
 }
