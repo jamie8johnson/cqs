@@ -1720,9 +1720,17 @@ mod tests {
         );
     }
 
-    /// Sibling pin: the task pipeline (scout → gather → impact → placement) also
-    /// overlays its scout SEED and carries the `seed-only` marker. Asserts the
-    /// marker; the scout-phase symbol surfacing is covered by the scout test.
+    /// Part A invariant: the task pipeline (scout → gather → impact →
+    /// placement) overlays its scout SEED AND surfaces the overlay-added
+    /// function's chunk in its `code` section — the two halves of the response
+    /// must AGREE. `task_core` extracts the modify-target name from the overlaid
+    /// scout; if `fetch_and_assemble` re-fetches it by name from the PARENT store
+    /// (which has no chunk for a worktree-added function) the function shows in
+    /// `scout.file_groups` but is absent from the `code` section — an internally
+    /// inconsistent single response, while the `seed-only` marker keeps
+    /// promising the seed is present. Asserting only the marker cannot catch
+    /// that; this asserts the chunk is in `json["code"]` with its worktree
+    /// content, and is present in `scout` too.
     #[cfg(feature = "slow-tests")]
     #[test]
     fn overlay_task_seed_overlaid_marker() {
@@ -1752,17 +1760,49 @@ mod tests {
             json["_meta"]["overlay_graph"], "seed-only",
             "task must carry _meta.overlay_graph = seed-only when overlaid; got {json}"
         );
+
+        // The scout phase surfaces the overlay-added symbol (the honest half).
+        let in_scout = json["scout"]["file_groups"]
+            .as_array()
+            .map(|groups| {
+                groups.iter().any(|g| {
+                    g["chunks"].as_array().is_some_and(|chunks| {
+                        chunks.iter().any(|c| c["name"] == "lane_new_widget_total")
+                    })
+                })
+            })
+            .unwrap_or(false);
+        assert!(
+            in_scout,
+            "task scout phase must surface the overlay-added symbol; got {json}"
+        );
+
+        // …and the `code` section must carry its CHUNK with worktree content.
+        // The scout and code halves agreeing is the internal-consistency
+        // invariant: a target surfaced by the overlaid scout must materialize in
+        // the code section with its overlay content, not be dropped by a
+        // parent-only re-fetch.
+        let code_chunk = json["code"]
+            .as_array()
+            .and_then(|code| code.iter().find(|c| c["name"] == "lane_new_widget_total"));
+        let code_chunk = code_chunk.unwrap_or_else(|| {
+            panic!("task `code` section must include the overlay-added function; got {json}")
+        });
+        let content = code_chunk["content"].as_str().unwrap_or("");
+        assert!(
+            content.contains("widget_total"),
+            "task code chunk must carry worktree content; got content={content:?}"
+        );
     }
 
-    /// Sibling pin: `gather`'s SEED is overlay-wired. The payload carries the
-    /// `seed-only` marker (proof the overlay engaged through `gather_core` →
-    /// `gather_with_overlay` → `merge_seed_results`). Symbol-surfacing through
-    /// `merge_seed_results` itself is asserted by `overlay_scout_seed_overlaid`
-    /// (the IDENTICAL lib codepath) and by the `merge_seed_results` unit tests
-    /// in `worktree_overlay.rs`; gather's seed search applies its own dense
-    /// `seed_threshold` (0.3) on top, so whether a given synthetic symbol clears
-    /// it is an embedder-scoring concern, not a wiring one — pinning a specific
-    /// score here would be flaky.
+    /// Part A invariant: `gather`'s SEED is overlay-wired AND its overlay-origin
+    /// chunk SURFACES with worktree content. `merge_seed_results` surfaces the
+    /// overlay-only seed as a `SearchResult`; if `fetch_and_assemble` then
+    /// re-fetches every chunk by name from the PARENT store (where a worktree-
+    /// added name does not exist) the chunk is silently dropped while the
+    /// `seed-only` marker keeps promising the seed is present — the marker would
+    /// lie. Asserting only the marker cannot catch that; this asserts the chunk
+    /// is in `json["chunks"]` with its worktree content.
     #[cfg(feature = "slow-tests")]
     #[test]
     fn overlay_gather_seed_overlaid() {
@@ -1791,6 +1831,165 @@ mod tests {
         assert_eq!(
             json["_meta"]["overlay_graph"], "seed-only",
             "gather must carry _meta.overlay_graph = seed-only when overlaid; got {json}"
+        );
+
+        // The overlay-added seed's CHUNK must be present in the output (not just
+        // the marker). Pre-fix this `chunks` entry was dropped by the parent
+        // by-name re-fetch.
+        let chunk = json["chunks"]
+            .as_array()
+            .and_then(|chunks| chunks.iter().find(|c| c["name"] == "lane_new_widget_total"));
+        let chunk = chunk.unwrap_or_else(|| {
+            panic!("gather must surface the overlay-added seed chunk; got {json}")
+        });
+        // And it must carry the WORKTREE content (the overlay store's chunk),
+        // not a stale/empty parent body. `widget_total` is unique to the
+        // worktree-added body.
+        let content = chunk["content"].as_str().unwrap_or("");
+        assert!(
+            content.contains("widget_total"),
+            "gather overlay seed chunk must carry worktree content; got content={content:?}"
+        );
+    }
+
+    /// Build a parent index (real pipeline) + linked worktree that RENAMES an
+    /// indexed symbol (old name → new name in a tracked, committed file).
+    /// Returns `(dir, ctx, worktree_root)` ready for an overlaid dispatch, or
+    /// `None` when the embedder can't init (CI-without-model → skip).
+    ///
+    /// Parent indexes `renamed_old_token`; the worktree renames it to
+    /// `renamed_new_token`. The overlay must mask the parent origin (so the OLD
+    /// name disappears) and surface the NEW name with its worktree content.
+    #[cfg(feature = "slow-tests")]
+    fn seed_overlay_ctx_with_rename() -> Option<(TempDir, BatchContext, PathBuf)> {
+        let dir = TempDir::new().expect("tempdir");
+        let parent = dir.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir");
+        std::fs::write(
+            parent.join("src/widget.rs"),
+            "/// Compute the renamed widget total.\n\
+             pub fn renamed_old_token() -> i32 {\n    \
+             let widget_total = 7;\n    \
+             widget_total\n\
+             }\n",
+        )
+        .expect("write widget.rs");
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let embedder = match cqs::Embedder::new_cpu(cqs::embedder::ModelConfig::resolve(None, None))
+        {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping rename seed-overlay e2e: embedder init failed: {e}");
+                return None;
+            }
+        };
+        let parser = cqs::parser::Parser::new().expect("parser");
+
+        let cqs_dir = parent.join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join("index.db");
+        {
+            let store = Store::open(&index_path).expect("open store");
+            let model_info =
+                ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+            store.init(&model_info).expect("init store");
+            let mut store = store;
+            store.set_dim(model_info.dimensions);
+            crate::cli::watch::overlay_reindex_files(
+                &parent,
+                &store,
+                &[PathBuf::from("src/widget.rs")],
+                &parser,
+                &embedder,
+                None,
+                true,
+            )
+            .expect("index parent");
+        }
+
+        // Linked worktree that RENAMES the symbol (committed, so it shows as a
+        // tracked diff vs the parent HEAD — git records it as a modify on the
+        // file's origin; the overlay masks that origin and re-indexes the new
+        // body).
+        let wt = dir.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+        std::fs::write(
+            wt.join("src/widget.rs"),
+            "/// Compute the renamed widget total.\n\
+             pub fn renamed_new_token() -> i32 {\n    \
+             let widget_total = 7;\n    \
+             widget_total\n\
+             }\n",
+        )
+        .expect("write renamed widget.rs");
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-q", "-m", "rename"]);
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        assert!(
+            ctx.adopt_embedder(std::sync::Arc::new(embedder)),
+            "embedder slot empty"
+        );
+        Some((dir, ctx, wt))
+    }
+
+    /// Part A calibration pin (RENAME case): the overlay masks the parent origin
+    /// so the OLD symbol name is ABSENT from gather, and surfaces the NEW name
+    /// with its worktree content. The old name leaking through would mean the
+    /// mask half of the overlay was bypassed by the by-name re-fetch; the new
+    /// name missing would mean the surface half was (the bug). Both halves are
+    /// asserted in one response.
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn overlay_gather_seed_rename() {
+        let Some((_dir, ctx, wt)) = seed_overlay_ctx_with_rename() else {
+            return;
+        };
+        let view = ctx.build_view(None);
+        view.set_validated_overlay_request(&wt)
+            .expect("validate wt");
+
+        let input = BatchInput::try_parse_from([
+            "gather",
+            "Compute the renamed widget total",
+            "--overlay",
+            "--overlay-root",
+            wt.to_str().unwrap(),
+        ])
+        .expect("clap parse");
+        let args = match input.cmd {
+            BatchCmd::Gather { args, .. } => args,
+            other => panic!("Expected Gather, got {other:?}"),
+        };
+        let json = crate::cli::batch::handlers::misc::dispatch_gather(&view, &args)
+            .expect("dispatch_gather");
+
+        let names: Vec<String> = json["chunks"]
+            .as_array()
+            .map(|chunks| {
+                chunks
+                    .iter()
+                    .filter_map(|c| c["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert!(
+            names.iter().any(|n| n == "renamed_new_token"),
+            "gather must surface the worktree-renamed (NEW) symbol; got names={names:?} json={json}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "renamed_old_token"),
+            "gather must NOT surface the parent (OLD) symbol — overlay masks its origin; got names={names:?} json={json}"
         );
     }
 }

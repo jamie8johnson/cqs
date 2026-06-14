@@ -220,9 +220,11 @@ pub(in crate::cli::batch) fn dispatch_task(
         .clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
-    // Overlay the task SCOUT seed from an eligible worktree (Part A); the
-    // gather/impact/placement phases fetch by name from the parent store and so
-    // stay on parent-truth.
+    // Overlay the task SCOUT seed from an eligible worktree (Part A). The gather
+    // phase also surfaces overlay-origin SEED chunks (a worktree-added/modified
+    // target shows its worktree content in `code`, matching the overlaid scout);
+    // BFS expansion and the impact/placement phases stay on parent-truth (the
+    // `seed-only` marker).
     let overlay = resolve_seed_overlay(ctx, &args.overlay)?;
     let result = cqs::task_with_resources_overlay(
         &ctx.store(),

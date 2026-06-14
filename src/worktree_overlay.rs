@@ -267,6 +267,103 @@ impl WorktreeOverlay {
 
         merged
     }
+
+    /// Extract the overlay-ORIGIN seeds from a merged seed set, keyed by name.
+    ///
+    /// An overlay-origin seed is one whose `chunk.file` is in `masked_origins`
+    /// — i.e. it came from the overlay fan-out (a worktree-added, -renamed, or
+    /// -modified origin), not the masked-survivor parent tail. (A parent
+    /// survivor never has its file in `masked_origins`; `merge_seed_results`
+    /// drops those first.)
+    ///
+    /// `gather`/`task` PREFER these over a by-name re-fetch when assembling
+    /// depth-0 chunks: the parent store has no chunk for an overlay-only name
+    /// (a worktree-added function), and serves STALE content for a modified
+    /// origin's name. Surfacing the overlay seed itself makes gather/task as
+    /// honest about the worktree delta as `scout` (which consumes the merged
+    /// `SearchResult`s directly) — the `seed-only` `_meta.overlay_graph` marker
+    /// then tells the truth: seeds (and their chunks) overlaid, expansion
+    /// parent-truth. The expansion (BFS) stays parent-truth in Part A.
+    ///
+    /// Name-keyed: a name-collision between an overlay seed and an
+    /// equally-named parent BFS-expanded node resolves to the overlay version
+    /// only at depth 0 (`fetch_and_assemble` consults this map for depth-0
+    /// chunks only), matching where `merge_seed_results` placed it.
+    pub fn overlay_origin_seeds(
+        &self,
+        merged: &[crate::store::SearchResult],
+    ) -> std::collections::HashMap<String, crate::store::SearchResult> {
+        let _span = tracing::info_span!(
+            "overlay_origin_seeds",
+            merged = merged.len(),
+            masked = self.masked_origins.len()
+        )
+        .entered();
+        let mut out = std::collections::HashMap::new();
+        for sr in merged {
+            if self.masked_origins.contains(&sr.chunk.file) {
+                // Last writer wins on a name collision among overlay seeds —
+                // `merge_seed_results` already sorted by score desc, so the
+                // entry().or_insert keeps the highest-scoring overlay hit.
+                out.entry(sr.chunk.name.clone())
+                    .or_insert_with(|| sr.clone());
+            }
+        }
+        out
+    }
+
+    /// Fetch overlay-store chunks for `names` by EXACT name, restricted to
+    /// overlay-origin chunks, as a name → `SearchResult` map.
+    ///
+    /// `task`'s gather phase derives its targets as bare names from the scout
+    /// output (no `SearchResult` survives), then re-materializes chunks by name
+    /// from the PARENT store — which silently drops a worktree-added target and
+    /// serves stale content for a worktree-modified one. This recovers the
+    /// overlay chunk for any such target so the task `code` section carries the
+    /// worktree content, matching the overlaid scout phase that surfaced the
+    /// target in the first place.
+    ///
+    /// Exact-name (`get_chunks_by_names_batch`) rather than the FTS-fuzzy
+    /// `search_by_names_batch`: a target is an exact symbol name from scout, and
+    /// the overlay store is tiny, so a fuzzy match would only invite
+    /// false-positive overlay chunks. Score is a sentinel `1.0` (these are
+    /// pinned targets, not re-ranked hits). Best-effort: a store error logs and
+    /// degrades to an empty map (the parent re-fetch then runs unchanged).
+    pub fn overlay_seed_chunks_for_names(
+        &self,
+        names: &[&str],
+    ) -> std::collections::HashMap<String, crate::store::SearchResult> {
+        let _span = tracing::info_span!(
+            "overlay_seed_chunks_for_names",
+            count = names.len(),
+            masked = self.masked_origins.len()
+        )
+        .entered();
+        let mut out = std::collections::HashMap::new();
+        let by_name = match self.store.get_chunks_by_names_batch(names) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "overlay seed-by-name fetch failed; task gather falls back to parent re-fetch"
+                );
+                return out;
+            }
+        };
+        for (name, chunks) in by_name {
+            // Keep only chunks whose origin is in the delta (overlay-origin) —
+            // the overlay store holds ONLY delta files, so this is belt-and-
+            // suspenders, but it keeps the invariant explicit and survives any
+            // future overlay-store contents change.
+            if let Some(chunk) = chunks
+                .into_iter()
+                .find(|c| self.masked_origins.contains(&c.file))
+            {
+                out.insert(name, crate::store::SearchResult::new(chunk, 1.0));
+            }
+        }
+        out
+    }
 }
 
 // ─── `_meta.worktree_overlay` envelope state ────────────────────────────────
@@ -1077,14 +1174,14 @@ mod tests {
         /// One-hot embedding (`1.0` at `slot`). Distinct slots are near-
         /// orthogonal, so a query at `slot` retrieves only the chunk seeded
         /// there from the brute-force overlay store.
-        fn one_hot(slot: usize) -> Embedding {
+        pub(super) fn one_hot(slot: usize) -> Embedding {
             let mut v = vec![0.0_f32; crate::EMBEDDING_DIM];
             v[slot] = 1.0;
             Embedding::new(v)
         }
 
         /// A project-side seed `SearchResult` for `(file, name, score)`.
-        fn project_result(file: &str, name: &str, score: f32) -> SearchResult {
+        pub(super) fn project_result(file: &str, name: &str, score: f32) -> SearchResult {
             let summary = ChunkSummary {
                 id: format!("{file}:{name}"),
                 file: PathBuf::from(file),
@@ -1108,7 +1205,10 @@ mod tests {
 
         /// Build a `WorktreeOverlay` whose in-memory store holds one chunk per
         /// `(file, name, slot)` triple, with `masked_origins` exactly `masked`.
-        fn overlay_with(seeds: &[(&str, &str, usize)], masked: &[&str]) -> WorktreeOverlay {
+        pub(super) fn overlay_with(
+            seeds: &[(&str, &str, usize)],
+            masked: &[&str],
+        ) -> WorktreeOverlay {
             let mut store = Store::open_memory().expect("open_memory");
             store.init(&ModelInfo::default()).expect("init store");
             store.set_dim(crate::EMBEDDING_DIM);
@@ -1242,6 +1342,90 @@ mod tests {
             assert_eq!(merged.len(), 2, "truncated to limit=2");
             assert_eq!(merged[0].chunk.name, "high", "overlay hit ranks first");
             assert_eq!(merged[1].chunk.name, "mid", "lowest-scoring hit dropped");
+        }
+    }
+
+    // ── overlay-origin seed surfacing (gather/task depth-0 preference) ──
+    //
+    // The seed sites PREFER these chunks at depth 0 so gather/task surface an
+    // overlay-origin seed's worktree content (matching scout). Reuses the
+    // `merge_seed_results` module's embedder-free fixtures via re-import.
+    mod overlay_origin_seeds {
+        use super::merge_seed_results::*;
+        use super::*;
+        use crate::store::SearchResult;
+
+        /// `overlay_origin_seeds` keeps ONLY the seeds whose origin is in the
+        /// delta (overlay-origin), keyed by name — the parent survivors are
+        /// dropped (they're served from the parent store by name, unchanged).
+        #[test]
+        fn keeps_only_overlay_origin_keyed_by_name() {
+            let overlay = overlay_with(&[("src/new.rs", "fresh_fn", 0)], &["src/new.rs"]);
+            // `merged` is what `merge_seed_results` would hand back: an overlay
+            // hit (origin in delta) plus an untouched parent survivor.
+            let merged = vec![
+                project_result("src/new.rs", "fresh_fn", 0.95),
+                project_result("src/old.rs", "existing_fn", 0.5),
+            ];
+            let map = overlay.overlay_origin_seeds(&merged);
+            assert!(
+                map.contains_key("fresh_fn"),
+                "overlay-origin seed must be kept; got {:?}",
+                map.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !map.contains_key("existing_fn"),
+                "parent-survivor seed must NOT be in the overlay map; got {:?}",
+                map.keys().collect::<Vec<_>>()
+            );
+            // The kept entry carries the overlay `SearchResult` (worktree
+            // content), not a placeholder.
+            assert_eq!(map["fresh_fn"].chunk.file, PathBuf::from("src/new.rs"));
+        }
+
+        /// On a name collision among overlay seeds, the highest-scoring one wins
+        /// (`merge_seed_results` already sorted by score desc, so first-writer-
+        /// wins on the pre-sorted slice keeps the top hit).
+        #[test]
+        fn name_collision_keeps_first_pre_sorted() {
+            let overlay = overlay_with(&[("src/a.rs", "dup", 0)], &["src/a.rs", "src/b.rs"]);
+            // Two overlay-origin hits with the same name, score-desc order.
+            let merged = vec![
+                project_result("src/a.rs", "dup", 0.9),
+                project_result("src/b.rs", "dup", 0.4),
+            ];
+            let map = overlay.overlay_origin_seeds(&merged);
+            assert_eq!(map.len(), 1, "one entry per name");
+            assert_eq!(
+                map["dup"].chunk.file,
+                PathBuf::from("src/a.rs"),
+                "highest-scoring (first in pre-sorted slice) overlay hit wins"
+            );
+        }
+
+        /// `overlay_seed_chunks_for_names` (task's by-exact-name path) recovers a
+        /// worktree-added function's chunk from the overlay store, restricted to
+        /// overlay-origin names. A name the overlay store doesn't hold is absent.
+        #[test]
+        fn by_name_recovers_overlay_chunk() {
+            let overlay = overlay_with(&[("src/new.rs", "fresh_fn", 0)], &["src/new.rs"]);
+            let map: std::collections::HashMap<String, SearchResult> =
+                overlay.overlay_seed_chunks_for_names(&["fresh_fn", "not_in_overlay"]);
+            assert!(
+                map.contains_key("fresh_fn"),
+                "task by-name fetch must recover the overlay-added chunk; got {:?}",
+                map.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !map.contains_key("not_in_overlay"),
+                "a name absent from the overlay store must not appear; got {:?}",
+                map.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(map["fresh_fn"].chunk.file, PathBuf::from("src/new.rs"));
+            assert!(
+                map["fresh_fn"].chunk.content.contains("fresh_fn"),
+                "recovered chunk carries the overlay (worktree) content"
+            );
         }
     }
 }

@@ -394,13 +394,36 @@ pub(crate) fn bfs_expand(
 
 /// Batch-fetch chunks for expanded names, deduplicate by id, assemble `GatheredChunk`s.
 ///
+/// `overlay_seeds`, when `Some`, maps an overlay-origin SEED name to its overlay
+/// `SearchResult` (built by `WorktreeOverlay::overlay_origin_seeds` /
+/// `overlay_seed_chunks_for_names`). A depth-0 name present there is assembled
+/// from the OVERLAY chunk and EXCLUDED from the parent by-name batch, so a
+/// worktree-added seed surfaces (the parent store has no chunk for it) and a
+/// worktree-modified seed shows its worktree content (not the parent's stale
+/// copy). Expansion (depth > 0) always re-fetches from the parent store —
+/// graph expansion stays parent-truth in Part A. `None` (the no-overlay path
+/// and the cross-index / onboard callers) is byte-identical to the prior
+/// parent-only behavior.
+///
 /// Returns `(chunks, search_degraded)`.
 pub(crate) fn fetch_and_assemble<Mode>(
     store: &Store<Mode>,
     name_scores: &HashMap<String, (f32, usize)>,
     root: &Path,
+    overlay_seeds: Option<&HashMap<String, crate::store::SearchResult>>,
 ) -> (Vec<GatheredChunk>, bool) {
-    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
+    // A name is served from the overlay only at depth 0. Exclude those names
+    // from the parent batch so we never spend an FTS probe re-fetching a chunk
+    // we're about to override (and so a parent name-collision can't sneak in).
+    let is_overlay_seed = |name: &str, depth: usize| -> bool {
+        depth == 0 && overlay_seeds.is_some_and(|seeds| seeds.contains_key(name))
+    };
+
+    let all_names: Vec<&str> = name_scores
+        .iter()
+        .filter(|(name, (_, depth))| !is_overlay_seed(name, *depth))
+        .map(|(name, _)| name.as_str())
+        .collect();
     let (batch_results, search_degraded) = match store.search_by_names_batch(&all_names, 1) {
         Ok(r) => (r, false),
         Err(e) => {
@@ -413,6 +436,18 @@ pub(crate) fn fetch_and_assemble<Mode>(
     let mut chunks: Vec<GatheredChunk> = Vec::new();
 
     for (name, (score, depth)) in name_scores {
+        // Prefer the overlay seed for an overlay-origin depth-0 name: the
+        // parent store either has no chunk for it (worktree-added) or a stale
+        // one (worktree-modified). This is the gather/task analogue of scout
+        // consuming the merged `SearchResult`s directly.
+        if is_overlay_seed(name, *depth) {
+            if let Some(r) = overlay_seeds.and_then(|seeds| seeds.get(name)) {
+                if seen_ids.insert(r.chunk.id.clone()) {
+                    chunks.push(GatheredChunk::from_search(r, root, *score, *depth, None));
+                }
+                continue;
+            }
+        }
         if let Some(results) = batch_results.get(name) {
             if let Some(r) = results.first() {
                 // HashSet::insert returns false if the key was already
@@ -612,6 +647,14 @@ pub fn gather_with_graph_overlay<Mode>(
         }
     }
 
+    // Overlay-origin seeds: assemble these depth-0 chunks from the OVERLAY
+    // store, not the parent. The parent has no chunk for a worktree-added seed
+    // (it would be silently dropped) and a stale one for a worktree-modified
+    // seed — so without this, the `seed-only` `_meta.overlay_graph` marker
+    // would lie for the headline case (new code added in the lane). Only the
+    // seed surfaces overlaid; the BFS expansion below stays parent-truth.
+    let overlay_seeds = overlay.map(|ov| ov.overlay_origin_seeds(&seed_results));
+
     // 2. BFS expand
     let expansion_capped = bfs_expand(&mut name_scores, graph, opts);
     tracing::info!(
@@ -621,7 +664,8 @@ pub fn gather_with_graph_overlay<Mode>(
     );
 
     // 3. Batch-fetch chunks, deduplicate
-    let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, root);
+    let (mut chunks, search_degraded) =
+        fetch_and_assemble(store, &name_scores, root, overlay_seeds.as_ref());
 
     // 3b. Attach seed provenance to depth-0 chunks. Expanded chunks (depth > 0)
     // weren't retrieved by fusion and keep an empty `rank_signals`.
@@ -835,7 +879,10 @@ pub fn gather_cross_index_with_index<Mode: Sync>(
     );
 
     // 5. Batch-fetch project chunks
-    let (project_chunks, search_degraded) = fetch_and_assemble(project_store, &name_scores, root);
+    // Cross-index gather seeds from the reference, not the project store —
+    // the worktree overlay does not apply (Part A), so no overlay seeds.
+    let (project_chunks, search_degraded) =
+        fetch_and_assemble(project_store, &name_scores, root, None);
 
     // 6. Combine ref seeds + project chunks, sort by score, truncate, re-sort to reading order
     let mut all_chunks = ref_chunks;

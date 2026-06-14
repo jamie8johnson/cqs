@@ -270,7 +270,7 @@ pub fn onboard<Mode>(
     //    so we do a direct lookup and prefer the exact name + file match from scout.
     let entry_point = fetch_entry_point(store, &entry_name, &entry_file, root)?;
 
-    let (mut callee_chunks, _) = fetch_and_assemble(store, &callee_scores, root);
+    let (mut callee_chunks, _) = fetch_and_assemble(store, &callee_scores, root, None);
     // Sort by depth asc, then file/line within depth
     callee_chunks.sort_by(|a, b| {
         a.depth
@@ -281,7 +281,7 @@ pub fn onboard<Mode>(
     let call_chain: Vec<OnboardEntry> =
         callee_chunks.into_iter().map(gathered_to_onboard).collect();
 
-    let (mut caller_chunks, _) = fetch_and_assemble(store, &caller_scores, root);
+    let (mut caller_chunks, _) = fetch_and_assemble(store, &caller_scores, root, None);
     // Sort callers by score desc. Secondary sort on (file, line_start, name)
     // keeps equal-score callers deterministically ordered across process
     // invocations.

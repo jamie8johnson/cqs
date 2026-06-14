@@ -249,6 +249,19 @@ pub(crate) fn task_core<Mode>(
         let mut name_scores: HashMap<String, (f32, usize)> =
             targets.iter().map(|n| (n.to_string(), (1.0, 0))).collect();
 
+        // Overlay-origin targets (depth 0): the scout phase surfaced these from
+        // the worktree delta, but `fetch_and_assemble` re-materializes by name
+        // from the PARENT store — which drops a worktree-added target and serves
+        // stale content for a worktree-modified one. Recover the overlay chunk
+        // by exact name so the `code` section is as honest about the delta as
+        // the scout phase that produced the targets. BFS expansion below (and
+        // the impact/placement phases) stay parent-truth (the `seed-only`
+        // marker).
+        let overlay_seeds = overlay.map(|ov| {
+            let target_names: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+            ov.overlay_seed_chunks_for_names(&target_names)
+        });
+
         // `GatherOptions::default()` resolves `CQS_GATHER_MAX_NODES` for the
         // node cap; depth is `CQS_TASK_GATHER_DEPTH` / `CQS_GATHER_DEPTH`
         // overridable via `task_gather_depth()`.
@@ -260,7 +273,8 @@ pub(crate) fn task_core<Mode>(
                 .with_direction(GatherDirection::Both),
         );
 
-        let (mut chunks, _degraded) = fetch_and_assemble(store, &name_scores, root);
+        let (mut chunks, _degraded) =
+            fetch_and_assemble(store, &name_scores, root, overlay_seeds.as_ref());
         sort_and_truncate(&mut chunks, limit * TASK_GATHER_LIMIT_MULTIPLIER);
         chunks
     };
