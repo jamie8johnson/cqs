@@ -88,6 +88,11 @@ fn find_neighbors<Mode>(
     target: &ChunkSummary,
     limit: usize,
 ) -> Result<Vec<(ChunkSummary, f32)>> {
+    // Clamp via the shared cap so neighbors bounds its result list like its
+    // sibling `similar` (the HNSW variant of this brute-force scan). Without
+    // it, `-n 1000000` truncates to the full corpus and fans out one DB lookup
+    // per chunk — the unbounded-result amplification the named cap prevents.
+    let limit = limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
     let _span = tracing::info_span!("find_neighbors", target = %target.name, limit).entered();
 
     // Get target embedding
