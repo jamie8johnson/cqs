@@ -376,6 +376,101 @@ mod parity_tests {
         assert_eq!(dispatched, core_val, "dispatch_dead must equal dead_core");
     }
 
+    /// Seed a context whose index holds a candidate-ONLY callee `maybe_fn`
+    /// (zero `function_calls` edges, one `candidate_edges` row) so the
+    /// candidate-edge consult (Lane 3) has something to flip. Returns the temp
+    /// dir (kept alive) and the context.
+    fn seed_candidate_only_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+        use cqs::parser::CandidateSite;
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let chunks = vec![(make_chunk("src/lib.rs:1:maybe_fn", "maybe_fn"), embedding)];
+            store.upsert_chunks_batch(&chunks, Some(0)).expect("upsert");
+            // A `candidate_edges` row naming `maybe_fn`: the consult must relabel
+            // it `low-confidence-live` instead of `dead`.
+            store
+                .upsert_candidate_edges(
+                    std::path::Path::new("src/caller.rs"),
+                    &[CandidateSite {
+                        file: std::path::PathBuf::from("src/caller.rs"),
+                        callee_name: "maybe_fn".to_string(),
+                        ref_line: 9,
+                        candidate_kind: "bare_arg_unresolved".to_string(),
+                    }],
+                )
+                .expect("upsert candidate");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("ctx");
+        (dir, ctx)
+    }
+
+    /// CLI==daemon parity on a candidate-bearing fixture: a candidate-only callee
+    /// surfaces as `low-confidence-live` (not `dead`) on BOTH surfaces, and the
+    /// daemon JSON byte-equals the core. Fixture-grounded so a both-sides-empty
+    /// or both-sides-wrong-verdict regression still fails.
+    #[test]
+    fn parity_dead_candidate_only_low_confidence_live() {
+        let (_dir, ctx) = seed_candidate_only_ctx();
+        let view = ctx.build_view(None);
+
+        let core = crate::cli::commands::dead_core(
+            &view.store(),
+            &view.root,
+            &crate::cli::commands::DeadArgs {
+                include_pub: false,
+                min_confidence: DeadConfidence::Low,
+                verdict: None,
+            },
+        )
+        .expect("dead_core");
+        let core_val = serde_json::to_value(&core).expect("serialize core");
+
+        // Fixture-grounded: `maybe_fn` is present and classified
+        // `low-confidence-live` (the candidate consult flipped it from `dead`),
+        // with the candidate kind named in the reason.
+        let entry = core_val["dead"]
+            .as_array()
+            .unwrap_or_else(|| panic!("dead core must carry a dead array: {core_val}"))
+            .iter()
+            .find(|d| d["name"] == "maybe_fn")
+            .unwrap_or_else(|| panic!("candidate-only `maybe_fn` must surface: {core_val}"));
+        assert_eq!(
+            entry["verdict"], "low-confidence-live",
+            "candidate-only callee must be low-confidence-live, not dead: {entry}"
+        );
+        let reason = entry["verdict_reason"].as_str().unwrap_or("");
+        assert!(
+            reason.contains("candidate edge") && reason.contains("bare_arg_unresolved"),
+            "reason must name the candidate kind: {reason}"
+        );
+
+        let dispatched = super::dispatch_dead(
+            &view,
+            &crate::cli::args::DeadArgs {
+                include_pub: false,
+                min_confidence: DeadConfidence::Low,
+                verdict: None,
+                overlay: Default::default(),
+            },
+        )
+        .expect("dispatch_dead");
+
+        assert_eq!(
+            dispatched, core_val,
+            "dispatch_dead must equal dead_core on a candidate-bearing fixture"
+        );
+    }
+
     /// `dispatch_health` equals `serde_json::to_value(health_core(...))` (parity
     /// by construction). The fixture-grounded assert pins that the seeded chunk
     /// is counted, guarding against both sides reporting an empty index.

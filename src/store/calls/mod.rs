@@ -51,6 +51,16 @@ pub struct DeadFunction {
     pub chunk: ChunkSummary,
     /// How confident we are that this function is dead
     pub confidence: DeadConfidence,
+    /// Set only by `apply_dead_overlay` Direction B: this entry was computed
+    /// dead over the authoritative merged (parent+overlay) caller graph in this
+    /// worktree, not read off the parent dead set. Verdict classification must
+    /// not relabel it via the parent-truth `low_conf` heuristic-caller map — that
+    /// map is parent-graph-derived and stale under the overlay, so a
+    /// genuinely-worktree-dead function whose name collides with a parent
+    /// candidate/heuristic name would otherwise be hidden from `--verdict dead`.
+    /// Internal-only; entries reach user-facing JSON as `DeadFunctionEntry`.
+    #[serde(skip)]
+    pub overlay_dead: bool,
 }
 
 /// Confidence level for dead code detection.
@@ -76,17 +86,31 @@ impl DeadConfidence {
     }
 }
 
-/// Heuristic-caller breakdown for a `low-confidence-live` callee: the total
-/// number of heuristic edges reaching it plus the per-kind counts. Lets the
-/// `cqs dead` verdict reason name the heuristic kinds and their counts instead
-/// of asserting a generic "all callers are heuristic" claim. Produced by
+/// Low-confidence-liveness evidence for a callee with NO trusted caller: the
+/// heuristic-edge breakdown (from `function_calls`) AND the candidate-edge
+/// breakdown (from the `candidate_edges` side-table, Lane 2). Either population
+/// alone is enough to relabel a zero-trusted-caller function
+/// `low-confidence-live` instead of `dead`; both feed the `cqs dead` verdict
+/// reason so it can name the exact provenance and counts rather than a generic
+/// "all callers are heuristic" claim. Produced by
 /// [`Store::find_low_confidence_live_names`].
 #[derive(Debug, Clone, Default)]
 pub struct LowConfidenceLiveInfo {
     /// Total heuristic edges reaching this callee (no trusted edge exists).
     pub total: u64,
-    /// `(edge_kind string, count)` pairs, sorted for deterministic reasons.
+    /// `(edge_kind string, count)` pairs from `function_calls`, sorted for
+    /// deterministic reasons.
     pub kind_counts: Vec<(String, u64)>,
+    /// Total `candidate_edges` (Lane 2) references naming this callee (no trusted
+    /// edge exists). A nonzero value with `total == 0` is a candidate-ONLY callee
+    /// — zero `function_calls` edges, present only in the side-table.
+    pub candidate_total: u64,
+    /// `(candidate_kind string, count)` pairs from `candidate_edges`, sorted for
+    /// deterministic reasons. Kinds are the Lane-2 provenance strings
+    /// (`bare_arg_unresolved` / `macro_arg_unresolved` / `serde_container` /
+    /// `serde_with_module`), reported transparently so a new candidate kind
+    /// surfaces without a query change.
+    pub candidate_counts: Vec<(String, u64)>,
 }
 
 impl std::fmt::Display for DeadConfidence {
