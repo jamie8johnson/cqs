@@ -10,8 +10,9 @@ use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::RiskLevel;
-use crate::review::{review_diff, ReviewResult, RiskSummary};
+use crate::review::{review_diff_overlay, ReviewResult, RiskSummary};
 use crate::store::DeadConfidence;
+use crate::worktree_overlay::WorktreeOverlay;
 use crate::Store;
 
 /// Gate threshold level — determines when CI fails.
@@ -69,6 +70,11 @@ pub struct CiReport {
 
 /// Run CI analysis on a unified diff.
 ///
+/// Plain entry point: no worktree overlay. The full logic lives in
+/// [`run_ci_analysis_overlay`]; this delegates with `None` so the parent-truth
+/// byte shape is unchanged (participation is discarded). The CLI direct path
+/// (`cmd_ci` text) and every existing caller go through here.
+///
 /// Composes:
 /// 1. `review_diff()` — impact analysis + risk scoring + notes + staleness
 /// 2. `find_dead_code()` — filtered to files touched by the diff
@@ -79,23 +85,69 @@ pub fn run_ci_analysis<Mode>(
     root: &Path,
     threshold: GateThreshold,
 ) -> Result<CiReport, AnalysisError> {
-    let _span = tracing::info_span!("run_ci_analysis", ?threshold).entered();
+    Ok(run_ci_analysis_overlay(store, diff_text, root, threshold, None)?.0)
+}
 
-    // 1. Full review (impact + risk + notes + stale)
-    let review = match review_diff(store, diff_text, root)? {
+/// Worktree-overlay-aware [`run_ci_analysis`]. Identical to
+/// [`run_ci_analysis`] when `overlay` is `None`. When `Some`, BOTH bundled
+/// sections reflect the worktree delta:
+///
+/// - **review** is computed via [`review_diff_overlay`] — only its
+///   `affected_callers` section is overlaid (the same mask+union `cqs review`
+///   applies); its `affected_tests` + per-function risk scores stay parent-truth.
+///   So the review component is `"callers-only"`.
+/// - **dead_in_diff** is recomputed over the merged caller graph via
+///   [`crate::store::apply_dead_overlay`] (the same Direction A/B merge `cqs dead`
+///   applies, BEFORE the diff-file filter), so a worktree call that flips a
+///   diff-file function dead⇄live is reflected. The dead component is `"full"`.
+///
+/// Returns `(CiReport, overlay_participated)`. Participation is `true` iff the
+/// review-overlay merge OR the dead-overlay merge consulted the delta for THIS
+/// diff. Every parent-truth early-return (`review` maps no indexed function) and
+/// every no-overlay call reports `false`.
+///
+/// Composite-marker honesty (the daemon adapter's concern): `cqs ci` bundles a
+/// `"callers-only"` component (review) and a `"full"` component (dead). The
+/// weakest component bounds the claim, so the daemon emits the combined
+/// `_meta.overlay_graph = "callers-only"` marker when this returns
+/// `participated == true` — NEVER `"full"`, which would over-promise the
+/// review's tests/risk sections as delta-aware (PR2/PR3 precedent: a partial
+/// overlay must never claim `"full"`).
+pub fn run_ci_analysis_overlay<Mode>(
+    store: &Store<Mode>,
+    diff_text: &str,
+    root: &Path,
+    threshold: GateThreshold,
+    overlay: Option<&WorktreeOverlay>,
+) -> Result<(CiReport, bool), AnalysisError> {
+    let _span =
+        tracing::info_span!("run_ci_analysis", ?threshold, overlay = overlay.is_some()).entered();
+
+    // 1. Full review (impact + risk + notes + stale). The overlay (when present)
+    //    merges ONLY the direct-callers section; `review_participated` records
+    //    whether it changed that section for this diff.
+    let (review_opt, review_participated) = review_diff_overlay(store, diff_text, root, overlay)?;
+    let review = match review_opt {
         Some(r) => r,
         None => {
+            // Parent-truth early-return (no indexed function affected). The review
+            // overlay reports `participated == false` here by construction, and the
+            // dead scan below is skipped, so the whole report is parent-truth: no
+            // marker downstream.
             tracing::info!("No indexed functions affected by diff");
-            return Ok(CiReport {
-                review: empty_review(),
-                dead_in_diff: Vec::new(),
-                dead_scan_ok: true,
-                gate: GateResult {
-                    threshold,
-                    passed: true,
-                    reasons: Vec::new(),
+            return Ok((
+                CiReport {
+                    review: empty_review(),
+                    dead_in_diff: Vec::new(),
+                    dead_scan_ok: true,
+                    gate: GateResult {
+                        threshold,
+                        passed: true,
+                        reasons: Vec::new(),
+                    },
                 },
-            });
+                false,
+            ));
         }
     };
 
@@ -107,8 +159,25 @@ pub fn run_ci_analysis<Mode>(
         .collect();
     let diff_files: HashSet<&str> = diff_file_strings.iter().map(|s| s.as_str()).collect();
 
+    let mut dead_participated = false;
     let (dead_in_diff, dead_scan_ok) = match store.find_dead_code(true) {
-        Ok((confident, possibly_pub)) => {
+        Ok((mut confident, mut possibly_pub)) => {
+            // Worktree-overlay merge over the parent dead populations (BEFORE the
+            // diff-file filter so a delta-driven flip is reflected). `cqs ci`'s
+            // dead scan uses include_pub=true and reports every confidence, so the
+            // merge runs with the same include_pub=true and `Low` floor — the
+            // shared lib merge (`cqs dead` drives the identical call) so the two
+            // surfaces cannot drift.
+            if let Some(ov) = overlay {
+                dead_participated = crate::store::apply_dead_overlay(
+                    store,
+                    ov,
+                    &mut confident,
+                    &mut possibly_pub,
+                    true,
+                    DeadConfidence::Low,
+                )?;
+            }
             let dead: Vec<DeadInDiff> = confident
                 .into_iter()
                 .chain(possibly_pub)
@@ -150,12 +219,18 @@ pub fn run_ci_analysis<Mode>(
         );
     }
 
-    Ok(CiReport {
-        review,
-        dead_in_diff,
-        dead_scan_ok,
-        gate,
-    })
+    // Participation is true if EITHER bundled component consulted the delta. The
+    // daemon adapter gates the (composite) marker on this bool.
+    let participated = review_participated || dead_participated;
+    Ok((
+        CiReport {
+            review,
+            dead_in_diff,
+            dead_scan_ok,
+            gate,
+        },
+        participated,
+    ))
 }
 
 /// Evaluate whether the CI gate passes for the given risk summary.

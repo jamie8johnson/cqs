@@ -804,6 +804,177 @@ impl<Mode> Store<Mode> {
     }
 }
 
+/// Whether `name` has ≥1 real-caller edge (excludes `doc_reference`) in `store`.
+/// A best-effort store read: a query error logs and degrades to `false` (treats
+/// the function as having no real caller), the safe direction for the overlay
+/// merge — it never resurrects a function on a failed read.
+fn overlay_has_real_caller<M>(store: &Store<M>, name: &str) -> bool {
+    match store.get_callers_full(name) {
+        Ok(callers) => callers.iter().any(|c| c.edge_kind.is_real_caller()),
+        Err(e) => {
+            tracing::warn!(error = %e, name, "overlay get_callers_full failed; treating as no real caller");
+            false
+        }
+    }
+}
+
+/// Resolve the definition chunk for a Direction-B dead candidate, applying the
+/// Tier-1 admissibility filters `fetch_uncalled_functions` applies so an
+/// overlay-added entry can never be a shape the parent path would have excluded:
+/// the def must be a callable, NON-`Property`, NON-doc-path ([`is_dead_doc_path`]),
+/// top-level (`parent_id` None), non-test chunk. Prefers the overlay store's def
+/// (current worktree line range) when the name is defined there, else the
+/// parent's. Returns `None` for a name with no admissible def (an external/std
+/// call, a test, a nested chunk, a property, a doc-block fn).
+fn resolve_overlay_dead_candidate_def<M>(
+    store: &Store<M>,
+    overlay_store: &Store<crate::store::ReadWrite>,
+    name: &str,
+) -> Option<ChunkSummary> {
+    let admissible = |c: &ChunkSummary| -> bool {
+        c.chunk_type.is_callable()
+            && c.chunk_type != ChunkType::Property
+            && c.parent_id.is_none()
+            && !is_dead_doc_path(&c.file.to_string_lossy())
+            && !crate::is_test_chunk(&c.name, &c.file.to_string_lossy())
+    };
+    // Prefer the overlay def (worktree line range) when present + admissible.
+    if let Ok(chunks) = overlay_store.get_chunks_by_name(name) {
+        if let Some(c) = chunks.into_iter().find(|c| admissible(c)) {
+            return Some(c);
+        }
+    }
+    match store.get_chunks_by_name(name) {
+        Ok(chunks) => chunks.into_iter().find(|c| admissible(c)),
+        Err(e) => {
+            tracing::warn!(error = %e, name, "dead overlay candidate def lookup failed");
+            None
+        }
+    }
+}
+
+/// Merge a worktree overlay into the parent dead populations, in place. The
+/// single source of truth for the `cqs dead` AND `cqs ci` worktree-overlay dead
+/// paths — both call this so the two surfaces cannot drift.
+///
+/// Recomputes the dead set over the MERGED caller graph (parent real-caller
+/// edges minus delta-touched caller-origins, plus the worktree's edges), in two
+/// directions:
+///
+/// - **parent-dead → live (removal):** a parent-dead function the worktree now
+///   really-calls (the overlay store holds a real-caller edge to it) is dropped
+///   from the dead set — it is live in this checkout.
+/// - **parent-live → dead (addition):** a parent-live function whose every
+///   real-caller edge sits in a delta-touched origin, and which the worktree no
+///   longer calls, becomes dead. Candidates are exactly the callees of the delta
+///   files ([`Store::distinct_callees_from_origins`]); for each, `merge_callers`
+///   over (parent, overlay) is checked for zero real-caller edges. A newly-dead
+///   addition is reported at `Medium` confidence — the file-activity recompute
+///   `score_confidence` does for the parent set is not re-run under the overlay,
+///   so `Medium` is the honest floor.
+///
+/// Both directions filter on [`crate::parser::CallEdgeKind::is_real_caller`] (a
+/// `doc_reference` is inert), matching `fetch_uncalled_functions`'s own
+/// real-caller contract.
+///
+/// Returns whether either direction changed the set — the participation signal
+/// the daemon gates the `_meta.overlay_graph` marker on. An active overlay whose
+/// delta is irrelevant returns the parent set untouched and reports `false`.
+pub fn apply_dead_overlay<M>(
+    store: &Store<M>,
+    overlay: &crate::worktree_overlay::WorktreeOverlay,
+    confident: &mut Vec<DeadFunction>,
+    possibly_pub: &mut Vec<DeadFunction>,
+    include_pub: bool,
+    min_confidence: DeadConfidence,
+) -> Result<bool, StoreError> {
+    let _span = tracing::info_span!(
+        "apply_dead_overlay",
+        include_pub,
+        masked = overlay.masked_origins.len()
+    )
+    .entered();
+    let mut participated = false;
+
+    // ── Direction A: parent-dead → live ──────────────────────────────────────
+    // Drop any parent-dead entry the worktree now really-calls. (A worktree file
+    // added a real call edge to a previously-uncalled function.)
+    let before_dead = confident.len();
+    let before_pub = possibly_pub.len();
+    confident.retain(|d| !overlay_has_real_caller(&overlay.store, &d.chunk.name));
+    possibly_pub.retain(|d| !overlay_has_real_caller(&overlay.store, &d.chunk.name));
+    if confident.len() != before_dead || possibly_pub.len() != before_pub {
+        participated = true;
+    }
+
+    // ── Direction B: parent-live → dead ──────────────────────────────────────
+    // Candidates = functions the delta files used to call (parent-side). For each
+    // not already dead, recompute the merged caller set and add it if it now has
+    // zero real callers.
+    let masked: Vec<String> = overlay
+        .masked_origins
+        .iter()
+        .map(|p| crate::normalize_path(p).to_string())
+        .collect();
+    let candidates = store.distinct_callees_from_origins(&masked)?;
+
+    // Names already present in the dead set (either direction) must not be
+    // re-added.
+    let already: std::collections::HashSet<&str> = confident
+        .iter()
+        .chain(possibly_pub.iter())
+        .map(|d| d.chunk.name.as_str())
+        .collect();
+
+    let mut additions: Vec<DeadFunction> = Vec::new();
+    for name in &candidates {
+        if already.contains(name.as_str()) {
+            continue;
+        }
+        let def = match resolve_overlay_dead_candidate_def(store, &overlay.store, name) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // Merged caller set: parent callers minus delta-origin call-sites, plus
+        // the overlay's callers. Dead iff zero REAL callers survive.
+        let parent_callers = store.get_callers_full(name)?;
+        let overlay_callers = overlay.store.get_callers_full(name)?;
+        let merged = overlay.merge_callers(parent_callers, overlay_callers);
+        let has_real = merged.iter().any(|c| c.edge_kind.is_real_caller());
+        if has_real {
+            continue;
+        }
+
+        // Newly dead. `Medium` is the honest floor — the file-activity recompute
+        // `score_confidence` runs for the parent set is not re-run here.
+        let dead_fn = DeadFunction {
+            chunk: def,
+            confidence: DeadConfidence::Medium,
+        };
+        if dead_fn.confidence < min_confidence {
+            continue;
+        }
+        additions.push(dead_fn);
+    }
+    if !additions.is_empty() {
+        participated = true;
+        for dead_fn in additions {
+            // Route public defs to the possibly-dead-pub list (unless
+            // include_pub), matching `score_confidence`'s visibility split.
+            let is_pub = dead_fn.chunk.signature.starts_with("pub ")
+                || dead_fn.chunk.signature.starts_with("pub(");
+            if is_pub && !include_pub {
+                possibly_pub.push(dead_fn);
+            } else {
+                confident.push(dead_fn);
+            }
+        }
+    }
+
+    Ok(participated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -231,18 +231,38 @@ pub(in crate::cli::batch) fn dispatch_ci(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_ci", ?gate).entered();
 
-    // Thin adapter over the shared `ci_core` — same schema + budgeting as the
+    // See `dispatch_dead`: clear leftover per-thread overlay meta before any
+    // branch can return, so a reused daemon worker never leaks a prior query's
+    // `_meta.worktree_overlay`.
+    cqs::worktree_overlay::clear_overlay_meta();
+
+    // Thin adapter over the shared `ci_overlay` — same schema + budgeting as the
     // CLI JSON surface. Gate failure is reported in the JSON (no exit) because
     // the batch session must continue. Adapter owns diff I/O (git only).
     let diff_text = crate::cli::commands::run_git_diff(base)?;
-    let output = crate::cli::commands::ci_core(
+    // Resolve the worktree overlay: merges BOTH the embedded review's
+    // direct-callers section and the dead_in_diff set. `None` ⇒ parent-truth.
+    let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
+    let (output, overlay_participated) = crate::cli::commands::ci_overlay(
         &ctx.store(),
         &ctx.root,
         &diff_text,
         gate,
         &crate::cli::commands::CiArgs { tokens },
+        overlay.as_deref(),
     )?;
-    Ok(serde_json::to_value(&output)?)
+    let mut value = serde_json::to_value(&output)?;
+    if overlay_participated {
+        // `cqs ci` bundles a `"callers-only"` review (its tests + risk sections
+        // stay parent-truth) and a `"full"` dead component. The weakest component
+        // bounds the honest composite claim, so the combined marker is
+        // `"callers-only"` — NEVER `"full"`, which would over-promise the review's
+        // tests/risk sections as delta-aware. Gated on participation (review OR
+        // dead consulted the delta), not `overlay.is_some()`: a dirty worktree
+        // whose delta flips neither section returns the parent report, NO marker.
+        super::attach_overlay_graph_meta_callers_only(&mut value);
+    }
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,11 @@ pub(crate) use crud::write_function_calls_in_tx;
 // dead-candidate SQL applies — single source for both views.
 pub use dead_code::is_dead_doc_path;
 
+// Re-export the worktree-overlay dead-set merge so both the `cqs dead` CLI core
+// and the lib-level `cqs ci` analysis drive the same Direction A/B merge over the
+// merged caller graph — single source, no surface drift.
+pub use dead_code::apply_dead_overlay;
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 

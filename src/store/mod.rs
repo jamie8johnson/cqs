@@ -181,6 +181,10 @@ pub use calls::DeadFunction;
 /// candidacy. Shared with the worktree-overlay dead path.
 pub use calls::is_dead_doc_path;
 
+/// Worktree-overlay dead-set merge (Direction A/B over the merged caller graph).
+/// Shared by the `cqs dead` core and the lib-level `cqs ci` analysis.
+pub use calls::apply_dead_overlay;
+
 /// Confidence level for dead code detection.
 pub use calls::DeadConfidence;
 

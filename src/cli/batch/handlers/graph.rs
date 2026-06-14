@@ -3571,4 +3571,376 @@ mod tests {
             "an empty diff (no changed functions) must leave review's marker absent: {json}"
         );
     }
+
+    // ─── cqs ci overlay: bundled review + dead, composite "callers-only" marker ──
+    //
+    // `cqs ci` bundles a `"callers-only"` review (only its affected_callers
+    // section is overlaid) and a `"full"` dead component (dead_in_diff recomputed
+    // over the merged caller graph). The weakest component bounds the composite
+    // claim, so the honest daemon marker is `"callers-only"` — NEVER `"full"`.
+    //
+    // The cores are tested with SYNTHESIZED unified diffs (no git) against a real
+    // parent store + an in-memory overlay: the participation bool that gates the
+    // marker IS what these tests assert directly (review participation, dead
+    // participation, and the parent-truth no-participation cases). The daemon-path
+    // marker honesty (gated on participation, not `overlay.is_some()`) is verified
+    // end-to-end via `dispatch_ci` over a temp git repo (cwd-locked) below.
+
+    use crate::cli::commands::ci_overlay;
+
+    /// Core `commands::CiArgs` (no token budget).
+    fn ci_core_args() -> crate::cli::commands::CiArgs {
+        crate::cli::commands::CiArgs { tokens: None }
+    }
+
+    /// review's `affected_callers` section names from a serialized `CiOutput`.
+    fn ci_review_caller_names(out: &serde_json::Value) -> Vec<String> {
+        out["review"]["affected_callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected ci review `affected_callers` array, got: {out}"))
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// `dead_in_diff` names from a serialized `CiOutput`.
+    fn ci_dead_in_diff_names(out: &serde_json::Value) -> Vec<String> {
+        out["dead_in_diff"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|d| d["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Calibration: ci's embedded review reflects a worktree delta. A diff touches
+    /// `target`; a parent caller of `target` is deleted from a masked file and a
+    /// worktree-new caller appears. The review's `affected_callers` section drops
+    /// the deleted caller and adds the fresh one, and participation is reported.
+    /// (Red without the overlay merge: the deleted caller would survive and the
+    /// fresh one would be absent.)
+    #[test]
+    fn ci_overlay_review_callers_reflect_delta() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/edited.rs", "old_caller"),
+                ("src/stable.rs", "stable_caller"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("old_caller", "src/edited.rs", 1, "target"),
+                ("stable_caller", "src/stable.rs", 1, "target"),
+            ],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (out, participated) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            Some(&overlay),
+        )
+        .expect("ci_overlay");
+        assert!(
+            participated,
+            "a masked-origin drop + an overlay add in the embedded review must report participation"
+        );
+        let value = serde_json::to_value(&out).unwrap();
+        let got = ci_review_caller_names(&value);
+        assert!(
+            !got.contains(&"old_caller".to_string()),
+            "deleted caller in delta file must drop from ci's review: {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "worktree-added caller must appear in ci's review: {got:?}"
+        );
+        assert!(
+            got.contains(&"stable_caller".to_string()),
+            "untouched caller must survive in ci's review: {got:?}"
+        );
+    }
+
+    /// Calibration (dead component): a parent-dead function `orphan` defined in a
+    /// diff-touched file is flipped LIVE by a worktree caller in a masked file. It
+    /// drops from `dead_in_diff`, and participation is reported. This proves the
+    /// bundled DEAD half is overlaid (not just the review half). (Red without the
+    /// dead-overlay merge: `orphan` survives in `dead_in_diff`.) The parent-truth
+    /// baseline asserts `orphan` IS dead-in-diff with no overlay, so the drop is a
+    /// genuine delta effect, not a both-sides-empty artifact.
+    #[test]
+    fn ci_overlay_dead_in_diff_reflects_delta() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/lib.rs", "target"), ("src/lib.rs", "orphan")],
+            // `orphan` has no parent caller → parent-dead. `target` exists so the
+            // diff maps ≥1 changed function (review is non-empty).
+            &[],
+        );
+        // Worktree: a NEW file calls `orphan` → Direction-A flip (dead → live).
+        let overlay = overlay_with_edges(
+            &[("src/new.rs", "fresh_user")],
+            &[("fresh_user", "src/new.rs", 1, "orphan")],
+            &["src/new.rs"],
+        );
+        let diff = diff_touching("src/lib.rs");
+
+        // Parent-truth baseline: `orphan` is dead-in-diff (defined in src/lib.rs).
+        let (base_out, base_part) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            None,
+        )
+        .expect("ci_overlay none");
+        assert!(!base_part, "no-overlay baseline must not participate");
+        let base_dead = ci_dead_in_diff_names(&serde_json::to_value(&base_out).unwrap());
+        assert!(
+            base_dead.contains(&"orphan".to_string()),
+            "parent baseline: orphan must be dead-in-diff: {base_dead:?}"
+        );
+
+        // Overlay: `orphan` flips live → drops from dead_in_diff, participation true.
+        let (out, participated) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            Some(&overlay),
+        )
+        .expect("ci_overlay");
+        assert!(
+            participated,
+            "a dead⇄live flip in a diff file must report participation"
+        );
+        let value = serde_json::to_value(&out).unwrap();
+        let got = ci_dead_in_diff_names(&value);
+        assert!(
+            !got.contains(&"orphan".to_string()),
+            "orphan (now really-called by the worktree) must drop from dead_in_diff: {got:?}"
+        );
+    }
+
+    /// Calibration: an unrelated dirty file leaves BOTH ci sections untouched, so
+    /// the overlay does NOT participate (pure parent-truth — no marker downstream).
+    #[test]
+    fn ci_overlay_unrelated_delta_no_participation() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (out, participated) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            Some(&overlay),
+        )
+        .expect("ci_overlay");
+        assert!(
+            !participated,
+            "an unrelated dirty file must NOT make ci participate"
+        );
+        let value = serde_json::to_value(&out).unwrap();
+        assert!(
+            ci_review_caller_names(&value).contains(&"the_caller".to_string()),
+            "the parent caller must survive untouched: {value}"
+        );
+    }
+
+    /// Calibration: a diff that maps no indexed function (touches a file with no
+    /// chunks) is the parent-truth empty early-return — participation `false` even
+    /// with an active overlay. (Guards against a marker on the empty case.)
+    #[test]
+    fn ci_overlay_empty_diff_no_participation() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        // Diff touches a file with no indexed chunks → no changed functions.
+        let diff = diff_touching("src/untracked.rs");
+        let (_out, participated) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            Some(&overlay),
+        )
+        .expect("ci_overlay");
+        assert!(
+            !participated,
+            "an empty diff (no changed functions) must report participated=false even \
+             with an active overlay"
+        );
+    }
+
+    /// No-overlay parity fence: `ci_overlay(.., None)` equals `ci_core`.
+    #[test]
+    fn ci_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/a.rs", "c1"), ("src/lib.rs", "target")],
+            &[("c1", "src/a.rs", 1, "target")],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (ov_out, participated) = ci_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+            None,
+        )
+        .expect("ci_overlay none");
+        assert!(!participated, "no-overlay must report participated=false");
+        let core_out = crate::cli::commands::ci_core(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            cqs::ci::GateThreshold::Off,
+            &ci_core_args(),
+        )
+        .expect("ci_core");
+        assert_eq!(
+            serde_json::to_value(&ov_out).unwrap(),
+            serde_json::to_value(&core_out).unwrap(),
+            "ci_overlay(None) must equal ci_core (no-overlay regression fence)"
+        );
+    }
+
+    // ─── daemon-path marker honesty: ci (end-to-end via dispatch_ci) ─────────────
+    //
+    // `dispatch_ci` acquires its diff from `run_git_diff` in the PROCESS cwd. These
+    // tests reuse `temp_git_repo_with_lib_edit` (committed baseline + uncommitted
+    // edit to src/lib.rs), chdir under `REVIEW_CWD_LOCK` (cwd is process-global),
+    // inject the overlay via `set_test_overlay_override`, and assert the COMPOSITE
+    // marker is `"callers-only"` (NEVER "full") ONLY on a genuine merge — ABSENT on
+    // an unrelated dirty file and on an empty diff. The absent cases are RED under a
+    // naive `overlay.is_some()` gate (the overlay is active and non-trivial in every
+    // case), so they pin the participation-gated marker.
+
+    /// Wire `args::CiArgs` with default (inactive) overlay flags — the overlay is
+    /// injected via `set_test_overlay_override`, not the wire flags.
+    fn ci_wire_args() -> crate::cli::args::CiArgs {
+        crate::cli::args::CiArgs {
+            base: None,
+            stdin: false,
+            gate: cqs::ci::GateThreshold::Off,
+            tokens: None,
+            overlay: Default::default(),
+        }
+    }
+
+    /// PRESENT + HONEST: ci's embedded review genuinely merges (a parent caller of
+    /// `target` is masked, a worktree caller is added) → composite
+    /// `_meta.overlay_graph = "callers-only"` (NEVER "full": the weakest bundled
+    /// component bounds the claim).
+    #[test]
+    fn dispatch_ci_genuine_merge_carries_callers_only_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_ci");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("callers-only"),
+            "a real ci review merge must claim the composite overlay_graph=callers-only \
+             (NEVER full — the bundled review's tests/risk sections are parent-truth): {json}"
+        );
+    }
+
+    /// ABSENT: an unrelated dirty file masks no caller of `target` and flips no
+    /// dead verdict → no participation → marker ABSENT. RED under a naive
+    /// `overlay.is_some()` gate.
+    #[test]
+    fn dispatch_ci_unrelated_delta_no_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_ci");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an unrelated dirty file must leave ci's marker absent: {json}"
+        );
+    }
+
+    /// ABSENT: a diff that maps no indexed function (the repo edits src/lib.rs but
+    /// the store has no chunk for it) is the parent-truth empty early-return →
+    /// marker ABSENT even with a genuine-looking active overlay. RED under a naive
+    /// `overlay.is_some()` gate.
+    #[test]
+    fn dispatch_ci_empty_diff_no_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        // The store has NO chunk at src/lib.rs, so the diff maps no function.
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_ci");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an empty diff (no changed functions) must leave ci's marker absent: {json}"
+        );
+    }
 }

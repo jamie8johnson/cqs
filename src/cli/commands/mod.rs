@@ -98,16 +98,17 @@ pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
 pub(crate) use review::{
-    ci_core, dead_overlay, health_core, review_overlay, suggest_core, CiArgs, DeadArgs,
+    ci_overlay, dead_overlay, health_core, review_overlay, suggest_core, CiArgs, DeadArgs,
     DeadVerdict, HealthArgs, ReviewArgs, SuggestArgs,
 };
-// `dead_core` / `review_core` are the no-overlay entry points. Production dispatch
-// routes through `dead_overlay` / `review_overlay` (Part B); the plain cores are
-// consumed only by the parity tests in `batch/handlers/analysis.rs`, so the
-// re-exports are test-gated. (`cmd_review` reaches `review_core` directly within
-// the `diff_review` module, not through this re-export.)
+// `ci_core` / `dead_core` / `review_core` are the no-overlay entry points.
+// Production dispatch routes through `ci_overlay` / `dead_overlay` /
+// `review_overlay` (Part B); the plain cores are consumed only by the parity
+// tests in `batch/handlers/analysis.rs`, so the re-exports are test-gated.
+// (`cmd_ci` / `cmd_review` reach `ci_core` / `review_core` directly within the
+// `review::ci` / `diff_review` modules, not through this re-export.)
 #[cfg(test)]
-pub(crate) use review::{dead_core, review_core};
+pub(crate) use review::{ci_core, dead_core, review_core};
 
 // -- index --
 pub(crate) use index::build_hnsw_base_index;

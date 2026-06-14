@@ -752,6 +752,12 @@ pub(crate) struct CiArgs {
     /// Maximum token budget for output
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
+    /// Worktree-overlay tri-state for the bundled review + dead sections.
+    /// The review's direct-callers section and the dead_in_diff set reflect the
+    /// worktree delta; the composite `_meta.overlay_graph` marker is
+    /// `"callers-only"` (the weakest component bounds the claim).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `impact-diff` and batch `impact-diff`.
