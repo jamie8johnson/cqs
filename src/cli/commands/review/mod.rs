@@ -8,12 +8,15 @@ pub(crate) mod health;
 pub(crate) mod suggest;
 
 pub(crate) use affected::cmd_affected;
-pub(crate) use ci::{ci_core, cmd_ci, CiArgs};
+pub(crate) use ci::{ci_overlay, cmd_ci, CiArgs};
 pub(crate) use dead::{cmd_dead, dead_overlay, DeadArgs, DeadVerdict};
-// `dead_core` / `review_core` (no-overlay entry points) are consumed only by the
-// test-gated re-exports in `commands/mod.rs`; production routes through
-// `dead_overlay` / `review_overlay`. (`cmd_review` reaches `review_core` directly
-// within `diff_review`, not through this re-export.)
+// `ci_core` / `dead_core` / `review_core` (no-overlay entry points) are consumed
+// only by the test-gated re-exports in `commands/mod.rs`; production routes through
+// `ci_overlay` / `dead_overlay` / `review_overlay`. (`cmd_ci` / `cmd_review` reach
+// `ci_core` / `review_core` directly within `ci` / `diff_review`, not through this
+// re-export.)
+#[cfg(test)]
+pub(crate) use ci::ci_core;
 #[cfg(test)]
 pub(crate) use dead::dead_core;
 #[cfg(test)]

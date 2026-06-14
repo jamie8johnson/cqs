@@ -644,10 +644,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     //
     // Forwards for `search` (whole-result overlay), `scout` / `gather` /
     // `task` (seed-only overlay), `callers` / `callees` (full call-graph
-    // overlay, #1858 Part B PR1), `impact` (direct-callers-only overlay),
-    // `dead` (merged-graph overlay, #1858 Part B PR2) and `review`
-    // (direct-callers-only diff overlay, #1858 Part B PR3), and only from an
-    // eligible worktree. The overlay flags live in two places: top-level
+    // overlay), `impact` (direct-callers-only overlay), `dead` (merged-graph
+    // overlay), `review` (direct-callers-only diff overlay), and `ci` (bundled
+    // review + dead overlay, composite `"callers-only"` marker), and only from
+    // an eligible worktree. The overlay flags live in two places: top-level
     // `Cli.overlay`/`no_overlay` for the default `cqs "query"` search form, and
     // on the subcommand's flattened `OverlayArgs` for the rest (so `cqs callers f
     // --overlay` binds to the subcommand, not the top-level flag). We read the
@@ -677,9 +677,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             | "impact"
             | "dead"
             | "review"
+            | "ci"
     ) {
         // Effective overlay tri-state: the subcommand's flattened flags for
-        // scout/gather/task/callers/callees/impact/dead/review, else the
+        // scout/gather/task/callers/callees/impact/dead/review/ci, else the
         // top-level Cli flags (default search).
         let (flag_on, flag_off) = cli
             .command

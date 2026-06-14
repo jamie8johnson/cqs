@@ -1161,6 +1161,7 @@ impl Commands {
             Commands::Impact { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Dead { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Review { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Ci { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             _ => None,
         }
     }

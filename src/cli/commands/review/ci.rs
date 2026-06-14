@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::ci::run_ci_analysis;
+use cqs::ci::{run_ci_analysis, run_ci_analysis_overlay};
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
@@ -41,6 +41,10 @@ pub(crate) struct CiOutput {
 /// the *exit-code* reaction to a failed gate is adapter-owned (the CLI exits
 /// non-zero, the daemon just reports). Both surfaces drive this so the CI
 /// schema + budgeting live in one place.
+///
+/// Plain entry point: no worktree overlay. The full logic lives in
+/// [`ci_overlay`]; this delegates with `None` (participation discarded), so the
+/// CLI / tests are byte-unchanged.
 pub(crate) fn ci_core(
     store: &cqs::Store<cqs::store::ReadOnly>,
     root: &std::path::Path,
@@ -48,18 +52,55 @@ pub(crate) fn ci_core(
     gate: cqs::ci::GateThreshold,
     args: &CiArgs,
 ) -> Result<CiOutput> {
-    let _span = tracing::info_span!("ci_core", ?gate, tokens = ?args.tokens).entered();
+    Ok(ci_overlay(store, root, diff_text, gate, args, None)?.0)
+}
 
-    let mut report = run_ci_analysis(store, diff_text, root, gate)?;
+/// Overlay-aware core for `cqs ci`. Identical to [`ci_core`] when
+/// `overlay` is `None`. When `Some`, BOTH bundled sections reflect the worktree
+/// delta via [`run_ci_analysis_overlay`]: the embedded review's
+/// `affected_callers` (the same mask+union `cqs review` applies) and the
+/// `dead_in_diff` set (recomputed over the merged caller graph, the same merge
+/// `cqs dead` applies).
+///
+/// Returns `(CiOutput, overlay_participated)`. Participation is `true` iff the
+/// review-overlay merge OR the dead-overlay merge consulted the delta for THIS
+/// diff. The empty-diff early-return (no indexed function) and every no-overlay
+/// call report `false`.
+///
+/// Composite-marker honesty: `cqs ci` bundles a `"callers-only"` review and a
+/// `"full"` dead component. The weakest component bounds the claim, so the
+/// daemon adapter emits the honest combined `_meta.overlay_graph = "callers-only"`
+/// marker — NOT `"full"` — when this returns `participated == true`.
+pub(crate) fn ci_overlay(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    diff_text: &str,
+    gate: cqs::ci::GateThreshold,
+    args: &CiArgs,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
+) -> Result<(CiOutput, bool)> {
+    let _span = tracing::info_span!(
+        "ci_core",
+        ?gate,
+        tokens = ?args.tokens,
+        overlay = overlay.is_some()
+    )
+    .entered();
+
+    let (mut report, participated) =
+        run_ci_analysis_overlay(store, diff_text, root, gate, overlay)?;
     let token_count = args
         .tokens
         .map(|budget| apply_token_budget(&mut report.review, budget, true));
 
-    Ok(CiOutput {
-        report,
-        token_count,
-        token_budget: args.tokens,
-    })
+    Ok((
+        CiOutput {
+            report,
+            token_count,
+            token_budget: args.tokens,
+        },
+        participated,
+    ))
 }
 
 pub(crate) fn cmd_ci(
