@@ -379,6 +379,100 @@ mod tests {
         );
     }
 
+    /// Structural guard against a half-completed *limit*-cap sweep, the
+    /// `--limit` sibling of [`every_bfs_depth_clamp_uses_a_named_cap`].
+    ///
+    /// Every command-layer site that bounds a user-facing `--limit` result
+    /// count must take its ceiling from a named `*_LIMIT_*`/`*_CAP` constant
+    /// in this module, not ship an unclamped limit. The named-cap consolidation
+    /// collected scout/similar/related into `cli::limits` and was later
+    /// extended across graph/impact/explain/onboard/where/task — but
+    /// `cqs neighbors` (the brute-force cosine sibling of `similar`) predated
+    /// the consolidation and was the last to migrate: before the fix
+    /// `find_neighbors` did `scored.truncate(limit)` with a raw, unclamped
+    /// `limit`, so `cqs neighbors foo -n 1000000` truncated to the full corpus
+    /// and fanned out one DB lookup per chunk — exactly the unbounded-result
+    /// amplification `similar`'s `clamp(1, SIMILAR_LIMIT_MAX)` exists to prevent.
+    ///
+    /// Asserted on source text (not on a runtime result count) on purpose:
+    /// a member whose clamp drifts to a *raw literal that happens to equal a
+    /// sibling cap* would stay green under a value-only check while the named
+    /// binding silently rotted — the same trap the depth guard documents.
+    ///
+    /// `neighbors` now clamps `limit` to a named cap (`SIMILAR_LIMIT_MAX` —
+    /// neighbors *is* the brute-force `similar`), so every member of the
+    /// family is uniform and this guard is GREEN. It stays to catch the next
+    /// command-layer site that bounds a `--limit` without a named cap.
+    #[test]
+    fn every_limit_clamp_uses_a_named_cap() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
+        // The family: every command-layer source file that owns a user
+        // `--limit` result-count, paired with a marker locating the line that
+        // *consumes* that limit to bound a result list. A member passes when
+        // the limit reaching the result-bounding op was clamped to a named
+        // cap somewhere in the file (`.clamp(1, …_CAP)` / `…_MAX`).
+        //
+        // `marker` is the "site moved" tripwire: if it stops matching, the
+        // limit-handling moved and this guard must be re-pointed rather than
+        // silently dropping the member from the enumerated family.
+        let sites: &[(&str, &str)] = &[
+            ("src/cli/commands/search/similar.rs", "args.limit.clamp"),
+            ("src/cli/commands/search/scout.rs", "args.limit.clamp"),
+            ("src/cli/commands/search/related.rs", "limit.clamp"),
+            ("src/cli/commands/search/onboard.rs", "args.limit.clamp"),
+            ("src/cli/commands/search/gather.rs", "args.limit.clamp"),
+            ("src/cli/commands/search/where_cmd.rs", "limit.clamp"),
+            ("src/cli/commands/graph/impact.rs", "args.limit.clamp"),
+            ("src/cli/commands/graph/callers.rs", "args.limit.clamp"),
+            ("src/cli/commands/graph/deps.rs", "args.limit.clamp"),
+            ("src/cli/commands/graph/explain.rs", "limit.clamp"),
+            ("src/cli/commands/graph/test_map.rs", "args.limit.clamp"),
+            ("src/cli/commands/train/task.rs", "limit.clamp"),
+            // The (now-fixed) straggler. `find_neighbors` bounds its result
+            // list with `scored.truncate(limit)`. The marker locates the
+            // truncation so a future refactor that renames it trips the
+            // "site moved" guard.
+            (
+                "src/cli/commands/search/neighbors.rs",
+                "scored.truncate(limit)",
+            ),
+        ];
+
+        let mut offenders: Vec<String> = Vec::new();
+        for (rel, marker) in sites {
+            let path = std::path::Path::new(manifest_dir).join(rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            assert!(
+                src.contains(marker),
+                "no limit-handling line matched marker `{marker}` in {rel} — the site moved; update this guard's marker so the family stays enumerated"
+            );
+            // A member is uniform iff its limit is clamped to a NAMED cap
+            // (`*_CAP`/`*_MAX`). We accept the clamp anywhere in the file: the
+            // result-bounding op (`.truncate(limit)` / `.take(limit)`) consumes
+            // a `limit` that was clamped upstream in the same `*_core`.
+            let clamps_to_named_cap = src.lines().any(|line| {
+                if !line.contains(".clamp(1,") {
+                    return false;
+                }
+                let after = line.split(".clamp(1,").nth(1).unwrap_or("");
+                let ceiling = after.split(')').next().unwrap_or("");
+                ceiling.contains("_CAP") || ceiling.contains("_MAX")
+            });
+            if !clamps_to_named_cap {
+                offenders.push(format!(
+                    "{rel}  bounds a `--limit` result list (matched `{marker}`) but no `.clamp(1, *_CAP/*_MAX)` clamps the limit to a named cap — unmigrated limit-cap straggler"
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "incomplete limit-cap sweep — these command-layer sites bound a user `--limit` without a named cap:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
     #[test]
     fn parse_env_usize_rejects_zero_and_garbage() {
         std::env::set_var("CQS_TEST_LIMIT_PARSE", "0");
