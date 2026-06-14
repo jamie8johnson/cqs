@@ -762,14 +762,13 @@ fn test_search_reference_by_name() {
 
     // Create a reference index (open separate Store to same DB)
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.8,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.8,
+        std::path::PathBuf::new(),
+    );
 
     // Search by name
     let results =
@@ -795,14 +794,13 @@ fn test_search_reference_by_name_threshold() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.5, // Low weight
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.5,
+        std::path::PathBuf::new(),
+    );
 
     // High threshold should filter out results (score * weight < threshold)
     let results =

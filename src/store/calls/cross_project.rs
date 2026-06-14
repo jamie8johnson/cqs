@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio::runtime::Runtime;
+
 use crate::store::helpers::{CallGraph, CallerInfo, ChunkSummary, StoreError};
+use crate::store::{DataVersionProbe, FileIdentity};
 use crate::Store;
 
 /// A named store for cross-project context.
@@ -20,20 +23,33 @@ pub struct NamedStore {
     pub name: String,
     /// The open Store handle.
     pub store: Store<crate::store::ReadOnly>,
-    /// The `index.db` path this store was opened from, plus the
-    /// `(mtime, size)` identity captured at open time. Used by
+    /// The `index.db` path this store was opened from. Kept so staleness
+    /// checks can re-stat the file and re-open the data_version probe without
+    /// reconstructing the path.
+    db_path: std::path::PathBuf,
+    /// Freshness key captured at open time, used by
     /// [`CrossProjectContext::is_stale`] so a daemon caching the context
     /// across requests self-heals after a `cqs ref update <name>` (which
     /// rewrites a reference's `index.db` without touching the primary
     /// project's). `None` when the file was unstattable at open — the
     /// staleness check then keeps the cached store rather than thrashing on
     /// a transient glitch.
-    db_path: std::path::PathBuf,
-    loaded_identity: Option<(std::time::SystemTime, u64)>,
+    loaded_identity: Option<FileIdentity>,
+    /// Long-lived `PRAGMA data_version` probe — the second freshness
+    /// discriminator. `cqs ref update` reindexes a reference's `index.db`
+    /// *in place* (incremental pipeline, not rename-over), so WAL-mode commits
+    /// can land before the closing checkpoint moves the file identity; the
+    /// probe is the only discriminator that catches that window. `None` when
+    /// the probe couldn't be opened (warned, identity-only fallback);
+    /// re-opened lazily on the next staleness check.
+    data_version_probe: Option<DataVersionProbe>,
+    /// Runtime handle (cloned from the store) that drives the probe's async
+    /// sqlx queries, so the probe stays on the store's worker pool.
+    runtime: Arc<Runtime>,
 }
 
 impl NamedStore {
-    /// Construct a `NamedStore`, capturing the `index.db` identity from
+    /// Construct a `NamedStore`, capturing the `index.db` freshness key from
     /// `path` for later staleness detection. `path` is the file the store was
     /// opened from; callers that already hold it (e.g.
     /// [`CrossProjectContext::from_config`]) avoid a redundant stat by passing
@@ -43,12 +59,69 @@ impl NamedStore {
         store: Store<crate::store::ReadOnly>,
         path: std::path::PathBuf,
     ) -> Self {
-        let loaded_identity = stat_identity(&path);
+        let loaded_identity = FileIdentity::from_path(&path);
+        let runtime = Arc::clone(store.runtime());
+        let data_version_probe = DataVersionProbe::open(&runtime, &path);
         Self {
             name,
             store,
             db_path: path,
             loaded_identity,
+            data_version_probe,
+            runtime,
+        }
+    }
+
+    /// Has this store's `index.db` been rewritten since it was opened?
+    ///
+    /// Two discriminators, OR-combined:
+    /// 1. [`FileIdentity`] change — catches rename-over and checkpoint (the
+    ///    `cqs ref update` close folds the WAL back, moving size/mtime/inode).
+    /// 2. `PRAGMA data_version` movement on the long-lived probe — catches the
+    ///    in-place WAL-incremental window before that checkpoint.
+    ///
+    /// On an identity change the probe is re-opened against the (possibly
+    /// replaced) file: a rename-over leaves the old fd pointing at the orphaned
+    /// inode, whose counter never moves again. An unstattable file or a missing
+    /// identity yields `false` (keep the cached store) — a transient glitch
+    /// shouldn't thrash the cache.
+    fn is_stale(&mut self) -> bool {
+        let Some(loaded) = self.loaded_identity else {
+            return false;
+        };
+        let Some(current) = FileIdentity::from_path(&self.db_path) else {
+            return false;
+        };
+        if current != loaded {
+            // Identity moved — re-baseline the probe against the new file so a
+            // subsequent in-place WAL commit is still caught.
+            if let Some(old) = self.data_version_probe.take() {
+                old.close(&self.runtime);
+            }
+            self.data_version_probe = DataVersionProbe::open(&self.runtime, &self.db_path);
+            self.loaded_identity = Some(current);
+            return true;
+        }
+        // Identity unchanged — consult the probe for the WAL-incremental case.
+        match self.data_version_probe.as_mut() {
+            Some(probe) => match probe.changed(&self.runtime) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    tracing::warn!(
+                        name = %self.name,
+                        error = %e,
+                        "data_version probe query failed — dropping probe; will re-open on next staleness check"
+                    );
+                    self.data_version_probe = None;
+                    false
+                }
+            },
+            None => {
+                // Earlier open failed (or the probe was dropped after a query
+                // error) — retry. Freshly baselined, so nothing to compare.
+                self.data_version_probe = DataVersionProbe::open(&self.runtime, &self.db_path);
+                false
+            }
         }
     }
 }
@@ -60,15 +133,6 @@ impl std::fmt::Debug for NamedStore {
             .field("store", &"<Store>")
             .finish()
     }
-}
-
-/// Stat `path` and return `(mtime, size)` if readable. Mirrors the helper
-/// in `reference.rs`; an unreadable path yields `None` (treated as
-/// "unknown", caller keeps the cached value).
-fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
-    let md = std::fs::metadata(path).ok()?;
-    let mtime = md.modified().ok()?;
-    Some((mtime, md.len()))
 }
 
 /// Caller info enriched with the originating project name.
@@ -210,23 +274,26 @@ impl CrossProjectContext {
     }
 
     /// Has any underlying `index.db` been rewritten since this context was
-    /// built? Catches `cqs ref update <name>` (rewrites a reference's
-    /// `index.db`) and a local reindex (rewrites the primary `index.db`) —
-    /// both leave the cached `graphs` map and the merged graph pointing at a
-    /// stale generation.
+    /// built? Catches `cqs ref update <name>` (reindexes a reference's
+    /// `index.db` in place) and a local reindex (rewrites the primary
+    /// `index.db`) — both leave the cached `graphs` map and the merged graph
+    /// pointing at a stale generation.
     ///
-    /// Returns `true` on the first store whose current `(mtime, size)`
-    /// differs from the value captured at open. Stores with no captured
-    /// identity (unstattable at open) or that are now unstattable are
+    /// Returns `true` if any store's freshness key moved (file identity or
+    /// `PRAGMA data_version`; see [`NamedStore::is_stale`]). Stores with no
+    /// captured identity (unstattable at open) or that are now unstattable are
     /// skipped — a transient glitch shouldn't force a rebuild.
-    pub fn is_stale(&self) -> bool {
-        self.stores.iter().any(|ns| match ns.loaded_identity {
-            Some(loaded) => match stat_identity(&ns.db_path) {
-                Some(current) => current != loaded,
-                None => false,
-            },
-            None => false,
-        })
+    ///
+    /// `&mut self` (not `&self`): the data_version probe advances its baseline
+    /// on each query, and every store must be polled so no probe falls behind —
+    /// hence a full fold rather than a short-circuiting `any`.
+    pub fn is_stale(&mut self) -> bool {
+        let mut stale = false;
+        for ns in self.stores.iter_mut() {
+            // Poll every store (no short-circuit) so each probe advances.
+            stale |= ns.is_stale();
+        }
+        stale
     }
 
     /// Number of projects in this context.
@@ -739,12 +806,12 @@ mod tests {
         forward.insert("caller_a".to_string(), vec!["target".to_string()]);
         let ns = make_named_store("proj_a", forward, StdMap::new());
         let db_path = ns.db_path.clone();
-        let ctx = CrossProjectContext::new(vec![ns]);
+        let mut ctx = CrossProjectContext::new(vec![ns]);
 
         assert!(!ctx.is_stale(), "freshly built context is not stale");
 
-        // Append a byte and bump mtime past the 1s FS granularity floor so the
-        // (mtime, size) identity changes.
+        // Append bytes and bump mtime past the 1s FS granularity floor so the
+        // file identity (size + mtime) changes.
         std::thread::sleep(std::time::Duration::from_secs(2));
         {
             use std::io::Write;
@@ -760,6 +827,123 @@ mod tests {
             ctx.is_stale(),
             "rewriting the underlying index.db must mark the context stale"
         );
+    }
+
+    /// Sub-second, same-size, in-place replacement (rename-over) of a backing
+    /// `index.db` must mark the context stale via the file-identity inode bump —
+    /// even when mtime and size are unchanged.
+    ///
+    /// Calibration: RED against the previous `(mtime, size)`-only key (a
+    /// same-size rewrite inside one WSL mtime bucket reads as unchanged → stale
+    /// serve). GREEN with [`FileIdentity`], which mixes in the inode: the
+    /// rename-over gives a new inode immediately. Pins the inode-catchable
+    /// replace case.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_stale_detects_same_size_rename_over() {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut forward = StdMap::new();
+        forward.insert("caller_a".to_string(), vec!["target".to_string()]);
+        let ns = make_named_store("proj_a", forward, StdMap::new());
+        let db_path = ns.db_path.clone();
+        let mut ctx = CrossProjectContext::new(vec![ns]);
+        assert!(!ctx.is_stale(), "freshly built context is not stale");
+
+        // Build a byte-identical replacement (copy the file) and rename it over
+        // the original. Same size; the copy lands a NEW inode. Pin both
+        // preconditions so the test proves it's the inode (not size/mtime)
+        // doing the catching.
+        let size_before = std::fs::metadata(&db_path).unwrap().len();
+        let inode_before = std::fs::metadata(&db_path).unwrap().ino();
+        let orig_mtime = std::fs::metadata(&db_path).unwrap().modified().unwrap();
+        let replacement = db_path.with_extension("db.replacement");
+        std::fs::copy(&db_path, &replacement).unwrap();
+        // Force the same mtime as the original so the (mtime, size) key cannot
+        // see the change — only the inode moves.
+        std::fs::File::open(&replacement)
+            .unwrap()
+            .set_modified(orig_mtime)
+            .unwrap();
+        std::fs::rename(&replacement, &db_path).unwrap();
+
+        let md_after = std::fs::metadata(&db_path).unwrap();
+        assert_eq!(md_after.len(), size_before, "precondition: size unchanged");
+        assert_ne!(
+            md_after.ino(),
+            inode_before,
+            "precondition: rename-over landed a new inode"
+        );
+        assert_eq!(
+            md_after.modified().unwrap(),
+            orig_mtime,
+            "precondition: mtime forced equal — only the inode discriminator can fire"
+        );
+
+        assert!(
+            ctx.is_stale(),
+            "same-size rename-over (new inode, same mtime/size) must mark the context stale"
+        );
+    }
+
+    /// A WAL-mode commit with NO checkpoint leaves the backing file's identity
+    /// (inode/size/mtime) unchanged, yet the cached context is stale. The
+    /// `PRAGMA data_version` probe must catch it.
+    ///
+    /// Calibration: RED against EITHER `(mtime, size)`-only OR the
+    /// `FileIdentity`-only key (neither moves on an uncheckpointed WAL commit).
+    /// GREEN only with the long-lived data_version probe. Pins the
+    /// WAL-incremental case — the real `cqs ref update` shape (in-place
+    /// incremental reindex before the closing checkpoint).
+    #[test]
+    fn test_is_stale_detects_wal_commit_without_checkpoint() {
+        use sqlx::{ConnectOptions, Connection};
+
+        let ns = make_named_store("proj_a", StdMap::new(), StdMap::new());
+        let db_path = ns.db_path.clone();
+        let mut ctx = CrossProjectContext::new(vec![ns]);
+        // Baseline both discriminators.
+        assert!(!ctx.is_stale(), "freshly built context is not stale");
+
+        let id_before = FileIdentity::from_path(&db_path).unwrap();
+
+        // Second connection, WAL commit, NO checkpoint, kept open across the
+        // assertions so closing the last writer can't auto-checkpoint into the
+        // main file and mask the discriminator under test.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut writer = rt
+            .block_on(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect(),
+            )
+            .unwrap();
+        rt.block_on(async {
+            sqlx::query("CREATE TABLE IF NOT EXISTS wal_poke (x INTEGER)")
+                .execute(&mut writer)
+                .await?;
+            sqlx::query("INSERT INTO wal_poke (x) VALUES (1)")
+                .execute(&mut writer)
+                .await?;
+            Ok::<_, sqlx::Error>(())
+        })
+        .unwrap();
+
+        // Precondition: the commit landed in the WAL, not the main file — if
+        // identity moved, this would prove nothing about data_version.
+        assert_eq!(
+            FileIdentity::from_path(&db_path).unwrap(),
+            id_before,
+            "precondition: WAL commit must leave main-file identity unchanged"
+        );
+
+        assert!(
+            ctx.is_stale(),
+            "WAL commit with no checkpoint must mark the context stale via data_version"
+        );
+
+        let _ = rt.block_on(writer.close());
     }
 
     #[test]

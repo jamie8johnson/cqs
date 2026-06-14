@@ -45,7 +45,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::Parser;
@@ -80,70 +80,13 @@ pub(crate) use view::{get_all_refs_via_refs_lru, get_ref_via_refs_lru};
 #[cfg(test)]
 pub(in crate::cli) use session::create_test_context;
 
-/// Opaque identity of `index.db` used to detect that it has been replaced
-/// or rewritten between two observations.
-///
-/// Combines inode (unix), size, and mtime. This catches:
-///
-/// - **Replacement via rename** (e.g. `cqs index --force` writes a fresh
-///   `index.db.tmp` then renames it over `index.db`): the new inode
-///   differs, so the identity changes even if size/mtime happened to
-///   match.
-/// - **In-place size change**: size differs.
-/// - **Overwrite that kept the size**: mtime differs (modulo the
-///   filesystem's mtime resolution).
-///
-/// ## Why not mtime alone?
-///
-/// WSL DrvFS / NTFS report mtime at 1-second resolution. A tight
-/// `cqs index --force` followed by a daemon query burst could share the
-/// same mtime bucket, causing `BatchContext` to keep serving results from
-/// the orphaned inode. Mixing in inode and size closes that sub-second
-/// race: the rename-over gives a new inode immediately, regardless of
-/// whether the mtime ticked.
-///
-/// On non-unix platforms the inode fields are omitted and the struct
-/// falls back to `(size, mtime)`; replacement on Windows still changes
-/// the mtime and/or the size, so this is weaker than unix but strictly
-/// better than mtime alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DbFileIdentity {
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    inode: u64,
-    size: u64,
-    mtime: Option<SystemTime>,
-}
-
-impl DbFileIdentity {
-    /// Read the identity fields for `path`, returning `None` if the
-    /// metadata stat fails (path missing, permission denied, etc.).
-    fn from_path(path: &Path) -> Option<Self> {
-        let meta = std::fs::metadata(path).ok()?;
-        // mtime is best-effort — some exotic filesystems don't record
-        // it. Falling back to `None` here still leaves inode + size as
-        // useful discriminators.
-        let mtime = meta.modified().ok();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Some(Self {
-                dev: meta.dev(),
-                inode: meta.ino(),
-                size: meta.len(),
-                mtime,
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            Some(Self {
-                size: meta.len(),
-                mtime,
-            })
-        }
-    }
-}
+/// The shared `index.db` freshness key, re-exported under the batch module's
+/// historical name so the existing call sites (`DbFileIdentity::from_path`)
+/// keep reading. The type, its doc, and its construction live single-source in
+/// [`cqs::store::FileIdentity`] — both sibling readers
+/// (`CrossProjectContext`, `ReferenceIndex`) use the same type, so a hardening
+/// here propagates to all three by construction rather than leaving a straggler.
+pub(super) use cqs::store::FileIdentity as DbFileIdentity;
 
 /// Default idle timeout for ONNX sessions (embedder, reranker) in minutes.
 /// After this many minutes without a command, sessions are cleared to free
