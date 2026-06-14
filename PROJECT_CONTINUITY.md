@@ -33,6 +33,10 @@
 
 **OPEN (idle pool):** #1893 (loom dup-edge HashSet→multiset), #1888 (L5X region-relative byte_start), #1858 Part B (above). CLOSED this session incl. #1826, #1879, #1886, #1891.
 
+## Parked
+
+- **audit-loop — perpetual auditor factory** (design sketch `docs/plans/2026-06-13-audit-loop.md`, 2026-06-13). The reframe: product is durable *guards* (a ratchet across a region×shape coverage matrix), not bug-hunting (diminishing). Engine = invalidation-driven (a merged diff re-opens the cells it touches via the magnet-area mapping) + idle coverage-extension. Hard problems: no "done" → budget+value-density governors; landing is the bottleneck → auto-land hardening guards / human-gate bug-findings; false-positive tax → per-finding verifiers. Built on existing infra (autonomous loop + family + /idle + gate battery). **12 open questions in the doc; the load-bearing one: auto-land aggressiveness (hardening-only vs also trivial fixes).** User to review later — do NOT start without the open-questions decided.
+
 ---
 
 **AUDITOR-TRIO WAVE COMPLETE + #1826 CLOSED (2026-06-13 ~06:00). Binary current (post-wave rebuild), daemon active + serving. Schema 31, PARSER_VERSION 7. Index FRESH-REBUILT (rm index.db → cqs index) → 15,975 chunks, doctor COHERENT. (The --force reindex gave 16,018; the fresh rebuild was a detour off a WRONG hypothesis — see schema.sql note — but harmless; both are valid full corpora.)**
