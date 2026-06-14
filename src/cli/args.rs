@@ -503,6 +503,10 @@ pub(crate) struct CallersArgs {
     /// rendering — both text and JSON paths respect the cap.
     #[command(flatten)]
     pub limit_arg: LimitArg,
+    /// Worktree-overlay tri-state for the call-graph query (#1858 Part B).
+    /// Built daemon-side only (phase 1); the CLI-direct adapter ignores it.
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `deps` and batch `deps`.

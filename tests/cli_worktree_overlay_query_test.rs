@@ -256,3 +256,33 @@ fn overlay_scout_cli_direct_serves_parent() {
         "CLI-direct scout did not overlay — no overlay_graph marker; got {v}"
     );
 }
+
+/// #1858 Part B — `callers` / `callees` accept `--overlay` and (like scout/
+/// gather/task) build the overlay daemon-side only. CLI-direct (daemon
+/// disabled) serves the PARENT call graph: the command succeeds, and emits NO
+/// `worktree_overlay` meta and NO `overlay_graph` marker (the marker rides only
+/// when the overlay was actually applied — `"full"` on the daemon path). The
+/// active full-overlay merge is covered daemon-side by the `callers_overlay` /
+/// `callees_overlay` core tests in `src/cli/batch/handlers/graph.rs`.
+#[test]
+fn overlay_callers_callees_cli_direct_serves_parent() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+
+    for cmd_name in ["callers", "callees"] {
+        let mut cmd = cqs(&wt);
+        cmd.env("CQS_WORKTREE_OVERLAY", "1");
+        let v = run_json(cmd.args([cmd_name, "alpha", "--json", "--overlay"]));
+        assert!(
+            v.get("_meta")
+                .and_then(|m| m.get("worktree_overlay"))
+                .is_none(),
+            "CLI-direct {cmd_name} serves the parent index — no worktree_overlay meta; got {v}"
+        );
+        assert!(
+            v.get("_meta")
+                .and_then(|m| m.get("overlay_graph"))
+                .is_none(),
+            "CLI-direct {cmd_name} did not overlay — no overlay_graph marker; got {v}"
+        );
+    }
+}

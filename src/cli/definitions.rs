@@ -1142,18 +1142,22 @@ impl Commands {
         }
     }
 
-    /// The worktree-overlay tri-state `(overlay, no_overlay)` for the seed-
-    /// overlaid graph-adjacent commands (`scout` / `gather` / `task`,
-    /// Part A), or `None` for every other command. The `search` overlay flags
-    /// live on the top-level `Cli` (the default `cqs "query"` form), so the
-    /// dispatch-forward path reads those directly; this accessor covers only the
-    /// subcommand-bound seed overlays. Returns the raw flags — the caller folds
-    /// them through `resolve_overlay_active` with worktree eligibility.
+    /// The worktree-overlay tri-state `(overlay, no_overlay)` for the
+    /// overlay-capable subcommands — the seed-overlaid graph-adjacent commands
+    /// (`scout` / `gather` / `task`, Part A) plus the call-graph commands
+    /// (`callers` / `callees`, #1858 Part B) — or `None` for every other
+    /// command. The `search` overlay flags live on the top-level `Cli` (the
+    /// default `cqs "query"` form), so the dispatch-forward path reads those
+    /// directly; this accessor covers only the subcommand-bound overlays.
+    /// Returns the raw flags — the caller folds them through
+    /// `resolve_overlay_active` with worktree eligibility.
     pub(crate) fn overlay_tristate(&self) -> Option<(bool, bool)> {
         match self {
             Commands::Scout { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Gather { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Task { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Callers { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Callees { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             _ => None,
         }
     }
@@ -1450,7 +1454,9 @@ mod tests {
     #[test]
     fn overlay_tristate_reads_subcommand_flags() {
         use clap::Parser;
-        for cmd in ["scout", "gather", "task"] {
+        // scout/gather/task (Part A) + callers/callees (#1858 Part B) are the
+        // overlay-capable subcommands.
+        for cmd in ["scout", "gather", "task", "callers", "callees"] {
             let cli = Cli::try_parse_from(["cqs", cmd, "q", "--overlay"])
                 .unwrap_or_else(|e| panic!("{cmd} --overlay must parse: {e}"));
             // The flag bound to the subcommand, NOT the top-level default.
@@ -1462,6 +1468,14 @@ mod tests {
                 cli.command.as_ref().unwrap().overlay_tristate(),
                 Some((true, false)),
                 "{cmd}: overlay_tristate must report the subcommand flags"
+            );
+            // `--no-overlay` is the opt-out counterpart.
+            let off = Cli::try_parse_from(["cqs", cmd, "q", "--no-overlay"])
+                .unwrap_or_else(|e| panic!("{cmd} --no-overlay must parse: {e}"));
+            assert_eq!(
+                off.command.as_ref().unwrap().overlay_tristate(),
+                Some((false, true)),
+                "{cmd}: overlay_tristate must report --no-overlay"
             );
         }
         // A non-overlay command has no tri-state.

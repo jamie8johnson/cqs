@@ -10,9 +10,15 @@ mod test_map;
 pub(crate) mod trace;
 
 pub(crate) use callers::{
-    callees_core, callees_cross_core, callers_core, callers_cross_core, cmd_callees, cmd_callers,
-    parse_edge_kind, CalleesArgs, CallersArgs as CallersCoreArgs,
+    callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, cmd_callees,
+    cmd_callers, parse_edge_kind, CalleesArgs, CallersArgs as CallersCoreArgs,
 };
+// The no-overlay cores: `cmd_callers` / `cmd_callees` call them intra-module
+// unqualified, so this `pub(crate)` re-export exists only for the parity tests
+// (test-gated to keep the non-test bin warning-clean — production dispatch
+// routes through the `*_overlay` variants).
+#[cfg(test)]
+pub(crate) use callers::{callees_core, callers_core};
 pub(crate) use deps::{cmd_deps, deps_core, DepsArgs as DepsCoreArgs};
 pub(crate) use explain::cmd_explain;
 pub(crate) use impact::{cmd_impact, impact_core, impact_cross_core, ImpactArgs as ImpactCoreArgs};

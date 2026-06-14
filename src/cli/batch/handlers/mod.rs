@@ -93,6 +93,22 @@ pub(super) fn prepare_overlay_request_fields(
 /// two coexist (`merged_meta_value` merges the per-response entry with the
 /// process-level `worktree_overlay`).
 pub(super) fn attach_overlay_graph_meta(value: &mut serde_json::Value) {
+    attach_overlay_graph_marker(value, "seed-only");
+}
+
+/// Inject the `_meta.overlay_graph = "full"` marker (#1858 Part B). Called by
+/// the call-graph dispatchers (`callers` / `callees`) when the worktree overlay
+/// shadowed the graph query ITSELF — the result reflects the worktree delta, not
+/// just the seed. Distinguished from the `"seed-only"` marker so a consumer can
+/// tell a fully-overlaid graph answer from a scout/gather answer whose seed was
+/// overlaid but whose BFS expansion stayed on parent-truth.
+pub(super) fn attach_overlay_graph_meta_full(value: &mut serde_json::Value) {
+    attach_overlay_graph_marker(value, "full");
+}
+
+/// Shared writer for the `_meta.overlay_graph` marker. The two named wrappers
+/// pin the only two valid values (`"seed-only"`, `"full"`) at their call sites.
+fn attach_overlay_graph_marker(value: &mut serde_json::Value, marker: &str) {
     if let Some(obj) = value.as_object_mut() {
         let meta = obj
             .entry("_meta")
@@ -100,7 +116,7 @@ pub(super) fn attach_overlay_graph_meta(value: &mut serde_json::Value) {
         if let Some(meta_obj) = meta.as_object_mut() {
             meta_obj.insert(
                 "overlay_graph".to_string(),
-                serde_json::Value::String("seed-only".to_string()),
+                serde_json::Value::String(marker.to_string()),
             );
         }
     }

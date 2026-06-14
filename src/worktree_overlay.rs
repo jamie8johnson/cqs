@@ -268,6 +268,139 @@ impl WorktreeOverlay {
         merged
     }
 
+    /// Merge the overlay's call-graph callers into a parent `callers(X)` result.
+    ///
+    /// `function_calls.file` is the CALLER's call-site origin (there is no
+    /// callee-origin column — the callee is identified by name), so the merge is
+    /// a single-call mask plus a union:
+    ///
+    /// 1. **Mask**: drop every parent caller whose `file` (its call-site origin)
+    ///    is in `masked_origins`. That caller's out-edge to X may have changed or
+    ///    vanished in the worktree, so its parent row is no longer authoritative.
+    ///    A caller deleted from a delta file thus drops out with no overlay
+    ///    replacement (the count falls); a caller whose body changed is replaced
+    ///    by its overlay row below.
+    /// 2. **Union**: append every overlay caller. By construction every chunk in
+    ///    the overlay store comes from a masked origin, so every overlay caller
+    ///    row is from a masked origin — the mask above already removed any
+    ///    parent counterpart, so the union cannot double-count. An added caller
+    ///    in a worktree-new file appears only here (the count rises).
+    ///
+    /// The result is the parent callers minus the suspect (masked-origin) ones,
+    /// plus the worktree's fresh view of those same origins. Edge-kind filtering
+    /// and the `--limit` cap stay in the core, applied to the merged set.
+    pub fn merge_callers(
+        &self,
+        parent: Vec<crate::store::CallerInfo>,
+        overlay: Vec<crate::store::CallerInfo>,
+    ) -> Vec<crate::store::CallerInfo> {
+        let _span = tracing::info_span!(
+            "overlay_merge_callers",
+            masked = self.masked_origins.len(),
+            parent = parent.len(),
+            overlay = overlay.len()
+        )
+        .entered();
+        let mut merged: Vec<crate::store::CallerInfo> = parent
+            .into_iter()
+            .filter(|c| !self.masked_origins.contains(&c.file))
+            .collect();
+        merged.extend(overlay);
+        merged
+    }
+
+    /// Merge the overlay's call-graph callees into a parent `callees(X)` result.
+    ///
+    /// The masking key is asymmetric to `merge_callers`. A callee row carries no
+    /// file (`function_calls` records the callee by NAME), so there is no
+    /// per-row origin to mask against. What governs authority is X's DEFINITION
+    /// file — a property of the query target, not of any row:
+    ///
+    /// - **`x_def_masked == true`** (X's body lives in a delta-touched file, so
+    ///   its entire out-edge set is suspect): drop ALL parent callee rows and
+    ///   serve the overlay's callee rows for X. The overlay reflects X's
+    ///   worktree body — added calls appear, deleted calls vanish.
+    /// - **`x_def_masked == false`** (X's body is unchanged): the parent callees
+    ///   are authoritative and there is nothing to mask (callees are name-only).
+    ///   Return them untouched and do NOT union the overlay — X was not edited,
+    ///   so the overlay holds no callee rows for it, and unioning could only
+    ///   inject rows from a stale or unrelated overlay scan.
+    ///
+    /// The caller (the core) resolves `x_def_masked` via
+    /// [`WorktreeOverlay::callee_target_def_masked`]. Edge-kind filtering and the
+    /// cap stay in the core.
+    ///
+    /// Accepted fidelity loss when a name is multiply-defined: the bare-name
+    /// callee query aggregates the out-edges of EVERY definition of X (callees
+    /// carry no def-origin to scope by). If one definition lives in the delta and
+    /// another does not, `x_def_masked` is true and the parent rows — including
+    /// the UNEDITED definition's callees — are all dropped in favour of the
+    /// overlay's, which only covers the edited file. This over-masks in the safe
+    /// direction (never serves a stale edge for the edited X; only loses some
+    /// valid edges of the co-named unedited X) and is forced by the schema. The
+    /// def-origin-scoped path that could separate them is the `Type::method`
+    /// query, which stays on parent-truth in PR1.
+    pub fn merge_callees(
+        &self,
+        parent: Vec<crate::store::CalleeInfo>,
+        overlay: Vec<crate::store::CalleeInfo>,
+        x_def_masked: bool,
+    ) -> Vec<crate::store::CalleeInfo> {
+        let _span = tracing::info_span!(
+            "overlay_merge_callees",
+            masked = self.masked_origins.len(),
+            parent = parent.len(),
+            overlay = overlay.len(),
+            x_def_masked
+        )
+        .entered();
+        if x_def_masked {
+            overlay
+        } else {
+            parent
+        }
+    }
+
+    /// Whether X's DEFINITION lives in a delta-touched file — the masking key
+    /// for [`WorktreeOverlay::merge_callees`]. True when either (a) any of X's
+    /// parent-store definition origins is in `masked_origins` (X's def file was
+    /// modified, deleted, or is the masked old path of a rename), or (b) the
+    /// overlay store itself defines X (X was added in the worktree, or moved into
+    /// a delta file, so the parent has no def at the new path). Either condition
+    /// means X's body is suspect and its out-edges must be served from the
+    /// overlay.
+    ///
+    /// `parent_def_origins` is X's definition origins read from the parent store
+    /// (e.g. `Store::get_chunks_by_name(X)` projected to `.file`); the overlay
+    /// check is done here against the overlay store so the predicate is
+    /// self-contained and unit-testable.
+    pub fn callee_target_def_masked<I>(&self, name: &str, parent_def_origins: I) -> bool
+    where
+        I: IntoIterator<Item = PathBuf>,
+    {
+        let _span = tracing::debug_span!("callee_target_def_masked", name).entered();
+        // (a) X's parent def-origin was touched by the delta.
+        for origin in parent_def_origins {
+            if self.masked_origins.contains(&origin) {
+                return true;
+            }
+        }
+        // (b) The overlay store itself defines X (worktree-added / moved-in X,
+        // whose parent def-origin is absent or is a masked old path). A store
+        // error degrades to `false` — the parent callees stay authoritative,
+        // which is the safe default (it never injects unrelated overlay rows).
+        match self.store.get_chunks_by_name(name) {
+            Ok(chunks) => chunks.iter().any(|c| self.masked_origins.contains(&c.file)),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "overlay get_chunks_by_name failed; treating X def as unmasked"
+                );
+                false
+            }
+        }
+    }
+
     /// Extract the overlay-ORIGIN seeds from a merged seed set, keyed by name.
     ///
     /// An overlay-origin seed is one whose `chunk.file` is in `masked_origins`
@@ -1425,6 +1558,199 @@ mod tests {
             assert!(
                 map["fresh_fn"].chunk.content.contains("fresh_fn"),
                 "recovered chunk carries the overlay (worktree) content"
+            );
+        }
+    }
+
+    // ── call-graph merge (callers / callees, #1858 Part B) ──────────────
+    //
+    // `merge_callers` / `merge_callees` operate on `CallerInfo` / `CalleeInfo`
+    // vecs, so the merge LOGIC is tested with hand-built rows (no store). The
+    // def-origin predicate `callee_target_def_masked` queries the overlay store,
+    // so its overlay-side leg reuses the `overlay_with` chunk-seeding fixture.
+    mod merge_call_graph {
+        use super::merge_seed_results::overlay_with;
+        use super::*;
+        use crate::parser::CallEdgeKind;
+        use crate::store::{CalleeInfo, CallerInfo};
+
+        fn caller(file: &str, name: &str) -> CallerInfo {
+            CallerInfo {
+                name: name.to_string(),
+                file: PathBuf::from(file),
+                line: 1,
+                edge_kind: CallEdgeKind::Call,
+            }
+        }
+
+        fn callee(name: &str) -> CalleeInfo {
+            CalleeInfo {
+                name: name.to_string(),
+                line: 1,
+                edge_kind: CallEdgeKind::Call,
+            }
+        }
+
+        fn caller_names(rows: &[CallerInfo]) -> Vec<String> {
+            rows.iter().map(|c| c.name.clone()).collect()
+        }
+
+        fn callee_names(rows: &[CalleeInfo]) -> Vec<String> {
+            rows.iter().map(|c| c.name.clone()).collect()
+        }
+
+        /// An overlay holding only the mask set (no chunks needed for the
+        /// caller-merge logic — `merge_callers` masks by row file).
+        fn overlay_masking(masked: &[&str]) -> WorktreeOverlay {
+            overlay_with(&[], masked)
+        }
+
+        /// callers — deleted caller: a parent caller in a delta-touched file with
+        /// NO overlay replacement drops out (the count falls). Calibration: the
+        /// mask is what makes this fail without the merge — without dropping the
+        /// masked-origin parent row, `dead_caller` would survive.
+        #[test]
+        fn callers_deleted_caller_count_drops() {
+            // `src/edited.rs` is in the delta; the worktree deleted the call to X
+            // there, so the overlay has NO caller from that origin.
+            let overlay = overlay_masking(&["src/edited.rs"]);
+            let parent = vec![
+                caller("src/edited.rs", "dead_caller"),
+                caller("src/stable.rs", "live_caller"),
+            ];
+            let merged = overlay.merge_callers(parent, Vec::new());
+            let got = caller_names(&merged);
+            assert!(
+                !got.contains(&"dead_caller".to_string()),
+                "a caller in a delta file with no overlay replacement must drop; got {got:?}"
+            );
+            assert!(
+                got.contains(&"live_caller".to_string()),
+                "a caller in an untouched file must survive; got {got:?}"
+            );
+            assert_eq!(merged.len(), 1, "count fell from 2 to 1");
+        }
+
+        /// callers — added caller: a worktree-new caller (overlay-only, from a
+        /// masked origin) raises the count.
+        #[test]
+        fn callers_added_caller_count_rises() {
+            let overlay = overlay_masking(&["src/new.rs"]);
+            let parent = vec![caller("src/stable.rs", "existing_caller")];
+            let overlay_rows = vec![caller("src/new.rs", "fresh_caller")];
+            let merged = overlay.merge_callers(parent, overlay_rows);
+            let got = caller_names(&merged);
+            assert!(
+                got.contains(&"fresh_caller".to_string()),
+                "a worktree-added caller must surface; got {got:?}"
+            );
+            assert!(
+                got.contains(&"existing_caller".to_string()),
+                "an untouched parent caller must survive; got {got:?}"
+            );
+            assert_eq!(merged.len(), 2, "count rose from 1 to 2");
+        }
+
+        /// callers — modified caller: the parent row from the delta file is
+        /// dropped and the overlay's fresh row from the SAME origin replaces it
+        /// (no double-count).
+        #[test]
+        fn callers_modified_caller_replaced_not_duplicated() {
+            let overlay = overlay_masking(&["src/edited.rs"]);
+            // Parent and overlay both have a caller named `caller_fn` in the
+            // edited file — the overlay row is the authoritative one.
+            let parent = vec![caller("src/edited.rs", "caller_fn")];
+            let overlay_rows = vec![caller("src/edited.rs", "caller_fn")];
+            let merged = overlay.merge_callers(parent, overlay_rows);
+            assert_eq!(
+                merged.len(),
+                1,
+                "the masked parent row is replaced by the overlay row, not duplicated"
+            );
+        }
+
+        /// callees — X edited (def-origin masked): the parent callee set is
+        /// dropped wholesale and the overlay's callees for X take over.
+        #[test]
+        fn callees_x_edited_served_from_overlay() {
+            let overlay = overlay_masking(&["src/x.rs"]);
+            let parent = vec![callee("old_call"), callee("removed_call")];
+            let overlay_rows = vec![callee("new_call"), callee("kept_call")];
+            let merged = overlay.merge_callees(parent, overlay_rows, /* x_def_masked */ true);
+            let got = callee_names(&merged);
+            assert_eq!(
+                got,
+                vec!["new_call".to_string(), "kept_call".to_string()],
+                "X's body changed: parent callees dropped, overlay callees served; got {got:?}"
+            );
+        }
+
+        /// callees — X unedited (def-origin NOT masked): parent callees are
+        /// authoritative and the overlay is NOT unioned (no spurious rows).
+        #[test]
+        fn callees_x_unedited_parent_authoritative_no_overlay_union() {
+            let overlay = overlay_masking(&["src/other.rs"]);
+            let parent = vec![callee("real_call")];
+            // Even if the overlay scan returned rows, an unedited X must ignore
+            // them — passing a non-empty overlay vec proves the no-union path.
+            let overlay_rows = vec![callee("spurious_overlay_call")];
+            let merged = overlay.merge_callees(parent, overlay_rows, /* x_def_masked */ false);
+            let got = callee_names(&merged);
+            assert_eq!(
+                got,
+                vec!["real_call".to_string()],
+                "unedited X: parent callees authoritative, overlay NOT unioned; got {got:?}"
+            );
+        }
+
+        /// `callee_target_def_masked` — (a) parent def-origin in the delta: X is
+        /// defined in a modified file, so its parent def-origin is masked.
+        #[test]
+        fn def_masked_by_parent_origin_in_delta() {
+            let overlay = overlay_masking(&["src/x.rs"]);
+            // X's parent definition lives in the masked file.
+            assert!(
+                overlay.callee_target_def_masked("X", [PathBuf::from("src/x.rs")]),
+                "X defined in a delta file ⇒ def masked"
+            );
+        }
+
+        /// `callee_target_def_masked` — (b) overlay defines X: X is worktree-added
+        /// (the parent has no def-origin for it), but the overlay store holds a
+        /// chunk named X from a masked origin.
+        #[test]
+        fn def_masked_by_overlay_definition() {
+            // Overlay store has a chunk `added_fn` at masked `src/new.rs`.
+            let overlay = overlay_with(&[("src/new.rs", "added_fn", 0)], &["src/new.rs"]);
+            // No parent def-origins (worktree-added), but the overlay defines it.
+            assert!(
+                overlay.callee_target_def_masked("added_fn", std::iter::empty()),
+                "a worktree-added X (overlay defines it) ⇒ def masked"
+            );
+        }
+
+        /// `callee_target_def_masked` — unedited X: parent def-origin is outside
+        /// the delta AND the overlay doesn't define X ⇒ NOT masked.
+        #[test]
+        fn def_not_masked_for_unedited_target() {
+            let overlay = overlay_masking(&["src/unrelated.rs"]);
+            assert!(
+                !overlay.callee_target_def_masked("X", [PathBuf::from("src/stable.rs")]),
+                "X defined in an untouched file, absent from overlay ⇒ NOT masked"
+            );
+        }
+
+        /// `callee_target_def_masked` — rename: X's parent def-origin is the OLD
+        /// path (still in the parent index), which `discover_delta` masks for a
+        /// rename, so the predicate fires on the old path.
+        #[test]
+        fn def_masked_for_renamed_def_file_old_path() {
+            // Rename masks both old and new paths; the parent index still has X
+            // at the old path.
+            let overlay = overlay_masking(&["src/old.rs", "src/new.rs"]);
+            assert!(
+                overlay.callee_target_def_masked("X", [PathBuf::from("src/old.rs")]),
+                "renamed def file: the masked old path fires the predicate"
             );
         }
     }
