@@ -119,7 +119,9 @@ pub(crate) mod ort_helpers;
 pub(crate) mod project;
 pub(crate) mod related;
 pub(crate) mod review;
-pub use review::{review_diff, ReviewNoteEntry, ReviewResult, ReviewedFunction, RiskSummary};
+pub use review::{
+    review_diff, review_diff_overlay, ReviewNoteEntry, ReviewResult, ReviewedFunction, RiskSummary,
+};
 #[cfg(feature = "llm-summaries")]
 pub mod doc_writer;
 #[cfg(feature = "llm-summaries")]

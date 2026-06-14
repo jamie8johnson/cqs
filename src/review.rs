@@ -10,8 +10,8 @@ use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::{
-    analyze_diff_impact_with_graph, compute_risk_batch, map_hunks_to_functions, CallerDetail,
-    DiffTestInfo, RiskLevel, RiskScore,
+    analyze_diff_impact_with_graph_overlay, compute_risk_batch, map_hunks_to_functions,
+    CallerDetail, DiffTestInfo, RiskLevel, RiskScore,
 };
 use crate::note::path_matches_mention;
 use crate::Store;
@@ -78,27 +78,66 @@ pub fn review_diff<Mode>(
     diff_text: &str,
     root: &Path,
 ) -> Result<Option<ReviewResult>, AnalysisError> {
-    let _span = tracing::info_span!("review_diff").entered();
+    // Plain entry point: no overlay. The full review logic lives in
+    // [`review_diff_overlay`]; this delegates with `None` so the byte shape is
+    // unchanged (participation is discarded).
+    Ok(review_diff_overlay(store, diff_text, root, None)?.0)
+}
+
+/// Worktree-overlay-aware [`review_diff`] (#1858 Part B PR3). Identical to
+/// [`review_diff`] when `overlay` is `None`. When `Some`, ONLY the
+/// `affected_callers` section reflects the worktree delta (via the same
+/// mask+union `cqs callers` / `cqs impact` apply, through
+/// [`crate::impact::analyze_diff_impact_with_graph_overlay`]); the
+/// `affected_tests` section and the per-function risk scores
+/// (`compute_risk_batch`) stay on parent-truth — they read the parent
+/// `CallGraph`, a separate, larger surface this PR does not overlay. The notes
+/// and staleness sections are parent-truth by nature (they key off the changed
+/// FILE paths from the diff, not the call graph).
+///
+/// Returns `(Option<ReviewResult>, overlay_participated)`. Participation is true
+/// only when the direct-callers merge actually consulted the delta for THIS diff
+/// (a parent caller masked OR ≥1 overlay caller unioned). Every parent-truth
+/// early-return (`None`: no hunks / no changed functions) reports `false`, as
+/// does every no-overlay call. The daemon adapter emits the honest
+/// `_meta.overlay_graph = "callers-only"` marker gated on this bool — NOT
+/// `"full"`, because the tests + risk-scoring sections stay parent-truth.
+pub fn review_diff_overlay<Mode>(
+    store: &Store<Mode>,
+    diff_text: &str,
+    root: &Path,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
+) -> Result<(Option<ReviewResult>, bool), AnalysisError> {
+    let _span = tracing::info_span!("review_diff", overlay = overlay.is_some()).entered();
     let mut warnings: Vec<String> = Vec::new();
 
     // 1. Parse hunks
     let hunks = parse_unified_diff(diff_text);
     if hunks.is_empty() {
-        return Ok(None);
+        return Ok((None, false));
     }
 
     // 2. Map hunks to functions
     let changed = map_hunks_to_functions(store, &hunks);
     if changed.is_empty() {
-        return Ok(None);
+        return Ok((None, false));
     }
 
     // 3. Load call graph and test chunks once — used by both impact and risk
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
 
-    // 4. Impact analysis (reuses pre-loaded graph + test_chunks)
-    let impact = analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks, root)?;
+    // 4. Impact analysis (reuses pre-loaded graph + test_chunks). The overlay
+    //    (when present) merges ONLY the direct-callers section; `participated`
+    //    records whether it changed that section for this diff.
+    let (impact, participated) = analyze_diff_impact_with_graph_overlay(
+        store,
+        changed,
+        &graph,
+        &test_chunks,
+        root,
+        overlay,
+    )?;
 
     // 5. Compute risk scores for changed functions (reuses same graph + test_chunks)
     let changed_names: Vec<&str> = impact
@@ -171,15 +210,18 @@ pub fn review_diff<Mode>(
         })
         .collect();
 
-    Ok(Some(ReviewResult {
-        changed_functions: reviewed_functions,
-        affected_callers,
-        affected_tests,
-        relevant_notes,
-        risk_summary,
-        stale_warning,
-        warnings,
-    }))
+    Ok((
+        Some(ReviewResult {
+            changed_functions: reviewed_functions,
+            affected_callers,
+            affected_tests,
+            relevant_notes,
+            risk_summary,
+            stale_warning,
+            warnings,
+        }),
+        participated,
+    ))
 }
 
 /// Match notes to a set of changed file paths.
