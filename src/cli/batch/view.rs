@@ -6,6 +6,45 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test overlay override for the daemon-path handler tests. When set,
+    /// [`BatchView::resolve_overlay`] returns it directly, bypassing the LRU /
+    /// embedder / git-delta build so a test can drive `dispatch_callers` /
+    /// `dispatch_callees` with a hand-built [`cqs::worktree_overlay::WorktreeOverlay`]
+    /// and assert the `_meta.overlay_graph` marker's honesty.
+    static TEST_OVERLAY_OVERRIDE: std::cell::RefCell<
+        Option<Arc<cqs::worktree_overlay::WorktreeOverlay>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Install a thread-local overlay override for the current test, returning a
+/// guard that clears it on drop (so a reused test thread never leaks the
+/// override into the next test).
+#[cfg(test)]
+pub(crate) fn set_test_overlay_override(
+    overlay: Arc<cqs::worktree_overlay::WorktreeOverlay>,
+) -> TestOverlayGuard {
+    TEST_OVERLAY_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(overlay));
+    TestOverlayGuard
+}
+
+/// RAII guard from [`set_test_overlay_override`]; clears the thread-local on drop.
+#[cfg(test)]
+pub(crate) struct TestOverlayGuard;
+
+#[cfg(test)]
+impl Drop for TestOverlayGuard {
+    fn drop(&mut self) {
+        TEST_OVERLAY_OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+fn test_overlay_override() -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
+    TEST_OVERLAY_OVERRIDE.with(|cell| cell.borrow().clone())
+}
+
 /// Produce a `BatchView` from an `Arc<Mutex<BatchContext>>`. Lock the mutex
 /// briefly, snapshot the Arcs, drop the guard. The view carries the
 /// `Arc<Mutex<BatchContext>>` as a back-channel for `Refresh`.
@@ -1006,6 +1045,15 @@ impl BatchView {
     /// `embeddings_cache.db` (the intentional cross-boundary cache write,
     /// documented in `worktree_overlay_build`).
     fn resolve_overlay(&self) -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
+        // Test seam: a directly-injected overlay short-circuits the LRU /
+        // embedder / git-delta build, so daemon-path handler tests can exercise
+        // the marker-honesty gate without a real worktree + CPU model.
+        // Thread-local because the override is per-test and the view is handed
+        // to handlers as `&BatchView` (no `&mut`); single-threaded per dispatch.
+        #[cfg(test)]
+        if let Some(ov) = test_overlay_override() {
+            return Some(ov);
+        }
         let worktree_root = self.overlay_request.borrow().clone()?;
         let _span = tracing::info_span!(
             "batch_view_resolve_overlay",

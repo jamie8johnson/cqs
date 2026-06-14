@@ -761,6 +761,7 @@ mod tests {
             cross_project: true,
             edge_kind: None,
             limit_arg: LimitArg { limit: 5 },
+            overlay: Default::default(),
         };
 
         let view1 = ctx.build_view(None);

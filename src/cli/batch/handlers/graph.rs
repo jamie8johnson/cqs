@@ -19,10 +19,17 @@ use crate::cli::args::{
     CallersArgs, DepsArgs, ImpactArgs, ImpactDiffArgs, RelatedArgs, TestMapArgs, TraceArgs,
 };
 use crate::cli::commands::{
-    callees_core, callees_cross_core, callers_core, callers_cross_core, deps_core, impact_core,
-    parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs, CallersCoreArgs,
-    DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
+    impact_core, parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs,
+    CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
+// `callers_core` / `callees_core` are the no-overlay entry points; production
+// dispatch now routes through the `*_overlay` variants above, so the plain cores
+// are referenced only by the parity tests (imported in the test module).
+// `SearchCtx` brings `BatchView::overlay()` into scope — the seam that resolves
+// + builds the per-worktree overlay from the request the dispatcher stamped
+// (#1858 Part B; mirrors the Part A seed handlers).
+use crate::cli::commands::search::search_ctx::SearchCtx;
 use cqs::parser::CallEdgeKind;
 
 /// Parse the daemon-side `--edge-kind` wire string into a typed
@@ -33,6 +40,26 @@ fn parse_dispatch_edge_kind(s: Option<&str>) -> Result<Option<CallEdgeKind>> {
         None => Ok(None),
         Some(s) => parse_edge_kind(s).map(Some).map_err(|e| anyhow::anyhow!(e)),
     }
+}
+
+/// Prepare + resolve the worktree overlay for a call-graph dispatcher (#1858
+/// Part B). Stamps the validated request from the wire tri-state flags (a
+/// foreign `--overlay-root` is rejected as a wire error), then resolves it
+/// through the daemon overlay LRU. Returns `Some(Arc<WorktreeOverlay>)` when the
+/// overlay is active for this query, else `None` (serve the parent index). The
+/// caller threads the `Some` into the `*_overlay` core and injects the `"full"`
+/// `_meta.overlay_graph` marker. Mirrors the seed handlers' `resolve_seed_overlay`.
+fn resolve_graph_overlay(
+    ctx: &BatchView,
+    overlay: &crate::cli::args::OverlayArgs,
+) -> Result<Option<std::sync::Arc<cqs::worktree_overlay::WorktreeOverlay>>> {
+    super::prepare_overlay_request_fields(
+        ctx,
+        overlay.overlay,
+        overlay.no_overlay,
+        overlay.overlay_root.as_deref(),
+    )?;
+    Ok(ctx.overlay())
 }
 
 // ─── Daemon dispatch handlers ──────────────────────────────────────────────
@@ -108,6 +135,11 @@ pub(in crate::cli::batch) fn dispatch_callers(
         cross_project
     )
     .entered();
+    // Clear leftover per-thread overlay meta before any branch can return — a
+    // reused daemon worker must not leak a prior query's `_meta.worktree_overlay`
+    // onto this response (the cross-project branch skips `resolve_graph_overlay`,
+    // which is where the seed path clears). Idempotent.
+    cqs::worktree_overlay::clear_overlay_meta();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
@@ -123,13 +155,27 @@ pub(in crate::cli::batch) fn dispatch_callers(
         return Ok(serde_json::to_value(&output)?);
     }
 
+    // Resolve the worktree overlay (Part B): merges the worktree delta into the
+    // call-graph query when active. `None` ⇒ parent-truth (the default).
+    let overlay = resolve_graph_overlay(ctx, &args.overlay)?;
     let core_args = CallersCoreArgs {
         name: name.to_string(),
         limit: args.limit_arg.limit,
         edge_kind,
     };
-    let output = callers_core(&ctx.store(), &core_args)?;
-    Ok(serde_json::to_value(&output)?)
+    let (output, overlay_participated) =
+        callers_overlay(&ctx.store(), &core_args, overlay.as_deref())?;
+    let mut value = serde_json::to_value(&output)?;
+    if overlay_participated {
+        // The overlay actually changed THIS caller set (a parent row was masked
+        // or an overlay row was unioned) — `"full"`, not Part A's `"seed-only"`.
+        // Gating on participation, NOT `overlay.is_some()`, keeps the marker
+        // honest: a dirty worktree whose delta is irrelevant to this query, the
+        // `Type::method`-qualified path, and the kind-fallback path all return
+        // pure parent-truth and carry NO marker.
+        super::attach_overlay_graph_meta_full(&mut value);
+    }
+    Ok(value)
 }
 
 /// Dispatches a request to retrieve all functions called by a specified function.
@@ -157,6 +203,8 @@ pub(in crate::cli::batch) fn dispatch_callees(
         cross_project
     )
     .entered();
+    // See `dispatch_callers`: clear leftover per-thread overlay meta first.
+    cqs::worktree_overlay::clear_overlay_meta();
     let edge_kind = parse_dispatch_edge_kind(args.edge_kind.as_deref())?;
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
@@ -172,13 +220,26 @@ pub(in crate::cli::batch) fn dispatch_callees(
         return Ok(serde_json::to_value(&output)?);
     }
 
+    // Resolve the worktree overlay (Part B): the asymmetric callee merge lives
+    // in `callees_overlay`. `None` ⇒ parent-truth.
+    let overlay = resolve_graph_overlay(ctx, &args.overlay)?;
     let core_args = CoreCalleesArgs {
         name: name.to_string(),
         limit: args.limit_arg.limit,
         edge_kind,
     };
-    let output = callees_core(&ctx.store(), &core_args)?;
-    Ok(serde_json::to_value(&output)?)
+    let (output, overlay_participated) =
+        callees_overlay(&ctx.store(), &core_args, overlay.as_deref())?;
+    let mut value = serde_json::to_value(&output)?;
+    if overlay_participated {
+        // Marker gated on participation (= `x_def_masked`), not
+        // `overlay.is_some()`: an unedited-X callees query over a dirty worktree
+        // returns the parent callees untouched and must NOT claim `"full"`. The
+        // `Type::method`-qualified and kind-fallback paths likewise carry no
+        // marker.
+        super::attach_overlay_graph_meta_full(&mut value);
+    }
+    Ok(value)
 }
 
 /// Analyzes the impact of changes to a target and returns the results as JSON.
@@ -434,6 +495,9 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
 mod tests {
     use super::*;
     use crate::cli::batch::create_test_context;
+    // The no-overlay cores: referenced by the parity tests (production dispatch
+    // routes through the `*_overlay` variants).
+    use crate::cli::commands::{callees_core, callers_core};
     use cqs::embedder::Embedding;
     use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
     use cqs::store::{ModelInfo, Store};
@@ -523,6 +587,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         // `callers_core` emits `{name, callers, count}` — the same object
@@ -545,6 +610,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         // `build_callees` emits `CalleesOutput { name, calls, count }` —
@@ -607,6 +673,7 @@ mod tests {
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 10 },
                 edge_kind: kind.map(String::from),
+                overlay: Default::default(),
             };
             let daemon =
                 dispatch_callers(&ctx.build_view(None), &daemon_args).expect("dispatch_callers");
@@ -641,6 +708,7 @@ mod tests {
                 cross_project: true,
                 limit_arg: crate::cli::args::LimitArg { limit: 10 },
                 edge_kind: Some("call".to_string()),
+                overlay: Default::default(),
             },
         )
         .expect("dispatch_callers cross + edge-kind call");
@@ -657,6 +725,7 @@ mod tests {
                 cross_project: true,
                 limit_arg: crate::cli::args::LimitArg { limit: 10 },
                 edge_kind: Some("call".to_string()),
+                overlay: Default::default(),
             },
         )
         .expect("dispatch_callees cross + edge-kind call");
@@ -674,6 +743,7 @@ mod tests {
                 cross_project: true,
                 limit_arg: crate::cli::args::LimitArg { limit: 10 },
                 edge_kind: Some("macro_heuristic".to_string()),
+                overlay: Default::default(),
             },
         )
         .expect("dispatch_callers cross + edge-kind macro_heuristic");
@@ -899,6 +969,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_fallback_shape(&json, "const", "callers", "MAX_LEN");
@@ -913,6 +984,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         assert_fallback_shape(&json, "type", "callees", "MyConfig");
@@ -986,6 +1058,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_fallback_shape(&json, "const", "callers", "MAX_LEN");
@@ -1042,6 +1115,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args)
             .expect("kind-detect store error must not fail the request");
@@ -1065,6 +1139,7 @@ mod tests {
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
                 edge_kind: None,
+                overlay: Default::default(),
             };
             let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers");
             let core = serde_json::to_value(
@@ -1112,6 +1187,7 @@ mod tests {
             cross_project: true,
             limit_arg: crate::cli::args::LimitArg { limit: 5 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&view, &wire).expect("dispatch_callers cross");
 
@@ -1156,6 +1232,7 @@ mod tests {
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
                 edge_kind: None,
+                overlay: Default::default(),
             };
             let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees");
             let core = serde_json::to_value(
@@ -1199,6 +1276,7 @@ mod tests {
             cross_project: true,
             limit_arg: crate::cli::args::LimitArg { limit: 5 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callees(&view, &wire).expect("dispatch_callees cross");
 
@@ -1663,6 +1741,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 1 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_eq!(json["count"], 1, "page is one entry");
@@ -1682,6 +1761,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
 
@@ -1754,6 +1834,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         assert_eq!(daemon["count"], 0, "no callers under a bogus qualifier");
@@ -1792,6 +1873,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         assert_eq!(daemon["count"], 0, "no callees under a bogus qualifier");
@@ -1889,6 +1971,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
         let calls: Vec<&str> = daemon["calls"]
@@ -1983,6 +2066,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         let names: Vec<&str> = daemon["callers"]
@@ -2076,6 +2160,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         let names: Vec<&str> = daemon["callers"]
@@ -2123,6 +2208,7 @@ mod tests {
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
             edge_kind: None,
+            overlay: Default::default(),
         };
         let daemon = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
         let candidates = daemon["candidates"]
@@ -2146,6 +2232,579 @@ mod tests {
         assert_eq!(
             daemon, core,
             "CLI==daemon parity for bare multi-def candidates"
+        );
+    }
+
+    // ─── Worktree-overlay call-graph merge (active path, #1858 Part B) ──────
+    //
+    // The unit module in `worktree_overlay.rs` covers the merge LOGIC over
+    // hand-built rows; these drive the full `*_overlay` CORE against a real
+    // parent store plus an in-memory overlay store seeded with chunks +
+    // function_calls — so they exercise the def-origin resolution
+    // (`callee_target_def_masked` + `get_chunks_by_name`) and the SQL → typed
+    // output translation. SQL-only (no embedder), so they run unconditionally.
+
+    use cqs::worktree_overlay::{OverlayStats, WorktreeOverlay};
+
+    /// Build an in-memory overlay store seeded with `(file, name)` chunks and
+    /// caller→callee `function_calls` edges, wrapped in a `WorktreeOverlay`
+    /// whose `masked_origins` is exactly `masked`. Each edge is
+    /// `(caller_name, caller_file, caller_line, callee_name)`.
+    fn overlay_with_edges(
+        chunks: &[(&str, &str)],
+        edges: &[(&str, &str, u32, &str)],
+        masked: &[&str],
+    ) -> WorktreeOverlay {
+        let mut store = Store::open_memory().expect("open_memory");
+        store.init(&ModelInfo::default()).expect("init store");
+        store.set_dim(cqs::EMBEDDING_DIM);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        for (file, name) in chunks {
+            let mut c = make_chunk(&format!("{file}:{name}"), name);
+            c.file = PathBuf::from(file);
+            store
+                .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                .expect("seed overlay chunk");
+        }
+        // Group edges by (caller_name, caller_file, caller_line) into FunctionCalls.
+        use std::collections::BTreeMap;
+        let mut grouped: BTreeMap<(String, String, u32), Vec<CallSite>> = BTreeMap::new();
+        for (caller_name, caller_file, caller_line, callee_name) in edges {
+            grouped
+                .entry((
+                    caller_name.to_string(),
+                    caller_file.to_string(),
+                    *caller_line,
+                ))
+                .or_default()
+                .push(CallSite {
+                    callee_name: callee_name.to_string(),
+                    line_number: caller_line + 1,
+                    kind: CallEdgeKind::Call,
+                });
+        }
+        for ((caller_name, caller_file, caller_line), calls) in grouped {
+            let fc = FunctionCalls {
+                name: caller_name,
+                line_start: caller_line,
+                calls,
+            };
+            store
+                .upsert_function_calls(Path::new(&caller_file), &[fc])
+                .expect("seed overlay edge");
+        }
+        WorktreeOverlay {
+            store,
+            masked_origins: masked.iter().map(PathBuf::from).collect(),
+            fingerprint: [0u8; 32],
+            worktree_root: PathBuf::from("/wt"),
+            stats: OverlayStats {
+                files_in_delta: masked.len(),
+                chunks_indexed: chunks.len(),
+                build_ms: 0,
+            },
+        }
+    }
+
+    /// Open a parent store, seed it, and re-open read-only for the core.
+    fn parent_store_with(
+        chunks: &[(&str, &str)],
+        edges: &[(&str, &str, u32, &str)],
+    ) -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            for (file, name) in chunks {
+                let mut c = make_chunk(&format!("{file}:{name}"), name);
+                c.file = PathBuf::from(file);
+                store
+                    .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                    .expect("upsert parent chunk");
+            }
+            use std::collections::BTreeMap;
+            let mut grouped: BTreeMap<(String, String, u32), Vec<CallSite>> = BTreeMap::new();
+            for (caller_name, caller_file, caller_line, callee_name) in edges {
+                grouped
+                    .entry((
+                        caller_name.to_string(),
+                        caller_file.to_string(),
+                        *caller_line,
+                    ))
+                    .or_default()
+                    .push(CallSite {
+                        callee_name: callee_name.to_string(),
+                        line_number: caller_line + 1,
+                        kind: CallEdgeKind::Call,
+                    });
+            }
+            for ((caller_name, caller_file, caller_line), calls) in grouped {
+                let fc = FunctionCalls {
+                    name: caller_name,
+                    line_start: caller_line,
+                    calls,
+                };
+                store
+                    .upsert_function_calls(Path::new(&caller_file), &[fc])
+                    .expect("upsert parent edge");
+            }
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// Extract caller names from a serialized `callers_overlay` output. The
+    /// `CallersCoreOutput` enum is private to the `graph::callers` module, so the
+    /// tests read the serialized `{callers: [...]}` (function path) shape — the
+    /// same wire shape the dispatcher emits.
+    fn caller_names_json(out: &serde_json::Value) -> Vec<String> {
+        out["callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected function path with `callers` array, got: {out}"))
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn callee_names_json(out: &serde_json::Value) -> Vec<String> {
+        out["calls"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected function path with `calls` array, got: {out}"))
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// callers(X) active: a caller deleted from a delta file drops; an added
+    /// caller in a worktree-new file appears. End-to-end through `callers_overlay`.
+    #[test]
+    fn callers_overlay_deleted_drops_added_rises() {
+        // Parent: `old_caller` (in the edited file) and `stable_caller` both
+        // call `target`.
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/edited.rs", "old_caller"),
+                ("src/stable.rs", "stable_caller"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("old_caller", "src/edited.rs", 1, "target"),
+                ("stable_caller", "src/stable.rs", 1, "target"),
+            ],
+        );
+        // Worktree: `src/edited.rs` was modified — it no longer calls `target`
+        // (no overlay edge from it) but a NEW caller `fresh_caller` does.
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "target".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "a masked-origin drop + an overlay add must report overlay participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert!(
+            !got.contains(&"old_caller".to_string()),
+            "deleted caller in delta file must drop; got {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "worktree-added caller must appear; got {got:?}"
+        );
+        assert!(
+            got.contains(&"stable_caller".to_string()),
+            "untouched caller must survive; got {got:?}"
+        );
+    }
+
+    /// callees(X) active — X edited (its def file is in the delta): callees come
+    /// from the overlay (parent callee set dropped wholesale).
+    #[test]
+    fn callees_overlay_x_edited_served_from_overlay() {
+        // Parent: X (defined in src/x.rs) calls `parent_callee`.
+        let (_dir, ctx) = parent_store_with(
+            &[("src/x.rs", "X"), ("src/lib.rs", "parent_callee")],
+            &[("X", "src/x.rs", 1, "parent_callee")],
+        );
+        // Worktree edits src/x.rs: X now calls `worktree_callee` instead.
+        let overlay = overlay_with_edges(
+            &[("src/x.rs", "X")],
+            &[("X", "src/x.rs", 1, "worktree_callee")],
+            &["src/x.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "X".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            participated,
+            "X edited (def-origin masked) must report overlay participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert!(
+            got.contains(&"worktree_callee".to_string()),
+            "X edited: overlay callee must appear; got {got:?}"
+        );
+        assert!(
+            !got.contains(&"parent_callee".to_string()),
+            "X edited: parent callee set must be dropped; got {got:?}"
+        );
+    }
+
+    /// callees(X) active — X UNedited (def file outside the delta): parent
+    /// callees stay authoritative, the overlay is NOT unioned (no spurious rows).
+    #[test]
+    fn callees_overlay_x_unedited_parent_authoritative() {
+        // Parent: X (in src/stable.rs) calls `real_callee`.
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "X"), ("src/lib.rs", "real_callee")],
+            &[("X", "src/stable.rs", 1, "real_callee")],
+        );
+        // The delta touches an UNRELATED file and (pathologically) the overlay
+        // store happens to hold a stray callee edge under the same name X — which
+        // must NOT leak in, because X's def file is unchanged.
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("X", "src/unrelated.rs", 9, "spurious_callee")],
+            &["src/unrelated.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "X".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            !participated,
+            "unedited X (def-origin unmasked) is pure parent-truth: overlay must NOT \
+             report participation (the marker would over-claim `full`)"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert_eq!(
+            got,
+            vec!["real_callee".to_string()],
+            "unedited X: parent callees authoritative, overlay NOT unioned; got {got:?}"
+        );
+    }
+
+    /// callees(X) active — X moved cross-boundary (worktree-added def): X is not
+    /// in the parent store at all, but the overlay defines it (in a delta file).
+    /// The overlay-def leg of `callee_target_def_masked` fires, so the callees
+    /// resolve to the overlay's view.
+    #[test]
+    fn callees_overlay_x_added_in_worktree_resolves_to_overlay() {
+        // Parent has no X (and no edges for it).
+        let (_dir, ctx) = parent_store_with(&[("src/lib.rs", "unrelated")], &[]);
+        // Worktree ADDS src/new.rs defining X, which calls `new_callee`.
+        let overlay = overlay_with_edges(
+            &[("src/new.rs", "X")],
+            &[("X", "src/new.rs", 1, "new_callee")],
+            &["src/new.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "X".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            participated,
+            "worktree-added X (overlay defines it) must report overlay participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert!(
+            got.contains(&"new_callee".to_string()),
+            "worktree-added X: callees resolve to the overlay def; got {got:?}"
+        );
+    }
+
+    /// CLI==daemon / no-overlay parity: `callers_overlay(.., None)` is
+    /// byte-identical to the plain `callers_core` (the regression fence — the
+    /// overlay-aware core must not perturb the parent-truth path).
+    #[test]
+    fn callers_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/a.rs", "a_caller"), ("src/lib.rs", "target")],
+            &[("a_caller", "src/a.rs", 1, "target")],
+        );
+        let args = CallersCoreArgs {
+            name: "target".into(),
+            limit: 5,
+            edge_kind: None,
+        };
+        let (none_out, participated) =
+            callers_overlay(&ctx.store(), &args, None).expect("callers_overlay none");
+        assert!(
+            !participated,
+            "no overlay (None) must never report participation"
+        );
+        let with_none = serde_json::to_value(none_out).unwrap();
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &args).expect("callers_core")).unwrap();
+        assert_eq!(
+            with_none, core,
+            "callers_overlay(None) must equal callers_core (no-overlay regression fence)"
+        );
+        // Grounded: the seeded caller is actually present (guards a both-empty
+        // false pass).
+        assert!(
+            core["callers"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|c| c["name"] == "a_caller")),
+            "seeded caller must be present: {core}"
+        );
+    }
+
+    /// No-overlay parity for callees.
+    #[test]
+    fn callees_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/x.rs", "X"), ("src/lib.rs", "c")],
+            &[("X", "src/x.rs", 1, "c")],
+        );
+        let args = CoreCalleesArgs {
+            name: "X".into(),
+            limit: 5,
+            edge_kind: None,
+        };
+        let (none_out, participated) =
+            callees_overlay(&ctx.store(), &args, None).expect("callees_overlay none");
+        assert!(
+            !participated,
+            "no overlay (None) must never report participation"
+        );
+        let with_none = serde_json::to_value(none_out).unwrap();
+        let core =
+            serde_json::to_value(callees_core(&ctx.store(), &args).expect("callees_core")).unwrap();
+        assert_eq!(
+            with_none, core,
+            "callees_overlay(None) must equal callees_core (no-overlay regression fence)"
+        );
+        assert!(
+            core["calls"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|c| c["name"] == "c")),
+            "seeded callee must be present: {core}"
+        );
+    }
+
+    // ─── Marker honesty on the DAEMON path ─────────────────────────────────
+    //
+    // Invariant: `_meta.overlay_graph = "full"` is emitted ONLY when the overlay
+    // actually consulted the delta for THIS answer — never merely because the
+    // worktree has some dirty file. These tests drive `dispatch_callers` /
+    // `dispatch_callees` end-to-end with an injected overlay (the
+    // `set_test_overlay_override` seam bypasses the embedder/git LRU build) and
+    // assert the marker is ABSENT on every parent-truth path (`Type::method`-
+    // qualified, kind-fallback, unedited-X callees) and PRESENT only on a
+    // genuine merge (masked-drop / overlay-add callers, edited-X callees).
+
+    /// Convenience: marker value or `None` when absent, from a dispatcher's JSON.
+    fn overlay_graph_marker(json: &serde_json::Value) -> Option<&str> {
+        json.get("_meta")
+            .and_then(|m| m.get("overlay_graph"))
+            .and_then(|v| v.as_str())
+    }
+
+    /// (a) `Type::method`-qualified callers — parent-truth in PR1, so even with
+    /// an active overlay the answer reflects main only. The marker must be
+    /// ABSENT (the old gate stamped `"full"`).
+    #[test]
+    fn dispatch_callers_type_method_no_full_marker_under_overlay() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/s.rs", "store_self"), ("src/s.rs", "Store")],
+            &[("store_self", "src/s.rs", 20, "search")],
+        );
+        // An active, non-trivial overlay (a masked origin + an overlay edge) —
+        // `overlay.is_some()` is true, so the OLD gate would stamp `"full"`.
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/s.rs", "fresh")],
+            &[("fresh", "src/s.rs", 1, "search")],
+            &["src/s.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "Store::search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "Type::method is parent-truth in PR1 — must NOT claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// (b) kind-fallback (X is a const, not callable) — the kind is classified
+    /// from the PARENT store, so the fallback never reflects the overlay. The
+    /// marker must be ABSENT. This is Finding 1: the const→fn refactor footgun
+    /// where the fallback would falsely claim `"full"`.
+    #[test]
+    fn dispatch_callers_kind_fallback_no_full_marker_under_overlay() {
+        let (_dir, ctx) = seed_kind_corpus();
+        // Active overlay present (some dirty file) — old gate would stamp `"full"`.
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/dirty.rs", "noise")],
+            &[("noise", "src/dirty.rs", 1, "whatever")],
+            &["src/dirty.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "MAX_LEN".into(), // const in the kind corpus
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        // Confirm we actually hit the fallback (const), not the function path.
+        assert_eq!(
+            json["kind"], "const",
+            "fixture must hit the const fallback: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "kind-fallback is parent-truth — must NOT claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// (c) callees of an UNEDITED X with an unrelated dirty file present — the
+    /// def-origin is unmasked, so `merge_callees` returns the parent set
+    /// untouched (pure parent-truth). The marker must be ABSENT (the old gate
+    /// stamped `"full"` because the worktree was dirty).
+    #[test]
+    fn dispatch_callees_unedited_x_no_full_marker_under_overlay() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "X"), ("src/lib.rs", "real_callee")],
+            &[("X", "src/stable.rs", 1, "real_callee")],
+        );
+        // The delta touches an UNRELATED file; X's def-origin (src/stable.rs) is
+        // NOT masked, so callees(X) is pure parent-truth.
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "X".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
+        // The parent callee survives (function path ran), confirming parent-truth.
+        let calls = json["calls"].as_array().expect("calls array");
+        assert!(
+            calls.iter().any(|c| c["name"] == "real_callee"),
+            "unedited X must still serve its parent callee: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "unedited-X callees is parent-truth — must NOT claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// PRESENT case 1: a genuine callers merge (a masked-origin parent drop +
+    /// an overlay-added caller) DOES reflect the delta — the marker must be
+    /// `"full"`. Guards against the fix over-correcting to never-stamp.
+    #[test]
+    fn dispatch_callers_genuine_merge_carries_full_marker() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/edited.rs", "old_caller"),
+                ("src/stable.rs", "stable_caller"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("old_caller", "src/edited.rs", 1, "target"),
+                ("stable_caller", "src/stable.rs", 1, "target"),
+            ],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "target".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 50 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("full"),
+            "a real masked-drop + overlay-add merge must claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// PRESENT case 2: callees of an EDITED X (def-origin masked) serves the
+    /// overlay's out-edges — a genuine overlay answer. The marker must be
+    /// `"full"`.
+    #[test]
+    fn dispatch_callees_edited_x_carries_full_marker() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/x.rs", "X"), ("src/lib.rs", "parent_callee")],
+            &[("X", "src/x.rs", 1, "parent_callee")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/x.rs", "X")],
+            &[("X", "src/x.rs", 1, "worktree_callee")],
+            &["src/x.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "X".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 50 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callees(&ctx.build_view(None), &args).expect("dispatch_callees");
+        let calls = json["calls"].as_array().expect("calls array");
+        assert!(
+            calls.iter().any(|c| c["name"] == "worktree_callee"),
+            "edited X must serve the overlay callee: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("full"),
+            "edited-X callees served from the overlay must claim overlay_graph=full: {json}"
         );
     }
 }

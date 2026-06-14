@@ -642,13 +642,14 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // re-validates it (canonicalize + `resolve_main_project_dir == served root`)
     // before reading any files.
     //
-    // Forwards for `search` (whole-result overlay) plus `scout` / `gather` /
-    // `task` (seed-only overlay), and only from an eligible worktree. The
-    // overlay flags live in two places: top-level `Cli.overlay`/`no_overlay`
-    // for the default `cqs "query"` search form, and on the subcommand's
-    // flattened `OverlayArgs` for `scout`/`gather`/`task` (so `cqs scout q
-    // --overlay` binds to the subcommand, not the top-level flag). We read the
-    // effective tri-state from whichever applies.
+    // Forwards for `search` (whole-result overlay), `scout` / `gather` /
+    // `task` (seed-only overlay), and `callers` / `callees` (full call-graph
+    // overlay, #1858 Part B), and only from an eligible worktree. The overlay
+    // flags live in two places: top-level `Cli.overlay`/`no_overlay` for the
+    // default `cqs "query"` search form, and on the subcommand's flattened
+    // `OverlayArgs` for the rest (so `cqs callers f --overlay` binds to the
+    // subcommand, not the top-level flag). We read the effective tri-state from
+    // whichever applies.
     //
     // Activation is the shared tri-state resolution (the default-on flip):
     // default-on requires eligibility (`overlay_root.is_some()`), so we resolve
@@ -663,9 +664,13 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // overlay can never activate (`--no-overlay` / `CQS_WORKTREE_OVERLAY=0`),
     // there is no reason to resolve the project root or read `.git` on every
     // query, so the default-on probe stays off the opted-out hot path.
-    if matches!(command.as_str(), "search" | "scout" | "gather" | "task") {
+    if matches!(
+        command.as_str(),
+        "search" | "scout" | "gather" | "task" | "callers" | "callees"
+    ) {
         // Effective overlay tri-state: the subcommand's flattened flags for
-        // scout/gather/task, else the top-level Cli flags (default search).
+        // scout/gather/task/callers/callees, else the top-level Cli flags
+        // (default search).
         let (flag_on, flag_off) = cli
             .command
             .as_ref()

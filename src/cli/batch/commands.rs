@@ -1012,6 +1012,7 @@ mod tests {
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
                 edge_kind: None,
+                overlay: Default::default(),
             },
             output: TextJsonArgs { json: false },
         };
