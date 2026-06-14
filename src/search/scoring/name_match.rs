@@ -877,4 +877,111 @@ mod tests {
         // the pair pins both sides of `lower == query`).
         assert!(!is_name_like_query("parse config handler"));
     }
+
+    // ===== ASCII/Unicode path-selection gate guards (adequacy) =====
+    //
+    // The existing Unicode tests put non-ASCII characters on BOTH the query and
+    // the name, so they never set exactly one side ASCII. That leaves the two
+    // path-selection conjunctions in `NameMatcher::score` unconstrained:
+    //   - `both_ascii = self.query_is_ascii && name.is_ascii()` (the exact /
+    //     substring tier selector), and
+    //   - `both_ascii && self.query_words_ascii` (the word-overlap selector).
+    // Both survive `&&` -> `||` mutation because no mixed-ASCII×Unicode input
+    // routes through them. These guards supply exactly that input.
+
+    #[test]
+    fn score_ascii_query_unicode_name_uses_unicode_fold() {
+        // U+212A KELVIN SIGN is non-ASCII but Unicode-lowercases to ASCII "k".
+        // Query "k" is ASCII; name is the Kelvin sign, so exactly one side is
+        // ASCII. The correct (slow / Unicode) path lowercases the name to "k"
+        // and exact-matches the query -> name_exact (1.0).
+        //
+        // `both_ascii` mutated `&&` -> `||`: `query_is_ascii(true) || name.is_ascii(false)`
+        // becomes true, routing a Unicode name through the ASCII byte path,
+        // whose ASCII-only case fold never folds U+212A to 'k'. No tier matches
+        // and the score collapses to 0.0 -> RED.
+        let cfg = ScoringConfig::current();
+        let got = name_match_score("k", "\u{212A}");
+        assert_eq!(
+            got, cfg.name_exact,
+            "ascii query vs unicode name that folds to it must exact-match via the unicode path, got {got}"
+        );
+    }
+
+    #[test]
+    fn score_ascii_query_unicode_name_word_overlap_selector() {
+        // Reaches the word-overlap tier (line ~170 selector) with exactly one
+        // ASCII side. Two-word query so the full-string exact/contains tiers do
+        // not fire (so execution actually reaches the word-overlap selector).
+        //
+        // Name "foo\u{212A}bar": the Unicode-aware tokenizer treats the Kelvin
+        // sign as an uppercase boundary that folds to 'k', producing the tokens
+        // ["foo", "kbar"]. Query words ["kbar", "zzz"]: "kbar" exact-matches a
+        // token, "zzz" matches nothing -> overlap 1/2 -> 0.5 * 1/2 = 0.25.
+        //
+        // `both_ascii && self.query_words_ascii` mutated `&&` -> `||`:
+        // `false || true` routes the Unicode name through the ASCII byte
+        // tokenizer, which makes one opaque token over the raw UTF-8 bytes
+        // where "kbar" is not even a substring -> overlap 0/2 -> 0.0 -> RED.
+        let cfg = ScoringConfig::current();
+        let expected = cfg.name_max_overlap * 0.5; // 1-of-2 overlap
+        let got = name_match_score("kbar zzz", "foo\u{212A}bar");
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "ascii query vs unicode name must tokenize the name via the unicode path; \
+             expected {expected}, got {got}"
+        );
+        // Pins the slow-path tokens this case depends on (Kelvin = boundary +
+        // fold to 'k'), so a tokenizer change that silently breaks the premise
+        // surfaces here rather than as a confusing score mismatch.
+        assert_eq!(
+            tokenize_identifier("foo\u{212A}bar"),
+            vec!["foo".to_string(), "kbar".to_string()]
+        );
+    }
+
+    // ===== ascii_bytes_contains_ignore_case boundary + loop guards (adequacy) =====
+    //
+    // The existing `test_ascii_bytes_contains_ignore_case` exercises only
+    // strictly-different lengths and clean match/no-match cases, leaving two
+    // mutants alive:
+    //   - `needle.len() > haystack.len()` -> `>=` (the equal-length early
+    //     return short-circuits a real equal-length match), and
+    //   - the first-byte-match `&&` rest-match `&&` -> `||` in the search loop
+    //     (a first-byte match alone would falsely report containment).
+
+    #[test]
+    fn ascii_bytes_contains_equal_length_match() {
+        // Equal length, equal bytes (case-insensitively) -> contained.
+        // `needle.len() > haystack.len()` mutated to `>=` returns the early
+        // `false` for `3 >= 3`, missing this match -> RED.
+        assert!(
+            ascii_bytes_contains_ignore_case(b"abc", b"abc"),
+            "equal-length equal needle must be reported as contained"
+        );
+        assert!(
+            ascii_bytes_contains_ignore_case(b"AbC", b"aBc"),
+            "equal-length case-insensitive equal needle must be contained"
+        );
+        // Negative control: equal length, differing bytes -> not contained
+        // (keeps the positive assertion from being vacuously satisfiable).
+        assert!(!ascii_bytes_contains_ignore_case(b"abc", b"abd"));
+    }
+
+    #[test]
+    fn ascii_bytes_contains_first_byte_match_rest_mismatch() {
+        // First byte matches the needle at i=0 and i=3, but the remaining bytes
+        // never do, and "ab" appears nowhere -> not contained (real: false).
+        //
+        // The loop's `first-byte-eq && rest-eq` mutated `&&` -> `||`: the
+        // first-byte match at i=0 alone satisfies `||` and falsely reports
+        // containment -> RED.
+        assert!(
+            !ascii_bytes_contains_ignore_case(b"axxac", b"ab"),
+            "a first-byte match with a mismatching remainder must not count as containment"
+        );
+        // Positive control: same haystack shape but the real "ab" present at the
+        // end -> contained (so the negative case is not trivially always-false).
+        assert!(ascii_bytes_contains_ignore_case(b"axxab", b"ab"));
+    }
 }
