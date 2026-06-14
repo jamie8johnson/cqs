@@ -20,7 +20,7 @@ use crate::cli::args::{
 };
 use crate::cli::commands::{
     callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
-    impact_core, parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs,
+    impact_overlay, parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs,
     CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
 // `callers_core` / `callees_core` are the no-overlay entry points; production
@@ -47,9 +47,10 @@ fn parse_dispatch_edge_kind(s: Option<&str>) -> Result<Option<CallEdgeKind>> {
 /// foreign `--overlay-root` is rejected as a wire error), then resolves it
 /// through the daemon overlay LRU. Returns `Some(Arc<WorktreeOverlay>)` when the
 /// overlay is active for this query, else `None` (serve the parent index). The
-/// caller threads the `Some` into the `*_overlay` core and injects the `"full"`
+/// caller threads the `Some` into the `*_overlay` core and injects the
 /// `_meta.overlay_graph` marker. Mirrors the seed handlers' `resolve_seed_overlay`.
-fn resolve_graph_overlay(
+/// Shared with `dispatch_dead` (analysis.rs), so `pub(super)`.
+pub(super) fn resolve_graph_overlay(
     ctx: &BatchView,
     overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<Option<std::sync::Arc<cqs::worktree_overlay::WorktreeOverlay>>> {
@@ -274,6 +275,10 @@ pub(in crate::cli::batch) fn dispatch_impact(
         cross_project
     )
     .entered();
+    // See `dispatch_callers`: clear leftover per-thread overlay meta before any
+    // branch can return, so a reused daemon worker never leaks a prior query's
+    // `_meta.worktree_overlay`.
+    cqs::worktree_overlay::clear_overlay_meta();
     if cross_project {
         let cross_ctx = ctx.cross_project()?;
         let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
@@ -294,6 +299,9 @@ pub(in crate::cli::batch) fn dispatch_impact(
         return Ok(json);
     }
 
+    // Resolve the worktree overlay (Part B): merges ONLY the direct-callers
+    // section of impact. `None` ⇒ parent-truth (the default).
+    let overlay = resolve_graph_overlay(ctx, &args.overlay)?;
     let core_args = ImpactCoreArgs {
         name: name.to_string(),
         depth: args.depth,
@@ -301,8 +309,19 @@ pub(in crate::cli::batch) fn dispatch_impact(
         suggest_tests: do_suggest_tests,
         include_types,
     };
-    let output = impact_core(&ctx.store(), &ctx.root, &core_args)?;
-    output.to_value()
+    let (output, overlay_participated) =
+        impact_overlay(&ctx.store(), &ctx.root, &core_args, overlay.as_deref())?;
+    let mut value = output.to_value()?;
+    if overlay_participated {
+        // The overlay changed impact's direct-callers section for this target.
+        // `"callers-only"`, NOT `"full"`: the tests / transitive / type-impacted
+        // sections still reflect parent-truth, so claiming `"full"` would let a
+        // consumer mistake those sections for delta-aware. Gated on
+        // participation, not `overlay.is_some()` — the kind-fallback path and a
+        // dirty worktree irrelevant to this target carry NO marker.
+        super::attach_overlay_graph_meta_callers_only(&mut value);
+    }
+    Ok(value)
 }
 
 /// Performs a reverse breadth-first search through the call graph to find all test chunks that call a specified target chunk, up to a maximum depth.
@@ -497,7 +516,7 @@ mod tests {
     use crate::cli::batch::create_test_context;
     // The no-overlay cores: referenced by the parity tests (production dispatch
     // routes through the `*_overlay` variants).
-    use crate::cli::commands::{callees_core, callers_core};
+    use crate::cli::commands::{callees_core, callers_core, impact_core};
     use cqs::embedder::Embedding;
     use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
     use cqs::store::{ModelInfo, Store};
@@ -1014,6 +1033,7 @@ mod tests {
             type_impact: false,
             cross_project: false,
             limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            overlay: Default::default(),
         };
         let json = dispatch_impact(&ctx.build_view(None), &args).expect("dispatch_impact");
         assert_fallback_shape(&json, "ambiguous", "impact", "dual_name");
@@ -1541,6 +1561,7 @@ mod tests {
                 type_impact: false,
                 cross_project: false,
                 limit_arg: crate::cli::args::LimitArg { limit: 5 },
+                overlay: Default::default(),
             };
             let daemon = dispatch_impact(&view, &wire).expect("dispatch_impact");
             let core = impact_core(
@@ -1589,6 +1610,7 @@ mod tests {
             type_impact: false,
             cross_project: true,
             limit_arg: crate::cli::args::LimitArg { limit: 5 },
+            overlay: Default::default(),
         };
         let daemon = dispatch_impact(&view, &wire).expect("dispatch_impact cross");
 
@@ -2805,6 +2827,415 @@ mod tests {
             overlay_graph_marker(&json),
             Some("full"),
             "edited-X callees served from the overlay must claim overlay_graph=full: {json}"
+        );
+    }
+
+    // ─── #1858 Part B PR2: impact + dead overlay ───────────────────────────────
+    //
+    // Overlay-correctness tests drive the `*_overlay` CORES against a real parent
+    // store + an in-memory overlay; marker-honesty tests drive the DISPATCHERS
+    // end-to-end via `set_test_overlay_override` and assert the `_meta.overlay_graph`
+    // marker's honesty (impact = "callers-only", dead = "full", absent on every
+    // parent-truth path).
+
+    use crate::cli::commands::{dead_overlay, impact_overlay};
+
+    fn impact_args(name: &str) -> crate::cli::args::ImpactArgs {
+        crate::cli::args::ImpactArgs {
+            name: name.into(),
+            depth: 1,
+            suggest_tests: false,
+            type_impact: false,
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 50 },
+            overlay: Default::default(),
+        }
+    }
+
+    /// The WIRE `args::DeadArgs` (what the daemon dispatcher takes).
+    fn dead_args() -> crate::cli::args::DeadArgs {
+        crate::cli::args::DeadArgs {
+            include_pub: true,
+            min_confidence: cqs::store::DeadConfidence::Low,
+            verdict: None,
+            overlay: Default::default(),
+        }
+    }
+
+    /// The CORE `commands::DeadArgs` (what `dead_overlay` / `dead_core` take).
+    fn dead_core_args() -> crate::cli::commands::DeadArgs {
+        crate::cli::commands::DeadArgs {
+            include_pub: true,
+            min_confidence: cqs::store::DeadConfidence::Low,
+            verdict: None,
+        }
+    }
+
+    /// Extract the impact `callers` section names from a serialized impact value.
+    fn impact_caller_names(out: &serde_json::Value) -> Vec<String> {
+        out["callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected impact `callers` array, got: {out}"))
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Names appearing in a `dead` output's `dead` + `possibly_dead_pub` lists.
+    fn dead_names(out: &serde_json::Value) -> Vec<String> {
+        let mut names = Vec::new();
+        for key in ["dead", "possibly_dead_pub"] {
+            if let Some(arr) = out[key].as_array() {
+                for d in arr {
+                    names.push(d["name"].as_str().unwrap().to_string());
+                }
+            }
+        }
+        names
+    }
+
+    // ----- impact_overlay core: direct-callers reflect the delta -----
+
+    /// impact(X) direct callers: a caller deleted from a delta file drops; an
+    /// added caller in a worktree-new file appears — the same mask+union as
+    /// `callers(X)`. Participation is reported (a parent masked + an overlay add).
+    #[test]
+    fn impact_overlay_callers_reflect_delta() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/edited.rs", "old_caller"),
+                ("src/stable.rs", "stable_caller"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("old_caller", "src/edited.rs", 1, "target"),
+                ("stable_caller", "src/stable.rs", 1, "target"),
+            ],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let args = ImpactCoreArgs {
+            name: "target".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact_overlay");
+        assert!(
+            participated,
+            "a masked drop + an overlay add must participate"
+        );
+        let value = out.to_value().unwrap();
+        let got = impact_caller_names(&value);
+        assert!(
+            !got.contains(&"old_caller".to_string()),
+            "deleted caller in delta file must drop from impact: {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "worktree-added caller must appear in impact: {got:?}"
+        );
+        assert!(
+            got.contains(&"stable_caller".to_string()),
+            "untouched caller must survive in impact: {got:?}"
+        );
+    }
+
+    /// impact(X) with an unrelated dirty file: X's callers are untouched, so the
+    /// overlay does NOT participate (pure parent-truth).
+    #[test]
+    fn impact_overlay_unrelated_delta_no_participation() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        let args = ImpactCoreArgs {
+            name: "target".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact_overlay");
+        assert!(
+            !participated,
+            "an unrelated dirty file must NOT make impact's callers participate"
+        );
+        let value = out.to_value().unwrap();
+        assert!(
+            impact_caller_names(&value).contains(&"the_caller".to_string()),
+            "the parent caller must survive untouched: {value}"
+        );
+    }
+
+    /// No-overlay parity fence: `impact_overlay(.., None)` equals `impact_core`.
+    #[test]
+    fn impact_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/a.rs", "c1"), ("src/lib.rs", "target")],
+            &[("c1", "src/a.rs", 1, "target")],
+        );
+        let args = ImpactCoreArgs {
+            name: "target".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (ov_out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, None).expect("impact_overlay none");
+        assert!(!participated, "no-overlay must report participated=false");
+        let core_out = impact_core(&ctx.store(), &ctx.root, &args).expect("impact_core");
+        assert_eq!(
+            ov_out.to_value().unwrap(),
+            core_out.to_value().unwrap(),
+            "impact_overlay(None) must equal impact_core (no-overlay regression fence)"
+        );
+    }
+
+    // ----- dead_overlay core: dead⇄live flips over the merged graph -----
+
+    /// Direction A: a worktree file adds a real caller to a parent-dead function,
+    /// flipping it LIVE (dropped from the dead set). Participation reported.
+    #[test]
+    fn dead_overlay_worktree_caller_flips_dead_to_live() {
+        // Parent: `orphan` is defined and called by nobody → dead.
+        let (_dir, ctx) = parent_store_with(&[("src/lib.rs", "orphan")], &[]);
+        // Worktree: a new file `src/new.rs` now calls `orphan`.
+        let overlay = overlay_with_edges(
+            &[("src/new.rs", "fresh_user")],
+            &[("fresh_user", "src/new.rs", 1, "orphan")],
+            &["src/new.rs"],
+        );
+        // Baseline (no overlay): orphan IS dead.
+        let (base, _) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), None).expect("base");
+        let base_json = serde_json::to_value(&base).unwrap();
+        assert!(
+            dead_names(&base_json).contains(&"orphan".to_string()),
+            "baseline: orphan must be dead with no overlay: {base_json}"
+        );
+        // With the overlay: orphan flips LIVE.
+        let (out, participated) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), Some(&overlay))
+                .expect("overlay");
+        assert!(participated, "a dead→live flip must report participation");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            !dead_names(&json).contains(&"orphan".to_string()),
+            "a worktree caller must flip `orphan` live (removed from dead): {json}"
+        );
+    }
+
+    /// Direction B: a worktree masks the SOLE caller of a parent-live function,
+    /// and the worktree no longer calls it, flipping it DEAD. Participation
+    /// reported.
+    #[test]
+    fn dead_overlay_masked_sole_caller_flips_live_to_dead() {
+        // Parent: `lonely` is called ONLY by `caller` (in src/edited.rs) → live.
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "caller"), ("src/lib.rs", "lonely")],
+            &[("caller", "src/edited.rs", 1, "lonely")],
+        );
+        // Worktree: src/edited.rs is modified and no longer calls `lonely`
+        // (the overlay has NO edge to it). `caller` becomes an overlay chunk with
+        // no out-edge.
+        let overlay = overlay_with_edges(&[("src/edited.rs", "caller")], &[], &["src/edited.rs"]);
+        // Baseline: `lonely` is live (NOT in the dead set).
+        let (base, _) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), None).expect("base");
+        let base_json = serde_json::to_value(&base).unwrap();
+        assert!(
+            !dead_names(&base_json).contains(&"lonely".to_string()),
+            "baseline: lonely must be LIVE with no overlay: {base_json}"
+        );
+        // With the overlay: the sole caller's origin is masked and the worktree
+        // no longer calls `lonely` → it flips DEAD.
+        let (out, participated) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), Some(&overlay))
+                .expect("overlay");
+        assert!(participated, "a live→dead flip must report participation");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            dead_names(&json).contains(&"lonely".to_string()),
+            "masking the sole caller must flip `lonely` dead: {json}"
+        );
+    }
+
+    /// No-overlay parity fence: `dead_overlay(.., None)` equals `dead_core`.
+    #[test]
+    fn dead_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(&[("src/lib.rs", "orphan")], &[]);
+        let (ov_out, participated) = dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), None)
+            .expect("dead_overlay none");
+        assert!(!participated, "no-overlay must report participated=false");
+        let core_out = crate::cli::commands::dead_core(&ctx.store(), &ctx.root, &dead_core_args())
+            .expect("core");
+        assert_eq!(
+            serde_json::to_value(&ov_out).unwrap(),
+            serde_json::to_value(&core_out).unwrap(),
+            "dead_overlay(None) must equal dead_core (no-overlay regression fence)"
+        );
+    }
+
+    /// Direction-B admissibility: a candidate whose definition lives in a
+    /// doc-shaped origin (`.md`) must NOT be added to the dead set even when its
+    /// merged caller set is empty — `fetch_uncalled_functions` excludes doc-path
+    /// origins, so the overlay addition must honor the same contract. Without the
+    /// doc-path filter in `resolve_dead_candidate_def`, masking the sole caller of
+    /// a `.md`-defined function would falsely report it dead.
+    #[test]
+    fn dead_overlay_does_not_add_doc_path_candidate() {
+        // `doc_fn` is defined in a markdown code block and called only by `caller`
+        // (in the to-be-masked src/edited.rs).
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "caller"), ("docs/guide.md", "doc_fn")],
+            &[("caller", "src/edited.rs", 1, "doc_fn")],
+        );
+        // Worktree edits src/edited.rs and drops the call to `doc_fn`.
+        let overlay = overlay_with_edges(&[("src/edited.rs", "caller")], &[], &["src/edited.rs"]);
+        let (out, _participated) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), Some(&overlay))
+                .expect("dead_overlay");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            !dead_names(&json).contains(&"doc_fn".to_string()),
+            "a `.md`-defined function must NEVER be added to the dead set by the overlay \
+             (doc-path origins are excluded from dead candidacy): {json}"
+        );
+    }
+
+    // ----- daemon-path marker honesty: impact -----
+
+    /// impact direct-callers genuinely merged → `_meta.overlay_graph =
+    /// "callers-only"` (NOT "full": tests/transitive/type stay parent-truth).
+    #[test]
+    fn dispatch_impact_genuine_merge_carries_callers_only_marker() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact(&ctx.build_view(None), &impact_args("target"))
+            .expect("dispatch_impact");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("callers-only"),
+            "a real impact direct-callers merge must claim overlay_graph=callers-only \
+             (NOT full — the tests/transitive sections are parent-truth): {json}"
+        );
+    }
+
+    /// impact kind-fallback (X is a const) is classified from the parent store, so
+    /// it never reflects the overlay — the marker must be ABSENT even with a
+    /// non-trivial active overlay.
+    #[test]
+    fn dispatch_impact_kind_fallback_no_marker_under_overlay() {
+        let (_dir, ctx) = seed_kind_corpus();
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/dirty.rs", "noise")],
+            &[("noise", "src/dirty.rs", 1, "whatever")],
+            &["src/dirty.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact(&ctx.build_view(None), &impact_args("MAX_LEN"))
+            .expect("dispatch_impact");
+        assert_eq!(
+            json["kind"], "const",
+            "fixture must hit the const fallback: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "impact kind-fallback is parent-truth — must carry NO overlay marker: {json}"
+        );
+    }
+
+    /// impact with an unrelated dirty file: X's direct callers are untouched, so
+    /// no marker (the dirty worktree is irrelevant to this target).
+    #[test]
+    fn dispatch_impact_unrelated_delta_no_marker() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact(&ctx.build_view(None), &impact_args("target"))
+            .expect("dispatch_impact");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an unrelated dirty file must leave impact's marker absent: {json}"
+        );
+    }
+
+    // ----- daemon-path marker honesty: dead -----
+
+    /// dead with a genuine flip (a worktree caller flips a parent-dead function
+    /// live) → `_meta.overlay_graph = "full"` (dead's answer is fully determined
+    /// by the merged caller graph).
+    #[test]
+    fn dispatch_dead_genuine_flip_carries_full_marker() {
+        let (_dir, ctx) = parent_store_with(&[("src/lib.rs", "orphan")], &[]);
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/new.rs", "fresh_user")],
+            &[("fresh_user", "src/new.rs", 1, "orphan")],
+            &["src/new.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = super::super::analysis::dispatch_dead(&ctx.build_view(None), &dead_args())
+            .expect("dispatch_dead");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("full"),
+            "a real dead⇄live flip must claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// dead with an unrelated dirty file flips no verdict → marker ABSENT.
+    #[test]
+    fn dispatch_dead_unrelated_delta_no_marker() {
+        // `orphan` is dead in parent; the delta touches an unrelated file that
+        // neither calls `orphan` nor masks any caller of a live function.
+        let (_dir, ctx) = parent_store_with(&[("src/lib.rs", "orphan")], &[]);
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = super::super::analysis::dispatch_dead(&ctx.build_view(None), &dead_args())
+            .expect("dispatch_dead");
+        // The verdict is unchanged: orphan stays dead, no flip → no marker.
+        assert!(
+            dead_names(&json).contains(&"orphan".to_string()),
+            "orphan must stay dead (unrelated delta): {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an unrelated dirty file that flips no verdict must carry NO dead marker: {json}"
         );
     }
 }

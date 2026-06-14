@@ -1158,6 +1158,8 @@ impl Commands {
             Commands::Task { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Callers { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Callees { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Impact { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Dead { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             _ => None,
         }
     }
@@ -1454,9 +1456,10 @@ mod tests {
     #[test]
     fn overlay_tristate_reads_subcommand_flags() {
         use clap::Parser;
-        // scout/gather/task (Part A) + callers/callees (#1858 Part B) are the
-        // overlay-capable subcommands.
-        for cmd in ["scout", "gather", "task", "callers", "callees"] {
+        // scout/gather/task (Part A) + callers/callees/impact (#1858 Part B) are
+        // the overlay-capable subcommands that take a single positional. `dead`
+        // (no positional) is checked separately below.
+        for cmd in ["scout", "gather", "task", "callers", "callees", "impact"] {
             let cli = Cli::try_parse_from(["cqs", cmd, "q", "--overlay"])
                 .unwrap_or_else(|e| panic!("{cmd} --overlay must parse: {e}"));
             // The flag bound to the subcommand, NOT the top-level default.
@@ -1478,8 +1481,23 @@ mod tests {
                 "{cmd}: overlay_tristate must report --no-overlay"
             );
         }
+        // `dead` takes no positional but is overlay-capable (#1858 Part B).
+        let dead_on = Cli::try_parse_from(["cqs", "dead", "--overlay"])
+            .unwrap_or_else(|e| panic!("dead --overlay must parse: {e}"));
+        assert_eq!(
+            dead_on.command.as_ref().unwrap().overlay_tristate(),
+            Some((true, false)),
+            "dead: overlay_tristate must report the subcommand flags"
+        );
+        let dead_off = Cli::try_parse_from(["cqs", "dead", "--no-overlay"])
+            .unwrap_or_else(|e| panic!("dead --no-overlay must parse: {e}"));
+        assert_eq!(
+            dead_off.command.as_ref().unwrap().overlay_tristate(),
+            Some((false, true)),
+            "dead: overlay_tristate must report --no-overlay"
+        );
         // A non-overlay command has no tri-state.
-        let cli = Cli::try_parse_from(["cqs", "impact", "foo"]).unwrap();
+        let cli = Cli::try_parse_from(["cqs", "trace", "a", "b"]).unwrap();
         assert_eq!(cli.command.unwrap().overlay_tristate(), None);
     }
 

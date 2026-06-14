@@ -21,7 +21,13 @@ pub(crate) use callers::{
 pub(crate) use callers::{callees_core, callers_core};
 pub(crate) use deps::{cmd_deps, deps_core, DepsArgs as DepsCoreArgs};
 pub(crate) use explain::cmd_explain;
-pub(crate) use impact::{cmd_impact, impact_core, impact_cross_core, ImpactArgs as ImpactCoreArgs};
+pub(crate) use impact::{
+    cmd_impact, impact_cross_core, impact_overlay, ImpactArgs as ImpactCoreArgs,
+};
+// `impact_core` (no-overlay entry point) is consumed only by the test-gated
+// re-export in `commands/mod.rs`; production routes through `impact_overlay`.
+#[cfg(test)]
+pub(crate) use impact::impact_core;
 pub(crate) use impact_diff::cmd_impact_diff;
 pub(crate) use test_map::{
     build_test_map_output, cmd_test_map, test_map_core, test_map_cross_core, test_map_max_nodes,

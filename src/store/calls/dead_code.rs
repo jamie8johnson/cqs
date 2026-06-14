@@ -14,12 +14,48 @@ use crate::parser::{ChunkType, Language};
 use crate::store::helpers::{clamp_line_number, ChunkRow, ChunkSummary, StoreError};
 use crate::store::Store;
 
+/// Document-shaped file extensions whose extracted code blocks are illustrative,
+/// not part of the project's call graph. A function chunked out of a fenced code
+/// block in one of these files is never a dead-code candidate. Single source for
+/// both the SQL `NOT LIKE` exclusions ([`dead_doc_path_excludes_sql`]) and the
+/// in-Rust predicate ([`is_dead_doc_path`]) the worktree-overlay dead path uses,
+/// so the two views of "doc-shaped origin" can never drift. `.css`/`.html` are
+/// covered by the chunk-type filter; `.scss`/`.sass`/`.less` are listed here in
+/// case a future parser treats them as code.
+pub(crate) const DEAD_DOC_PATH_EXTENSIONS: &[&str] = &[
+    ".md", ".mdx", ".adoc", ".rst", ".txt", ".tex", ".scss", ".sass", ".less",
+];
+
+/// SQL `AND c.origin NOT LIKE '%.ext'` clause set for the dead-candidate query,
+/// generated from [`DEAD_DOC_PATH_EXTENSIONS`]. Leading newline + indentation
+/// match the previous inline literal so the formatted SQL is unchanged.
+fn dead_doc_path_excludes_sql() -> String {
+    DEAD_DOC_PATH_EXTENSIONS
+        .iter()
+        .map(|ext| format!("\n                AND c.origin NOT LIKE '%{ext}'"))
+        .collect()
+}
+
+/// Whether `origin` is a document-shaped path (one of
+/// [`DEAD_DOC_PATH_EXTENSIONS`]) — the Rust counterpart of the SQL
+/// `dead_doc_path_excludes_sql`. The worktree-overlay dead path
+/// (`resolve_dead_candidate_def`) uses this so an overlay-added candidate is
+/// held to the same doc-path admissibility the parent SQL applies.
+pub fn is_dead_doc_path(origin: &str) -> bool {
+    DEAD_DOC_PATH_EXTENSIONS
+        .iter()
+        .any(|ext| origin.ends_with(ext))
+}
+
 impl<Mode> Store<Mode> {
-    /// Find functions/methods never called by ANY indexed edge (dead code
+    /// Find functions/methods never called by any real-caller edge (dead code
     /// detection). A function qualifies only when no `function_calls` row names
-    /// it as callee — trusted (`call`, `serde_callback`), heuristic
-    /// (`macro_heuristic`, `fn_pointer`), or `doc_reference` alike. This is the
-    /// strict zero-edge contract: heuristic-only callees do NOT enter this set.
+    /// it as callee through a real-caller kind — trusted (`call`,
+    /// `serde_callback`) or heuristic (`macro_heuristic`, `fn_pointer`). A
+    /// `doc_reference` edge does NOT count: a prose mention invokes nothing, so a
+    /// function whose only inbound edge is a doc reference is still dead. This is
+    /// the strict zero-real-edge contract: heuristic-only callees do NOT enter
+    /// this set.
     /// (`cqs dead` separately surfaces the heuristic-only population via
     /// [`Store::find_low_confidence_live_functions`] and relabels it
     /// `low-confidence-live`; that union is additive on the `dead` surface only,
@@ -245,24 +281,21 @@ impl<Mode> Store<Mode> {
         let callable = ChunkType::callable_sql_list();
         // Document-shaped paths: code blocks inside these files are
         // illustrative, not part of the project's call graph.
-        let doc_path_excludes = "
-                AND c.origin NOT LIKE '%.md'
-                AND c.origin NOT LIKE '%.mdx'
-                AND c.origin NOT LIKE '%.adoc'
-                AND c.origin NOT LIKE '%.rst'
-                AND c.origin NOT LIKE '%.txt'
-                AND c.origin NOT LIKE '%.tex'
-                AND c.origin NOT LIKE '%.scss'
-                AND c.origin NOT LIKE '%.sass'
-                AND c.origin NOT LIKE '%.less'";
-        // Dead-candidate population: strict zero-edge. A function qualifies only
-        // when NO `function_calls` row names it as callee — trusted, heuristic,
-        // or doc-reference alike. This is the contract `health`/`ci`/`suggest`
-        // depend on: a heuristic-only callee (macro/fn-pointer) is NOT dead and
-        // must not enter this set. `cqs dead` surfaces that heuristic-only
-        // population separately via `fetch_heuristic_only_callees` and relabels
-        // it `low-confidence-live` — an additive overlay on the `dead` surface
-        // only, never a mutation of this shared candidate set.
+        let doc_path_excludes = dead_doc_path_excludes_sql();
+        // Dead-candidate population: strict zero-real-edge. A function qualifies
+        // only when NO `function_calls` row names it as callee through a
+        // real-caller kind — trusted or heuristic. A `doc_reference` edge is
+        // inert: a prose mention invokes nothing, so a function whose only
+        // inbound edge is a doc reference is still dead (the `NOT EXISTS`
+        // subquery excludes `doc_reference` via the real-caller kind set, the
+        // same view of "real caller" the `low-confidence-live` carve-out uses).
+        // This is the contract `health`/`ci`/`suggest` depend on: a
+        // heuristic-only callee (macro/fn-pointer) is NOT dead and must not enter
+        // this set. `cqs dead` surfaces that heuristic-only population separately
+        // via `fetch_heuristic_only_callees` and relabels it
+        // `low-confidence-live` — an additive overlay on the `dead` surface only,
+        // never a mutation of this shared candidate set.
+        let real_callers = crate::parser::CallEdgeKind::real_caller_kinds_sql();
         let sql = format!(
             "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
                     c.line_start, c.line_end, c.parent_id
@@ -271,7 +304,8 @@ impl<Mode> Store<Mode> {
                AND c.chunk_type != 'property'
                {doc_path_excludes}
                AND NOT EXISTS (SELECT 1 FROM function_calls fc \
-                               WHERE fc.callee_name = c.name LIMIT 1)
+                               WHERE fc.callee_name = c.name \
+                                 AND fc.edge_kind IN ({real_callers}) LIMIT 1)
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
         );
@@ -289,16 +323,7 @@ impl<Mode> Store<Mode> {
     /// [`Store::find_low_confidence_live_names`].
     async fn fetch_heuristic_only_callees(&self) -> Result<Vec<LightChunk>, StoreError> {
         let callable = ChunkType::callable_sql_list();
-        let doc_path_excludes = "
-                AND c.origin NOT LIKE '%.md'
-                AND c.origin NOT LIKE '%.mdx'
-                AND c.origin NOT LIKE '%.adoc'
-                AND c.origin NOT LIKE '%.rst'
-                AND c.origin NOT LIKE '%.txt'
-                AND c.origin NOT LIKE '%.tex'
-                AND c.origin NOT LIKE '%.scss'
-                AND c.origin NOT LIKE '%.sass'
-                AND c.origin NOT LIKE '%.less'";
+        let doc_path_excludes = dead_doc_path_excludes_sql();
         let heuristic = crate::parser::CallEdgeKind::heuristic_kinds_sql();
         let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
         let sql = format!(
@@ -1520,6 +1545,89 @@ mod tests {
         assert!(
             names.contains(&"default_true"),
             "serde filter must require `key = \\\"name\\\"` shape, not bare mention: {names:?}"
+        );
+    }
+
+    // ===== doc_reference edge inertness in dead candidacy =====
+
+    /// A function whose ONLY inbound `function_calls` edge is a `doc_reference`
+    /// (a prose mention, not an invocation) must still be reported dead. The
+    /// `fetch_uncalled_functions` NOT-EXISTS subquery counts only real-caller
+    /// edge kinds; a doc reference is inert. RED before the edge-kind filter on
+    /// that subquery (the bare `callee_name = c.name` form treated the doc edge
+    /// as a caller and excluded the function from the dead set), GREEN after.
+    /// The companion `genuinely_called` function — reached by a real `call`
+    /// edge — must stay live, fencing the fix from degenerating into "ignore all
+    /// edges".
+    #[test]
+    fn test_doc_reference_only_callee_is_dead() {
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // The doc-referenced function — invoked by nothing, only mentioned.
+        let doc_only = rust_fn_chunk(
+            "src/a.rs:1",
+            "src/a.rs",
+            "doc_only_fn",
+            "fn doc_only_fn() {}",
+        );
+        store.upsert_chunk(&doc_only, &emb, Some(1)).unwrap();
+
+        // A genuinely-called control function (real `call` edge → must stay live).
+        let live = rust_fn_chunk(
+            "src/a.rs:5",
+            "src/a.rs",
+            "genuinely_called",
+            "fn genuinely_called() {}",
+        );
+        store.upsert_chunk(&live, &emb, Some(1)).unwrap();
+
+        // A caller chunk that holds both edges: a doc_reference to `doc_only_fn`
+        // and a real call to `genuinely_called`.
+        let caller = rust_fn_chunk(
+            "src/b.rs:1",
+            "src/b.rs",
+            "caller_fn",
+            "fn caller_fn() { genuinely_called(); }",
+        );
+        store.upsert_chunk(&caller, &emb, Some(1)).unwrap();
+        store
+            .upsert_function_calls(
+                std::path::Path::new("src/b.rs"),
+                &[FunctionCalls {
+                    name: "caller_fn".to_string(),
+                    line_start: 1,
+                    calls: vec![
+                        CallSite {
+                            callee_name: "doc_only_fn".to_string(),
+                            line_number: 2,
+                            kind: CallEdgeKind::DocReference,
+                        },
+                        CallSite {
+                            callee_name: "genuinely_called".to_string(),
+                            line_number: 3,
+                            kind: CallEdgeKind::Call,
+                        },
+                    ],
+                }],
+            )
+            .unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"doc_only_fn"),
+            "a function reached only by a doc_reference edge must be reported dead \
+             (doc references are prose, not callers): {names:?}"
+        );
+        assert!(
+            !names.contains(&"genuinely_called"),
+            "a function reached by a real `call` edge must stay live: {names:?}"
         );
     }
 }

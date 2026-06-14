@@ -19,6 +19,11 @@ mod test_map;
 // file-level call-graph write into the same per-file transaction.
 pub(crate) use crud::write_function_calls_in_tx;
 
+// Re-export the doc-shaped-origin predicate so the worktree-overlay dead path
+// (in the binary crate) can apply the same doc-path admissibility the
+// dead-candidate SQL applies — single source for both views.
+pub use dead_code::is_dead_doc_path;
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 

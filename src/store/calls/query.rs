@@ -672,4 +672,50 @@ impl<Mode> Store<Mode> {
             Ok(result)
         })
     }
+
+    /// Distinct callee names reached by a real-caller edge whose call-site origin
+    /// (`function_calls.file`) is in `origins`. The worktree-overlay dead-code
+    /// merge (#1858 Part B) uses this against the PARENT store: these are exactly
+    /// the functions the delta files USED to call, so they are the only
+    /// candidates that a now-masked caller-origin could flip from live to dead.
+    /// Restricted to real-caller kinds (excludes `doc_reference`) so the merged
+    /// dead verdict agrees with `fetch_uncalled_functions`'s own real-caller
+    /// contract. Returns an empty vec when `origins` is empty (no delta).
+    pub fn distinct_callees_from_origins(
+        &self,
+        origins: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::debug_span!("distinct_callees_from_origins", origins = origins.len())
+            .entered();
+        if origins.is_empty() {
+            return Ok(Vec::new());
+        }
+        let real_callers = crate::parser::CallEdgeKind::real_caller_kinds_sql();
+        self.rt.block_on(async {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            let batch_size = max_rows_per_statement(1);
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for batch in origins.chunks(batch_size) {
+                let placeholders = super::super::helpers::make_placeholders(batch.len());
+                let sql = format!(
+                    "SELECT DISTINCT callee_name FROM function_calls
+                     WHERE file IN ({placeholders})
+                       AND edge_kind IN ({real_callers})"
+                );
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+                for o in batch {
+                    q = q.bind(o);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let name: String = row.get(0);
+                    if seen.insert(name.clone()) {
+                        out.push(name);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
 }
