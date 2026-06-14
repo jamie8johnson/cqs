@@ -20,6 +20,18 @@ The naive version — "perpetually hunt bugs" — **fails**: bug-hunting is a di
 
 The factory keeps the matrix green. Requires **persisted state** — a coverage ledger (see Q2) — without it the loop can't prioritize or avoid redundancy.
 
+## Roles: orchestrator (agent) / governor (code) / workers (agents)
+
+The loop is three roles, and conflating them — calling the whole thing "the governor" — is the trap. Pull them apart:
+
+- **Orchestrator** (conductor / foreman) — the judgment-bearing director: reads coverage state → decides what to audit (judgment beyond the deterministic priority) → dispatches auditor subagents → reads findings → dispatches verifiers → **disposes** of each (auto-land hardening / dispatch a fix lane / file an issue / escalate to the human) → manages the fix pipeline → updates the ledger. The ledger is its *memory*. **Agent-shaped and capability-sensitive** — orchestration/triage/disposition is where model capability pays off, and it's Fable's documented lane (the model split: *fable orchestrates/reviews/audits, opus implements*). So the **expensive model lives HERE**, on the conductor — Fable when it returns from the export-order freeze, opus until then. The "strategist/lab" role is *subsumed*: the conductor's judgment **is** the strategy (escalate a hot region, declare the loop spinning, re-tune the governor's knobs).
+- **Governor** (the leash) — the deterministic budget / WIP / value-density-backoff limits the orchestrator operates *within*. **NOT an agent, and NOT the orchestrator.** Governance is arithmetic + queue discipline where you want determinism: an LLM in the per-cycle budget path is the anti-pattern — it *burns budget to decide budget*, and an LLM's budget-discipline is unreliable. The governor is enforceable code (a budget file, a WIP counter) the conductor cannot blow past. The conductor is the dog; the governor is the leash.
+- **Workers** — auditors (find), per-finding verifiers (real? — the false-positive filter), fix-lanes (implement). Dispatched by the orchestrator; model per role (opus implements; auditors per their own rules; security stays opus).
+
+**Cost factoring (decide — Q13).** An expensive conductor in a *perpetual* hot loop is the cost commitment: you pay conductor-tier every cycle, forever. Two shapes: **(a) one expensive orchestrator** does dispatch+triage+disposition every cycle (simple, pricier); **(b) tiered** — a *cheap* per-cycle dispatcher (mostly mechanical once the governor's deterministic priority picks the cell) + the *expensive* conductor only on strategic ticks (triage a cluster, re-tune, escalate, dispose of the hard findings). (b) spends the money on judgment instead of dispatch plumbing; the governor bounds either.
+
+**This loop is already running, by hand.** The #1826 arc — dispatching the auditor trio, test-firing each new auditor, running the gate batteries, managing the fix-rounds, landing, tracking in tears — *is* the orchestrator role, performed manually by the autonomous `/loop`. audit-loop = specialize that loop, give it a coverage ledger + a budget leash, let the conductor self-task.
+
 ## Engine: invalidation, not perpetual re-sweep
 
 The high-value fuel is **change**. A merged diff re-opens the cells it touches, using the magnet-area mapping we already apply by hand (overlay change → seam+interleaving; codec/round-trip → property; migration/format → legacy-state; new-variant/dual-surface → sweep; security-surface → red-team; logic-dense-with-thorough-looking-tests → adequacy). The #1900 gate battery was a manual instance.
@@ -46,27 +58,28 @@ So "perpetual" really means: **always keep just-changed regions re-audited (reac
 ## factory vs lab vs swarm
 
 - **factory** (ratchet guard coverage, balanced to landing capacity) — the valuable core. Build this.
-- **lab** (periodically probe for *new shapes* — the "is there a 7th null?" work; a completeness-critic asking "what region/shape is unaudited?") — a slow background tick that evolves the auditor *set*. Bolt on after the factory works.
+- **lab** (periodically probe for *new shapes* — the "is there a 7th null?" work; a completeness-critic asking "what region/shape is unaudited?") — **not a separate role; the orchestrator's strategic facet** (see Roles). A slow tick where the conductor evolves the auditor *set* rather than just running it. Bolt on after the factory works.
 - **swarm** (uncoordinated parallel fan-out) — weakest; without the matrix's prioritization it spends tokens on redundant coverage. Skip.
 
 ## Mostly not new infra
 
-Already have: the driver (the autonomous `/loop`), the workers (the family), the target-selector (`/idle`), residuals-to-issues, the gate-battery landing. **Net-new:** the coverage ledger, the invalidation mapping (diff → cells; partly encoded in the magnet-area habit), the auto-land-hardening path, the governors. A target-selection + ratchet layer, not a rewrite. Likely shape: a `/audit-loop` skill, or a mode of `/idle`.
+Already have: the orchestrator-by-hand (the autonomous `/loop`), the workers (the family), the target-selector (`/idle`), residuals-to-issues, the gate-battery landing. **Net-new:** the coverage ledger, the invalidation mapping (diff → cells; partly encoded in the magnet-area habit), the auto-land-hardening path + the confidence gate (Q1), the **governor** (deterministic leash), and formalizing the **conductor's disposition judgment** (the expensive-model role) into a self-tasking loop. A target-selection + ratchet layer, not a rewrite. Likely shape: a `/audit-loop` skill, or a mode of `/idle`.
 
 ## Open questions (decide before building)
 
-1. **Auto-land aggressiveness** (shapes everything): green-hardening-guards-only (safe — a hardening guard is a pure test-add) vs *also* auto-land trivially-confirmed fixes (faster, riskier)? Default: hardening-only.
+1. **Auto-land aggressiveness / the confidence gate** (shapes everything): "managing fixes" turns this from a find→guard ratchet into a find→**fix**→land factory, which crosses the human-gate line. The risk isn't uniform — a *hardening guard* (a test-add, no behavior change) is safe to auto-land; auto-fixing-and-landing a *real bug* unseen is the aggressive end. Proposed gate: the conductor may close a finding itself ONLY if (a) a verifier confirms it, (b) the fix passes the full magnet-area battery, (c) it's below a blast-radius threshold; everything else → a digest for the human. The conductor's core judgment is *which findings it's allowed to close on its own*. Default: auto-land hardening guards; bug-fixes gated by (a)+(b)+(c).
 2. **Ledger location**: a committed file (`docs/audit-coverage.toml`) — explicit but can drift from reality; vs derived from the guards present + git blame — self-truthing but harder to query; vs a SQLite table. Which?
 3. **Region granularity**: file / module / subsystem / function? Finer = precise invalidation + more overhead; coarser = cheap + blunt.
 4. **Invalidation mapping ownership**: is diff→cells the magnet-area path heuristic, or per-shape "what change invalidates me" rules? Who maintains it as the code evolves?
 5. **Governor knobs**: token budget per cycle? dispatches per cycle? value-density backoff threshold K? How are they set / tuned?
 6. **Concurrency**: how many auditors in parallel per cycle (GPU + cost contention — the swarm risk)?
-7. **Driver**: the existing autonomous `/loop`, a cron, or a new daemon? Runs only-when-idle / continuously / on-merge-trigger?
-8. **Human touchpoint**: the loop auto-triages (verifier) + auto-lands hardening; bug-findings go to — an issue? a digest for the user? a fix lane it dispatches itself?
+7. **Driver + the orchestrator/governor split**: the orchestrator is an agent (the autonomous `/loop` specialized, or a dedicated conductor) running *within* the deterministic governor (code) — the per-cycle budget/WIP enforcement is never an LLM. Driver options for the agent: the autonomous `/loop`, a cron, or a daemon; only-when-idle / continuously / on-merge-trigger?
+8. **Human touchpoint**: with the confidence gate (Q1), the conductor auto-closes hardening + gated bug-fixes; everything above the gate → an issue / a periodic digest / escalation. Digest cadence? And what must ALWAYS reach the human regardless of confidence (e.g. anything touching scoring / security / schema)?
 9. **Lab component**: in v1 or deferred? How/when does it probe for new shapes vs run existing?
 10. **Relationship to `/audit` (16-category) and `/idle`**: subsume, complement, or a mode of `/idle`?
 11. **Pause/scope control**: how does the user pause/resume or scope it ("only `src/store` this week")?
 12. **Success metric**: matrix % green? guards added/week? bugs caught pre-merge vs post-? false-positive rate?
+13. **Cost factoring** (see Roles): one expensive orchestrator per cycle (simple, pricier) vs tiered cheap-dispatcher + expensive-conductor-only-on-strategic-ticks (money on judgment, not dispatch plumbing)? Decides where the expensive model actually runs.
 
 ## Prerequisite already in place
 
