@@ -3238,4 +3238,337 @@ mod tests {
             "an unrelated dirty file that flips no verdict must carry NO dead marker: {json}"
         );
     }
+
+    // ─── #1858 Part B PR3: review overlay ───────────────────────────────────────
+    //
+    // `cqs review` is diff-impact (caller graph + risk + tests) over a unified
+    // diff. Only its direct-`affected_callers` section is overlaid (the same
+    // mask+union `cqs callers` / `cqs impact` apply); the affected-tests section
+    // and per-function risk scores stay parent-truth — so the honest daemon marker
+    // is `"callers-only"`, NOT `"full"` (mirroring `impact`).
+    //
+    // The cores are tested with SYNTHESIZED unified diffs (no git) against a real
+    // parent store + an in-memory overlay: the participation bool that gates the
+    // marker IS what these tests assert directly. The daemon-path marker honesty
+    // (gated on participation, not `overlay.is_some()`) is verified end-to-end via
+    // `dispatch_review` over a temp git repo (cwd-locked) below.
+
+    use crate::cli::commands::review_overlay;
+
+    /// Core `commands::ReviewArgs` (no token budget).
+    fn review_core_args() -> crate::cli::commands::ReviewArgs {
+        crate::cli::commands::ReviewArgs { tokens: None }
+    }
+
+    /// A minimal unified diff that touches `file` at lines [start, start+span),
+    /// so `map_hunks_to_functions` maps the chunk(s) overlapping that range. The
+    /// seeded test chunks live at lines 1..=5 (see `make_chunk`), so the default
+    /// `@@ -1,4 +1,4 @@` hunk overlaps the changed function's definition.
+    fn diff_touching(file: &str) -> String {
+        format!(
+            "diff --git a/{file} b/{file}\n\
+             --- a/{file}\n\
+             +++ b/{file}\n\
+             @@ -1,4 +1,4 @@\n\
+             -fn placeholder() {{ }}\n\
+             +fn placeholder() {{ /* edited */ }}\n"
+        )
+    }
+
+    /// review's `affected_callers` section names from a serialized `ReviewOutput`.
+    fn review_caller_names(out: &serde_json::Value) -> Vec<String> {
+        out["affected_callers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected review `affected_callers` array, got: {out}"))
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Calibration: review reflects a worktree delta. A diff touches `target`
+    /// (defined in src/lib.rs); a parent caller of `target` is deleted from a
+    /// masked file and a worktree-new caller appears. The `affected_callers`
+    /// section drops the deleted caller and adds the fresh one, and participation
+    /// is reported. (Red without the overlay merge: the deleted caller would
+    /// survive and the fresh one would be absent.)
+    #[test]
+    fn review_overlay_callers_reflect_delta() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/edited.rs", "old_caller"),
+                ("src/stable.rs", "stable_caller"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("old_caller", "src/edited.rs", 1, "target"),
+                ("stable_caller", "src/stable.rs", 1, "target"),
+            ],
+        );
+        // Worktree: src/edited.rs modified — no longer calls `target`, but a NEW
+        // caller `fresh_caller` does.
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (out, participated) = review_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            &review_core_args(),
+            Some(&overlay),
+        )
+        .expect("review_overlay");
+        assert!(
+            participated,
+            "a masked-origin drop + an overlay add must report overlay participation"
+        );
+        let value = serde_json::to_value(&out).unwrap();
+        let got = review_caller_names(&value);
+        assert!(
+            !got.contains(&"old_caller".to_string()),
+            "deleted caller in delta file must drop from review: {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "worktree-added caller must appear in review: {got:?}"
+        );
+        assert!(
+            got.contains(&"stable_caller".to_string()),
+            "untouched caller must survive in review: {got:?}"
+        );
+    }
+
+    /// Calibration: an unrelated dirty file leaves review's callers untouched, so
+    /// the overlay does NOT participate (pure parent-truth — no marker downstream).
+    #[test]
+    fn review_overlay_unrelated_delta_no_participation() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (out, participated) = review_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            &review_core_args(),
+            Some(&overlay),
+        )
+        .expect("review_overlay");
+        assert!(
+            !participated,
+            "an unrelated dirty file must NOT make review's callers participate"
+        );
+        let value = serde_json::to_value(&out).unwrap();
+        assert!(
+            review_caller_names(&value).contains(&"the_caller".to_string()),
+            "the parent caller must survive untouched: {value}"
+        );
+    }
+
+    /// Calibration: a diff that maps no indexed function (touches a file with no
+    /// chunks) is the parent-truth empty early-return — participation `false`
+    /// even with an active overlay. (Guards against a marker on the empty case.)
+    #[test]
+    fn review_overlay_empty_diff_no_participation() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        // Diff touches a file with no indexed chunks → no changed functions.
+        let diff = diff_touching("src/untracked.rs");
+        let (_out, participated) = review_overlay(
+            &ctx.store(),
+            &ctx.root,
+            &diff,
+            &review_core_args(),
+            Some(&overlay),
+        )
+        .expect("review_overlay");
+        assert!(
+            !participated,
+            "an empty diff (no changed functions) must report participated=false even \
+             with an active overlay"
+        );
+    }
+
+    /// No-overlay parity fence: `review_overlay(.., None)` equals `review_core`.
+    #[test]
+    fn review_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_store_with(
+            &[("src/a.rs", "c1"), ("src/lib.rs", "target")],
+            &[("c1", "src/a.rs", 1, "target")],
+        );
+        let diff = diff_touching("src/lib.rs");
+        let (ov_out, participated) =
+            review_overlay(&ctx.store(), &ctx.root, &diff, &review_core_args(), None)
+                .expect("review_overlay none");
+        assert!(!participated, "no-overlay must report participated=false");
+        let core_out =
+            crate::cli::commands::review_core(&ctx.store(), &ctx.root, &diff, &review_core_args())
+                .expect("review_core");
+        assert_eq!(
+            serde_json::to_value(&ov_out).unwrap(),
+            serde_json::to_value(&core_out).unwrap(),
+            "review_overlay(None) must equal review_core (no-overlay regression fence)"
+        );
+    }
+
+    // ─── daemon-path marker honesty: review (end-to-end via dispatch_review) ─────
+    //
+    // `dispatch_review` acquires its diff from `run_git_diff`, which runs `git
+    // diff` in the PROCESS cwd. These tests build a temp git repo (committed
+    // baseline + an uncommitted edit to `src/lib.rs`), chdir into it under a lock
+    // (cwd is process-global), inject the overlay via `set_test_overlay_override`,
+    // and assert the marker is `"callers-only"` ONLY on a genuine direct-callers
+    // merge — ABSENT on an unrelated dirty file and on an empty diff. The absent
+    // cases are RED under a naive `overlay.is_some()` gate (the overlay is active
+    // and non-trivial in every case), so they pin the participation-gated marker.
+
+    /// Serializes the cwd-mutating `dispatch_review` tests (cwd is process-wide).
+    static REVIEW_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build a temp git repo whose `src/lib.rs` has a committed baseline and an
+    /// uncommitted one-line edit at line 1, so `git diff` (no base) yields a hunk
+    /// overlapping the seeded `target` chunk's [1,5] range. Returns the repo dir.
+    fn temp_git_repo_with_lib_edit() -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        let run = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git invocation")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+        let lib = dir.path().join("src/lib.rs");
+        std::fs::write(&lib, "fn target() { let x = 1; }\n").expect("write baseline");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "baseline"]);
+        // Uncommitted edit at line 1 — `git diff` reports a hunk over [1,..].
+        std::fs::write(&lib, "fn target() { let x = 2; }\n").expect("write edit");
+        dir
+    }
+
+    /// Wire `args::ReviewArgs` with default (inactive) overlay flags — the overlay
+    /// is injected via `set_test_overlay_override`, not the wire flags.
+    fn review_wire_args() -> crate::cli::args::ReviewArgs {
+        crate::cli::args::ReviewArgs {
+            base: None,
+            stdin: false,
+            tokens: None,
+            overlay: Default::default(),
+        }
+    }
+
+    /// PRESENT: review's direct-callers section genuinely merges (a parent caller
+    /// of `target` is masked, a worktree caller is added) → `_meta.overlay_graph =
+    /// "callers-only"` (NOT "full": tests + risk-scoring stay parent-truth).
+    #[test]
+    fn dispatch_review_genuine_merge_carries_callers_only_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_review");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("callers-only"),
+            "a real review direct-callers merge must claim overlay_graph=callers-only \
+             (NOT full — tests/risk sections are parent-truth): {json}"
+        );
+    }
+
+    /// ABSENT: an unrelated dirty file masks no caller of `target` → no
+    /// participation → marker ABSENT. RED under a naive `overlay.is_some()` gate.
+    #[test]
+    fn dispatch_review_unrelated_delta_no_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        let (_dir, ctx) = parent_store_with(
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        // Active, non-trivial overlay touching an UNRELATED file.
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_review");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an unrelated dirty file must leave review's marker absent: {json}"
+        );
+    }
+
+    /// ABSENT: a diff that maps no indexed function (the repo edits `src/lib.rs`
+    /// but the store has no chunk for it) is the parent-truth empty early-return →
+    /// marker ABSENT even with a genuine-looking active overlay. RED under a naive
+    /// `overlay.is_some()` gate.
+    #[test]
+    fn dispatch_review_empty_diff_no_marker() {
+        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
+        let repo = temp_git_repo_with_lib_edit();
+        // The store has NO chunk at src/lib.rs, so the diff maps no function.
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        let overlay = std::sync::Arc::new(overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let original = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(repo.path()).expect("chdir repo");
+        let result =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
+        std::env::set_current_dir(&original).expect("restore cwd");
+        let json = result.expect("dispatch_review");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an empty diff (no changed functions) must leave review's marker absent: {json}"
+        );
+    }
 }

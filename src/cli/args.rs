@@ -732,6 +732,9 @@ pub(crate) struct ReviewArgs {
     /// Maximum token budget for output (truncates callers/tests lists)
     #[arg(long, value_parser = parse_nonzero_usize)]
     pub tokens: Option<usize>,
+    /// Worktree-overlay tri-state for the direct-callers section (#1858 Part B).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `ci` and batch `ci`.

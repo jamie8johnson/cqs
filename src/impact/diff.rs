@@ -151,21 +151,61 @@ pub fn analyze_diff_impact_with_graph<Mode>(
     test_chunks: &[crate::store::ChunkSummary],
     root: &Path,
 ) -> Result<DiffImpactResult, AnalysisError> {
-    let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
+    // Plain entry point: no overlay. The full diff-impact logic lives in
+    // [`analyze_diff_impact_with_graph_overlay`]; this delegates with `None` so
+    // the byte shape is unchanged (participation is discarded).
+    Ok(analyze_diff_impact_with_graph_overlay(store, changed, graph, test_chunks, root, None)?.0)
+}
+
+/// Worktree-overlay-aware diff impact (#1858 Part B PR3). Identical to
+/// [`analyze_diff_impact_with_graph`] when `overlay` is `None`. When `Some`, ONLY
+/// the direct `all_callers` section reflects the worktree delta — parent caller
+/// rows whose call-site origin is in `masked_origins` are dropped and the
+/// overlay's caller rows (for the same changed-function names) are unioned, the
+/// same single-call mask+union `cqs callers` / `cqs impact` use. The affected-tests
+/// section (reverse-BFS over the parent `CallGraph`) stays on parent-truth: a
+/// fully-merged call graph is a separate, larger surface, so this overlays the
+/// primary "who breaks" signal only. (`review_diff`'s risk scoring reads the same
+/// parent graph and likewise stays parent-truth.)
+///
+/// Returns `(result, overlay_participated)`. Participation is true only when the
+/// direct-callers merge actually consulted the delta for THIS diff — a parent
+/// caller row masked OR ≥1 overlay caller unioned. An active overlay whose delta
+/// touches no caller-origin of any changed function leaves it `false` (pure
+/// parent-truth). The daemon adapter emits the honest
+/// `_meta.overlay_graph = "callers-only"` marker (NOT `"full"`: the tests +
+/// risk-scoring sections stay parent-truth) gated on this bool.
+pub fn analyze_diff_impact_with_graph_overlay<Mode>(
+    store: &Store<Mode>,
+    changed: Vec<ChangedFunction>,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    root: &Path,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
+) -> Result<(DiffImpactResult, bool), AnalysisError> {
+    let _span = tracing::info_span!(
+        "analyze_diff_impact",
+        changed_count = changed.len(),
+        overlay = overlay.is_some()
+    )
+    .entered();
     if changed.is_empty() {
-        return Ok(DiffImpactResult {
-            changed_functions: Vec::new(),
-            all_callers: Vec::new(),
-            all_tests: Vec::new(),
-            summary: DiffImpactSummary {
-                changed_count: 0,
-                caller_count: 0,
-                test_count: 0,
-                truncated: false,
-                truncated_functions: 0,
-                degraded: false,
+        return Ok((
+            DiffImpactResult {
+                changed_functions: Vec::new(),
+                all_callers: Vec::new(),
+                all_tests: Vec::new(),
+                summary: DiffImpactSummary {
+                    changed_count: 0,
+                    caller_count: 0,
+                    test_count: 0,
+                    truncated: false,
+                    truncated_functions: 0,
+                    degraded: false,
+                },
             },
-        });
+            false,
+        ));
     }
 
     // Cap changed functions to prevent unbounded processing on massive diffs.
@@ -205,7 +245,7 @@ pub fn analyze_diff_impact_with_graph<Mode>(
             HashMap::new()
         });
 
-    // Deduplicate callers across all changed functions
+    // Deduplicate parent callers across all changed functions.
     let mut deduped_callers: Vec<CallerWithContext> = Vec::new();
     for func in &changed {
         if let Some(callers_ctx) = callers_by_callee.get(&func.name) {
@@ -217,7 +257,53 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         }
     }
 
-    // Batch-fetch chunk data for all caller names (single query)
+    // Overlay mask+union on the direct-callers section — the SAME single-call
+    // mask+union `cqs callers` / `cqs impact` apply, generalized to the diff's
+    // multi-target deduped set. `participated` records whether the delta changed
+    // this section: a parent caller masked OR ≥1 overlay caller unioned.
+    let participated = if let Some(ov) = overlay {
+        // Mask: drop parent callers whose call-site origin is in the delta. That
+        // caller's out-edge to a changed function may have changed or vanished in
+        // the worktree, so its parent row is no longer authoritative.
+        let masked_any = deduped_callers
+            .iter()
+            .any(|c| ov.masked_origins.contains(&c.file));
+        deduped_callers.retain(|c| !ov.masked_origins.contains(&c.file));
+
+        // Union: the overlay's callers for the SAME changed-function names (all
+        // from masked origins by construction, so the mask above can't double-
+        // count). Dedupe against the kept-parent set the same way the parent loop
+        // dedupes — first-seen wins, parent before overlay.
+        let overlay_by_callee = ov
+            .store
+            .get_callers_with_context_batch(&callee_names)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to batch-fetch overlay callers for diff impact");
+                degraded = true;
+                HashMap::new()
+            });
+        let mut unioned_any = false;
+        for func in &changed {
+            if let Some(callers_ctx) = overlay_by_callee.get(&func.name) {
+                for caller in callers_ctx {
+                    if seen_callers.insert(caller.name.clone()) {
+                        deduped_callers.push(caller.clone());
+                        unioned_any = true;
+                    }
+                }
+            }
+        }
+        masked_any || unioned_any
+    } else {
+        false
+    };
+
+    // Batch-fetch chunk data for all caller names (single query). Snippets are
+    // drawn from the parent store; overlay-added callers (worktree-new files) may
+    // therefore lack a snippet, but their name/file/line still surface — the
+    // primary "who breaks" signal is intact. (A per-half snippet split like
+    // `analyze_impact_overlay` does is out of scope for the diff path's batched
+    // multi-target shape.)
     let unique_names: Vec<&str> = deduped_callers.iter().map(|c| c.name.as_str()).collect();
     let chunks_by_name = store
         .search_by_names_batch(&unique_names, 5)
@@ -303,12 +389,15 @@ pub fn analyze_diff_impact_with_graph<Mode>(
         degraded,
     };
 
-    Ok(DiffImpactResult {
-        changed_functions: changed,
-        all_callers,
-        all_tests,
-        summary,
-    })
+    Ok((
+        DiffImpactResult {
+            changed_functions: changed,
+            all_callers,
+            all_tests,
+            summary,
+        },
+        participated,
+    ))
 }
 
 #[cfg(test)]

@@ -1160,6 +1160,7 @@ impl Commands {
             Commands::Callees { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Impact { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Dead { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Review { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             _ => None,
         }
     }
@@ -1495,6 +1496,22 @@ mod tests {
             dead_off.command.as_ref().unwrap().overlay_tristate(),
             Some((false, true)),
             "dead: overlay_tristate must report --no-overlay"
+        );
+        // `review` takes no positional (diff via --base/--stdin) but is
+        // overlay-capable (#1858 Part B PR3 — direct-callers diff overlay).
+        let review_on = Cli::try_parse_from(["cqs", "review", "--overlay"])
+            .unwrap_or_else(|e| panic!("review --overlay must parse: {e}"));
+        assert_eq!(
+            review_on.command.as_ref().unwrap().overlay_tristate(),
+            Some((true, false)),
+            "review: overlay_tristate must report the subcommand flags"
+        );
+        let review_off = Cli::try_parse_from(["cqs", "review", "--no-overlay"])
+            .unwrap_or_else(|e| panic!("review --no-overlay must parse: {e}"));
+        assert_eq!(
+            review_off.command.as_ref().unwrap().overlay_tristate(),
+            Some((false, true)),
+            "review: overlay_tristate must report --no-overlay"
         );
         // A non-overlay command has no tri-state.
         let cli = Cli::try_parse_from(["cqs", "trace", "a", "b"]).unwrap();

@@ -23,7 +23,10 @@ pub use types::{
 pub(crate) use analysis::find_affected_tests_with_chunks;
 pub use analysis::{analyze_impact, analyze_impact_overlay, suggest_tests, ImpactOptions};
 pub(crate) use bfs::test_reachability;
-pub use diff::{analyze_diff_impact, analyze_diff_impact_with_graph, map_hunks_to_functions};
+pub use diff::{
+    analyze_diff_impact, analyze_diff_impact_with_graph, analyze_diff_impact_with_graph_overlay,
+    map_hunks_to_functions,
+};
 pub use format::{
     diff_impact_empty_json, diff_impact_to_json, format_test_suggestions, impact_to_json,
     impact_to_mermaid,

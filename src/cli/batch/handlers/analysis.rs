@@ -188,16 +188,35 @@ pub(in crate::cli::batch) fn dispatch_review(
     let tokens = args.tokens;
     let _span = tracing::info_span!("batch_review", ?base).entered();
 
-    // Thin adapter over the shared `review_core` — same schema + budgeting as
+    // See `dispatch_dead`: clear leftover per-thread overlay meta before any
+    // branch can return, so a reused daemon worker never leaks a prior query's
+    // `_meta.worktree_overlay`.
+    cqs::worktree_overlay::clear_overlay_meta();
+
+    // Thin adapter over the shared `review_overlay` — same schema + budgeting as
     // the CLI JSON surface. Adapter owns diff I/O (git only, no stdin).
     let diff_text = crate::cli::commands::run_git_diff(base)?;
-    let output = crate::cli::commands::review_core(
+    // Resolve the worktree overlay (Part B PR3): merges the direct-callers
+    // section. `None` ⇒ parent-truth (the default).
+    let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
+    let (output, overlay_participated) = crate::cli::commands::review_overlay(
         &ctx.store(),
         &ctx.root,
         &diff_text,
         &crate::cli::commands::ReviewArgs { tokens },
+        overlay.as_deref(),
     )?;
-    Ok(serde_json::to_value(&output)?)
+    let mut value = serde_json::to_value(&output)?;
+    if overlay_participated {
+        // review's direct-callers section reflects the worktree delta, but its
+        // affected-tests + per-function risk-scoring sections stay parent-truth
+        // (a fully-merged call graph is a separate surface), so `"callers-only"`
+        // is the honest marker — mirroring `impact`. Gated on participation, not
+        // `overlay.is_some()`: a dirty worktree whose delta touches no caller of
+        // any changed function returns the parent review untouched, NO marker.
+        super::attach_overlay_graph_meta_callers_only(&mut value);
+    }
+    Ok(value)
 }
 
 /// Runs CI analysis (review + dead code + gate) and returns results as JSON.

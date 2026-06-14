@@ -65,26 +65,68 @@ pub(crate) fn review_core(
     diff_text: &str,
     args: &ReviewArgs,
 ) -> Result<ReviewOutput> {
-    let _span = tracing::info_span!("review_core", tokens = ?args.tokens).entered();
+    // Plain entry point: no overlay. The full review logic lives in
+    // [`review_overlay`]; this delegates with `None` so the CLI / tests are
+    // byte-unchanged (participation is discarded).
+    Ok(review_overlay(store, root, diff_text, args, None)?.0)
+}
 
-    match cqs::review_diff(store, diff_text, root)? {
+/// Overlay-aware core for `cqs review` (#1858 Part B PR3). Identical to
+/// [`review_core`] when `overlay` is `None`. When `Some`, ONLY the
+/// `affected_callers` section reflects the worktree delta (the same mask+union
+/// `cqs callers` / `cqs impact` apply, via [`cqs::review_diff_overlay`]); the
+/// `affected_tests` section and the per-function risk scores stay on parent-truth
+/// (a fully-merged call graph is a separate, larger surface). Because the answer
+/// is therefore only PARTIALLY overlaid, the daemon adapter emits the honest
+/// `_meta.overlay_graph = "callers-only"` marker — NOT `"full"` — when this
+/// returns `participated == true`.
+///
+/// Returns `(output, overlay_participated)`. Participation is true only when the
+/// direct-callers merge consulted the delta for THIS diff (a parent caller masked
+/// OR ≥1 overlay caller unioned). The empty-diff early-return (no hunks / no
+/// changed functions — parent-truth by construction) reports `false`, as does
+/// every no-overlay call.
+pub(crate) fn review_overlay(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    root: &std::path::Path,
+    diff_text: &str,
+    args: &ReviewArgs,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
+) -> Result<(ReviewOutput, bool)> {
+    let _span = tracing::info_span!(
+        "review_core",
+        tokens = ?args.tokens,
+        overlay = overlay.is_some()
+    )
+    .entered();
+
+    let (review, participated) = cqs::review_diff_overlay(store, diff_text, root, overlay)?;
+    match review {
         // No indexed functions affected: emit the empty-review shape with no
         // budget telemetry (matches the historical empty-diff envelope on both
         // surfaces — budget fields were never spliced onto the empty case).
-        None => Ok(ReviewOutput {
-            review: empty_review_result(),
-            token_count: None,
-            token_budget: None,
-        }),
+        // `participated` is `false` here by construction (the empty early-return),
+        // so no marker is emitted.
+        None => Ok((
+            ReviewOutput {
+                review: empty_review_result(),
+                token_count: None,
+                token_budget: None,
+            },
+            participated,
+        )),
         Some(mut review) => {
             let token_count = args
                 .tokens
                 .map(|budget| apply_token_budget(&mut review, budget, true));
-            Ok(ReviewOutput {
-                review,
-                token_count,
-                token_budget: args.tokens,
-            })
+            Ok((
+                ReviewOutput {
+                    review,
+                    token_count,
+                    token_budget: args.tokens,
+                },
+                participated,
+            ))
         }
     }
 }
