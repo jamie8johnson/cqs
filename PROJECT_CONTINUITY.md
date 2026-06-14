@@ -2,7 +2,31 @@
 
 ## Right Now
 
-**🧭 #1858 PART B IN PROGRESS + AUDITOR RUN (2026-06-14, post-crash-recovery). main @ 38f23eb3, clean; daemon 10/10, 16465 chunks. The 6-auditor family is all MERGED + invokable by `subagent_type`.**
+**✅ SESSION 2026-06-14 — #1858 OVERLAY EPIC + KEY-DESIGN CLASS BOTH CLOSED. main @ 1c523ab3 + this PR, clean; daemon active, schema 31, PARSER_VERSION 9, 16610 chunks (reindexed for the v8→v9 migration). 9 PRs merged.**
+
+**#1858 WORKTREE OVERLAY — COMPLETE (#1858 + #1821 CLOSED).** Every graph-adjacent command reflects worktree edits in a `.claude/worktrees/` checkout: search + scout/gather/task (seed) + callers/callees + impact + dead + review. Read `_meta.overlay_graph`: `"full"` (search/callers/callees/dead), `"callers-only"` (impact + review — their affected-tests/transitive/risk sections stay parent-truth), `"seed-only"` (scout/gather/task — seed overlaid, BFS expansion parent-truth), absent (parent-truth early-return). Every marker gated on ACTUAL overlay participation, never `overlay.is_some()` (the seam-audit discipline). The "treat results as hints" re-read tax is RETIRED in CLAUDE.md. Lanes: PR1 #1908 (callers/callees), PR2 #1921 (impact/dead + #1910 dead-code edge-kind fix), PR3 #1924 (review). Known gap: `cqs ci`'s embedded review still parent-truth → #1926.
+
+**KEY-DESIGN CLASS — CLOSED (the incomplete-sweep-of-the-hardening: a fix applied to one key but not its siblings).**
+- **#1909 freshness** (PR #1917): one shared `FileIdentity` (dev/inode/size/mtime) + `DataVersionProbe`, adopted by ALL THREE index.db readers (primary + cross_project + references-LRU — two were stragglers on pure `(mtime,size)`). data_version parity for both siblings (`ref update` is in-place WAL → data_version is the real discriminator); freshness-key fields made private → sweep-by-construction.
+- **#1911 chunk-id** (PR #1923): markdown whole-file/table id collision (P1) + window-suffix re-id blindness (P3). New `chunk_id_suffixed` (table chunks get `:t{idx}`); suffix routed through the constructor; re-id assert reads stored ids. **PARSER_VERSION 8→9 → reindex DONE (16610 chunks).**
+
+**AUDITOR FINDINGS — all disposed:** #1914 (cross-project cache bare-counter epoch gate → WAL stale-serve race, LOOM-PROVEN; EpochCell tag + post-publish re-check), #1912 (neighbors limit unclamped → named-cap clamp), #1910 (dead-code `doc_reference` counted as a real caller → `is_real_caller` carve-out, folded into PR2), adequacy (name_match.rs scoring assertions VACUOUS — 24% mutant survival → 4 calibrated killing tests, #1918).
+
+**APEX DOCS (#1915):** principal-loop sketch deepened with the **plumb-line / cornerstone** model — True = a *field* (read/checkable), Right = a *cornerstone* (laid/committed, not sensed); caution/taste/wisdom are *readouts* of one field-sense, not installable rules; the one unrecoverable error is a mislaid cornerstone (leaning-tower geometry → why values are least-delegable). Mirrored to CLAUDE.md Apex section + `feedback_right_and_true`. Also recorded `reference_fable_vocabulary` (the cqs vocabulary lineage: user laid the root *tears*; Fable extended the weave *seam/loom/magnets* + seeded orthogonal-nulls; user carried it across the block).
+
+**9 PRs MERGED this session:** #1908, #1909 (PR #1917), #1914, #1915, #1918, #1920, #1921, #1923, #1924.
+
+**INDEX STATE (live):** schema 31, PARSER_VERSION 9, 16610 chunks, daemon active + serving, binary current (v9, installed). ⚠️ **DON'T `rm index.db`** — nukes the llm_summaries cache; use `cqs index --force` ([[feedback_summary_cross_slot]]).
+**RECALL (v1.44.0 baseline, eval.md):** R@5 72.5 / R@1 47.7 / R@20 88.5. v1.44.0 shipped + on crates.io.
+**SUBAGENT NESTING:** subagents can spawn subagents (CC v2.1.172); bg capped depth 5, fg unbounded ([[reference_subagent_nesting]]).
+
+**OPEN (idle pool):** #1916 (name_match coverage-gap survivors — chip away), #1925 (legacy-state guard for the v8→v9 table-chunk migration), #1926 (overlay `cqs ci`'s embedded review), #1893 (loom dup-edge HashSet→multiset), #1888 (L5X region-relative byte_start). CLOSED this session: #1858, #1821, #1909, #1910, #1911, #1912, #1914.
+
+---
+
+**↓ Prior in-arc detail (historical — the auditor-family + Part-B arc that produced the above):**
+
+**🧭 (was) #1858 PART B IN PROGRESS + AUDITOR RUN (2026-06-14, post-crash-recovery). The 6-auditor family is all MERGED + invokable by `subagent_type`.**
 
 **THE FAMILY (now SIX orthogonal auditors, all defs MERGED; taxonomy is in CLAUDE.md "Custom Agents"):**
 - **Relational quintet** (finding IS a relation only one mind can hold → **NO Agent tool**): **seam** (a join between units), **property** (the input space), **interleaving** (schedules), **sweep** (the relation across a peer-set), **legacy-state** (old-bytes×new-code across a version boundary).
