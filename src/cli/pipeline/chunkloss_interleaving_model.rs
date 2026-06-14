@@ -636,8 +636,14 @@ fn multi_file_split_duplicate_fingerprint_does_not_reprune() {
 // on EVERY flush, so the wholesale DELETE-then-INSERT reconstructs the graph.
 //
 // > **CALL-GRAPH-FIDELITY**: after any producer interleaving, the file's
-// > committed call graph equals the cumulative call set the parser produced —
-// > never wiped to empty by a later additive flush, never orphaned.
+// > committed call graph equals the cumulative call set the parser produced — as a
+// > MULTISET. NO-WIPE (never deleted to empty by a later additive flush) and
+// > NO-ORPHAN join NO-DUP: each parser edge committed EXACTLY as many times as the
+// > parser produced it, no extra rows. The multiset framing matters because
+// > `function_calls` has no UNIQUE constraint (`id ... AUTOINCREMENT` + plain
+// > `INSERT`): a regression that supplies an edge twice commits two rows, and a
+// > set-valued model store would silently collapse that. The `CallStore::edges`
+// > `Vec` + per-edge cardinality assertion is the guard that expresses the dup.
 // ===========================================================================
 
 /// A call edge `(caller, callee)` — the `function_calls` row reduced to what the
@@ -680,20 +686,30 @@ impl RelQueue {
 /// The store's committed call graph for file F. The wholesale write REPLACES it
 /// with the supplied set (DELETE-then-INSERT), so a flush with an empty supplied
 /// set leaves it empty.
+///
+/// `edges` is a **multiset** (`Vec`), NOT a `HashSet`: production `function_calls`
+/// is `id INTEGER PRIMARY KEY AUTOINCREMENT` with a plain `INSERT` and no UNIQUE
+/// constraint, so supplying an edge twice produces TWO rows. A `HashSet` would
+/// collapse that duplicate and the model could not express a duplicate-edge
+/// regression — the structural gap this multiset closes. The CALL-GRAPH-FIDELITY
+/// cardinality assertion below bites a dup that a set-valued store would hide.
 #[derive(Default)]
 struct CallStore {
     chunks: HashSet<ChunkId>,
-    edges: HashSet<Edge>,
+    edges: Vec<Edge>,
     stamped: bool,
 }
 
 /// Consumer scratch for the call-graph dimension: chunk accum + the cumulative
 /// `flushed` state (committed ids AND cumulative edges — the P2-fix carry-forward).
+/// The cumulative edge carrier is a `Vec` multiset for the same row-semantics
+/// reason as `CallStore::edges`: a duplicated supplied edge must survive the
+/// carry-forward to the wholesale write as two entries, not be silently deduped.
 #[derive(Default)]
 struct CallConsumer {
     accum: Vec<ChunkId>,
     accum_edges: Vec<Edge>,
-    flushed: Option<(HashSet<ChunkId>, HashSet<Edge>)>,
+    flushed: Option<(HashSet<ChunkId>, Vec<Edge>)>,
 }
 
 /// THE FIXED flush: re-supply the CUMULATIVE edge set on every flush (the
@@ -728,7 +744,7 @@ fn call_flush_fixed(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
 /// NO edges therefore supplies an empty set → the DELETE wipes the graph.
 fn call_flush_buggy(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
     let own_ids: HashSet<ChunkId> = c.accum.drain(..).collect();
-    let new_edges: HashSet<Edge> = c.accum_edges.drain(..).collect();
+    let new_edges: Vec<Edge> = c.accum_edges.drain(..).collect();
     let (prior_ids, _) = c.flushed.take().unwrap_or_default();
     let live: HashSet<ChunkId> = own_ids.union(&prior_ids).copied().collect();
 
@@ -744,22 +760,83 @@ fn call_flush_buggy(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
     next_ids.extend(own_ids);
     // Note: still records ids (so chunks survive) but DROPS edges — the precise
     // pre-P2-fix shape (chunks ok, call graph wiped).
-    c.flushed = Some((next_ids, HashSet::new()));
+    c.flushed = Some((next_ids, Vec::new()));
+}
+
+/// THE DUPLICATE-EDGE flush (negative control for NO-DUP): the carry-forward is
+/// correct (no wipe) but each supplied edge is committed TWICE to the wholesale
+/// write — the shape of a future regression that double-`INSERT`s a row (the
+/// parser yields an edge twice, or a re-flush re-supplies an already-committed edge
+/// without dedup). Production `function_calls` has no UNIQUE constraint, so this
+/// commits two rows for one parser edge. A `HashSet`-valued store would collapse
+/// the dup and `assert_call_graph_intact` would still pass; the `Vec` store + the
+/// per-edge cardinality assertion is what catches it.
+fn call_flush_duplicating(store: &mut CallStore, c: &mut CallConsumer, stamp: bool) {
+    let own_ids: HashSet<ChunkId> = c.accum.drain(..).collect();
+    let new_edges: Vec<Edge> = c.accum_edges.drain(..).collect();
+
+    let (prior_ids, mut cum_edges) = c.flushed.take().unwrap_or_default();
+    // BUG: each new edge is appended TWICE (the double-INSERT regression shape).
+    for e in &new_edges {
+        cum_edges.push(*e);
+        cum_edges.push(*e);
+    }
+    let live: HashSet<ChunkId> = own_ids.union(&prior_ids).copied().collect();
+
+    store.edges = cum_edges.clone();
+    store.chunks.retain(|id| live.contains(id));
+    store.chunks.extend(own_ids.iter().copied());
+    if stamp {
+        store.stamped = true;
+    }
+    let mut next_ids = prior_ids;
+    next_ids.extend(own_ids);
+    c.flushed = Some((next_ids, cum_edges));
 }
 
 /// The expected cumulative call graph the parser produced for F.
 const F_EDGES: [Edge; 1] = [('a', 'v')]; // chunk `a` (caller) calls `v` (victim)
 
 fn assert_call_graph_intact(store: &CallStore) {
+    // NO-WIPE / NO-ORPHAN: every parser-produced edge present (the contains check
+    // the HashSet store already enforced).
     for &e in &F_EDGES {
         assert!(
             store.edges.contains(&e),
-            "CALL-GRAPH-FIDELITY VIOLATED: edge {e:?} absent — an additive re-flush \
-             supplied an empty relationship set and the wholesale DELETE wiped the \
-             call graph (edges = {:?})",
+            "CALL-GRAPH-FIDELITY VIOLATED (NO-WIPE): edge {e:?} absent — an additive \
+             re-flush supplied an empty relationship set and the wholesale DELETE \
+             wiped the call graph (edges = {:?})",
             store.edges,
         );
     }
+    // NO-DUP / CARDINALITY: the committed call graph equals the parser's cumulative
+    // call set as a MULTISET, not just a set. Production `function_calls` has no
+    // UNIQUE constraint and a plain `INSERT`, so a regression that supplies an edge
+    // twice commits TWO rows. A `HashSet`-valued store would collapse that to one
+    // and pass `contains` silently; this `Vec` store + per-edge cardinality check
+    // is the guard that BITES the duplicate. Total-length equality alone could be
+    // fooled by one missing + one duplicate cancelling out, so assert the count of
+    // EACH parser edge matches AND the total carries no foreign/extra rows.
+    for &e in &F_EDGES {
+        let want = F_EDGES.iter().filter(|&&x| x == e).count();
+        let got = store.edges.iter().filter(|&&x| x == e).count();
+        assert_eq!(
+            got, want,
+            "CALL-GRAPH-FIDELITY VIOLATED (NO-DUP): edge {e:?} committed {got}× but the \
+             parser produced it {want}× — a duplicate `INSERT` made spurious rows \
+             (no UNIQUE constraint on function_calls); edges = {:?}",
+            store.edges,
+        );
+    }
+    assert_eq!(
+        store.edges.len(),
+        F_EDGES.len(),
+        "CALL-GRAPH-FIDELITY VIOLATED (CARDINALITY): store holds {} edge rows, the \
+         parser produced {} — a duplicate or foreign edge row is present: {:?}",
+        store.edges.len(),
+        F_EDGES.len(),
+        store.edges,
+    );
     // Chunks must also survive (the union-prune); a wiped graph with surviving
     // chunks is the exact pre-fix asymmetry.
     assert!(
@@ -971,6 +1048,66 @@ fn call_graph_wiped_by_empty_additive_reflush() {
         // FAILS on the schedule where p1 flushes (edge written), then p2's late
         // chunk triggers an additive flush that supplies an empty edge set and the
         // wholesale DELETE wipes the edge.
+        assert_call_graph_intact(&store);
+    });
+}
+
+// NEGATIVE CONTROL for NO-DUP (`#[ignore]`, FAILS by design): the carry-forward is
+// intact (NO-WIPE holds — the edge is present), but the flush commits the edge
+// TWICE — the double-`INSERT` regression shape `function_calls`'s missing UNIQUE
+// constraint permits. This is the EXACT class the old `HashSet`-valued store could
+// not express: a set collapses the two rows to one and `contains` passes. The
+// `Vec` store + per-edge cardinality assertion fires here.
+//
+// Calibration (the deliverable's red-without/green-with):
+//   * green-with: the dup-free fixed path (`call_flush_fixed`) commits `(a,v)`
+//     once → cardinality 1 == F_EDGES → `gpu_split_relationships_survive_*` and
+//     `relationships_after_flush_*` PASS.
+//   * red-without: this test commits `(a,v)` twice → cardinality 2 != 1 → the
+//     NO-DUP assert fires. Run with `--ignored` to observe.
+//
+//   RUSTFLAGS="--cfg cqs_loom" cargo test --features cuda-index --bin cqs \
+//       call_graph_duplicate_edge_makes_spurious_row -- --ignored
+#[test]
+#[ignore = "negative control: commits an edge twice (the double-INSERT shape function_calls' \
+            missing UNIQUE constraint permits); the NO-DUP cardinality assert FAILS by design — \
+            the regression class a HashSet-valued store could not express"]
+fn call_graph_duplicate_edge_makes_spurious_row() {
+    loom::model(|| {
+        let embed_tx = Arc::new(Mutex::new(RelQueue::default()));
+
+        // A single in-order batch: F's caller chunk {a}, fp, the edge {(a,v)}.
+        // The dup is introduced by the BUGGY (duplicating) flush, NOT by the
+        // producer — this isolates the model-store-vocabulary gap from any
+        // interleaving (loom still explores the trivial single-producer schedule).
+        let e1 = Arc::clone(&embed_tx);
+        let p1 = thread::spawn(move || {
+            RelQueue::push(
+                &e1,
+                RelMsg {
+                    chunks: vec!['a'],
+                    has_fp: true,
+                    edges: vec![('a', 'v')],
+                },
+            );
+        });
+
+        p1.join().unwrap();
+
+        let msgs = RelQueue::drain(&embed_tx);
+        let mut store = CallStore::default();
+        let mut c = CallConsumer::default();
+        for msg in msgs {
+            c.accum.extend(msg.chunks.iter().copied());
+            c.accum_edges.extend(msg.edges.iter().copied());
+            if msg.has_fp {
+                // BUGGY: commits each supplied edge twice.
+                call_flush_duplicating(&mut store, &mut c, true);
+            }
+        }
+        // FAILS: store.edges == [(a,v), (a,v)] — cardinality 2, parser produced 1.
+        // The NO-WIPE `contains` check would PASS (the edge IS present); only the
+        // NO-DUP cardinality assertion catches the spurious row.
         assert_call_graph_intact(&store);
     });
 }
