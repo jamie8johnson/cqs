@@ -137,15 +137,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "cqs diff loads embeddings one-by-one for each matched pair via get_chunk_with_embedding. For large diffs (1000+ matched functions), this will be slow. Batch loading would help but adds complexity — defer until someone hits the perf wall."
-mentions = [
-    "src/diff.rs",
-    "semantic_diff",
-    "get_chunk_with_embedding",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Module splitting patterns: impl Foo blocks can live in separate files (no trait needed, public API unchanged). But trait method imports (e.g. `use hnsw_rs::api::AnnT`) don't carry across submodule files — each file needs its own. Used for parser/ and hnsw/ directory refactors in v0.9.0."
 mentions = [
@@ -469,14 +460,6 @@ mentions = [
     "src/language/languages.rs",
     "src/language/queries",
     "src/parser/calls.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "resolve_target picks test functions over production code for ambiguous names. search_filtered resolves to test_search_filtered_empty_store, not Store::search_filtered. Phase 1b trials all showed zero type_impacted until using unique names like open_project_store or cmd_impact_diff."
-mentions = [
-    "src/search/query.rs",
-    "resolve_target",
 ]
 
 [[note]]
@@ -1025,14 +1008,6 @@ text = "SPLADE-Code 0.6B export: needed 4 fixes — Qwen tokenizer fallback, __i
 mentions = ["~/training-data/export_splade_code.py"]
 
 [[note]]
-sentiment = 0.5
-text = "Monitor tool is available in Claude Code. Use for streaming background processes (eval, training, export, CI) instead of sleep/poll/tail loops. Each stdout line becomes a notification. Use grep --line-buffered to filter."
-mentions = [
-    ".claude/hooks",
-    "telemetry",
-]
-
-[[note]]
 sentiment = -0.5
 text = "bin-crate tests can't access pub(crate) types from lib — need explicit re-exports in lib.rs for ReviewedFunction, RiskSummary etc. Agent-generated tests hit this; fix is to add pub use review::{Type} in lib.rs"
 mentions = [
@@ -1395,14 +1370,6 @@ mentions = [
     "evals/alpha_sweep_v3_r5.py",
     "evals/rerank_ab_oracle_eval.py",
     "classifier",
-]
-
-[[note]]
-sentiment = -0.5
-text = "cqs notes list --json: CLI direct default is the bare payload (V2Bare since v1.40) — a flat JSON list of {id, mentions, sentiment, text, type}; batch/daemon lines wrap it as slim {data: [...]}. Either way the list is flat, NOT a dict with a 'notes' key — parsers doing data['data']['notes'] crash with AttributeError. Bit me twice in one session."
-mentions = [
-    "src/cli/commands/io/notes.rs",
-    "evals",
 ]
 
 [[note]]
@@ -1954,4 +1921,43 @@ text = "Magnet-area gate battery (seam + interleaving auditors) on the #1900 wor
 mentions = [
     "gather.rs",
     "worktree_overlay.rs",
+]
+
+[[note]]
+sentiment = 0.0
+text = "The v32 candidate_edges side-table is callee-NAME-keyed and is NEVER joined by any graph query — by construction a candidate suppresses a dead-verdict (the callee leaves the zero-edge population) but can NEVER surface as a caller. Deliberately a separate table, not a function_calls.edge_kind value: callers/callees/impact SELECT every function_calls row with no kind exclusion, so a candidate stored there would read as a false caller. Populated in-tx by write_candidate_edges_in_tx (file-scoped DELETE+INSERT)."
+mentions = [
+    "src/schema.sql",
+    "src/store/calls/crud.rs",
+    "src/parser/calls.rs",
+    "candidate_edges",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Worktree-overlay dead merge: Direction-B (parent-live to overlay-dead additions) recomputes the dead set over the MERGED caller graph and must bypass the parent-truth low_conf relabel via the overlay_dead flag — else a genuine worktree-death whose bare name collides with a parent candidate/heuristic name is mislabeled low-confidence-live and filtered out of cqs dead --verdict dead. A seam-audit caught this; a full test sweep and an opus code-review both passed it."
+mentions = [
+    "src/cli/commands/review/dead.rs",
+    "src/store/calls/dead_code.rs",
+    "overlay_dead",
+    "dead-verdict",
+]
+
+[[note]]
+sentiment = 0.5
+text = "index.db freshness across long-lived readers (daemon BatchContext, CrossProjectContext, LRU ReferenceIndex) uses TWO discriminators, single-sourced in src/store/helpers/file_identity.rs: FileIdentity = (dev,inode,size,mtime) catches rename-replace and checkpoint; DataVersionProbe (a long-lived PRAGMA data_version connection) catches WAL-mode incremental commits that land in index.db-wal and leave the main file identity untouched until checkpoint. Pure (mtime,size) is a false-negative for the WAL-incremental class — use the shared key, do not re-derive per reader."
+mentions = [
+    "src/store/helpers/file_identity.rs",
+    "FileIdentity",
+    "data_version",
+    "freshness",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Chunk ids are {path}:{line_start}:{byte_start}:{hash8} — byte_start makes them injective when two elements start on the same line. Markdown table chunks and windowed chunks share their parent section (line,byte,hash), so the base alone is NON-injective for them — they get a suffix (e.g. :t{idx} for tables) via chunk_id_suffixed, appended to the SAME base extract-time AND at re-id, so a re-id never maps a suffixed id to a suffix-less one."
+mentions = [
+    "src/parser/chunk.rs",
+    "src/parser/markdown/tables.rs",
+    "chunk_id_suffixed",
 ]
