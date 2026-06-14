@@ -314,6 +314,19 @@ async fn delete_origins_in_tx(
         }
         calls_stmt.execute(&mut **tx).await?;
 
+        // v32: the `candidate_edges` side-table is file-keyed too, so the same
+        // wholesale prune must drop its rows for the removed origins — otherwise
+        // a deleted/gitignored file leaves orphan candidate rows behind.
+        let candidate_query = format!(
+            "DELETE FROM candidate_edges WHERE file IN ({})",
+            placeholder_str
+        );
+        let mut candidate_stmt = sqlx::query(sqlx::AssertSqlSafe(candidate_query.as_str()));
+        for origin in batch {
+            candidate_stmt = candidate_stmt.bind(origin);
+        }
+        candidate_stmt.execute(&mut **tx).await?;
+
         // Prune the v29 `file_registry` fingerprint for the same origins
         // #1774. These origins are being removed wholesale (file gone from
         // disk / now gitignored), so the persisted zero-chunk fingerprint must

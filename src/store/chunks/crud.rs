@@ -778,6 +778,16 @@ impl Store<ReadWrite> {
                 .execute(&mut *tx)
                 .await?;
 
+            // v32: the `candidate_edges` side-table is also file-keyed with no FK
+            // to chunks, so the wholesale file-removal path must delete its rows
+            // for the same origin — otherwise a deleted file leaves orphan
+            // candidate rows behind (a later consumer would read stale candidates
+            // for a file that no longer exists).
+            sqlx::query("DELETE FROM candidate_edges WHERE file = ?1")
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
             // Prune the v29 `file_registry` fingerprint for this origin #1774.
             // `delete_by_origin` is the wholesale file-removal path (watch
             // delete event, model swap, slot teardown), so the persisted
@@ -1209,6 +1219,7 @@ impl Store<ReadWrite> {
             None,
             &[],
             None,
+            None,
         )
     }
 
@@ -1249,6 +1260,7 @@ impl Store<ReadWrite> {
             file_function_calls,
             &[],
             None,
+            None,
         )
     }
 
@@ -1272,6 +1284,11 @@ impl Store<ReadWrite> {
     /// write. `prune_file`/`live_ids` follow the same contract as the other fused
     /// methods (empty `live_ids` + `Some(origin)` = the file was emptied; every
     /// chunk for the origin is pruned). `fingerprint` is always `Some` here.
+    ///
+    /// `file_candidate_edges` is the v32 call-graph candidate side-table for the
+    /// file, folded into the same tx as `function_calls`. An empty slice clears
+    /// the file's candidates (DELETE WHERE file = ?), which is the common case
+    /// until a parser-emit pass (a later lane) produces candidate sites.
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_file_fused(
         &self,
@@ -1282,6 +1299,7 @@ impl Store<ReadWrite> {
         prune_file: &std::path::Path,
         live_ids: &[&str],
         file_function_calls: &[crate::parser::FunctionCalls],
+        file_candidate_edges: &[crate::parser::CandidateSite],
         fingerprint: &crate::store::chunks::staleness::FileFingerprint,
     ) -> Result<usize, StoreError> {
         self.upsert_chunks_calls_and_prune_inner(
@@ -1293,6 +1311,7 @@ impl Store<ReadWrite> {
             Some(file_function_calls),
             sentinel,
             Some(fingerprint),
+            Some(file_candidate_edges),
         )
     }
 
@@ -1319,11 +1338,24 @@ impl Store<ReadWrite> {
         // path passes `None` and keeps its own post-tx best-effort stamp.
         // `prune_file` must be `Some` so the stamp has an origin to key on.
         fingerprint: Option<&crate::store::chunks::staleness::FileFingerprint>,
+        // v32: when `Some`, write the file's `candidate_edges` (the call-graph
+        // candidate side-table) in the SAME tx as function_calls, folded in
+        // right after the function_calls write so the two file-keyed call-graph
+        // tables commit together. Requires `prune_file` to scope the DELETE,
+        // same as `file_function_calls`. Empty/`None` is the common case until a
+        // parser-emit pass (a later lane) produces candidate sites.
+        file_candidate_edges: Option<&[crate::parser::CandidateSite]>,
     ) -> Result<usize, StoreError> {
         if fingerprint.is_some() {
             debug_assert!(
                 prune_file.is_some(),
                 "in-tx fingerprint stamp requires prune_file to supply the origin"
+            );
+        }
+        if file_candidate_edges.is_some() {
+            debug_assert!(
+                prune_file.is_some(),
+                "file_candidate_edges requires prune_file to scope the DELETE"
             );
         }
         let _span = tracing::info_span!(
@@ -1334,6 +1366,7 @@ impl Store<ReadWrite> {
             prune = prune_file.is_some(),
             live_count = live_ids.len(),
             file_function_calls = file_function_calls.is_some(),
+            file_candidate_edges = file_candidate_edges.is_some(),
             stamp = fingerprint.is_some()
         )
         .entered();
@@ -1554,6 +1587,16 @@ impl Store<ReadWrite> {
             if let (Some(file), Some(fcs)) = (prune_file, file_function_calls) {
                 let file_str = crate::normalize_path(file);
                 crate::store::calls::write_function_calls_in_tx(&mut tx, &file_str, fcs).await?;
+            }
+
+            // v32: fold the file-level `candidate_edges` write into the same tx,
+            // right after function_calls. Both are file-keyed call-graph tables
+            // refreshed wholesale per file; committing them together keeps them
+            // from drifting into an asymmetric state. candidate_edges is never
+            // joined by a graph query, so it cannot surface as a false caller.
+            if let (Some(file), Some(cands)) = (prune_file, file_candidate_edges) {
+                let file_str = crate::normalize_path(file);
+                crate::store::calls::write_candidate_edges_in_tx(&mut tx, &file_str, cands).await?;
             }
 
             // #1835: stamp the reconcile fingerprint LAST and INSIDE the same tx
@@ -1782,7 +1825,7 @@ impl Store<ReadWrite> {
 #[cfg(test)]
 mod tests {
     use super::super::test_utils::make_chunk;
-    use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
+    use crate::parser::{CallEdgeKind, CallSite, CandidateSite, FunctionCalls};
     use crate::test_helpers::{mock_embedding, setup_store};
 
     /// `upsert_chunks_calls_and_prune_with_file_calls` must write
@@ -1874,6 +1917,7 @@ mod tests {
                 std::path::Path::new("src/f.rs"),
                 &[chunk.id.as_str()],
                 &[],
+                &[],
                 &fp,
             )
             .expect("fused write must succeed");
@@ -1925,6 +1969,7 @@ mod tests {
                 std::path::Path::new("src/z.rs"),
                 &[], // empty live set → prune all chunks for the origin
                 &fcs,
+                &[],
                 &fp,
             )
             .expect("zero-chunk fused write must succeed");
@@ -1947,6 +1992,190 @@ mod tests {
             store.find_orphaned_function_calls().unwrap().is_empty(),
             "zero-chunk fused write must not leave orphaned function_calls"
         );
+    }
+
+    /// v32 `candidate_edges`: the fused write folds the candidate side-table
+    /// into the same per-file tx and round-trips a row (file/callee_name/
+    /// ref_line/candidate_kind). The candidate is written to its OWN table — it
+    /// must NOT appear in `function_calls`, so `get_callers_full` for the same
+    /// callee name returns nothing (the side-table is never joined by the graph
+    /// queries, so a candidate can never surface as a false caller).
+    #[test]
+    fn upsert_file_fused_writes_candidate_edges_separate_from_callers() {
+        let (store, _dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let chunk = make_chunk("real_fn", "src/c.rs");
+        let pairs = [(chunk.clone(), emb)];
+        let fp = crate::store::chunks::staleness::FileFingerprint {
+            mtime: Some(7),
+            size: Some(11),
+            content_hash: Some(*blake3::hash(b"cand").as_bytes()),
+        };
+
+        let candidates = vec![CandidateSite {
+            file: std::path::PathBuf::from("src/c.rs"),
+            callee_name: "maybe_callee".to_string(),
+            ref_line: 9,
+            candidate_kind: "unresolved".to_string(),
+        }];
+
+        store
+            .upsert_file_fused(
+                &pairs,
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("src/c.rs"),
+                &[chunk.id.as_str()],
+                &[],
+                &candidates,
+                &fp,
+            )
+            .expect("fused write with candidate edges must succeed");
+
+        // The candidate row round-trips from candidate_edges.
+        store.runtime().block_on(async {
+            let rows: Vec<(String, String, i64, String)> = sqlx::query_as(
+                "SELECT file, callee_name, ref_line, candidate_kind \
+                 FROM candidate_edges WHERE callee_name = ?1",
+            )
+            .bind("maybe_callee")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+            assert_eq!(rows.len(), 1, "exactly one candidate row must be stored");
+            assert_eq!(rows[0].0, "src/c.rs");
+            assert_eq!(rows[0].1, "maybe_callee");
+            assert_eq!(rows[0].2, 9);
+            assert_eq!(rows[0].3, "unresolved");
+        });
+
+        // The candidate must NOT leak into the caller graph — get_callers_full
+        // for the candidate's callee name finds nothing (it lives in a table the
+        // graph queries never join).
+        let callers = store
+            .get_callers_full("maybe_callee")
+            .expect("get_callers_full");
+        assert!(
+            callers.is_empty(),
+            "a candidate edge must never surface as a caller; got {:?}",
+            callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // Re-running the fused write with an EMPTY candidate slice clears the
+        // file's candidates (DELETE-then-INSERT wholesale per file).
+        store
+            .upsert_file_fused(
+                &pairs,
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("src/c.rs"),
+                &[chunk.id.as_str()],
+                &[],
+                &[],
+                &fp,
+            )
+            .expect("fused rewrite with no candidates must succeed");
+        store.runtime().block_on(async {
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM candidate_edges WHERE file = ?1")
+                    .bind("src/c.rs")
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                n, 0,
+                "empty candidate slice must clear the file's candidates"
+            );
+        });
+    }
+
+    /// v32 COMPLETENESS GUARD: every wholesale `function_calls` replace/delete
+    /// path must also sweep `candidate_edges` for the same files — both are
+    /// file-keyed call-graph tables refreshed wholesale per file, and a path
+    /// that refreshes one but not the other strands orphan rows. This pins the
+    /// parse-driven batch writer `upsert_function_calls_for_files` (the watch
+    /// zero-chunk finalize path): it does NOT receive candidate sites, so the
+    /// symmetric action is to CLEAR the files' candidates. Seed a candidate
+    /// directly, then run the batch writer for the same file and assert the
+    /// candidate is gone.
+    #[test]
+    fn upsert_function_calls_for_files_clears_candidate_edges() {
+        let (store, _dir) = setup_store();
+
+        // Seed a candidate row for src/q.rs via the fused write (the only
+        // store-public path that writes candidate_edges in Lane 1).
+        let emb = mock_embedding(1.0);
+        let chunk = make_chunk("seed_fn", "src/q.rs");
+        let pairs = [(chunk.clone(), emb)];
+        let fp = crate::store::chunks::staleness::FileFingerprint {
+            mtime: Some(1),
+            size: Some(2),
+            content_hash: Some(*blake3::hash(b"q").as_bytes()),
+        };
+        let candidates = vec![CandidateSite {
+            file: std::path::PathBuf::from("src/q.rs"),
+            callee_name: "ghost_callee".to_string(),
+            ref_line: 4,
+            candidate_kind: "unresolved".to_string(),
+        }];
+        store
+            .upsert_file_fused(
+                &pairs,
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("src/q.rs"),
+                &[chunk.id.as_str()],
+                &[],
+                &candidates,
+                &fp,
+            )
+            .expect("seed fused write must succeed");
+
+        // Sanity: the candidate exists.
+        store.runtime().block_on(async {
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM candidate_edges WHERE file = ?1")
+                    .bind("src/q.rs")
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(n, 1, "candidate must be seeded before the batch replace");
+        });
+
+        // Run the parse-driven batch function_calls replace for the same file
+        // (the watch zero-chunk finalize path). It must clear the candidates.
+        let entries = vec![(
+            std::path::PathBuf::from("src/q.rs"),
+            vec![FunctionCalls {
+                name: "seed_fn".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "real_callee".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )];
+        store
+            .upsert_function_calls_for_files(&entries)
+            .expect("batch function_calls replace must succeed");
+
+        store.runtime().block_on(async {
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM candidate_edges WHERE file = ?1")
+                    .bind("src/q.rs")
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                n, 0,
+                "upsert_function_calls_for_files must clear the file's candidate_edges \
+                 (wholesale call-graph replace must sweep both file-keyed tables)"
+            );
+        });
     }
 
     /// Passing `None` for file_function_calls leaves the existing

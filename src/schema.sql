@@ -1,4 +1,10 @@
--- cq index schema v31 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29+v30+v31 columns annotated inline below)
+-- cq index schema v32 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29+v30+v31+v32 columns annotated inline below)
+-- v32: candidate_edges side-table (file, callee_name, ref_line, candidate_kind)
+--      for low-confidence call-graph candidates that must NOT surface as
+--      callers. SEPARATE table, not a function_calls.edge_kind value — the graph
+--      queries SELECT every function_calls row for a callee with no kind
+--      exclusion, so a candidate stored there reads as a false caller. Empty on
+--      migrate; populated by a later parser-emit pass.
 -- v31: file_registry.parse_failed_parser_version INTEGER (nullable) — drift
 --      loop-breaker. A version-drifted file that cannot parse records the
 --      parser version it failed at; origins_with_parser_drift excludes origins
@@ -174,6 +180,23 @@ CREATE TABLE IF NOT EXISTS function_calls (
 CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
 CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);
 CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name);
+
+-- v32: low-confidence call-graph candidates that must NOT surface as callers.
+-- Deliberately a SEPARATE table, not a function_calls.edge_kind value: the
+-- callers/callees/impact queries SELECT every function_calls row for a callee
+-- with no kind exclusion, so a candidate stored there would read as a false
+-- caller, and CallEdgeKind::is_real_caller (the complement of doc_reference)
+-- would put the callee in the wrong dead tier. This table is callee-name-keyed
+-- and is never joined by a graph query, so a candidate is invisible to the
+-- caller graph by construction. Empty until a parser-emit pass populates it.
+CREATE TABLE IF NOT EXISTS candidate_edges (
+    file TEXT NOT NULL,            -- source file path the candidate reference lives in
+    callee_name TEXT NOT NULL,     -- symbol the candidate points at
+    ref_line INTEGER NOT NULL,     -- 1-indexed line of the reference
+    candidate_kind TEXT NOT NULL   -- candidate provenance string
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_callee ON candidate_edges(callee_name);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_file ON candidate_edges(file);
 
 -- Type dependency edges: which chunks reference which types (Phase 2b)
 -- Source is chunk-level for precise dependency tracking.

@@ -19,6 +19,11 @@ mod test_map;
 // file-level call-graph write into the same per-file transaction.
 pub(crate) use crud::write_function_calls_in_tx;
 
+// Re-export the in-tx candidate_edges writer (the call-graph candidate
+// side-table) so the same per-file fused write can fold it in alongside
+// function_calls.
+pub(crate) use crud::write_candidate_edges_in_tx;
+
 // Re-export the doc-shaped-origin predicate so the worktree-overlay dead path
 // (in the binary crate) can apply the same doc-path admissibility the
 // dead-candidate SQL applies — single source for both views.

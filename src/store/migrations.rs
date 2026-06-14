@@ -401,6 +401,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (28, 29, |c| Box::pin(migrate_v28_to_v29(c))),
     (29, 30, |c| Box::pin(migrate_v29_to_v30(c))),
     (30, 31, |c| Box::pin(migrate_v30_to_v31(c))),
+    (31, 32, |c| Box::pin(migrate_v31_to_v32(c))),
 ];
 
 /// Run a single migration step
@@ -1248,6 +1249,56 @@ async fn migrate_v30_to_v31(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v31 → v32: add the `candidate_edges` side-table for low-confidence call-graph
+/// candidates that must NOT surface as callers.
+///
+/// A SEPARATE table — deliberately NOT a new `function_calls.edge_kind` value.
+/// Every callers/callees/impact query SELECTs `function_calls` rows for a callee
+/// with no kind exclusion, so a candidate stored there would read as a false
+/// caller; and `CallEdgeKind::is_real_caller` is the complement of
+/// `doc_reference`, so a new kind would default to "real caller" and put the
+/// callee in the wrong dead tier. This table is callee-name-keyed and is never
+/// joined by a graph query, so a candidate is invisible to the caller graph by
+/// construction.
+///
+/// Created EMPTY on migrate (additive). The columns mirror what a candidate site
+/// carries: `file` (source path), `callee_name` (the symbol the candidate points
+/// at), `ref_line` (1-indexed line of the reference), and `candidate_kind` (the
+/// candidate's provenance string). Indexes on `callee_name` and `file` match the
+/// two access patterns a future consumer/cleanup path needs (callee-name lookup
+/// and per-file delete-on-reindex). No PARSER_VERSION bump: nothing emits rows
+/// into this table yet, so no re-extraction is required.
+async fn migrate_v31_to_v32(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v31_to_v32").entered();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS candidate_edges (
+            file TEXT NOT NULL,
+            callee_name TEXT NOT NULL,
+            ref_line INTEGER NOT NULL,
+            candidate_kind TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_candidate_edges_callee ON candidate_edges(callee_name)",
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_candidate_edges_file ON candidate_edges(file)")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v32: candidate_edges side-table (callee-name-keyed; never \
+         joined by callers/callees/impact). Empty on migrate; populated by a \
+         later parser-emit pass. No PARSER_VERSION bump — nothing writes rows yet."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1280,7 +1331,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 32);
     }
 
     #[test]
@@ -4779,6 +4830,170 @@ mod tests {
         });
     }
 
+    /// Build a v31-shaped DB: a `function_calls` table (with the v30 edge_kind
+    /// column) but NO `candidate_edges` side-table. Schema version stamped 31.
+    /// Minimal — just enough for the v31→v32 step, which only CREATEs a new
+    /// table and does not depend on prior shape.
+    async fn setup_v31_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE function_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file TEXT NOT NULL,
+                caller_name TEXT NOT NULL,
+                caller_line INTEGER NOT NULL,
+                callee_name TEXT NOT NULL,
+                call_line INTEGER NOT NULL,
+                edge_kind TEXT NOT NULL DEFAULT 'call'
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '31')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v31 → v32 creates the `candidate_edges` side-table. After the migration a
+    /// row can be inserted and read back, and the side-table is SEPARATE from
+    /// `function_calls` (a candidate is never a function_calls row).
+    #[test]
+    fn test_migrate_v31_to_v32_creates_candidate_edges() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v31_schema(&db_path).await;
+
+            // No candidate_edges table before the migration.
+            let pre: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='candidate_edges'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(pre.is_none(), "candidate_edges must not exist pre-v32");
+
+            let pool = migrate(pool, &db_path, 31, 32).await.unwrap();
+
+            // The table exists and a row round-trips.
+            sqlx::query(
+                "INSERT INTO candidate_edges (file, callee_name, ref_line, candidate_kind) \
+                 VALUES ('src/a.rs', 'maybe_fn', 12, 'unresolved')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (file, callee, line, kind): (String, String, i64, String) = sqlx::query_as(
+                "SELECT file, callee_name, ref_line, candidate_kind \
+                 FROM candidate_edges WHERE callee_name = 'maybe_fn'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                (file.as_str(), callee.as_str(), line, kind.as_str()),
+                ("src/a.rs", "maybe_fn", 12, "unresolved")
+            );
+
+            // It is empty after migrate (additive, no backfill).
+            let pool2 = setup_v31_schema(&dir.path().join("empty.db")).await;
+            let pool2 = migrate(pool2, &dir.path().join("empty.db"), 31, 32)
+                .await
+                .unwrap();
+            let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM candidate_edges")
+                .fetch_one(&pool2)
+                .await
+                .unwrap();
+            assert_eq!(n, 0, "candidate_edges must be empty on migrate");
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v31 → v32) must produce the same
+    /// `candidate_edges` shape (same columns, same indexes). The headline
+    /// `test_fresh_init_equals_full_migration_from_v10` covers this structurally
+    /// too, but a focused per-step check names the exact divergent surface.
+    #[test]
+    fn test_v32_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Fresh: apply schema.sql and read the candidate_edges DDL + indexes.
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+            let fresh_idx: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='candidate_edges' ORDER BY name",
+            )
+            .fetch_all(&fresh)
+            .await
+            .unwrap();
+            let fresh_idx: Vec<String> = fresh_idx.into_iter().map(|(n,)| n).collect();
+            assert!(
+                fresh_idx.contains(&"idx_candidate_edges_callee".to_string())
+                    && fresh_idx.contains(&"idx_candidate_edges_file".to_string()),
+                "fresh candidate_edges must carry both indexes, got: {fresh_idx:?}"
+            );
+
+            // Migrated: build v31, migrate to v32, read the same.
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v31_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 31, 32).await.unwrap();
+            let mig_idx: Vec<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='candidate_edges' ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            let mig_idx: Vec<String> = mig_idx.into_iter().map(|(n,)| n).collect();
+            assert_eq!(
+                fresh_idx, mig_idx,
+                "fresh vs migrated candidate_edges index set must match"
+            );
+        });
+    }
+
     /// FROZEN-ARTIFACT full-chain guard (legacy-state / version-null shape).
     ///
     /// Every other migration test in this module hand-builds a *minimal*
@@ -4791,7 +5006,7 @@ mod tests {
     /// silently depends on the *real* predecessor shape — or a default backfill
     /// that's wrong for the *oldest* rows — would pass every per-step test yet
     /// crash a real user's v10 DB on upgrade. No fixture built by current code
-    /// can construct a v10 DB: current `init()` writes the v31 schema. The only
+    /// can construct a v10 DB: current `init()` writes the v32 schema. The only
     /// way to reach this shape is to freeze the historical DDL, which is what
     /// this test does — the v10 `CREATE TABLE`s are copied verbatim from git
     /// commit 73cca226 (`feat: Migrate to sqlx async SQLite + schema v10`).
@@ -5085,10 +5300,25 @@ mod tests {
                 "file_registry must carry the v31 column after the full chain"
             );
 
+            // candidate_edges (v32) exists and is empty after the chain (additive,
+            // no backfill); a row can be inserted with its four columns.
+            sqlx::query(
+                "INSERT INTO candidate_edges (file, callee_name, ref_line, candidate_kind) \
+                 VALUES ('src/x.rs', 'cand_fn', 3, 'unresolved')",
+            )
+            .execute(&pool)
+            .await
+            .expect("candidate_edges must exist with its four columns after the full chain");
+
             // Tables created mid-chain exist (type_edges v11, sparse_vectors
-            // v16, llm_summaries v13/v16). A missing one means a step's
-            // `IF NOT EXISTS` masked a real ordering bug.
-            for tbl in ["type_edges", "sparse_vectors", "llm_summaries"] {
+            // v16, llm_summaries v13/v16, candidate_edges v32). A missing one
+            // means a step's `IF NOT EXISTS` masked a real ordering bug.
+            for tbl in [
+                "type_edges",
+                "sparse_vectors",
+                "llm_summaries",
+                "candidate_edges",
+            ] {
                 let present: Option<(String,)> = sqlx::query_as(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name = ?1",
                 )
@@ -5113,7 +5343,7 @@ mod tests {
     // `ALTER TABLE … ADD COLUMN … DEFAULT` drifts from `schema.sql`'s column
     // definition (wrong type, wrong default, missing NOT NULL) would leave
     // migrated DBs structurally different from fresh ones, and no fresh-state
-    // fixture can catch it: current `init()` only ever writes the v31 schema,
+    // fixture can catch it: current `init()` only ever writes the v32 schema,
     // so the migrated-from-v10 shape is unreachable except by replaying the
     // frozen historical DDL through the live migration chain.
     // ========================================================================
@@ -5448,7 +5678,7 @@ mod tests {
     /// default or type differs between the migrate path and the fresh path is
     /// the straggler this catches — it would silently diverge migrated DBs from
     /// fresh ones, and no born-at-HEAD fixture can construct the migrated shape
-    /// (current `init()` only ever writes v31).
+    /// (current `init()` only ever writes v32).
     ///
     /// Calibration (proving the guard bites): temporarily changing the v30
     /// migration's `edge_kind` default from `'call'` to `'xcall'`, OR

@@ -74,6 +74,54 @@ pub(crate) async fn write_function_calls_in_tx(
     Ok(())
 }
 
+/// Shared in-tx helper for writing the file-level `candidate_edges` side-table.
+///
+/// Sibling of [`write_function_calls_in_tx`]. `candidate_edges` holds
+/// low-confidence call-graph candidates that must NOT surface as callers; it is
+/// a SEPARATE table (never a `function_calls.edge_kind` value) and is never
+/// joined by a graph query, so a candidate is invisible to the caller graph by
+/// construction. Like `function_calls`, the table is file-keyed and refreshed
+/// wholesale per file (DELETE WHERE file = ? then INSERT the current set), so it
+/// is folded into the same per-file transaction as the chunks/FTS/calls write to
+/// keep the tables from drifting into an asymmetric committed state.
+///
+/// `file_str` MUST be the normalized origin path (call `crate::normalize_path`
+/// at the call site, once); it scopes both the DELETE and every inserted row's
+/// `file` column so they cannot disagree.
+pub(crate) async fn write_candidate_edges_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_str: &str,
+    candidates: &[crate::parser::CandidateSite],
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM candidate_edges WHERE file = ?1")
+        .bind(file_str)
+        .execute(&mut **tx)
+        .await?;
+
+    if !candidates.is_empty() {
+        use crate::store::helpers::sql::max_rows_per_statement;
+        const INSERT_BATCH: usize = max_rows_per_statement(4);
+        for batch in candidates.chunks(INSERT_BATCH) {
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                "INSERT INTO candidate_edges (file, callee_name, ref_line, candidate_kind) ",
+            );
+            query_builder.push_values(batch.iter(), |mut b, cand| {
+                b.push_bind(file_str)
+                    .push_bind(&cand.callee_name)
+                    .push_bind(cand.ref_line as i64)
+                    .push_bind(&cand.candidate_kind);
+            });
+            query_builder.build().execute(&mut **tx).await?;
+        }
+        tracing::info!(
+            file = %file_str,
+            candidates = candidates.len(),
+            "Indexed candidate edges"
+        );
+    }
+    Ok(())
+}
+
 impl Store<ReadWrite> {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
@@ -305,6 +353,21 @@ impl Store<ReadWrite> {
                     q = q.bind(fs);
                 }
                 q.execute(&mut *tx).await?;
+
+                // v32: clear the same files' `candidate_edges` in the same tx.
+                // This is the parse-driven `function_calls` replace path (it does
+                // not receive candidate sites), so the symmetric action is to
+                // CLEAR — a file refreshed through here must not keep stale
+                // candidate rows a prior emit pass wrote. Same DELETE-then-INSERT
+                // wholesale-per-file contract the other call-graph delete sites
+                // (delete_by_origin, prune_missing, the fused write) honor.
+                let cand_sql =
+                    format!("DELETE FROM candidate_edges WHERE file IN ({})", placeholders);
+                let mut cq = sqlx::query(sqlx::AssertSqlSafe(cand_sql.as_str()));
+                for fs in chunk {
+                    cq = cq.bind(fs);
+                }
+                cq.execute(&mut *tx).await?;
             }
 
             // Phase 2: collect all rows tagged with their file string, then

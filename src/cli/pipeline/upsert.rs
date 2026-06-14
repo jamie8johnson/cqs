@@ -228,6 +228,9 @@ pub(super) fn store_stage(
             origin.as_path(),
             &live_refs,
             function_calls,
+            // v32 candidate_edges: empty until a later parser-emit lane produces
+            // candidate sites. An empty slice clears the file's candidates.
+            &[],
             fp,
         ) {
             Ok(_) => {
