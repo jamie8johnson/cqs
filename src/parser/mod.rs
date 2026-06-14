@@ -52,18 +52,27 @@ pub(crate) const MAX_FILE_SIZE: u64 = crate::limits::PARSER_MAX_FILE_SIZE;
 /// everything in a single file read + tree-sitter parse.
 pub type ParseAllResult = (Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>);
 
-/// Combined parse result PLUS per-chunk call sites.
+/// Combined parse result PLUS per-chunk call sites AND file-level candidates.
 /// Returned by [`Parser::parse_file_all_with_chunk_calls`] and used by the
 /// indexing pipeline (`pipeline::parser_stage()`) to populate the per-chunk
 /// `calls` table without re-parsing each chunk's body. The fourth element
 /// pairs each extracted [`CallSite`] with the originating chunk's id (using
 /// the path-based id format produced by `extract_chunk`; the pipeline rewrites
 /// these to relative-path ids before persisting).
+///
+/// The fifth element is the file's low-confidence call-graph candidates (Lane
+/// 2): references the confident passes DROP (cross-file bare fn-pointer args,
+/// container / `with`-module serde callbacks). They are
+/// file-keyed, not chunk-keyed (the `candidate_edges` side-table is
+/// callee-name + file keyed), so they ride as a flat `Vec<CandidateSite>` the
+/// pipeline persists wholesale per file — never joined into the caller graph
+/// (Lane 1's invariant).
 pub type ParseAllWithChunkCallsResult = (
     Vec<Chunk>,
     Vec<FunctionCalls>,
     Vec<ChunkTypeRefs>,
     Vec<(String, CallSite)>,
+    Vec<CandidateSite>,
 );
 
 /// Default per-chunk byte cap (100 KiB). Larger chunks are dropped at
@@ -429,7 +438,8 @@ impl Parser {
     /// pipeline calls [`Self::parse_file_all_with_chunk_calls`] instead so it
     /// populates the per-chunk `calls` table from the same Pass 2 walk.
     pub fn parse_file_all(&self, path: &Path) -> Result<ParseAllResult, ParserError> {
-        let (chunks, calls, types, _chunk_calls) = self.parse_file_all_inner(path, false)?;
+        let (chunks, calls, types, _chunk_calls, _candidates) =
+            self.parse_file_all_inner(path, false)?;
         Ok((chunks, calls, types))
     }
 
@@ -450,6 +460,10 @@ impl Parser {
     /// (`src/cli/watch.rs`) uses `parse_file_all` and runs its own
     /// `extract_calls_from_chunk` per chunk — its parser stage is
     /// rayon-parallel, so it doesn't share this Pass-2 emit path.
+    ///
+    /// The 5th element is the file's Lane-2 `candidate_edges` (see
+    /// [`ParseAllWithChunkCallsResult`]); it is collected regardless of
+    /// `want_chunk_calls` because candidates are file-keyed, not chunk-keyed.
     pub fn parse_file_all_with_chunk_calls(
         &self,
         path: &Path,
@@ -462,7 +476,10 @@ impl Parser {
     /// guards the per-chunk-id bookkeeping (a `(start_byte, end_byte)` →
     /// `chunk.id` map plus the per-call emit) so callers that only need the
     /// existing 3-element shape pay nothing extra. When `want_chunk_calls` is
-    /// `false` the returned 4th element is always empty.
+    /// `false` the returned 4th element is always empty. The 5th element (Lane-2
+    /// candidates) is collected on BOTH flag settings — it is file-level, so
+    /// `parse_file_all` (Watch's path) drops it via destructure while the bulk
+    /// pipeline persists it.
     fn parse_file_all_inner(
         &self,
         path: &Path,
@@ -480,7 +497,7 @@ impl Parser {
                     path = %path.display(),
                     "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed"
                 );
-                return Ok((vec![], vec![], vec![], vec![]));
+                return Ok((vec![], vec![], vec![], vec![], vec![]));
             }
             Ok(_) => {}
             Err(e) => return Err(e.into()),
@@ -491,7 +508,7 @@ impl Parser {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");
-                return Ok((vec![], vec![], vec![], vec![]));
+                return Ok((vec![], vec![], vec![], vec![], vec![]));
             }
             Err(e) => return Err(e.into()),
         };
@@ -531,18 +548,29 @@ impl Parser {
                     (chunks, calls, vec![])
                 }
             };
+            // Candidates are collected on BOTH flag settings (file-level), but
+            // the per-chunk emit only fires when we walk chunks for chunk_calls;
+            // a grammar-less file's only candidate source is a fenced Rust block,
+            // and the per-chunk extractor is the path that sees those.
+            let mut candidates: Vec<CandidateSite> = Vec::new();
             let chunk_calls = if want_chunk_calls {
                 let mut sink: Vec<(String, CallSite)> = Vec::new();
                 for chunk in &chunks {
-                    for call in self.extract_calls_from_chunk(chunk) {
+                    let (chunk_calls, chunk_candidates) =
+                        self.extract_calls_and_candidates_from_chunk(chunk);
+                    for call in chunk_calls {
                         sink.push((chunk.id.clone(), call));
                     }
+                    candidates.extend(chunk_candidates);
                 }
                 sink
             } else {
+                for chunk in &chunks {
+                    candidates.extend(self.extract_calls_and_candidates_from_chunk(chunk).1);
+                }
                 Vec::new()
             };
-            return Ok((chunks, calls, types, chunk_calls));
+            return Ok((chunks, calls, types, chunk_calls, candidates));
         }
 
         // Single tree-sitter parse
@@ -635,6 +663,9 @@ impl Parser {
 
         let mut call_results = Vec::new();
         let mut type_results = Vec::new();
+        // Lane-2 low-confidence call-graph candidates (file-level). See
+        // `ParseAllWithChunkCallsResult`.
+        let mut candidates: Vec<CandidateSite> = Vec::new();
         // Emit (chunk_id, CallSite) pairs from the same Pass 2 walk that
         // builds `call_results`, so the indexing pipeline doesn't re-parse
         // every chunk body afterwards just to populate this list.
@@ -655,6 +686,13 @@ impl Parser {
         } else {
             std::collections::HashSet::new()
         };
+
+        // Whole-file serde candidate pre-pass (Lane 2): CONTAINER-level
+        // `#[serde(...)]` attributes are prev-siblings OUTSIDE every item node's
+        // byte range, so the per-chunk confident scan below cannot reach them —
+        // they need a file-root walk. `with = "module"` inner (de)ser fns also
+        // land here. ABSOLUTE line numbers (no chunk offset).
+        calls::collect_serde_candidates(tree.root_node(), &source, language, path, &mut candidates);
 
         while let Some(m) = matches2.next() {
             let func_node = m.captures.iter().find(|c| {
@@ -748,6 +786,30 @@ impl Parser {
             calls.extend(calls::extract_fn_pointer_arg_edges(
                 node, &source, language, 0, &known_fns,
             ));
+
+            // Cross-file bare fn-pointer-arg + macro-arg candidates (Lane 2):
+            // the bare-identifier references the confident passes above DROP
+            // (not in `known_fns`). ABSOLUTE line numbers → line_offset = 0.
+            // Collected per-chunk so they share the Pass-2 walk; file-keyed, so
+            // they ride the flat `candidates` vec rather than `chunk_calls`.
+            calls::collect_fn_pointer_arg_candidates(
+                node,
+                &source,
+                language,
+                0,
+                &known_fns,
+                path,
+                &mut candidates,
+            );
+            calls::collect_macro_arg_candidates(
+                node,
+                &source,
+                language,
+                0,
+                &known_fns,
+                path,
+                &mut candidates,
+            );
 
             seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
@@ -860,6 +922,18 @@ impl Parser {
                                 added = inner_chunks.len(),
                                 "Replaced outer chunks with injection results"
                             );
+                            // Drop outer candidates that lived inside this
+                            // injection container (their range is owned by the
+                            // inner-language parse now). Candidate kinds are
+                            // Rust-only, so an inner Rust injection re-emits its
+                            // own via the per-chunk extractor below.
+                            candidates.retain(|c| {
+                                !injection::chunk_within_container(
+                                    c.ref_line,
+                                    c.ref_line,
+                                    &group.container_lines,
+                                )
+                            });
                             if want_chunk_calls {
                                 // Drop outer chunk_calls that lived inside
                                 // this injection container (their chunks are
@@ -870,9 +944,18 @@ impl Parser {
                                 // outer hot-path saving.
                                 chunk_calls.retain(|(id, _)| !drop_ids.contains(id));
                                 for chunk in &inner_chunks {
-                                    for call in self.extract_calls_from_chunk(chunk) {
+                                    let (inner_chunk_calls, inner_cands) =
+                                        self.extract_calls_and_candidates_from_chunk(chunk);
+                                    for call in inner_chunk_calls {
                                         chunk_calls.push((chunk.id.clone(), call));
                                     }
+                                    candidates.extend(inner_cands);
+                                }
+                            } else {
+                                for chunk in &inner_chunks {
+                                    candidates.extend(
+                                        self.extract_calls_and_candidates_from_chunk(chunk).1,
+                                    );
                                 }
                             }
                             chunks.extend(inner_chunks);
@@ -921,7 +1004,7 @@ impl Parser {
             );
         }
 
-        Ok((chunks, call_results, type_results, chunk_calls))
+        Ok((chunks, call_results, type_results, chunk_calls, candidates))
     }
 
     /// Retrieves the list of file extensions supported by the language registry.
@@ -1323,7 +1406,7 @@ impl Holder {
         std::fs::write(&path, source).unwrap();
 
         // Pass-2 emit path
-        let (chunks_new, _calls, _types, chunk_calls_new) =
+        let (chunks_new, _calls, _types, chunk_calls_new, _candidates) =
             parser.parse_file_all_with_chunk_calls(&path).unwrap();
 
         // Per-chunk extraction path: parse_file_all + extract_calls_from_chunk

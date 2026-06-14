@@ -1681,7 +1681,7 @@ fn test_reindex_files_hits_global_cache_skipping_embedder() {
     let parser = CqParser::new().unwrap();
     let chunks = parser
         .parse_file_all_with_chunk_calls(&rs_file)
-        .map(|(c, _, _, _)| c)
+        .map(|(c, _, _, _, _)| c)
         .expect("parse hit.rs");
     assert!(!chunks.is_empty(), "parser must yield at least one chunk");
     let target_hash = chunks[0].content_hash.clone();

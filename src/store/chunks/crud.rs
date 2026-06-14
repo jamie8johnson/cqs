@@ -1236,6 +1236,13 @@ impl Store<ReadWrite> {
     /// function_calls belong to). When `prune_file = None`, this method
     /// asserts `file_function_calls.is_none()` because there's no file
     /// scope to delete-then-insert against.
+    ///
+    /// `file_candidate_edges` (Lane 2) is the file's low-confidence
+    /// `candidate_edges` set, written wholesale in the same tx as
+    /// `function_calls`; like it, it requires `prune_file` to scope the DELETE.
+    /// `None` leaves candidates untouched; `Some(&[])` clears the file's
+    /// candidates.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_chunks_calls_and_prune_with_file_calls(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -1244,6 +1251,7 @@ impl Store<ReadWrite> {
         prune_file: Option<&std::path::Path>,
         live_ids: &[&str],
         file_function_calls: Option<&[crate::parser::FunctionCalls]>,
+        file_candidate_edges: Option<&[crate::parser::CandidateSite]>,
     ) -> Result<usize, StoreError> {
         if file_function_calls.is_some() {
             debug_assert!(
@@ -1260,7 +1268,7 @@ impl Store<ReadWrite> {
             file_function_calls,
             &[],
             None,
-            None,
+            file_candidate_edges,
         )
     }
 
@@ -1862,6 +1870,7 @@ mod tests {
                 Some(std::path::Path::new("src/m.rs")),
                 &[chunk.id.as_str()],
                 Some(&fcs),
+                None,
             )
             .expect("upsert with file_calls must succeed");
 
@@ -2089,6 +2098,87 @@ mod tests {
                 "empty candidate slice must clear the file's candidates"
             );
         });
+    }
+
+    /// Lane-2 END-TO-END invariant: a real parser-emitted candidate (a
+    /// cross-file bare fn-pointer arg, #1818) persisted via the fused write
+    /// lands in `candidate_edges` but NEVER surfaces in `get_callers_full` for
+    /// the candidate's callee — closing the loop from parser emit (Lane 2)
+    /// through the side-table to the Lane-1 caller-graph isolation invariant.
+    #[test]
+    fn parser_emitted_candidate_never_pollutes_callers() {
+        use crate::parser::Parser;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("install.rs");
+        std::fs::write(
+            &src,
+            "fn install() {\n    set_handler(imported_handler);\n}\n",
+        )
+        .unwrap();
+
+        let parser = Parser::new().unwrap();
+        let (function_calls, _types, candidates) = parser
+            .parse_file_relationships_with_candidates(&src)
+            .expect("parse must succeed");
+
+        // The parser produced exactly the cross-file bare-arg candidate.
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.callee_name == "imported_handler"
+                    && c.candidate_kind == "bare_arg_unresolved"),
+            "parser must emit imported_handler as a candidate, got {:?}",
+            candidates
+                .iter()
+                .map(|c| (&c.callee_name, &c.candidate_kind))
+                .collect::<Vec<_>>()
+        );
+
+        // Persist via the fused write, keyed on a relative origin.
+        let (store, _store_dir) = setup_store();
+        let emb = mock_embedding(1.0);
+        let chunk = make_chunk("install", "install.rs");
+        let pairs = [(chunk.clone(), emb)];
+        let fp = crate::store::chunks::staleness::FileFingerprint {
+            mtime: Some(3),
+            size: Some(4),
+            content_hash: Some(*blake3::hash(b"install").as_bytes()),
+        };
+        store
+            .upsert_file_fused(
+                &pairs,
+                &[],
+                fp.mtime,
+                &[],
+                std::path::Path::new("install.rs"),
+                &[chunk.id.as_str()],
+                &function_calls,
+                &candidates,
+                &fp,
+            )
+            .expect("fused write of parser-emitted candidate must succeed");
+
+        // The candidate is in candidate_edges...
+        store.runtime().block_on(async {
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM candidate_edges WHERE callee_name = 'imported_handler'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            assert_eq!(n, 1, "candidate must be persisted");
+        });
+
+        // ...but it must NOT be a caller of imported_handler (Lane-1 invariant).
+        let callers = store
+            .get_callers_full("imported_handler")
+            .expect("get_callers_full");
+        assert!(
+            callers.is_empty(),
+            "a parser-emitted candidate must never surface as a caller; got {:?}",
+            callers.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
     }
 
     /// v32 COMPLETENESS GUARD: every wholesale `function_calls` replace/delete

@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use cqs::embedder::ModelConfig;
-use cqs::parser::{CallSite, ChunkTypeRefs, FunctionCalls};
+use cqs::parser::{CallSite, CandidateSite, ChunkTypeRefs, FunctionCalls};
 use cqs::store::FileFingerprint;
 use cqs::{Chunk, Embedding, Store};
 
@@ -19,6 +19,11 @@ pub(super) struct RelationshipData {
     /// Per-chunk call sites for the `calls` table, extracted during the parse
     /// stage to avoid re-parsing in store_stage. Keyed by chunk ID.
     pub chunk_calls: Vec<(String, CallSite)>,
+    /// Lane-2 low-confidence call-graph candidates for the `candidate_edges`
+    /// side-table, keyed by file path (file-level, not chunk-level). Written
+    /// wholesale per file in the same fused tx as `function_calls`; never joined
+    /// into the caller graph (Lane 1's invariant).
+    pub candidate_edges: HashMap<PathBuf, Vec<CandidateSite>>,
 }
 
 /// Message types for the pipelined indexer

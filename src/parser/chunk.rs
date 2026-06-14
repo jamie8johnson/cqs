@@ -27,7 +27,12 @@ use super::Parser;
 /// 9: markdown table chunks gained a `:t{idx}` id suffix
 /// (`chunk_id_suffixed`) so a top-of-file table no longer collides with the
 /// whole-file/section chunk that shares its `(line_start, byte_start, hash)`.
-pub const PARSER_VERSION: u32 = 9;
+/// 10: parser now emits low-confidence `candidate_edges` (Lane 2) — cross-file
+/// bare fn-pointer args, container-level / `with`-module serde
+/// callbacks — alongside the confident `function_calls`. A
+/// byte-identical file re-parsed under v10 produces candidate rows it did not
+/// under v9, so a refresh is required even when `content_hash` is unchanged.
+pub const PARSER_VERSION: u32 = 10;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
