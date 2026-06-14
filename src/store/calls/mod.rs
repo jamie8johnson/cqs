@@ -51,6 +51,16 @@ pub struct DeadFunction {
     pub chunk: ChunkSummary,
     /// How confident we are that this function is dead
     pub confidence: DeadConfidence,
+    /// Set only by `apply_dead_overlay` Direction B: this entry was computed
+    /// dead over the authoritative merged (parent+overlay) caller graph in this
+    /// worktree, not read off the parent dead set. Verdict classification must
+    /// not relabel it via the parent-truth `low_conf` heuristic-caller map — that
+    /// map is parent-graph-derived and stale under the overlay, so a
+    /// genuinely-worktree-dead function whose name collides with a parent
+    /// candidate/heuristic name would otherwise be hidden from `--verdict dead`.
+    /// Internal-only; entries reach user-facing JSON as `DeadFunctionEntry`.
+    #[serde(skip)]
+    pub overlay_dead: bool,
 }
 
 /// Confidence level for dead code detection.

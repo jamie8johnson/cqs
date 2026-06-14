@@ -882,7 +882,13 @@ impl<Mode> Store<Mode> {
 
             let chunk = ChunkSummary::from(ChunkRow::from_light_chunk(light, content, doc));
 
-            let dead_fn = DeadFunction { chunk, confidence };
+            let dead_fn = DeadFunction {
+                chunk,
+                confidence,
+                // Parent-set entry, not an overlay recompute — verdict
+                // classification keeps the full ordered tiers (incl. low_conf).
+                overlay_dead: false,
+            };
 
             if is_pub && !include_pub {
                 possibly_dead_pub.push(dead_fn);
@@ -1039,9 +1045,13 @@ pub fn apply_dead_overlay<M>(
 
         // Newly dead. `Medium` is the honest floor — the file-activity recompute
         // `score_confidence` runs for the parent set is not re-run here.
+        // `overlay_dead`: computed dead over the authoritative merged graph in
+        // this worktree, so verdict classification must not relabel it via the
+        // parent-truth `low_conf` map (stale under the overlay).
         let dead_fn = DeadFunction {
             chunk: def,
             confidence: DeadConfidence::Medium,
+            overlay_dead: true,
         };
         if dead_fn.confidence < min_confidence {
             continue;
