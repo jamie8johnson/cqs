@@ -21,9 +21,22 @@ use cqs::store::DataVersionProbe;
 // ─── Cross-project cache entry ───────────────────────────────────────────────
 
 /// A cached cross-project context plus the references-config fingerprint it
-/// was built from. The fingerprint lets a reader detect a config edit
-/// (references added/removed/repointed/reweighted) and rebuild even though the
-/// underlying `index.db` files never changed.
+/// was built from and the publish-epoch it was built for. The fingerprint lets
+/// a reader detect a config edit (references added/removed/repointed/
+/// reweighted) and rebuild even though the underlying `index.db` files never
+/// changed.
+///
+/// `published_epoch` is the publishing view's `checkout_epoch` — the index
+/// generation the merged graph was built from. A reader gates on
+/// `published_epoch == checkout_epoch` (a tag baked into the value) rather than
+/// the live `invalidation_epoch` counter, mirroring `EpochCell<T>`'s tag. The
+/// bare-counter gate had a hole on the WAL `data_version` invalidation path:
+/// `is_stale()` is blind there (the commit lands in `index.db-wal`, leaving the
+/// main file's `(mtime, size)` unchanged), so a deferred-clear residue from a
+/// superseded generation could coexist with the bumped live counter and be
+/// served to a newer reader. The tag closes that interleaving — a residue
+/// carries the older epoch and is rejected on read regardless of the live
+/// counter.
 ///
 /// The context is wrapped in `Arc<Mutex<...>>` so a [`BatchView`] can hand the
 /// `&mut CrossProjectContext` the cross cores require to a dispatch handler
@@ -32,6 +45,7 @@ use cqs::store::DataVersionProbe;
 pub(super) struct CachedCrossProject {
     pub(super) ctx: Arc<Mutex<cqs::cross_project::CrossProjectContext>>,
     pub(super) fingerprint: u64,
+    pub(super) published_epoch: u64,
 }
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
