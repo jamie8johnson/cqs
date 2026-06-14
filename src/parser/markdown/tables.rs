@@ -91,11 +91,19 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
 
         if table_content.len() <= MAX_TABLE_CHARS {
             let table_hash = blake3::hash(table_content.as_bytes()).to_hex().to_string();
-            let table_id = super::super::chunk::chunk_id(
+            // A table that begins on its section's first line shares the
+            // section's `line_start` AND `byte_start`; when the section is
+            // exactly that table with no trailing newline the `content_hash`
+            // matches too, so the base id collides with the section's. The
+            // `t{idx}` suffix is the disambiguator (the table is the idx-th of
+            // its section). Routed through `chunk_id_suffixed` so the re-id step
+            // reconstructs the same suffixed id.
+            let table_id = super::super::chunk::chunk_id_suffixed(
                 &ctx.path.display().to_string(),
                 table_line_start,
                 table_byte_start,
                 &table_hash,
+                &format!("t{table_idx}"),
             );
             chunks.push(Chunk {
                 id: table_id,
@@ -168,16 +176,19 @@ fn emit_table_window(
     content.push('\n');
     content.push_str(&rows.join("\n"));
     let whash = blake3::hash(content.as_bytes()).to_hex().to_string();
-    // Injective base (`chunk_id`) plus a `:t{idx}w{widx}` suffix that
+    // Injective base (`chunk_id`) plus a `t{idx}w{widx}` suffix that
     // disambiguates the row-wise windows of one table (which share line_start +
-    // byte_start). Multiple tables in a section get distinct base byte_starts.
-    let base = super::super::chunk::chunk_id(
+    // byte_start with each other and with the parent section). Routed through
+    // `chunk_id_suffixed` so the re-id step reconstructs the same suffixed id;
+    // a bare `format!` here would leave the suffix outside the single-source
+    // constructor and the re-id remap would drop it.
+    let wid = super::super::chunk::chunk_id_suffixed(
         &ctx.path.display().to_string(),
         ctx.line_start,
         ctx.byte_start,
         &whash,
+        &format!("t{}w{}", ctx.table_idx, window_idx),
     );
-    let wid = format!("{}:t{}w{}", base, ctx.table_idx, window_idx);
     chunks.push(Chunk {
         id: wid,
         file: ctx.path.to_path_buf(),

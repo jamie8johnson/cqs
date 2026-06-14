@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc f5f3e20b1249c22cc3752a77d0fbf149beaf980b795c78f37b656398bbba2b2b # shrinks to line_start = 0, hash = "aaaa00a0", b1 = 0, b2 = 1
 cc f613395f7c1dd9dbe26e397a56fcd34be4e12792c8f46bf9a885f905a77a27cc # shrinks to coords = [ChunkCoord { line_start: 2, byte_start: 0, content_hash: "bbbbbbbb" }, ChunkCoord { line_start: 2, byte_start: 1, content_hash: "bbbbbbbb" }]
+cc 8848b74fc5c47cd7c905a44f72ef69c1fedb32556cd3fe757ed18e5fa7cb49ce # shrinks to doc = "| h0 | h1 |\n| --- | --- |\n| r0c0 | r0c1 |"

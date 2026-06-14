@@ -32,7 +32,11 @@ pub enum ParserError {
 #[derive(Debug, Clone)]
 pub struct Chunk {
     /// Unique identifier: `{file}:{line_start}:{byte_start}:{hash8}` (see
-    /// `parser::chunk::chunk_id`) or `{parent_id}:w{window_idx}` for windows.
+    /// `parser::chunk::chunk_id`), with a structural suffix for chunks that
+    /// legitimately share those base coordinates with a sibling (see
+    /// `parser::chunk::chunk_id_suffixed`): `…:t{idx}` for a markdown table,
+    /// `…:t{idx}w{widx}` for a table window, and `{parent_id}:w{window_idx}` for
+    /// a token-window code chunk.
     pub id: String,
     /// Source file path (typically absolute during indexing, stored as provided)
     pub file: PathBuf,

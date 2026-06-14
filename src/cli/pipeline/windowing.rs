@@ -66,6 +66,17 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                     // boundaries anyway, so tree-precision buys nothing here.
                     let window_canonical = cqs::canonical_hash_fallback(&window_content);
                     result.push(Chunk {
+                        // Code windows are split at the embedding stage, AFTER
+                        // the re-id step has rewritten `parent_id` to its final
+                        // (normalized-path) form. `parent_id` is already the
+                        // canonical base, so the window id is base + `:w{idx}`.
+                        // Unlike the table-window suffix, this id is never
+                        // reconstructed by a re-id remap, so it appends to the
+                        // existing base rather than rebuilding via
+                        // `chunk_id_suffixed`: rebuilding would have to use
+                        // `chunk.file` (the raw rel-path), which can diverge
+                        // from the normalized path baked into `parent_id` on
+                        // platforms with backslash separators.
                         id: format!("{}:w{}", parent_id, window_idx),
                         file: chunk.file.clone(),
                         language: chunk.language,
