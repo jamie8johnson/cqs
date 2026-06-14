@@ -419,30 +419,40 @@ All inside the shared core so CLI==daemon parity is by construction:
   hybrid, `--name-only`, all filters;
 - the project half of `--include-refs` (it flows through
   `retrieve_project`).
+- **`scout` / `gather` / `task` SEED retrieval (#1858 Part A).** Their seed
+  `search_filtered` now routes through `WorktreeOverlay::merge_seed_results`
+  on the daemon path, so from a worktree a worktree-added/edited file
+  surfaces as a seed. The cores take an `Option<&WorktreeOverlay>` threaded
+  from the daemon dispatchers (`scout_with_overlay` / `gather_with_overlay` /
+  `task_with_resources_overlay`); CLI-direct passes `None`. The downstream
+  BFS / call-graph expansion stays parent-truth — the payload carries an
+  honest `_meta.overlay_graph = "seed-only"` marker (skip-when-absent) so a
+  consumer knows the seeds are overlaid while the graph is not.
 
 **Explicitly excluded (and how exclusion is enforced):**
 - `--ref`-scoped search: `ProjectSurface::Skip` (`query.rs:984`) — searches
   an external store; worktree state is irrelevant; `retrieve_ref_scoped`
-  never calls `apply_overlay`.
-- `scout` / `gather` / `task`: their seed retrieval bypasses `query_core`
-  entirely (`scout_core` calls `store.search_filtered` directly,
-  `src/scout.rs:204`; gather at `src/gather.rs:650`) — no code change needed
-  to exclude; one test pins that `cqs scout` from a worktree emits no
-  `worktree_overlay` meta.
-- `similar` / `related` / `neighbors` / `where` / `onboard`: same — not
-  routed through `retrieve_project`.
+  never calls `apply_overlay`. Cross-index `gather --ref` also stays
+  parent-truth (it seeds from the reference, not the project store).
+- `scout` / `gather` / `task` **graph phases** (BFS expansion, caller/test
+  counts, staleness): parent-truth in Part A — only the seed is overlaid.
+  Phase-2/Part B extends the overlay to the call-graph add/subtract layer.
+- `similar` / `related` / `neighbors` / `where` / `onboard`: not routed
+  through `retrieve_project` or the seed overlay — parent-truth.
 - **All graph commands** (`callers`, `callees`, `impact`, `test-map`,
   `trace`, `explain`, `dead`, `review`, `ci`, `diff`, `drift`): stay
   parent-truth with the existing `worktree_stale` hint
   (`json_envelope.rs:65`). The overlay's call tables (written by
   `reindex_files` as a side effect) are deliberately **not** merged — call
   graph shadowing has subtraction semantics (a deleted caller must reduce
-  parent counts) that phase 2 owns. No partial overlay: a graph answer that
+  parent counts) that Part B owns. No partial overlay: a graph answer that
   is half-worktree would be a new calibration lie.
 
-Because the hook is `retrieve_project` + the FTS short-circuits, the
-exclusion list is enforced by architecture, not by per-command flags — the
-only commands that *can* see an overlay are the ones in the include list.
+The search overlay is enforced by the `retrieve_project` + FTS short-circuit
+hook; the seed overlay (Part A) is enforced by the explicit
+`Option<&WorktreeOverlay>` threaded into the three seed cores. Both surfaces
+share `set_overlay_meta` so the `_meta.worktree_overlay` outcome rides every
+overlaid answer.
 
 ---
 
@@ -509,7 +519,13 @@ Tests (names from §4's table plus the program-doc gates):
     None, max_connections=1) + roundtrip; `-z` name-status parser (R/C/D/M/T
     records, embedded-rename two-entry expansion); fingerprint determinism +
     order-independence.
-19. `overlay_scout_not_overlaid` — scope-guard pin (§9).
+19. ~~`overlay_scout_not_overlaid` — scope-guard pin (§9).~~ **INVERTED by
+    #1858 Part A**: scout's seed IS overlaid now (daemon path). The pin became
+    `overlay_scout_cli_direct_serves_parent` (CLI-direct still serves parent —
+    no daemon, no build), with the active seed-overlay covered daemon-side by
+    `overlay_scout_seed_overlaid` / `overlay_gather_seed_overlaid` /
+    `overlay_task_seed_overlaid_marker` in `handlers/search.rs` plus the
+    `merge_seed_results` unit tests in `worktree_overlay.rs`.
 20. Run `/recall-gate` after the query-path PR merges (retrieval-adjacent by
     the house rule, even though `overlay_no_worktree_no_overlay` says it
     cannot move).

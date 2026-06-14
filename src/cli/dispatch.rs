@@ -472,19 +472,26 @@ fn cli_arg_spec() -> cqs::daemon_translate::CliArgSpec {
 }
 
 /// `true` when the worktree overlay should be forwarded to the daemon for this
-/// invocation. Uses the SAME shared resolution as the CLI `QueryArgs::from_cli`
-/// adapter ([`resolve_overlay_active`]) so the two surfaces cannot diverge: a
-/// `--no-overlay` / `CQS_WORKTREE_OVERLAY=0` opt-out wins; else `--overlay` /
+/// invocation, from the resolved overlay tri-state flags. Uses the SAME shared
+/// resolution as the CLI `QueryArgs::from_cli` adapter ([`resolve_overlay_active`])
+/// so the two surfaces cannot diverge: a `--no-overlay` /
+/// `CQS_WORKTREE_OVERLAY=0` opt-out wins; else `--overlay` /
 /// `CQS_WORKTREE_OVERLAY=1` opt-in; else default-on iff in an eligible worktree
 /// (`overlay_eligible`). The forward block already gates on `overlay_root`, so
 /// `overlay_eligible` here is that same `overlay_root(cwd, root).is_some()`.
+///
+/// Takes the flags directly (not `&Cli`) because the seed-overlaid graph
+/// commands (`scout` / `gather` / `task`) carry their overlay flags on the
+/// subcommand's flattened `OverlayArgs`, while the default search carries them
+/// on the top-level `Cli` — the caller resolves which applies and passes the
+/// effective pair.
 #[cfg(unix)]
-fn overlay_requested_for_forward(cli: &Cli, overlay_eligible: bool) -> bool {
-    crate::cli::commands::search::query::resolve_overlay_active(
-        cli.overlay,
-        cli.no_overlay,
-        overlay_eligible,
-    )
+fn overlay_requested_for_forward_flags(
+    flag_on: bool,
+    flag_off: bool,
+    overlay_eligible: bool,
+) -> bool {
+    crate::cli::commands::search::query::resolve_overlay_active(flag_on, flag_off, overlay_eligible)
 }
 
 /// `true` when the overlay is explicitly forced OFF for this invocation
@@ -492,8 +499,8 @@ fn overlay_requested_for_forward(cli: &Cli, overlay_eligible: bool) -> bool {
 /// short-circuits the worktree probe in that case. Thin wrapper over the shared
 /// [`query::overlay_force_off`] so the opt-out spelling lives in one place.
 #[cfg(unix)]
-fn overlay_force_off(cli: &Cli) -> bool {
-    crate::cli::commands::search::query::overlay_force_off(cli.no_overlay)
+fn overlay_force_off_flags(flag_off: bool) -> bool {
+    crate::cli::commands::search::query::overlay_force_off(flag_off)
 }
 
 /// Try to forward the current command to a running daemon.
@@ -625,49 +632,67 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         &cli_arg_spec(),
     );
 
-    // Worktree-overlay daemon forward (result-trust §3, plan §8). The daemon's
-    // cwd is the parent project and the wire request carries no cwd, so when an
-    // overlay is requested the client must say WHICH worktree. We resolve the
-    // overlay root here (CLI-side `cqs::worktree::overlay_root` over the real
-    // cwd + resolved root) and append the hidden `--overlay-root <abs>` flag
-    // post-translate; the daemon re-validates it (canonicalize +
-    // `resolve_main_project_dir == served root`) before reading any files.
+    // Worktree-overlay daemon forward (result-trust §3, plan §8). Part A
+    // extended it from `search`-only to the seed-overlaid graph-adjacent
+    // commands. The daemon's cwd is the parent project and the wire request
+    // carries no cwd, so when an overlay is requested the client must say WHICH
+    // worktree. We resolve the overlay root here (CLI-side
+    // `cqs::worktree::overlay_root` over the real cwd + resolved root) and append
+    // the hidden `--overlay-root <abs>` flag post-translate; the daemon
+    // re-validates it (canonicalize + `resolve_main_project_dir == served root`)
+    // before reading any files.
     //
-    // Forwards only for the `search` command (the only daemon command the
-    // overlay applies to) and only from an eligible worktree. Activation is the
-    // shared tri-state resolution (the default-on flip): default-on requires
-    // eligibility (`overlay_root.is_some()`), so we resolve the root FIRST and
-    // feed `root.is_some()` to the resolver — a non-worktree CWD short-circuits
-    // before any decision. Env-only / default activations still append the
-    // forwardable `--overlay` flag (the daemon is a separate long-lived process
-    // that does not see the client's env, and the wire `--overlay` is what its
-    // `prepare_overlay_request` consults), and a `--no-overlay` / `=0` opt-out
-    // resolves to `false` so nothing is forwarded.
+    // Forwards for `search` (whole-result overlay) plus `scout` / `gather` /
+    // `task` (seed-only overlay), and only from an eligible worktree. The
+    // overlay flags live in two places: top-level `Cli.overlay`/`no_overlay`
+    // for the default `cqs "query"` search form, and on the subcommand's
+    // flattened `OverlayArgs` for `scout`/`gather`/`task` (so `cqs scout q
+    // --overlay` binds to the subcommand, not the top-level flag). We read the
+    // effective tri-state from whichever applies.
+    //
+    // Activation is the shared tri-state resolution (the default-on flip):
+    // default-on requires eligibility (`overlay_root.is_some()`), so we resolve
+    // the root FIRST and feed `root.is_some()` to the resolver — a non-worktree
+    // CWD short-circuits before any decision. Env-only / default activations
+    // still append the forwardable `--overlay` flag (the daemon is a separate
+    // long-lived process that does not see the client's env, and the wire
+    // `--overlay` is what its `prepare_overlay_request` consults), and a
+    // `--no-overlay` / `=0` opt-out resolves to `false` so nothing is forwarded.
     //
     // An explicit opt-out short-circuits BEFORE the worktree probe: when the
     // overlay can never activate (`--no-overlay` / `CQS_WORKTREE_OVERLAY=0`),
     // there is no reason to resolve the project root or read `.git` on every
-    // search, so the default-on probe stays off the opted-out hot path.
-    if command == "search" && !overlay_force_off(cli) {
-        let resolved_root = find_project_root();
-        let overlay_root = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, &resolved_root));
-        if overlay_requested_for_forward(cli, overlay_root.is_some()) {
-            if let Some(root) = overlay_root {
-                if !cmd_args.iter().any(|a| a == "--overlay") {
-                    cmd_args.push("--overlay".to_string());
+    // query, so the default-on probe stays off the opted-out hot path.
+    if matches!(command.as_str(), "search" | "scout" | "gather" | "task") {
+        // Effective overlay tri-state: the subcommand's flattened flags for
+        // scout/gather/task, else the top-level Cli flags (default search).
+        let (flag_on, flag_off) = cli
+            .command
+            .as_ref()
+            .and_then(|c| c.overlay_tristate())
+            .unwrap_or((cli.overlay, cli.no_overlay));
+        if !overlay_force_off_flags(flag_off) {
+            let resolved_root = find_project_root();
+            let overlay_root = std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cqs::worktree::overlay_root(&cwd, &resolved_root));
+            if overlay_requested_for_forward_flags(flag_on, flag_off, overlay_root.is_some()) {
+                if let Some(root) = overlay_root {
+                    if !cmd_args.iter().any(|a| a == "--overlay") {
+                        cmd_args.push("--overlay".to_string());
+                    }
+                    cmd_args.push("--overlay-root".to_string());
+                    cmd_args.push(root.to_string_lossy().into_owned());
+                    tracing::debug!(
+                        command = %command,
+                        overlay_root = %root.display(),
+                        "forwarding worktree overlay to daemon"
+                    );
+                } else {
+                    tracing::debug!(
+                        "overlay explicitly requested but cwd is not an eligible worktree — not forwarding overlay-root"
+                    );
                 }
-                cmd_args.push("--overlay-root".to_string());
-                cmd_args.push(root.to_string_lossy().into_owned());
-                tracing::debug!(
-                    overlay_root = %root.display(),
-                    "forwarding worktree overlay to daemon"
-                );
-            } else {
-                tracing::debug!(
-                    "overlay explicitly requested but cwd is not an eligible worktree — not forwarding overlay-root"
-                );
             }
         }
     }

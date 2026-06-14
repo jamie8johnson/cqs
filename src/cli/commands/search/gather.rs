@@ -10,8 +10,8 @@ use cqs::reference::ReferenceIndex;
 use cqs::store::{ReadOnly, Store};
 use cqs::Embedder;
 use cqs::{
-    gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions,
-    GatherResult,
+    gather_cross_index_with_index, gather_with_overlay, normalize_path, GatherDirection,
+    GatherOptions, GatherResult,
 };
 
 use crate::cli::staleness;
@@ -70,6 +70,7 @@ impl Default for GatherArgs {
 ///
 /// Unifying the packing here gives the daemon the same reading-order re-sort
 /// the CLI always had (previously the daemon left packed chunks in score order).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn gather_core(
     store: &Store<ReadOnly>,
     embedder: &Embedder,
@@ -77,6 +78,7 @@ pub(crate) fn gather_core(
     args: &GatherArgs,
     ref_idx: Option<&ReferenceIndex>,
     project_index: Option<&dyn VectorIndex>,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
 ) -> Result<(GatherResult, Option<(usize, usize)>)> {
     let _span = tracing::info_span!("gather_core", query_len = args.query.len()).entered();
 
@@ -96,6 +98,9 @@ pub(crate) fn gather_core(
     };
 
     let mut result = if let Some(ref_idx) = ref_idx {
+        // Cross-index gather seeds from the REFERENCE, not the project store, so
+        // the worktree overlay (a project-delta shadow) does not apply to the
+        // seed — it stays parent-truth in Part A.
         let query_embedding = embedder.embed_query(&args.query)?;
         gather_cross_index_with_index(
             store,
@@ -107,7 +112,8 @@ pub(crate) fn gather_core(
             project_index,
         )?
     } else {
-        gather(store, embedder, &args.query, &opts, root)?
+        // Project gather: overlay the seed search (Part A).
+        gather_with_overlay(store, embedder, &args.query, &opts, root, overlay)?
     };
 
     let token_info = if let Some(budget) = args.tokens {
@@ -273,9 +279,11 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
             &args,
             Some(&ref_idx),
             index.as_deref(),
+            // CLI surface serves the parent index (overlay is daemon-only, ).
+            None,
         )?
     } else {
-        gather_core(store, embedder, root, &args, None, None)?
+        gather_core(store, embedder, root, &args, None, None, None)?
     };
     let token_count_used = token_info.map(|(used, _)| used);
 

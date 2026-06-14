@@ -8,10 +8,35 @@ use anyhow::Result;
 use super::super::commands::BatchInput;
 use super::super::BatchView;
 use crate::cli::args::{
-    DiffArgs, DriftArgs, GatherArgs, NotesListArgs, PlanArgs, ReconcileArgs, ScoutArgs, TaskArgs,
-    WaitFreshArgs, WhereArgs,
+    DiffArgs, DriftArgs, GatherArgs, NotesListArgs, OverlayArgs, PlanArgs, ReconcileArgs,
+    ScoutArgs, TaskArgs, WaitFreshArgs, WhereArgs,
 };
+// `SearchCtx` brings `BatchView::overlay()` into scope — the seam that resolves
+// + builds the per-worktree overlay from the request `prepare_overlay_request_*`
+// stamped (Part A).
+use crate::cli::commands::search::search_ctx::SearchCtx;
 use crate::cli::validate_finite_f32;
+
+/// Prepare + resolve the worktree seed overlay for an overlay-capable dispatcher
+/// (Part A). Stamps the validated request from the tri-state flags (a
+/// foreign `--overlay-root` is rejected as a wire error), then resolves it
+/// through the daemon overlay LRU. Returns `Some(Arc<WorktreeOverlay>)` when the
+/// overlay is active for this query (eligible worktree, non-clean delta, under
+/// the file cap), else `None` (serve the parent index). The caller threads the
+/// `Some` into the lib `*_overlay` seed path and injects the `seed-only`
+/// `_meta.overlay_graph` marker.
+fn resolve_seed_overlay(
+    ctx: &BatchView,
+    overlay: &OverlayArgs,
+) -> Result<Option<std::sync::Arc<cqs::worktree_overlay::WorktreeOverlay>>> {
+    super::prepare_overlay_request_fields(
+        ctx,
+        overlay.overlay,
+        overlay.no_overlay,
+        overlay.overlay_root.as_deref(),
+    )?;
+    Ok(ctx.overlay())
+}
 
 /// Performs a semantic search gather operation with optional cross-index querying and token budget constraints.
 ///
@@ -25,6 +50,14 @@ pub(in crate::cli::batch) fn dispatch_gather(
     let query = args.query.as_str();
     let ref_name = args.ref_name.as_deref();
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
+
+    // Clear leftover per-thread overlay meta BEFORE any branch can return — a
+    // reused worker thread must not leak a prior query's
+    // `_meta.worktree_overlay` onto this response (mirrors `dispatch_search`'s
+    // clear-before-branch discipline). The non-`--ref` branch re-clears via
+    // `resolve_seed_overlay`; the `--ref` branch skips that path, so the
+    // unconditional clear here is what guards it. Idempotent.
+    cqs::worktree_overlay::clear_overlay_meta();
 
     let embedder = ctx.embedder()?;
 
@@ -41,33 +74,46 @@ pub(in crate::cli::batch) fn dispatch_gather(
         json_overhead: crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
     };
 
-    let (result, token_info) = if let Some(rn) = ref_name {
+    let (result, token_info, overlaid) = if let Some(rn) = ref_name {
+        // Cross-index gather seeds from the reference, not the project store, so
+        // the overlay does not apply (Part A). Resolve no overlay here.
         ctx.get_ref(rn)?;
         let ref_idx = ctx
             .borrow_ref(rn)
             .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
         let index = ctx.vector_index()?;
-        crate::cli::commands::gather::gather_core(
+        let (result, token_info) = crate::cli::commands::gather::gather_core(
             &ctx.store(),
             embedder,
             &ctx.root,
             &core_args,
             Some(ref_idx.as_ref()),
             index.as_deref(),
-        )?
+            None,
+        )?;
+        (result, token_info, false)
     } else {
-        crate::cli::commands::gather::gather_core(
+        // Project gather: overlay the seed search from an eligible worktree.
+        let overlay = resolve_seed_overlay(ctx, &args.overlay)?;
+        let (result, token_info) = crate::cli::commands::gather::gather_core(
             &ctx.store(),
             embedder,
             &ctx.root,
             &core_args,
             None,
             None,
-        )?
+            overlay.as_deref(),
+        )?;
+        (result, token_info, overlay.is_some())
     };
 
     let output = crate::cli::commands::build_gather_output(&result, query, token_info);
-    Ok(serde_json::to_value(&output)?)
+    let mut value = serde_json::to_value(&output)?;
+    if overlaid {
+        // Seeds are overlaid; BFS expansion still reflects parent-truth.
+        super::attach_overlay_graph_meta(&mut value);
+    }
+    Ok(value)
 }
 
 /// Dispatches filtered notes from the batch context as a JSON response.
@@ -174,7 +220,13 @@ pub(in crate::cli::batch) fn dispatch_task(
         .clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
-    let result = cqs::task_with_resources(
+    // Overlay the task SCOUT seed from an eligible worktree (Part A). The gather
+    // phase also surfaces overlay-origin SEED chunks (a worktree-added/modified
+    // target shows its worktree content in `code`, matching the overlaid scout);
+    // BFS expansion and the impact/placement phases stay on parent-truth (the
+    // `seed-only` marker).
+    let overlay = resolve_seed_overlay(ctx, &args.overlay)?;
+    let result = cqs::task_with_resources_overlay(
         &ctx.store(),
         embedder,
         description,
@@ -182,11 +234,16 @@ pub(in crate::cli::batch) fn dispatch_task(
         limit,
         &graph,
         &test_chunks,
+        overlay.as_deref(),
     )?;
 
     // Shared projection: waterfall budgeting when `--tokens` is set, else full
     // serialization. Identical to the CLI's non-brief JSON path.
-    crate::cli::commands::task::task_json_core(&result, embedder, tokens)
+    let mut value = crate::cli::commands::task::task_json_core(&result, embedder, tokens)?;
+    if overlay.is_some() {
+        super::attach_overlay_graph_meta(&mut value);
+    }
+    Ok(value)
 }
 
 /// Performs a scout search query with optional token budget packing.
@@ -217,8 +274,19 @@ pub(in crate::cli::batch) fn dispatch_scout(
         search_threshold: args.search_threshold,
         min_gap_ratio: args.min_gap_ratio,
     };
-    let (output, _token_info) =
-        crate::cli::commands::scout::scout_core(&ctx.store(), embedder, &ctx.root, &core_args)?;
+    // Overlay the scout SEED search from an eligible worktree (Part A);
+    // the caller/staleness/BFS-hint phases stay on parent-truth.
+    let overlay = resolve_seed_overlay(ctx, &args.overlay)?;
+    let (mut output, _token_info) = crate::cli::commands::scout::scout_core(
+        &ctx.store(),
+        embedder,
+        &ctx.root,
+        &core_args,
+        overlay.as_deref(),
+    )?;
+    if overlay.is_some() {
+        super::attach_overlay_graph_meta(&mut output);
+    }
     Ok(output)
 }
 

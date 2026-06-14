@@ -1142,6 +1142,22 @@ impl Commands {
         }
     }
 
+    /// The worktree-overlay tri-state `(overlay, no_overlay)` for the seed-
+    /// overlaid graph-adjacent commands (`scout` / `gather` / `task`,
+    /// Part A), or `None` for every other command. The `search` overlay flags
+    /// live on the top-level `Cli` (the default `cqs "query"` form), so the
+    /// dispatch-forward path reads those directly; this accessor covers only the
+    /// subcommand-bound seed overlays. Returns the raw flags — the caller folds
+    /// them through `resolve_overlay_active` with worktree eligibility.
+    pub(crate) fn overlay_tristate(&self) -> Option<(bool, bool)> {
+        match self {
+            Commands::Scout { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Gather { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::Task { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            _ => None,
+        }
+    }
+
     /// `true` when this invocation mutates the resolved `.cqs/` index
     /// (or its slots / cache / refs) — the set the parent-index write
     /// guard gates. Pure reads and daemon-forwarded queries return
@@ -1425,6 +1441,32 @@ mod tests {
 
         let cli = Cli::try_parse_from(["cqs", "stale"]).unwrap();
         assert_eq!(cli.command.unwrap().batch_support(), BatchSupport::Daemon);
+    }
+
+    /// Part A: `cqs scout|gather|task <q> --overlay` binds the overlay
+    /// flag to the SUBCOMMAND (the flattened `OverlayArgs`), not the top-level
+    /// `Cli.overlay`, and `overlay_tristate()` reads it back. Non-overlay
+    /// commands return `None`.
+    #[test]
+    fn overlay_tristate_reads_subcommand_flags() {
+        use clap::Parser;
+        for cmd in ["scout", "gather", "task"] {
+            let cli = Cli::try_parse_from(["cqs", cmd, "q", "--overlay"])
+                .unwrap_or_else(|e| panic!("{cmd} --overlay must parse: {e}"));
+            // The flag bound to the subcommand, NOT the top-level default.
+            assert!(
+                !cli.overlay,
+                "{cmd}: --overlay must bind to the subcommand, not top-level Cli.overlay"
+            );
+            assert_eq!(
+                cli.command.as_ref().unwrap().overlay_tristate(),
+                Some((true, false)),
+                "{cmd}: overlay_tristate must report the subcommand flags"
+            );
+        }
+        // A non-overlay command has no tri-state.
+        let cli = Cli::try_parse_from(["cqs", "impact", "foo"]).unwrap();
+        assert_eq!(cli.command.unwrap().overlay_tristate(), None);
     }
 
     /// `mutates_index()` gates the parent-index write guard. Pin the
