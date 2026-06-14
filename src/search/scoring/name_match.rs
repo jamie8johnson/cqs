@@ -739,4 +739,142 @@ mod tests {
         assert!(ascii_bytes_contains_ignore_case(b"abc", b""));
         assert!(!ascii_bytes_contains_ignore_case(b"", b"a"));
     }
+
+    // ===== Word-overlap value + containment pinning (adequacy guards) =====
+    //
+    // The pre-existing word-overlap tests assert only loose bounds
+    // (`test_name_match_partial_overlap`: `score > 0.0 && score <= 0.5`)
+    // or compare two in-file copies of the same formula
+    // (`test_refactor_matches_legacy`), so they leave the word-overlap
+    // *value formula* and the substring-*containment* requirement
+    // unconstrained. cargo-mutants confirmed survivors here:
+    //   - 263:43 `&&` -> `||`   (a longer name word matches any shorter
+    //                            query word *without* containment)
+    //   - 269/268 `(overlap / total) * cfg.name_max_overlap` with `*`->`+`,
+    //     `*`->`/`, `/`->`%`, `/`->`*` (the fraction is never value-pinned
+    //     for a true partial overlap; `partial_overlap` happens to hit a
+    //     full overlap = 0.5, which all four arithmetic mutants reproduce
+    //     or leave loosely within bounds).
+    // These guards bite each of those.
+
+    #[test]
+    fn name_overlap_partial_value_is_exact() {
+        // ASCII fast path (`ascii_word_overlap_score`). Query has 2 words,
+        // exactly one of which matches a name token, so the overlap fraction
+        // is 1/2. With `name_max_overlap` = 0.5 the score must be exactly
+        // 0.25. This pins the `(overlap / total) * name_max_overlap` formula:
+        //   real:        (1/2) * 0.5 = 0.25
+        //   `*` -> `+`:  (1/2) + 0.5 = 1.0      (RED)
+        //   `*` -> `/`:  (1/2) / 0.5 = 1.0      (RED)
+        //   `/` -> `%`:  (1%2) * 0.5 = 0.5      (RED)
+        //   `/` -> `*`:  (1*2) * 0.5 = 1.0      (RED)
+        // "parse" exact-matches the "parse" token of "parseHandler"; "config"
+        // matches nothing (not a substring of "parse" or "handler", and they
+        // are not substrings of it). The full-string exact/contains tiers do
+        // not fire ("parse config" is not a substring of "parsehandler" nor
+        // vice versa), so scoring reaches the word-overlap tier.
+        let expected = ScoringConfig::current().name_max_overlap * 0.5; // 1/2 overlap
+        let got = name_match_score("parse config", "parseHandler");
+        assert_eq!(
+            got, expected,
+            "partial (1-of-2) word overlap must be exactly half of name_max_overlap, got {got}"
+        );
+        // Guard against the degenerate case where name_max_overlap itself is
+        // tuned such that 0.25 coincides with a mutant output.
+        assert!(got > 0.0 && got < ScoringConfig::current().name_max_overlap);
+    }
+
+    #[test]
+    fn name_overlap_requires_containment_not_just_length() {
+        // ASCII fast path. The substring tier of `ascii_word_overlap_score`
+        // counts a name token as matching a query word only when the longer
+        // string actually *contains* the shorter one. A name token that is
+        // strictly longer than the query word but shares no substring must
+        // NOT count.
+        //
+        // Kills 263:43 `&&` -> `||`:
+        //   query word "abc" (len 3) vs name token "wxyzv" (len 5)
+        //   real:       5 > 3 && contains("abc")  == false  -> overlap 0 -> 0.0
+        //   `&&`->`||`: 5 > 3 || ...              == true   -> overlap 1 -> 0.5  (RED)
+        //
+        // Single-word query + single-token name keeps total = 1 so the
+        // false match flips the score from 0.0 to the full name_max_overlap.
+        let no_match = name_match_score("abc", "wxyzv");
+        assert_eq!(
+            no_match, 0.0,
+            "a longer-but-non-containing name token must not count as overlap, got {no_match}"
+        );
+        // Positive control: when the longer name token *does* contain the
+        // query word, the substring tier fires and the score is positive.
+        // (Pairs with the negative case so the assertion is not vacuously
+        // satisfiable by `score -> 0.0`.)
+        let match_score = name_match_score("abc", "xxabcxx");
+        assert!(
+            match_score > 0.0,
+            "a name token that contains the query word must count as overlap, got {match_score}"
+        );
+    }
+
+    #[test]
+    fn name_overlap_value_via_slow_unicode_path() {
+        // Drive the *allocating* word-overlap path (lines ~205-226) by using
+        // a Unicode query/name pair so the ASCII fast path is skipped. This
+        // pins the slow-path twin of the formula and its substring tier,
+        // which cargo-mutants flagged independently (219:41 `&&`->`||`,
+        // 219:31 `>` family, 226 arithmetic, 220 comparisons).
+        //
+        // Tokens (tokenize_identifier emits each CJK char as its own token,
+        // and splits the ASCII run on the camel boundary):
+        //   query "中parseConfig" -> ["中", "parse", "config"]   (3 words)
+        //   name  "中parseXyz"    -> ["中", "parse", "xyz"]
+        // Overlap: "中" exact, "parse" exact, "config" no match -> 2/3.
+        // Score = (2/3) * name_max_overlap.
+        //
+        // The full-string contains tiers do not fire: neither string is a
+        // case-folded substring of the other.
+        let nmo = ScoringConfig::current().name_max_overlap;
+        let expected = (2.0f32 / 3.0f32) * nmo;
+        let got = name_match_score("中parseConfig", "中parseXyz");
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "slow-path 2-of-3 overlap must be (2/3)*name_max_overlap = {expected}, got {got}"
+        );
+        // A strictly-longer non-containing token must still not count on the
+        // slow path (kills 219:41 `&&`->`||`): "ab" vs token "中xyzv".
+        // query "中ab" -> ["中","ab"]; name "中wxyzv" -> ["中","wxyzv"].
+        // Overlap: "中" exact only -> 1/2. If "wxyzv" (len 5) falsely matched
+        // "ab" (len 2) the overlap would become 2/2 and the score would jump.
+        let half = name_match_score("中ab", "中wxyzv");
+        let expected_half = (1.0f32 / 2.0f32) * nmo;
+        assert!(
+            (half - expected_half).abs() < 1e-6,
+            "slow-path: longer non-containing token must not count; expected {expected_half}, got {half}"
+        );
+    }
+
+    #[test]
+    fn name_like_3plus_words_mixed_case_no_underscore_is_name_like() {
+        // Adequacy guard for the NL-detection branch:
+        //   if words.len() >= 3 && lower == query && !query.contains('_') { false }
+        // The pre-existing cases (`"error handling retry"` -> NL,
+        // `"handle_error_retry"` -> name) each satisfy or break the WHOLE
+        // condition, so they leave the *internal* `&&` between `lower == query`
+        // and the length/underscore checks unconstrained. cargo-mutants
+        // confirmed `74:43 && -> ||` survives.
+        //
+        // A 3-word query that is mixed-case (so `lower != query`) and has no
+        // underscore is the discriminating input:
+        //   real:        3>=3 && (false && true)  == false -> falls through -> NAME-like (true)
+        //   `&&`->`||`:  3>=3 && (false || true)  == true  -> returns NL (false)  (RED)
+        // Mixed case is the identifier signal the branch is meant to respect,
+        // so the correct classification is name-like.
+        assert!(
+            is_name_like_query("parse Config Handler"),
+            "a 3-word mixed-case query with no NL words and no underscore is identifier-like"
+        );
+        // Negative control kept adjacent: the same shape but all-lowercase IS
+        // natural language (this is the already-tested direction, restated so
+        // the pair pins both sides of `lower == query`).
+        assert!(!is_name_like_query("parse config handler"));
+    }
 }
