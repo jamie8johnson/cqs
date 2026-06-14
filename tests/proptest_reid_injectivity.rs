@@ -135,6 +135,149 @@ proptest! {
     }
 }
 
+// ── Real-parser injectivity over the MARKDOWN path ──────────────────────────
+//
+// The `chunk_coords` property above asserts injectivity over the *arithmetic*
+// of `chunk_id`, but its generator DEDUPS by `byte_start` (`coords.retain` on a
+// `seen` set) — it bakes in the assumption "no two distinct chunks of a file
+// share a start offset." That assumption is FALSE on the markdown path: a
+// no-heading (or single-heading) file emits a whole-file/section chunk at
+// `byte_start = 0, line_start = 1`, and `extract_table_chunks` then emits a
+// table chunk for a table that begins at byte 0 — SAME `byte_start`, SAME
+// `line_start`. The byte_start disambiguator collapses, and when the file is
+// *exactly* one table with no trailing newline the whole-file `content_hash`
+// also equals the table `content_hash` (the only textual difference is the
+// trailing `\n` the whole-file chunk would otherwise carry). All four base id
+// fields collide → two distinct chunks shared an id. The fix appends a `:t{idx}`
+// suffix to every table chunk (`chunk_id_suffixed`), so the table id sits below
+// the section id even when all four base fields match.
+//
+// The example suite cannot express this: it requires the precise combination
+// {no heading} × {file IS exactly one table} × {no trailing newline}, and the
+// arithmetic property's generator structurally excludes equal byte_starts.
+//
+// This property runs the REAL markdown parser over generated table-bearing
+// documents and asserts whole-file id injectivity (every chunk a distinct id).
+
+/// Generate markdown documents that stress the section/table byte_start overlap:
+/// a (possibly absent) leading heading, then a table, optionally followed by a
+/// trailing newline. Coverage claim: spans {0 heading, 1 heading} × {table at
+/// byte 0, table after a heading} × {trailing newline present/absent} × varying
+/// table widths and a leading-blank-line option — i.e. it deliberately VISITS
+/// the {no-heading} × {table-at-byte-0} × {no-trailing-newline} corner the
+/// arithmetic generator's byte_start-dedup can never reach.
+///
+/// DISTRUST: a generator that always appended a trailing `\n` would make the
+/// whole-file/table content hashes differ and hide the collision; the
+/// `trailing_nl: bool` dimension is the load-bearing axis, so it is sampled,
+/// not fixed.
+fn markdown_with_table() -> impl Strategy<Value = String> {
+    (
+        prop::option::of("[A-Za-z]{1,6}"), // optional leading heading text
+        2usize..4,                         // table column count (>=2: detector needs pipes)
+        1usize..4,                         // table data-row count
+        any::<bool>(),                     // trailing newline?
+        any::<bool>(),                     // blank line between heading and table?
+    )
+        .prop_map(|(heading, cols, rows, trailing_nl, blank)| {
+            let mut s = String::new();
+            if let Some(h) = heading {
+                s.push_str(&format!("# {h}\n"));
+                if blank {
+                    s.push('\n');
+                }
+            }
+            // Header row + separator + data rows.
+            let header: String = (0..cols).map(|c| format!(" h{c} |")).collect();
+            s.push('|');
+            s.push_str(&header);
+            s.push('\n');
+            let sep: String = (0..cols).map(|_| " --- |").collect();
+            s.push('|');
+            s.push_str(&sep);
+            s.push('\n');
+            for r in 0..rows {
+                let row: String = (0..cols).map(|c| format!(" r{r}c{c} |")).collect();
+                s.push('|');
+                s.push_str(&row);
+                s.push('\n');
+            }
+            if !trailing_nl {
+                // Drop the final newline we just appended.
+                while s.ends_with('\n') {
+                    s.pop();
+                }
+            }
+            s
+        })
+}
+
+proptest! {
+    /// REAL-PARSER INJECTIVITY (markdown): every chunk emitted for a single
+    /// markdown file must have a distinct id. The whole-file/section chunk and
+    /// a table chunk that begins at the same byte must not collide.
+    ///
+    /// Was a production bug: a no-heading file that is exactly one table with no
+    /// trailing newline yielded a whole-file chunk and a table chunk with
+    /// identical `{path}:1:0:{hash8}` ids (and the table's `parent_id` pointed
+    /// at itself), so the downstream `chunks.id` PRIMARY KEY UPSERT silently
+    /// overwrote one of the two distinct chunks. The fix salts the table id with
+    /// a `:t{idx}` suffix via `chunk_id_suffixed`. proptest shrinks straight to
+    /// the minimal table, so it re-verifies the fix. Minimal case pinned below.
+    #[test]
+    fn markdown_chunk_ids_injective_within_file(doc in markdown_with_table()) {
+        let file = write_temp(&doc, "md");
+        let parser = Parser::new().expect("init parser");
+        let chunks = parser.parse_file(file.path()).expect("parse");
+
+        let mut seen: HashSet<&str> = HashSet::with_capacity(chunks.len());
+        for c in &chunks {
+            prop_assert!(
+                seen.insert(c.id.as_str()),
+                "markdown id collision: {} reused by a second distinct chunk \
+                 (name={:?}, byte_start={}, parent_id={:?}); source:\n{}",
+                c.id, c.name, c.byte_start, c.parent_id, doc,
+            );
+        }
+    }
+}
+
+/// Minimal falsifier pin (production bug, not a too-strong property): a
+/// no-heading markdown file that is EXACTLY one table with no trailing newline
+/// emits a whole-file chunk and a table chunk with the SAME id. Both have
+/// `line_start = 1`, `byte_start = 0`, and — because the only textual
+/// difference would have been the trailing `\n` — the same `content_hash`. The
+/// table chunk's `parent_id` then points at its own id.
+///
+/// The fix salts the table id with a `:t{idx}` suffix (`chunk_id_suffixed`), so
+/// the whole-file section chunk (`{path}:1:0:{hash8}`) and the table chunk
+/// (`{path}:1:0:{hash8}:t0`) no longer collide.
+#[test]
+fn markdown_whole_file_table_no_trailing_newline_ids_injective() {
+    // Exactly one 2-col table, no heading, NO trailing newline.
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |";
+    let file = write_temp(src, "md");
+    let parser = Parser::new().expect("init parser");
+    let chunks = parser.parse_file(file.path()).expect("parse");
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut dup: Option<(String, String, String)> = None;
+    for c in &chunks {
+        if !seen.insert(c.id.clone()) {
+            dup = Some((c.id.clone(), c.name.clone(), format!("{:?}", c.parent_id)));
+        }
+    }
+    assert!(
+        dup.is_none(),
+        "whole-file chunk and table chunk share an id (injectivity violated): {dup:?}; \
+         chunks = {:?}",
+        chunks
+            .iter()
+            .map(|c| (c.id.as_str(), c.name.as_str()))
+            .collect::<Vec<_>>(),
+    );
+}
+
 // ── Real-parser pins (falsifier reproductions) ──────────────────────────────
 //
 // These are the concrete inputs the property generalizes. They run the REAL

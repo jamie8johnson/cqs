@@ -16,7 +16,7 @@ pub mod l5x;
 pub mod markdown;
 pub mod types;
 
-pub use chunk::{canonical_hash_fallback, chunk_id, collapse_whitespace};
+pub use chunk::{canonical_hash_fallback, chunk_id, chunk_id_suffixed, collapse_whitespace};
 
 /// The current parser-logic version stamped onto every chunk this build
 /// extracts (`chunk::PARSER_VERSION`). Re-exported so the binary crate's

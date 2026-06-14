@@ -18,8 +18,16 @@ use super::Parser;
 /// source bytes are identical to a previously-indexed version. The
 /// store-side UPSERT clause must include
 /// `OR chunks.parser_version != excluded.parser_version` so the bump
-/// triggers a refresh.
-pub const PARSER_VERSION: u32 = 8;
+/// triggers a refresh. The `id` IS such a field: a change to its format for
+/// any chunk class (e.g. the markdown table-chunk `:t{idx}` disambiguator)
+/// alters the stored id for byte-identical source, so it requires a bump —
+/// without one, a fingerprint-unchanged file is never re-parsed and keeps the
+/// old-format (potentially colliding) id until its bytes next change.
+///
+/// 9: markdown table chunks gained a `:t{idx}` id suffix
+/// (`chunk_id_suffixed`) so a top-of-file table no longer collides with the
+/// whole-file/section chunk that shares its `(line_start, byte_start, hash)`.
+pub const PARSER_VERSION: u32 = 9;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -49,6 +57,43 @@ pub fn chunk_id(
 ) -> String {
     let hash_prefix = content_hash.get(..8).unwrap_or(content_hash);
     format!("{path_display}:{line_start}:{byte_start}:{hash_prefix}")
+}
+
+/// Build a chunk id carrying a structural disambiguator suffix appended to the
+/// canonical [`chunk_id`] base.
+///
+/// Some chunks legitimately share all four base coordinates
+/// (`path`/`line_start`/`byte_start`/`hash8`) with another chunk of the same
+/// file, so the base alone is NOT injective for them. Two cases:
+///
+/// - **Sub-chunks at a parent's start offset.** A markdown table that begins on
+///   its containing section's first line shares the section's `line_start` and
+///   `byte_start`; when the section is *exactly* that table with no trailing
+///   newline the `content_hash` matches too — all four base fields collide.
+///   The table is the `idx`-th table of its section, so a `t{idx}` suffix
+///   separates it from the section and from sibling tables.
+/// - **Windows of one chunk.** Row-wise table windows and token-window code
+///   chunks all inherit their parent's `line_start`/`byte_start`; the window
+///   ordinal is the disambiguator (`t{idx}w{widx}` for table windows, `w{idx}`
+///   for code windows).
+///
+/// Single-sourcing the suffix here (rather than `format!("{base}:…")` at each
+/// emission site) is load-bearing for re-id: the indexing pipeline's re-id step
+/// reconstructs each chunk's id from its persisted coordinates, and the stored
+/// `Chunk::id` carries the suffix. Reconstructing the base only (the bug this
+/// closes) drops the suffix, so the re-id `old_id → new_id` map sends a
+/// suffixed id to a suffix-less one — non-injective, and distinct windows
+/// collapse onto one id. The pipeline calls this function with the SAME suffix
+/// the emission site used, so extract-time and re-id ids match byte-for-byte.
+pub fn chunk_id_suffixed(
+    path_display: &str,
+    line_start: u32,
+    byte_start: u32,
+    content_hash: &str,
+    suffix: &str,
+) -> String {
+    let base = chunk_id(path_display, line_start, byte_start, content_hash);
+    format!("{base}:{suffix}")
 }
 
 /// Collapse every run of ASCII/Unicode whitespace in `s` to a single space,

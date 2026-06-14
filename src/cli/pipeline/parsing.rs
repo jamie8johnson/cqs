@@ -308,6 +308,12 @@ pub(super) fn parser_stage(
                             // Rewrite paths to be relative for storage
                             // Normalize path separators to forward slashes for cross-platform consistency
                             let path_str = normalize_path(rel_path);
+                            // The path display string the extract-time sites
+                            // (`extract_chunk`, the markdown parser) folded into
+                            // each chunk's id. `chunk.id` was built from THIS
+                            // path; `new_id` rebuilds from the normalized
+                            // relative `path_str`.
+                            let abs_path_display = abs_path.display().to_string();
                             // Build a map of old IDs -> new IDs for parent_id fixup.
                             // MUST reconstruct via the same `chunk_id` helper the
                             // extract-time site used, including `byte_start`, or the
@@ -315,15 +321,38 @@ pub(super) fn parser_stage(
                             // injective within a file (same-line byte-identical
                             // chunks no longer collide), so this map no longer
                             // collapses distinct chunks onto one entry.
+                            //
+                            // Suffix preservation: some chunks carry a structural
+                            // suffix appended after the 4-field base (markdown
+                            // table chunks `:t{idx}`, table windows `:t{idx}w{widx}`
+                            // — see `chunk_id_suffixed`). The base reconstruction
+                            // alone would drop that suffix, sending a suffixed
+                            // `chunk.id` to a suffix-less `new_id`: non-injective
+                            // (distinct table windows collapse onto one id) and the
+                            // remapped id no longer matches the stored chunk. So we
+                            // recover the suffix by stripping the extract-time base
+                            // (rebuilt from the same absolute path) off `chunk.id`,
+                            // then re-append it to the new base. Path-safe even when
+                            // the path contains colons (the base prefix is matched
+                            // whole, not by colon-splitting).
                             let id_map: std::collections::HashMap<String, String> = chunks
                                 .iter()
                                 .map(|chunk| {
-                                    let new_id = cqs::parser::chunk_id(
+                                    let new_base = cqs::parser::chunk_id(
                                         &path_str,
                                         chunk.line_start,
                                         chunk.byte_start,
                                         &chunk.content_hash,
                                     );
+                                    let old_base = cqs::parser::chunk_id(
+                                        &abs_path_display,
+                                        chunk.line_start,
+                                        chunk.byte_start,
+                                        &chunk.content_hash,
+                                    );
+                                    let suffix =
+                                        chunk.id.strip_prefix(&old_base).unwrap_or("");
+                                    let new_id = format!("{new_base}{suffix}");
                                     (chunk.id.clone(), new_id)
                                 })
                                 .collect();
@@ -334,7 +363,12 @@ pub(super) fn parser_stage(
                             //   - new ids collide -> distinct chunks UPSERT onto
                             //     one `chunks.id` PRIMARY KEY row -> fewer distinct
                             //     values than keys.
-                            // Check both against `chunks.len()`.
+                            // The new-id check reads the values ACTUALLY assigned
+                            // to `chunk.id` below (suffix included), not bare base
+                            // ids — a base-only check would pass even when two
+                            // table windows differ solely by their dropped suffix.
+                            // The keys are the stored `chunk.id`s (suffix
+                            // included), so the old-id check sees the real ids too.
                             #[cfg(debug_assertions)]
                             {
                                 let distinct_new: std::collections::HashSet<&String> =
@@ -930,6 +964,128 @@ mod tests {
             rels_seen <= 1,
             "relationships should ride with at most one batch, saw {rels_seen}"
         );
+    }
+
+    /// Re-id must preserve a chunk's structural id suffix end-to-end.
+    ///
+    /// Table windows (and the markdown table chunk) carry a `:t{idx}w{widx}`
+    /// suffix appended AFTER the four-field base by `chunk_id_suffixed`. The
+    /// re-id remap rebuilds each chunk's id from its persisted coordinates
+    /// (path absolute→relative); a base-only reconstruction drops the suffix,
+    /// so the suffixed extract-time `chunk.id` would be rewritten to a
+    /// suffix-LESS id — diverging from the parser-native form. The store would
+    /// then hold an id no fresh `parse_file` can reproduce, so an incremental
+    /// re-index churns the row, and parent_id resolution across the windows of
+    /// one table goes ambiguous. This drives a no-heading markdown file that is
+    /// one LARGE table (forcing row-wise windowing) through the full
+    /// `parser_stage` and asserts every stored window id still ends in its
+    /// `:t0w{idx}` suffix and equals the suffix-aware re-id form.
+    #[test]
+    fn parser_stage_preserves_table_window_id_suffix_through_reid() {
+        let _lock = super::super::types::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // A no-heading file that is EXACTLY one table, wide+long enough to
+        // exceed MAX_TABLE_CHARS (1500) so the table is split row-wise into
+        // multiple windows. No trailing newline (also stresses the #1911 P1
+        // whole-file/table base collision: the whole-file chunk and the table
+        // share the (1, 0) start coords).
+        let mut md = String::new();
+        md.push_str("| Column A | Column B | Column C | Column D | Column E |\n");
+        md.push_str("|----------|----------|----------|----------|----------|\n");
+        for i in 0..60 {
+            use std::fmt::Write as _;
+            writeln!(
+                &mut md,
+                "| value_{i}_aaaa | value_{i}_bbbb | value_{i}_cccc | value_{i}_dddd | value_{i}_eeee |"
+            )
+            .unwrap();
+        }
+        while md.ends_with('\n') {
+            md.pop();
+        }
+        let rel = PathBuf::from("only_table.md");
+        std::fs::write(root.join(&rel), &md).unwrap();
+
+        let db_path = root.join("index.db");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+        let parser = Arc::new(CqParser::new().unwrap());
+
+        let (tx, rx) = unbounded::<ParsedBatch>();
+        let ctx = ParserStageContext {
+            root: root.clone(),
+            force: true,
+            parser: Arc::clone(&parser),
+            store: Arc::clone(&store),
+            parsed_count: Arc::new(AtomicUsize::new(0)),
+            parse_errors: Arc::new(AtomicUsize::new(0)),
+            model_config: cqs::embedder::ModelConfig::resolve(None, None),
+        };
+        parser_stage(vec![rel.clone()], ctx, tx).unwrap();
+
+        let chunks: Vec<cqs::Chunk> = rx.try_iter().flat_map(|b| b.chunks).collect();
+        assert!(!chunks.is_empty(), "parser_stage produced no chunks");
+
+        // Every stored id is injective within the file.
+        let mut ids: HashSet<&str> = HashSet::new();
+        for c in &chunks {
+            assert!(
+                ids.insert(c.id.as_str()),
+                "stored chunk id collision after re-id: {} (name={:?})",
+                c.id,
+                c.name,
+            );
+        }
+
+        // The table windowed: at least two window chunks exist (window_idx set).
+        let windows: Vec<&cqs::Chunk> = chunks.iter().filter(|c| c.window_idx.is_some()).collect();
+        assert!(
+            windows.len() >= 2,
+            "fixture must produce >=2 table windows, got {} (chunks: {:?})",
+            windows.len(),
+            chunks.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        );
+
+        // Each window's stored id must STILL carry its `:t{idx}w{widx}` suffix
+        // and equal the suffix-aware re-id reconstruction from the normalized
+        // relative path. A base-only re-id (the bug) drops the `:t…w…` tail.
+        let path_str = normalize_path(&rel);
+        for w in &windows {
+            let widx = w.window_idx.unwrap();
+            let expected = cqs::parser::chunk_id_suffixed(
+                &path_str,
+                w.line_start,
+                w.byte_start,
+                &w.content_hash,
+                &format!("t0w{widx}"),
+            );
+            assert_eq!(
+                w.id, expected,
+                "table window id lost its suffix through re-id: stored {} vs expected {}",
+                w.id, expected,
+            );
+            assert!(
+                w.id.contains(":t0w"),
+                "table window id must retain its :t{{idx}}w{{widx}} suffix: {}",
+                w.id,
+            );
+        }
+
+        // parent_id of every window resolves to exactly one chunk (the section).
+        for w in &windows {
+            if let Some(pid) = &w.parent_id {
+                let matches = chunks.iter().filter(|o| &o.id == pid).count();
+                assert!(
+                    matches <= 1,
+                    "window parent_id {pid} resolves to {matches} chunks — ambiguous",
+                );
+            }
+        }
     }
 
     /// Incremental (`force=false`) runs must parse ONLY files whose disk
