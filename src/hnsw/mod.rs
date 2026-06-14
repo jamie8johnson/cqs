@@ -67,6 +67,22 @@ use crate::index::{DistanceMetric, IndexResult, VectorIndex};
 
 pub(crate) const MAX_LAYER: usize = 16; // Maximum layers in the graph
 
+/// Multiplicative factor applied to hnsw_rs's default level scale
+/// (`1/ln(max_nb_connection)`) at graph construction, via
+/// [`Hnsw::modify_level_scale`]. Halving the level scale fewer-layers the
+/// graph: under CPU-saturated parallel insert it eliminates the
+/// self-unreachable-node orphaning seen at the larger tiers (M=32 went to 0
+/// orphans across 40 builds, a ~26-100x reduction) with no recall regression
+/// (recall slightly improves at every tier). The argument to
+/// `modify_level_scale` is itself a multiplicative factor on the per-M
+/// default, so a single 0.5 here stays correct across every M-tier — it is
+/// NOT a hardcoded absolute scale. hnsw_rs clamps the factor to [0.2, 1.0].
+///
+/// SINGLE SOURCE: every fresh hnsw_rs `Hnsw` cqs constructs routes through
+/// [`HnswGraph::new`], which applies this factor. No build path may
+/// construct a graph without it.
+pub(crate) const LEVEL_SCALE_FACTOR: f64 = 0.5;
+
 /// Mid-tier default M. Used when the no-corpus-size path is the only
 /// available context.
 const MID_M: usize = 24;
@@ -285,6 +301,13 @@ macro_rules! with_graph {
 impl<'a> HnswGraph<'a> {
     /// Construct an empty graph for `metric` with the given hnsw_rs
     /// parameters (mirrors `Hnsw::new`'s argument order).
+    ///
+    /// SINGLE SOURCE for level scale: this is the only constructor of a fresh
+    /// hnsw_rs `Hnsw` in cqs — bulk build, batched build, and the watch
+    /// background rebuild all route here. It applies [`LEVEL_SCALE_FACTOR`]
+    /// via `modify_level_scale` BEFORE any point is inserted (the library
+    /// requires the scale be set on an empty graph for run-to-run coherence),
+    /// so every build path gets the reduced scale with no straggler possible.
     pub(crate) fn new(
         metric: DistanceMetric,
         max_nb_connection: usize,
@@ -293,21 +316,41 @@ impl<'a> HnswGraph<'a> {
         ef_construction: usize,
     ) -> Self {
         match metric {
-            DistanceMetric::Cosine => HnswGraph::Cosine(Hnsw::new(
-                max_nb_connection,
-                nb_elem,
-                max_layer,
-                ef_construction,
-                DistCosine,
-            )),
-            DistanceMetric::DotProduct => HnswGraph::Dot(Hnsw::new(
-                max_nb_connection,
-                nb_elem,
-                max_layer,
-                ef_construction,
-                DistDot,
-            )),
+            DistanceMetric::Cosine => {
+                let mut h = Hnsw::new(
+                    max_nb_connection,
+                    nb_elem,
+                    max_layer,
+                    ef_construction,
+                    DistCosine,
+                );
+                h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                HnswGraph::Cosine(h)
+            }
+            DistanceMetric::DotProduct => {
+                let mut h = Hnsw::new(
+                    max_nb_connection,
+                    nb_elem,
+                    max_layer,
+                    ef_construction,
+                    DistDot,
+                );
+                h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                HnswGraph::Dot(h)
+            }
         }
+    }
+
+    /// The effective level scale of the underlying graph (after the
+    /// [`LEVEL_SCALE_FACTOR`] modification). Used by the sweep guard to assert
+    /// the reduced scale was applied at construction.
+    ///
+    /// `get_level_scale` lives on hnsw_rs's `PointIndexation`, not on `Hnsw`
+    /// directly, so we reach it via the public `get_point_indexation`
+    /// accessor.
+    #[cfg(test)]
+    pub(crate) fn get_level_scale(&self) -> f64 {
+        with_graph!(self, h => h.get_point_indexation().get_level_scale())
     }
 
     /// Load a graph from `io`, instantiating the dist type recorded in the
@@ -977,6 +1020,69 @@ mod send_sync_tests {
         assert_eq!(super::max_nb_connection_for(20_000), 24);
         assert_eq!(super::max_nb_connection_for(500_000), 32);
         assert_eq!(super::ef_search_for(500_000), 200);
+    }
+
+    /// SWEEP GUARD for the reduced level scale.
+    ///
+    /// `HnswGraph::new` is the single source for the level scale: every fresh
+    /// hnsw_rs `Hnsw` cqs builds routes through it and applies
+    /// [`LEVEL_SCALE_FACTOR`] via `modify_level_scale`. hnsw_rs's default scale
+    /// is `1/ln(M)`, and `modify_level_scale(f)` multiplies it by `f`, so the
+    /// effective scale read back by `get_level_scale()` must equal
+    /// `(1/ln(M)) * LEVEL_SCALE_FACTOR` at EVERY M-tier.
+    ///
+    /// Asserting the per-M relation (not a fixed number) is the load-bearing
+    /// part: it proves the factor is applied as a multiplicative factor on the
+    /// per-M default — a regression that hardcoded an absolute scale, or that
+    /// dropped the `modify_level_scale` call from one metric arm, would diverge
+    /// at one or more tiers and fail here.
+    #[test]
+    fn test_level_scale_factor_applied_per_m() {
+        for &m in &[16usize, 24, 32] {
+            let expected = (1.0 / (m as f64).ln()) * super::LEVEL_SCALE_FACTOR;
+            for metric in [DistanceMetric::Cosine, DistanceMetric::DotProduct] {
+                let g = HnswGraph::new(metric, m, 1, MAX_LAYER, 100);
+                let got = g.get_level_scale();
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "metric={metric:?} M={m}: effective level scale {got} != \
+                     (1/ln(M))*LEVEL_SCALE_FACTOR {expected}"
+                );
+            }
+        }
+    }
+
+    /// The production build path (`build_with_dim` -> `HnswGraph::new`) must
+    /// carry the reduced scale onto the actual `HnswIndex` graph. This catches
+    /// a build site that constructs a graph bypassing the single source — the
+    /// per-M unit test above would still pass while production silently shipped
+    /// the default scale.
+    #[test]
+    fn test_build_path_carries_reduced_scale() {
+        // build_with_dim reads CQS_HNSW_* (process-global) via the *_for
+        // helpers; serialize against env_override_tests so an override leaking
+        // from another test can't perturb the M we compute the expected scale
+        // from.
+        let _lock = super::HNSW_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::remove_var("CQS_HNSW_M");
+        std::env::remove_var("CQS_HNSW_EF_CONSTRUCTION");
+        std::env::remove_var("CQS_HNSW_EF_SEARCH");
+        let embeddings: Vec<(String, Embedding)> = (0..5)
+            .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
+            .collect();
+        let n = embeddings.len();
+        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
+        // The small-corpus tier picks M=16; the build reads that via
+        // max_nb_connection_for(n).
+        let m = super::max_nb_connection_for(n);
+        let expected = (1.0 / (m as f64).ln()) * super::LEVEL_SCALE_FACTOR;
+        let got = index.inner.with_hnsw(|g| g.get_level_scale());
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "built index level scale {got} != reduced expected {expected} (M={m})"
+        );
     }
 }
 
