@@ -1,6 +1,6 @@
 ---
 name: red-team
-description: Adversarial security audit of cqs — fans out red-team-auditor agents across 5 categories (RT-INJ/RT-FS/RT-RES/RT-DATA/RT-RELAY), attacker mindset, run-the-attack PoC + regression guard.
+description: Adversarial security audit of cqs — fans out red-team-auditor agents across 6 categories (RT-INJ/RT-FS/RT-RES/RT-DATA/RT-RELAY/RT-EXFIL), attacker mindset, run-the-attack PoC + regression guard.
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ This skill is the orchestrator. **The contract — threat model, two attack vect
 
 ## Arguments
 
-- (none) — runs all 5 categories
+- (none) — runs all 6 categories
 
 ## Process
 
@@ -57,6 +57,11 @@ This skill is the orchestrator. **The contract — threat model, two attack vect
 **Key question:** can adversarial content already in the corpus (a contributor's comment, an upstream dependency, a `cqs ref add` source, a developer note, an LLM summary) manipulate the consuming agent? This is SECURITY.md's longest section and the reason the trust-signal suite exists.
 **Targets:** indirect prompt-injection payloads surviving the relay without `injection_flags` firing or `CQS_TRUST_DELIMITERS` wrapping; forging a trust signal (`trust_level: user-code` on vendored/ref content, fake `note_boost`, mislabelled `edge_kind`); `validate_summary` bypass on the LLM-summary path; making `suggest`/`dead` recommend a harmful action (e.g. deleting live code) to an agent that acts on it; ranked-result poisoning that blends untrusted content as trusted.
 **Files:** `src/vendored.rs`, `src/cli/json_envelope.rs`, `src/llm/validation.rs`, `src/store/notes.rs`, `src/search/` (RRF blending + rank_signals), `src/cli/batch/handlers/search.rs`, `src/note.rs`.
+
+### RT-EXFIL — Data Egress / Privacy (the dual oracle)
+**Key question:** does data flow OUT beyond its PRIVACY.md-declared boundary — no adversary required, just an honest leak? The other categories check intrusion *inward*; this checks egress *outward*. The boundary held when nothing leaves beyond what was declared.
+**Targets:** the LLM-summary Batches API payload — does `cqs index --llm-summaries` send only the chunk to Anthropic, or more (the whole file, neighbouring context)?; `tracing` spans/events logging chunk content, full paths, or secrets that persist; `cqs telemetry` recording query text / content; error-message content leaking paths/content to a socket client (verify the redacted `err-<id>` discipline holds on EVERY error path, not just the overlay one); the embeddings/summary caches persisting content beyond intent.
+**Files:** `src/llm/` (Batches client + exactly what it sends), `src/cli/watch/` (daemon logging), the telemetry module, `src/cli/json_envelope.rs` (error redaction), `src/store/` (cache contents).
 
 ## Notes
 
