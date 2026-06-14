@@ -1058,6 +1058,7 @@ mod tests {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
                 verdict: None,
+                overlay: Default::default(),
             },
             output: TextJsonArgs { json: false },
         };

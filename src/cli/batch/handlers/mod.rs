@@ -97,17 +97,31 @@ pub(super) fn attach_overlay_graph_meta(value: &mut serde_json::Value) {
 }
 
 /// Inject the `_meta.overlay_graph = "full"` marker (#1858 Part B). Called by
-/// the call-graph dispatchers (`callers` / `callees`) when the worktree overlay
-/// shadowed the graph query ITSELF — the result reflects the worktree delta, not
-/// just the seed. Distinguished from the `"seed-only"` marker so a consumer can
-/// tell a fully-overlaid graph answer from a scout/gather answer whose seed was
+/// the call-graph dispatchers (`callers` / `callees` / `dead`) when the worktree
+/// overlay shadowed the graph query ITSELF and the ENTIRE answer reflects the
+/// worktree delta — not just the seed, and not just one section. `dead`'s answer
+/// is fully determined by the merged caller graph (no transitive/test sections),
+/// so it earns `"full"`. Distinguished from `"seed-only"` so a consumer can tell
+/// a fully-overlaid graph answer from a scout/gather answer whose seed was
 /// overlaid but whose BFS expansion stayed on parent-truth.
 pub(super) fn attach_overlay_graph_meta_full(value: &mut serde_json::Value) {
     attach_overlay_graph_marker(value, "full");
 }
 
-/// Shared writer for the `_meta.overlay_graph` marker. The two named wrappers
-/// pin the only two valid values (`"seed-only"`, `"full"`) at their call sites.
+/// Inject the `_meta.overlay_graph = "callers-only"` marker (#1858 Part B).
+/// Called by `dispatch_impact`: impact's direct-`callers` section reflects the
+/// worktree delta, but its affected-tests, transitive-caller, and type-impacted
+/// sections stay on parent-truth (a fully-merged call graph is a separate, larger
+/// surface). The honest middle value between `"seed-only"` and `"full"` — it tells
+/// a consumer exactly which section of the impact answer is overlaid, so the
+/// transitive/test sections are NOT mistaken for delta-aware.
+pub(super) fn attach_overlay_graph_meta_callers_only(value: &mut serde_json::Value) {
+    attach_overlay_graph_marker(value, "callers-only");
+}
+
+/// Shared writer for the `_meta.overlay_graph` marker. The three named wrappers
+/// pin the only valid values (`"seed-only"`, `"callers-only"`, `"full"`) at their
+/// call sites.
 fn attach_overlay_graph_marker(value: &mut serde_json::Value, marker: &str) {
     if let Some(obj) = value.as_object_mut() {
         let meta = obj

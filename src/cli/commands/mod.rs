@@ -79,16 +79,16 @@ pub(crate) use graph::parse_edge_kind;
 // site, so they stay internal to the graph module.
 pub(crate) use graph::{
     callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
-    impact_core, impact_cross_core, test_map_core, test_map_cross_core, test_map_max_nodes,
+    impact_cross_core, impact_overlay, test_map_core, test_map_cross_core, test_map_max_nodes,
     trace_core, trace_cross_core, trace_max_nodes, CalleesArgs, CallersCoreArgs, DepsCoreArgs,
     ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
-// The no-overlay callers/callees cores. Production dispatch routes through the
-// `*_overlay` variants above (Part B); these plain entry points are consumed by
-// the parity tests in `batch/handlers/graph.rs`, which assert the no-overlay
+// The no-overlay callers/callees/impact cores. Production dispatch routes through
+// the `*_overlay` variants above (Part B); these plain entry points are consumed
+// by the parity tests in `batch/handlers/graph.rs`, which assert the no-overlay
 // path equals the plain core.
 #[cfg(test)]
-pub(crate) use graph::{callees_core, callers_core};
+pub(crate) use graph::{callees_core, callers_core, impact_core};
 
 // -- review --
 pub(crate) use review::cmd_affected;
@@ -98,9 +98,14 @@ pub(crate) use review::cmd_health;
 pub(crate) use review::cmd_review;
 pub(crate) use review::cmd_suggest;
 pub(crate) use review::{
-    ci_core, dead_core, health_core, review_core, suggest_core, CiArgs, DeadArgs, DeadVerdict,
+    ci_core, dead_overlay, health_core, review_core, suggest_core, CiArgs, DeadArgs, DeadVerdict,
     HealthArgs, ReviewArgs, SuggestArgs,
 };
+// `dead_core` is the no-overlay entry point. Production dispatch routes through
+// `dead_overlay` (Part B); the plain core is consumed only by the parity test in
+// `batch/handlers/analysis.rs`, so the re-export is test-gated.
+#[cfg(test)]
+pub(crate) use review::dead_core;
 
 // -- index --
 pub(crate) use index::build_hnsw_base_index;

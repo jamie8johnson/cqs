@@ -119,6 +119,97 @@ pub fn analyze_impact<Mode>(
     })
 }
 
+/// Worktree-overlay-aware impact analysis (#1858 Part B). Identical to
+/// [`analyze_impact`] when `overlay` is `None`. When `Some`, ONLY the direct
+/// `callers` section reflects the worktree delta — its parent rows whose
+/// call-site origin was edited are masked and the overlay's caller rows are
+/// unioned, the same single-call mask+union `merge_callers` applies to
+/// `cqs callers`. The affected-tests and transitive-caller sections (reverse-BFS
+/// over the parent `CallGraph`) and the type-impacted section (parent
+/// `type_edges`) stay on parent-truth: a fully-merged call graph is a separate,
+/// larger surface, so this PR overlays the primary "who breaks" signal only.
+///
+/// Returns `(result, overlay_participated)`. Participation is true only when the
+/// direct-callers merge actually consulted the delta for THIS target — a parent
+/// caller masked OR ≥1 overlay caller unioned. An active overlay whose delta
+/// touches no caller-origin of this target leaves it `false` (pure parent-truth).
+/// The daemon adapter emits the honest `_meta.overlay_graph = "callers-only"`
+/// marker (NOT `"full"`: tests/transitive/type stay parent-truth) gated on this
+/// bool.
+pub fn analyze_impact_overlay<Mode>(
+    store: &Store<Mode>,
+    target_name: &str,
+    root: &Path,
+    opts: &ImpactOptions,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
+) -> Result<(ImpactResult, bool), AnalysisError> {
+    let _span = tracing::info_span!(
+        "analyze_impact_overlay",
+        target = target_name,
+        depth = opts.depth,
+        include_types = opts.include_types,
+        overlay = overlay.is_some()
+    )
+    .entered();
+
+    // Direct callers: the only overlaid section. `build_caller_info_overlay`
+    // returns the merged set plus the participation bool.
+    let (callers, mut degraded, participated) =
+        build_caller_info_overlay(store, target_name, root, overlay)?;
+
+    // Everything below is parent-truth (BFS over the parent CallGraph / parent
+    // type_edges) — unchanged from `analyze_impact`.
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    let tests = find_affected_tests_with_chunks(
+        &graph,
+        &test_chunks,
+        target_name,
+        DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    )
+    .into_iter()
+    .map(|t| TestInfo {
+        file: rel_path(&t.file, root),
+        ..t
+    })
+    .collect();
+    let transitive_callers = if opts.depth > 1 {
+        let (tc, tc_degraded) =
+            find_transitive_callers(store, &graph, target_name, opts.depth, root)?;
+        if tc_degraded {
+            degraded = true;
+        }
+        tc
+    } else {
+        Vec::new()
+    };
+    let type_impacted = if opts.include_types {
+        match find_type_impacted(store, target_name, root) {
+            Ok(ti) => ti,
+            Err(e) => {
+                tracing::warn!(target = target_name, error = %e, "Failed to compute type-impacted");
+                degraded = true;
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    Ok((
+        ImpactResult {
+            function_name: target_name.to_string(),
+            callers,
+            tests,
+            transitive_callers,
+            type_impacted,
+            type_impacted_truncated: 0,
+            degraded,
+        },
+        participated,
+    ))
+}
+
 /// Build caller detail with call-site snippets.
 /// Batch-fetches all caller chunks in a single query (via `search_by_names_batch`)
 /// to avoid N+1 per-caller `search_by_name` calls.
@@ -162,6 +253,96 @@ fn build_caller_info<Mode>(
     }
 
     Ok((callers, degraded))
+}
+
+/// Project a `CallerWithContext` set to `CallerDetail` with call-site snippets,
+/// fetching snippet chunks from `snippet_store` (the store whose content matches
+/// these callers' bodies). Shared by `build_caller_info_overlay`'s parent and
+/// overlay halves so each half draws snippets from its OWN store — an overlay
+/// caller's snippet must reflect the worktree body, not main's.
+fn project_callers_with_snippets<Mode>(
+    snippet_store: &Store<Mode>,
+    callers_ctx: &[CallerWithContext],
+    root: &Path,
+) -> (Vec<CallerDetail>, bool) {
+    let unique_names: Vec<&str> = {
+        let mut seen = HashSet::new();
+        callers_ctx
+            .iter()
+            .filter(|c| seen.insert(c.name.as_str()))
+            .map(|c| c.name.as_str())
+            .collect()
+    };
+    let (chunks_by_name, degraded) = match snippet_store.search_by_names_batch(&unique_names, 5) {
+        Ok(map) => (map, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch caller chunks for snippets");
+            (HashMap::new(), true)
+        }
+    };
+    let callers = callers_ctx
+        .iter()
+        .map(|caller| CallerDetail {
+            name: caller.name.clone(),
+            file: rel_path(&caller.file, root),
+            line: caller.line,
+            call_line: caller.call_line,
+            snippet: extract_call_snippet_from_cache(&chunks_by_name, caller),
+            edge_kind: caller.edge_kind,
+        })
+        .collect();
+    (callers, degraded)
+}
+
+/// Overlay-aware [`build_caller_info`] (#1858 Part B). With no overlay, byte-for-
+/// byte the same parent result. With an overlay, the direct callers of
+/// `target_name` are merged the same way `cqs callers` is: drop every parent
+/// caller whose call-site origin is in `masked_origins` (its out-edge to the
+/// target may have changed in the worktree), then union every overlay caller
+/// (all from masked origins by construction, so the mask can't double-count).
+///
+/// Snippets are drawn per-half from the correct store — parent callers' snippets
+/// from the parent store, overlay callers' from the overlay store — so an
+/// overlay caller's snippet reflects the worktree body.
+///
+/// Returns `(callers, degraded, participated)`. `participated` is true iff the
+/// merge consulted the delta for this target: a parent caller was masked OR ≥1
+/// overlay caller was unioned. With no overlay it is always false.
+fn build_caller_info_overlay<Mode>(
+    store: &Store<Mode>,
+    target_name: &str,
+    root: &Path,
+    overlay: Option<&crate::worktree_overlay::WorktreeOverlay>,
+) -> Result<(Vec<CallerDetail>, bool, bool), StoreError> {
+    let parent_ctx = store.get_callers_with_context(target_name)?;
+
+    let Some(ov) = overlay else {
+        let (callers, degraded) = project_callers_with_snippets(store, &parent_ctx, root);
+        return Ok((callers, degraded, false));
+    };
+
+    // Mask: drop parent callers whose call-site origin is in the delta.
+    let masked_any = parent_ctx
+        .iter()
+        .any(|c| ov.masked_origins.contains(&c.file));
+    let kept_parent: Vec<CallerWithContext> = parent_ctx
+        .into_iter()
+        .filter(|c| !ov.masked_origins.contains(&c.file))
+        .collect();
+
+    // Union: the overlay's callers for the target (all from masked origins).
+    let overlay_ctx = ov.store.get_callers_with_context(target_name)?;
+    let participated = masked_any || !overlay_ctx.is_empty();
+
+    // Project each half against its own store so snippets match the body that
+    // produced the edge.
+    let (mut callers, mut degraded) = project_callers_with_snippets(store, &kept_parent, root);
+    let (overlay_callers, overlay_degraded) =
+        project_callers_with_snippets(&ov.store, &overlay_ctx, root);
+    callers.extend(overlay_callers);
+    degraded = degraded || overlay_degraded;
+
+    Ok((callers, degraded, participated))
 }
 
 /// Extract a snippet around the call site using pre-fetched chunk data.

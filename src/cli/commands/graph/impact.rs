@@ -13,8 +13,8 @@ use anyhow::Result;
 
 use cqs::store::{ReadOnly, Store};
 use cqs::{
-    analyze_impact, format_test_suggestions, impact_to_json, impact_to_mermaid, suggest_tests,
-    ImpactOptions, ImpactResult, TestSuggestion,
+    analyze_impact_overlay, format_test_suggestions, impact_to_json, impact_to_mermaid,
+    suggest_tests, ImpactOptions, ImpactResult, TestSuggestion,
 };
 
 use super::notes_text;
@@ -128,22 +128,58 @@ pub(crate) fn impact_core(
     root: &std::path::Path,
     args: &ImpactArgs,
 ) -> Result<ImpactCoreOutput> {
-    let _span = tracing::info_span!("impact_core", name = %args.name, limit = args.limit).entered();
+    // Plain entry point: no overlay. The full impact logic lives in
+    // [`impact_overlay`]; this delegates with `None` so the CLI / eval / tests
+    // are byte-unchanged (participation is discarded).
+    Ok(impact_overlay(store, root, args, None)?.0)
+}
+
+/// Overlay-aware core for `cqs impact <name>` (single-project, #1858 Part B).
+///
+/// Identical to [`impact_core`] when `overlay` is `None`. When `Some`, ONLY the
+/// direct-`callers` section reflects the worktree delta (via the same
+/// `merge_callers` mask+union `cqs callers` uses); the affected-tests,
+/// transitive-caller, and type-impacted sections stay on parent-truth (a
+/// fully-merged call graph is a separate, larger surface). Because the answer is
+/// therefore only PARTIALLY overlaid, the daemon adapter emits the honest
+/// `_meta.overlay_graph = "callers-only"` marker — NOT `"full"` — when this
+/// returns `participated == true`.
+///
+/// Returns `(output, overlay_participated)`. Participation is true only when the
+/// direct-callers merge consulted the delta for THIS target (a parent caller
+/// masked OR ≥1 overlay caller unioned). The kind-fallback early-return (the
+/// kind is classified from the parent store, so the verdict never reflects the
+/// overlay) reports `false`, as does every no-overlay call.
+pub(crate) fn impact_overlay(
+    store: &Store<ReadOnly>,
+    root: &std::path::Path,
+    args: &ImpactArgs,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
+) -> Result<(ImpactCoreOutput, bool)> {
+    let _span =
+        tracing::info_span!("impact_overlay", name = %args.name, limit = args.limit).entered();
     let depth = args.depth.clamp(1, crate::cli::IMPACT_DEPTH_CAP);
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
+    // Kind detection is classified from the parent store, so a fallback verdict
+    // never reflects the overlay — parent-truth, report `false`.
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::impact(fk);
-        return Ok(ImpactCoreOutput::Fallback(KindFallbackOutput::new(
-            &args.name, &chunks, fk, "impact", &text,
-        )));
+        return Ok((
+            ImpactCoreOutput::Fallback(KindFallbackOutput::new(
+                &args.name, &chunks, fk, "impact", &text,
+            )),
+            false,
+        ));
     }
 
-    // Resolve target + run shared impact analysis.
+    // Resolve target + run shared impact analysis. The overlay (when present)
+    // merges ONLY the direct-callers section; `participated` records whether it
+    // changed that section for this target.
     let resolved = resolve_target(store, &args.name)?;
     let chunk = resolved.chunk;
-    let mut result = analyze_impact(
+    let (mut result, participated) = analyze_impact_overlay(
         store,
         &chunk.name,
         root,
@@ -151,10 +187,12 @@ pub(crate) fn impact_core(
             depth,
             include_types: args.include_types,
         },
+        overlay,
     )?;
 
-    // Compute suggestions BEFORE truncation so the engine sees every
-    // untested caller, not just the first N.
+    // Compute suggestions BEFORE truncation so the engine sees every untested
+    // caller — including the overlay's newly-merged callers — not just the
+    // first N. (`suggest_tests` reads `result.callers`, which is the merged set.)
     let suggestions = if args.suggest_tests {
         suggest_tests(store, &result, root)
     } else {
@@ -163,11 +201,14 @@ pub(crate) fn impact_core(
 
     truncate_impact_sections(&mut result, limit);
 
-    Ok(ImpactCoreOutput::Function {
-        result,
-        suggestions,
-        suggest_tests: args.suggest_tests,
-    })
+    Ok((
+        ImpactCoreOutput::Function {
+            result,
+            suggestions,
+            suggest_tests: args.suggest_tests,
+        },
+        participated,
+    ))
 }
 
 // ─── Cross-project core ──────────────────────────────────────────────────────

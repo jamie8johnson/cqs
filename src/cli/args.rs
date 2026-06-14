@@ -346,6 +346,10 @@ pub(crate) struct ImpactArgs {
     /// type_impacted). Defaults to 5 to match the top-level `Cli`.
     #[command(flatten)]
     pub limit_arg: LimitArg,
+    /// Worktree-overlay tri-state for the direct-callers section (#1858 Part B).
+    /// Built daemon-side only (phase 1); the CLI-direct adapter ignores it.
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `scout` and batch `scout`.
@@ -406,6 +410,11 @@ pub(crate) struct DeadArgs {
     /// actionable residue. Omit for all verdicts.
     #[arg(long, value_name = "VERDICT")]
     pub verdict: Option<String>,
+    /// Worktree-overlay tri-state for the merged-graph dead computation (#1858
+    /// Part B). Built daemon-side only (phase 1); the CLI-direct adapter ignores
+    /// it.
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `similar` and batch `similar`.

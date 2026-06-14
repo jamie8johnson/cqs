@@ -29,7 +29,13 @@ pub(in crate::cli::batch) fn dispatch_dead(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_dead").entered();
 
-    // Thin adapter over the shared `dead_core` — identical JSON shape across
+    // See `dispatch_callers`: clear leftover per-thread overlay meta before any
+    // branch can return, so a reused daemon worker never leaks a prior query's
+    // `_meta.worktree_overlay`. (`resolve_graph_overlay` clears it too, but
+    // clearing first keeps the discipline uniform across handlers.)
+    cqs::worktree_overlay::clear_overlay_meta();
+
+    // Thin adapter over the shared `dead_overlay` — identical JSON shape across
     // the CLI and daemon surfaces.
     let verdict = match args.verdict.as_deref() {
         None => None,
@@ -42,8 +48,25 @@ pub(in crate::cli::batch) fn dispatch_dead(
         min_confidence: args.min_confidence,
         verdict,
     };
-    let output = crate::cli::commands::dead_core(&ctx.store(), &ctx.root, &core_args)?;
-    Ok(serde_json::to_value(&output)?)
+    // Resolve the worktree overlay (Part B): recomputes the dead set over the
+    // merged caller graph. `None` ⇒ parent-truth (the default).
+    let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
+    let (output, overlay_participated) = crate::cli::commands::dead_overlay(
+        &ctx.store(),
+        &ctx.root,
+        &core_args,
+        overlay.as_deref(),
+    )?;
+    let mut value = serde_json::to_value(&output)?;
+    if overlay_participated {
+        // `dead`'s answer is fully determined by the merged caller graph (no
+        // transitive/test/type sections), so `"full"` is honest here. Gated on
+        // participation, not `overlay.is_some()`: a dirty worktree whose delta
+        // flips no dead verdict returns the parent dead set untouched and carries
+        // NO marker.
+        super::attach_overlay_graph_meta_full(&mut value);
+    }
+    Ok(value)
 }
 
 /// Dispatches a request to identify stale and missing files in the batch store.
@@ -306,6 +329,7 @@ mod parity_tests {
                 include_pub: false,
                 min_confidence: DeadConfidence::Low,
                 verdict: None,
+                overlay: Default::default(),
             },
         )
         .expect("dispatch_dead");
