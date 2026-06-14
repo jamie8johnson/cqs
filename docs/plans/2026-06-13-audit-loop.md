@@ -30,6 +30,8 @@ The loop is three roles, and conflating them — calling the whole thing "the go
 
 **Cost factoring (decide — Q13).** An expensive conductor in a *perpetual* hot loop is the cost commitment: you pay conductor-tier every cycle, forever. Two shapes: **(a) one expensive orchestrator** does dispatch+triage+disposition every cycle (simple, pricier); **(b) tiered** — a *cheap* per-cycle dispatcher (mostly mechanical once the governor's deterministic priority picks the cell) + the *expensive* conductor only on strategic ticks (triage a cluster, re-tune, escalate, dispose of the hard findings). (b) spends the money on judgment instead of dispatch plumbing; the governor bounds either.
 
+**The real cost isn't the model tier — it's the human's attention.** Model tokens (even Fable's) are the rounding error; the most expensive orchestrator in the loop is the *user*, and right now they sit in the per-cycle conductor seat (approving staffings, gating each land). So the factory's first-order optimization is **minimize user-touchpoints per cycle, not model spend.** Apply the role split to the user too: spend them in the rare *strategist* seat (which auditors exist, the auto-land aggressiveness, "is this a real new null") and evict them from the *conductor* seat — the model becomes the conductor, the code the governor, the user the exception-handler who reads a digest. The eviction has a prerequisite: the user only leaves the hot loop once the conductor+governor are trustworthy enough to trust the auto-closed set — which is precisely what test-firing every auditor + the durable-guard discipline earns. Building the factory is the user paying attention now to buy their attention back later.
+
 **This loop is already running, by hand.** The #1826 arc — dispatching the auditor trio, test-firing each new auditor, running the gate batteries, managing the fix-rounds, landing, tracking in tears — *is* the orchestrator role, performed manually by the autonomous `/loop`. audit-loop = specialize that loop, give it a coverage ledger + a budget leash, let the conductor self-task.
 
 ## Engine: invalidation, not perpetual re-sweep
@@ -78,8 +80,8 @@ Already have: the orchestrator-by-hand (the autonomous `/loop`), the workers (th
 9. **Lab component**: in v1 or deferred? How/when does it probe for new shapes vs run existing?
 10. **Relationship to `/audit` (16-category) and `/idle`**: subsume, complement, or a mode of `/idle`?
 11. **Pause/scope control**: how does the user pause/resume or scope it ("only `src/store` this week")?
-12. **Success metric**: matrix % green? guards added/week? bugs caught pre-merge vs post-? false-positive rate?
-13. **Cost factoring** (see Roles): one expensive orchestrator per cycle (simple, pricier) vs tiered cheap-dispatcher + expensive-conductor-only-on-strategic-ticks (money on judgment, not dispatch plumbing)? Decides where the expensive model actually runs.
+12. **Success metric** — denominated in the scarcest resource, the user's attention: **fraction of cycles requiring a human → 0**, user-touchpoints per real bug caught. (Secondary: matrix % green, guards added/week, bugs caught pre-merge vs post-, false-positive rate.)
+13. **Cost factoring** (see Roles): the first-order cost is *user-touchpoints*, not model tier — optimize for evicting the user from the per-cycle seat. Second-order: one expensive orchestrator per cycle (simple, pricier in tokens) vs tiered cheap-dispatcher + expensive-conductor-only-on-strategic-ticks. Decides where both the expensive model AND the human actually run.
 
 ## Prerequisite already in place
 
