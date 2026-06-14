@@ -306,6 +306,31 @@ impl Store<ReadWrite> {
         })
     }
 
+    /// Insert the file's low-confidence `candidate_edges` (Lane 2), wholesale.
+    ///
+    /// Symmetric sibling of [`Store::upsert_function_calls`]: refreshes one
+    /// file's candidate set (DELETE WHERE file = ? then INSERT the current rows)
+    /// in its own transaction. `file` is normalized once at the call site so the
+    /// DELETE scope and the inserted rows' `file` column cannot disagree.
+    /// Candidates are a SEPARATE table never joined by a graph query, so writing
+    /// here can never pollute the caller graph; they feed only the `cqs dead`
+    /// low-confidence-live consult.
+    pub fn upsert_candidate_edges(
+        &self,
+        file: &Path,
+        candidates: &[crate::parser::CandidateSite],
+    ) -> Result<(), StoreError> {
+        let _span =
+            tracing::info_span!("upsert_candidate_edges", count = candidates.len()).entered();
+        let file_str = crate::normalize_path(file);
+        self.rt.block_on(async {
+            let (_guard, mut tx) = self.begin_write().await?;
+            write_candidate_edges_in_tx(&mut tx, &file_str, candidates).await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
     /// Insert function calls for multiple files in a single transaction.
     ///
     /// Mirrors the `upsert_type_edges_for_files` pattern. Calling

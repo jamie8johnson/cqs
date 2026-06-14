@@ -212,15 +212,23 @@ impl<Mode> Store<Mode> {
     /// (not heuristic) nor disqualifies (not trusted) a callee, so a function
     /// reached only by a doc reference plus a macro edge still surfaces.
     ///
-    /// This returns the heuristic-caller BREAKDOWN (kind + count per callee)
-    /// used to render the `low-confidence-live` verdict reason string. The
-    /// matching CHUNK population is fetched by
-    /// [`Store::find_low_confidence_live_functions`] (same heuristic-only
-    /// predicate) and unioned into the `cqs dead` report by `dead_core`;
-    /// `fetch_uncalled_functions` holds the disjoint strict zero-edge contract,
-    /// so the two populations never overlap. The kind-sets are generated from
-    /// `CallEdgeKind` rather than a lexical comparison, so a new kind cannot
-    /// drift out of sync.
+    /// This returns the low-confidence-live BREAKDOWN (kind + count per callee)
+    /// used to render the `low-confidence-live` verdict reason string. It folds
+    /// TWO populations into the same map, both restricted to callees with NO
+    /// trusted `function_calls` edge:
+    /// * heuristic `function_calls` edges (`macro_heuristic` / `fn_pointer`) →
+    ///   `total` + `kind_counts`,
+    /// * `candidate_edges` (Lane 2) references → `candidate_total` +
+    ///   `candidate_counts`.
+    ///
+    /// The matching CHUNK population is fetched by
+    /// [`Store::find_low_confidence_live_functions`] (same predicate) and unioned
+    /// into the `cqs dead` report by `dead_core`; `fetch_uncalled_functions`
+    /// holds the disjoint strict zero-evidence contract, so the two populations
+    /// never overlap. The `function_calls` kind-sets are generated from
+    /// `CallEdgeKind` rather than a lexical comparison, so a new edge kind cannot
+    /// drift out of sync; candidate kinds are reported transparently from the
+    /// side-table rows so a new Lane-2 kind surfaces with no query change.
     pub fn find_low_confidence_live_names(
         &self,
     ) -> Result<std::collections::HashMap<String, LowConfidenceLiveInfo>, StoreError> {
@@ -231,7 +239,7 @@ impl<Mode> Store<Mode> {
         // trusted edge. Grouping by kind too lets the verdict reason name the
         // heuristic kinds and their counts. The outer trusted-edge exclusion is
         // applied per callee via the windowed SUM in the HAVING-style subquery.
-        let sql = format!(
+        let heuristic_sql = format!(
             "SELECT callee_name, edge_kind, COUNT(*) AS n
              FROM function_calls
              WHERE edge_kind IN ({heuristic})
@@ -242,21 +250,52 @@ impl<Mode> Store<Mode> {
                )
              GROUP BY callee_name, edge_kind"
         );
+        // Per (callee, candidate kind) count over the `candidate_edges`
+        // side-table (Lane 2), restricted to callees with NO trusted
+        // `function_calls` edge. A callee that already has a trusted edge is
+        // genuinely live and must NOT be relabeled low-confidence-live, so the
+        // same trusted-exclusion subquery gates the candidate counts. A
+        // candidate-only callee has zero `function_calls` rows, so the
+        // `NOT EXISTS` (rather than the heuristic query's `IN` over a
+        // function_calls-derived set) is what admits it.
+        let candidate_sql = format!(
+            "SELECT callee_name, candidate_kind, COUNT(*) AS n
+             FROM candidate_edges ce
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM function_calls fc
+                   WHERE fc.callee_name = ce.callee_name
+                     AND fc.edge_kind IN ({trusted}) LIMIT 1
+               )
+             GROUP BY callee_name, candidate_kind"
+        );
         self.rt.block_on(async {
-            let rows: Vec<(String, String, i64)> =
-                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-                    .fetch_all(&self.pool)
-                    .await?;
             let mut out: std::collections::HashMap<String, LowConfidenceLiveInfo> =
                 std::collections::HashMap::new();
-            for (name, kind, n) in rows {
+
+            let heuristic_rows: Vec<(String, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(heuristic_sql.as_str()))
+                    .fetch_all(&self.pool)
+                    .await?;
+            for (name, kind, n) in heuristic_rows {
                 let info = out.entry(name).or_default();
                 info.total += n.max(0) as u64;
                 info.kind_counts.push((kind, n.max(0) as u64));
             }
+
+            let candidate_rows: Vec<(String, String, i64)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(candidate_sql.as_str()))
+                    .fetch_all(&self.pool)
+                    .await?;
+            for (name, kind, n) in candidate_rows {
+                let info = out.entry(name).or_default();
+                info.candidate_total += n.max(0) as u64;
+                info.candidate_counts.push((kind, n.max(0) as u64));
+            }
+
             // Stable kind order for deterministic reason strings.
             for info in out.values_mut() {
                 info.kind_counts.sort();
+                info.candidate_counts.sort();
             }
             Ok(out)
         })
@@ -295,6 +334,16 @@ impl<Mode> Store<Mode> {
         // via `fetch_heuristic_only_callees` and relabels it
         // `low-confidence-live` — an additive overlay on the `dead` surface only,
         // never a mutation of this shared candidate set.
+        //
+        // A `candidate_edges` (Lane 2) reference is also NOT real death: a bare
+        // fn-pointer / macro arg or a serde container/with-module linkage that
+        // the confident extractor declined to resolve into a `function_calls`
+        // edge still points at this function. So a callee PRESENT in
+        // `candidate_edges` is excluded here (it is low-confidence-live, surfaced
+        // by `fetch_heuristic_only_callees`) — the truly-dead set requires zero
+        // real `function_calls` edges AND zero candidate references. This keeps
+        // truly-dead and low-confidence-live DISJOINT with candidates added: a
+        // candidate-only callee leaves this set and enters the other.
         let real_callers = crate::parser::CallEdgeKind::real_caller_kinds_sql();
         let sql = format!(
             "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
@@ -306,21 +355,33 @@ impl<Mode> Store<Mode> {
                AND NOT EXISTS (SELECT 1 FROM function_calls fc \
                                WHERE fc.callee_name = c.name \
                                  AND fc.edge_kind IN ({real_callers}) LIMIT 1)
+               AND NOT EXISTS (SELECT 1 FROM candidate_edges ce \
+                               WHERE ce.callee_name = c.name LIMIT 1)
                AND c.parent_id IS NULL
              ORDER BY c.origin, c.line_start"
         );
         Self::light_chunks_from_query(&sql, &self.pool).await
     }
 
-    /// Phase 1 (low-confidence-live): query callable chunks reached by ≥1
-    /// heuristic edge (`macro_heuristic`, `fn_pointer`) and NO trusted edge
-    /// (`call`, `serde_callback`). Same Tier-1 noise filters as
+    /// Phase 1 (low-confidence-live): query callable chunks that have NO trusted
+    /// edge (`call`, `serde_callback`) and at least one of: a heuristic
+    /// `function_calls` edge (`macro_heuristic` / `fn_pointer`), OR a
+    /// `candidate_edges` (Lane 2) reference. A candidate-ONLY callee — zero
+    /// `function_calls` edges, present only in the side-table — enters here via
+    /// the candidate `EXISTS` arm. Same Tier-1 noise filters as
     /// `fetch_uncalled_functions` (Property exclusion, doc-path exclusion,
     /// top-level only). The heuristic and trusted kind-sets are generated from
     /// `CallEdgeKind` (single source), so a new edge kind updates both surfaces
     /// at once. `doc_reference` edges are inert: they neither qualify (not
     /// heuristic) nor disqualify (not trusted), matching
     /// [`Store::find_low_confidence_live_names`].
+    ///
+    /// Disjointness with `fetch_uncalled_functions` (truly-dead) is preserved
+    /// with candidates added: truly-dead requires zero real `function_calls`
+    /// edges AND zero candidate references; this set requires (heuristic edge OR
+    /// candidate) AND zero trusted edge. The two predicates are mutually
+    /// exclusive — a callee with any candidate is excluded from truly-dead and
+    /// admitted here, with no overlap.
     async fn fetch_heuristic_only_callees(&self) -> Result<Vec<LightChunk>, StoreError> {
         let callable = ChunkType::callable_sql_list();
         let doc_path_excludes = dead_doc_path_excludes_sql();
@@ -333,9 +394,11 @@ impl<Mode> Store<Mode> {
              WHERE c.chunk_type IN ({callable})
                AND c.chunk_type != 'property'
                {doc_path_excludes}
-               AND EXISTS (SELECT 1 FROM function_calls fc \
-                           WHERE fc.callee_name = c.name \
-                             AND fc.edge_kind IN ({heuristic}) LIMIT 1)
+               AND (EXISTS (SELECT 1 FROM function_calls fc \
+                            WHERE fc.callee_name = c.name \
+                              AND fc.edge_kind IN ({heuristic}) LIMIT 1)
+                    OR EXISTS (SELECT 1 FROM candidate_edges ce \
+                               WHERE ce.callee_name = c.name LIMIT 1))
                AND NOT EXISTS (SELECT 1 FROM function_calls fc \
                                WHERE fc.callee_name = c.name \
                                  AND fc.edge_kind IN ({trusted}) LIMIT 1)
@@ -514,23 +577,45 @@ impl<Mode> Store<Mode> {
         Ok(filtered)
     }
 
-    /// Phase 1.6: drop Rust functions that are referenced only as serde
-    /// string callbacks. serde's derive macros accept function paths as
-    /// attribute string literals:
+    /// Phase 1.6: drop Rust functions referenced only by the serde-callback keys
+    /// the parser's confident pass and Lane-2 candidate emit do NOT cover —
+    /// `skip_serializing` / `skip_deserializing`, plus `with = "..."`. serde's
+    /// derive macros accept function paths as attribute string literals:
     ///
     /// ```ignore
-    /// #[serde(default = "default_ref_weight")]
-    /// #[serde(skip_serializing_if = "is_zero_u32")]
-    /// #[serde(serialize_with = "crate::serialize_path_normalized")]
+    /// #[serde(skip_serializing = "is_zero_u32")]
+    /// #[serde(skip_deserializing = "always_zero")]
     /// #[serde(with = "some::module")]
     /// ```
+    ///
+    /// **Retirement (candidate-edge campaign Lane 3).** This pass was the sole
+    /// backstop for every serde-callback key. Now that the parser emits
+    /// `function_calls` edges (FIELD-level `default` / `serialize_with` /
+    /// `deserialize_with` / `skip_serializing_if` / `getter` / `with` → a
+    /// `serde_callback` edge) AND `candidate_edges` (CONTAINER-level callbacks →
+    /// `serde_container`; `with = "module"` inner fns → `serde_with_module`),
+    /// and `fetch_uncalled_functions` excludes any callee present in
+    /// `candidate_edges`, those callbacks never reach this filter — their callee
+    /// is gone from the dead-candidate list before Phase 1.6 runs. So those keys
+    /// were RETIRED from the regex below.
+    ///
+    /// **What remains, and why (no dead-code coverage lost):**
+    /// - `skip_serializing` / `skip_deserializing` — NOT in the parser's
+    ///   `SERDE_CALLBACK_RE`, so neither the confident pass nor the candidate
+    ///   pass emits anything for them. This filter is their only keep-alive.
+    /// - `with` — retained as a deliberate same-name keep: a `with = "module"`
+    ///   linkage whose terminal segment (`module`) happens to also be a real
+    ///   function name in the corpus stays live here even on a path/index state
+    ///   where the per-file candidate emit did not record it. The confident pass
+    ///   already keeps the field-level case; this preserves the corpus-wide
+    ///   backstop for the terminal-name match.
     ///
     /// The derived (de)serializer calls these at runtime, but the reference
     /// lives in an attribute string the call-graph walker never resolves into
     /// an edge. So the callbacks look uncalled. This pass scans every chunk's
-    /// content for serde-shaped attribute strings, extracts the terminal path
-    /// segment of each (`crate::a::b::f` → `f`), and drops any Rust function
-    /// candidate whose name matches.
+    /// content for the remaining serde-shaped attribute strings, extracts the
+    /// terminal path segment of each (`crate::a::b::f` → `f`), and drops any Rust
+    /// function candidate whose name matches.
     ///
     /// Contract details (mirrors `filter_invoked_macros`):
     /// - **Functions only.** serde callbacks are free functions / associated
@@ -571,15 +656,21 @@ impl<Mode> Store<Mode> {
             return Ok(candidates);
         }
 
-        // Matches serde-shaped callback attributes and captures the quoted
-        // path: `default = "..."`, `with = "..."`, `serialize_with = "..."`,
-        // `deserialize_with = "..."`, `skip_serializing_if = "..."`,
-        // `bound = "..."` is excluded (it names types/where-clauses, not fns).
+        // Matches ONLY the serde-callback keys the parser emit does not cover
+        // (the rest were retired in Lane 3 — see this fn's doc comment):
+        // `skip_serializing = "..."`, `skip_deserializing = "..."`, and
+        // `with = "..."` (the corpus-wide same-name backstop). `default` /
+        // `serialize_with` / `deserialize_with` / `skip_serializing_if` /
+        // `getter` are now covered by confident `serde_callback` edges +
+        // `serde_container` candidates, so they are intentionally absent.
+        // `skip_serializing_if` must NOT be re-added: it shares a prefix with
+        // `skip_serializing`, but the `\s*=` anchor keeps them disjoint (a
+        // `skip_serializing_if = "x"` has `_if` between the key and `=`, so it
+        // never matches the bare `skip_serializing` alternative). `bound = "..."`
+        // stays excluded (it names types/where-clauses, not fns).
         static SERDE_CALLBACK_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(
-                r#"(?:default|with|serialize_with|deserialize_with|skip_serializing_if|skip_serializing|skip_deserializing|getter)\s*=\s*"([^"]+)""#,
-            )
-            .expect("hardcoded serde-callback regex")
+            Regex::new(r#"(?:with|skip_serializing|skip_deserializing)\s*=\s*"([^"]+)""#)
+                .expect("hardcoded serde-callback regex")
         });
 
         let mut dropped: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -1530,16 +1621,43 @@ mod tests {
         }
     }
 
-    /// A function referenced only via `#[serde(default = "name")]` is reached
-    /// by the derive-generated deserializer, not a syntactic call. It must be
-    /// dropped from dead candidates when another chunk's content names it in a
-    /// serde attribute.
+    /// Helper: seed a confident `serde_callback` `function_calls` edge naming
+    /// `callee` (terminal segment), as the parser's `extract_serde_callback_calls`
+    /// pass emits for a FIELD-level serde callback. This is the post-Lane-3
+    /// keep-alive mechanism for `default` / `serialize_with` / `deserialize_with`
+    /// / `skip_serializing_if` / `getter` — they were retired from
+    /// `filter_serde_callbacks` because the parser now records them as edges.
+    fn seed_serde_callback_edge(
+        store: &Store<crate::store::ReadWrite>,
+        caller_file: &str,
+        callee: &str,
+    ) {
+        use crate::parser::{CallEdgeKind, CallSite, FunctionCalls};
+        store
+            .upsert_function_calls(
+                std::path::Path::new(caller_file),
+                &[FunctionCalls {
+                    name: "__serde_derive__".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: callee.to_string(),
+                        line_number: 1,
+                        kind: CallEdgeKind::SerdeCallback,
+                    }],
+                }],
+            )
+            .unwrap();
+    }
+
+    /// FIELD-level `#[serde(default = "name")]` is kept live by the parser's
+    /// confident `serde_callback` edge (a trusted real-caller), NOT by
+    /// `filter_serde_callbacks` — `default` was retired from the filter in
+    /// Lane 3. Seeding that edge keeps the callback out of the dead set.
     #[test]
-    fn test_serde_default_callback_dropped_from_dead() {
+    fn test_serde_default_callback_kept_live_by_edge() {
         let (store, _dir) = setup_store();
         let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
 
-        // The callback function — never called with `()`.
         let cb = rust_fn_chunk(
             "src/config.rs:1",
             "src/config.rs",
@@ -1547,16 +1665,9 @@ mod tests {
             "fn default_ref_weight() -> f32 { 1.0 }",
         );
         store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
-
-        // A struct chunk whose field references it via serde attribute.
-        let user = rust_fn_chunk(
-            "src/config.rs:10",
-            "src/config.rs",
-            "RefConfig",
-            "#[derive(serde::Deserialize)] struct RefConfig { \
-             #[serde(default = \"default_ref_weight\")] weight: f32 }",
-        );
-        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+        // The confident pass would emit this serde_callback edge for the
+        // field-level `#[serde(default = "default_ref_weight")]`.
+        seed_serde_callback_edge(&store, "src/config.rs", "default_ref_weight");
 
         let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
         let names: Vec<&str> = confident
@@ -1566,14 +1677,16 @@ mod tests {
             .collect();
         assert!(
             !names.contains(&"default_ref_weight"),
-            "serde default callback must be filtered from dead candidates: {names:?}"
+            "field-level serde default callback must stay live via the \
+             serde_callback edge (filter coverage retired in Lane 3): {names:?}"
         );
     }
 
-    /// `skip_serializing_if = "is_zero_u32"` is a predicate callback. Same
-    /// contract as `default`.
+    /// FIELD-level `skip_serializing_if = "is_zero_u32"` is a predicate callback,
+    /// kept live by the confident `serde_callback` edge (retired from the filter
+    /// in Lane 3).
     #[test]
-    fn test_serde_skip_serializing_if_callback_dropped() {
+    fn test_serde_skip_serializing_if_callback_kept_live_by_edge() {
         let (store, _dir) = setup_store();
         let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
 
@@ -1584,15 +1697,7 @@ mod tests {
             "fn is_zero_u32(v: &u32) -> bool { *v == 0 }",
         );
         store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
-
-        let user = rust_fn_chunk(
-            "src/model.rs:5",
-            "src/model.rs",
-            "Model",
-            "#[derive(serde::Serialize)] struct Model { \
-             #[serde(skip_serializing_if = \"is_zero_u32\")] count: u32 }",
-        );
-        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+        seed_serde_callback_edge(&store, "src/model.rs", "is_zero_u32");
 
         let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
         let names: Vec<&str> = confident
@@ -1602,15 +1707,17 @@ mod tests {
             .collect();
         assert!(
             !names.contains(&"is_zero_u32"),
-            "serde skip_serializing_if callback must be filtered: {names:?}"
+            "field-level serde skip_serializing_if callback must stay live via \
+             the serde_callback edge (filter coverage retired in Lane 3): {names:?}"
         );
     }
 
-    /// Path-qualified callbacks (`serialize_with = "crate::a::b::f"`) resolve
-    /// to a function keyed by its bare terminal segment. The filter must match
-    /// on `f`, not the full path.
+    /// Path-qualified `serialize_with = "crate::a::b::f"` resolves to the bare
+    /// terminal segment `f` — the parser's confident pass emits a `serde_callback`
+    /// edge keyed by the terminal segment, keeping `f` live (retired from the
+    /// filter in Lane 3).
     #[test]
-    fn test_serde_path_qualified_callback_matches_terminal_segment() {
+    fn test_serde_path_qualified_callback_kept_live_by_terminal_edge() {
         let (store, _dir) = setup_store();
         let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
 
@@ -1621,13 +1728,99 @@ mod tests {
             "pub fn serialize_path_normalized() {}",
         );
         store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+        // The confident pass keys the edge by the terminal segment.
+        seed_serde_callback_edge(&store, "src/ref.rs", "serialize_path_normalized");
 
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"serialize_path_normalized"),
+            "path-qualified serde callback must stay live via the terminal-keyed \
+             serde_callback edge (filter coverage retired in Lane 3): {names:?}"
+        );
+    }
+
+    /// CONTAINER-level serde callbacks are now kept live by a `serde_container`
+    /// `candidate_edges` row (Lane 2 emit), relabeling the callback
+    /// `low-confidence-live` instead of leaving it for the filter. Retiring the
+    /// container-level keys from `filter_serde_callbacks` loses no coverage.
+    #[test]
+    fn test_serde_container_callback_kept_live_by_candidate() {
+        use crate::parser::CandidateSite;
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/cfg.rs:1",
+            "src/cfg.rs",
+            "container_default",
+            "fn container_default() {}",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+        // The Lane-2 emit records the container-level callback as a candidate.
+        store
+            .upsert_candidate_edges(
+                std::path::Path::new("src/cfg.rs"),
+                &[CandidateSite {
+                    file: std::path::PathBuf::from("src/cfg.rs"),
+                    callee_name: "container_default".to_string(),
+                    ref_line: 1,
+                    candidate_kind: "serde_container".to_string(),
+                }],
+            )
+            .unwrap();
+
+        // Truly-dead set excludes it; low-confidence-live set includes it.
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let dead_names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !dead_names.contains(&"container_default"),
+            "container-level serde callback must leave the truly-dead set via the \
+             serde_container candidate: {dead_names:?}"
+        );
+        let (low, low_pub) = store.find_low_confidence_live_functions(true).unwrap();
+        let low_names: Vec<&str> = low
+            .iter()
+            .chain(low_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            low_names.contains(&"container_default"),
+            "container-level serde callback must enter low-confidence-live: {low_names:?}"
+        );
+    }
+
+    /// `skip_serializing` / `skip_deserializing` are NOT emitted by the parser
+    /// (absent from its `SERDE_CALLBACK_RE`), so `filter_serde_callbacks` is
+    /// still their only keep-alive — these keys were KEPT in the filter regex.
+    #[test]
+    fn test_serde_skip_serializing_still_filtered() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/h.rs:1",
+            "src/h.rs",
+            "skip_predicate",
+            "fn skip_predicate() -> bool { true }",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+        // No edge, no candidate — the filter's content scan is the only thing
+        // that can keep it alive.
         let user = rust_fn_chunk(
-            "src/ref.rs:5",
-            "src/ref.rs",
-            "RefSpec",
-            "#[derive(serde::Serialize)] struct RefSpec { \
-             #[serde(serialize_with = \"crate::serialize_path_normalized\")] path: PathBuf }",
+            "src/m.rs:5",
+            "src/m.rs",
+            "M",
+            "#[derive(serde::Serialize)] struct M { \
+             #[serde(skip_serializing = \"skip_predicate\")] x: u32 }",
         );
         store.upsert_chunk(&user, &emb, Some(1)).unwrap();
 
@@ -1638,8 +1831,45 @@ mod tests {
             .map(|d| d.chunk.name.as_str())
             .collect();
         assert!(
-            !names.contains(&"serialize_path_normalized"),
-            "path-qualified serde callback must match by terminal segment: {names:?}"
+            !names.contains(&"skip_predicate"),
+            "skip_serializing callback must still be filtered — KEPT in the regex \
+             because the parser does not emit it: {names:?}"
+        );
+    }
+
+    /// `with = "module"` is KEPT in the filter regex as the corpus-wide same-name
+    /// backstop: a function whose name matches the `with`-path terminal segment
+    /// stays live via the content scan even with no edge/candidate seeded.
+    #[test]
+    fn test_serde_with_module_same_name_still_filtered() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let cb = rust_fn_chunk(
+            "src/codec.rs:1",
+            "src/codec.rs",
+            "my_codec",
+            "fn my_codec() {}",
+        );
+        store.upsert_chunk(&cb, &emb, Some(1)).unwrap();
+        let user = rust_fn_chunk(
+            "src/m.rs:5",
+            "src/m.rs",
+            "M",
+            "#[derive(serde::Serialize)] struct M { \
+             #[serde(with = \"my_codec\")] x: u32 }",
+        );
+        store.upsert_chunk(&user, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"my_codec"),
+            "with = \"module\" same-name keep must stay in the filter (KEPT in Lane 3): {names:?}"
         );
     }
 
@@ -1799,6 +2029,251 @@ mod tests {
         assert!(
             !names.contains(&"genuinely_called"),
             "a function reached by a real `call` edge must stay live: {names:?}"
+        );
+    }
+
+    // ===== candidate_edges consult (Lane 3) =====
+
+    /// A callee with ZERO `function_calls` edges but PRESENT in `candidate_edges`
+    /// (a candidate-ONLY callee) must LEAVE the truly-dead set
+    /// (`find_dead_code`) and ENTER the low-confidence-live set
+    /// (`find_low_confidence_live_functions`). Calibration: without the candidate
+    /// row the same function is truly-dead — the consult is what flips it.
+    #[test]
+    fn test_candidate_only_callee_flips_dead_to_low_confidence_live() {
+        use crate::parser::CandidateSite;
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // The candidate-only callee — invoked by nothing in `function_calls`.
+        let cand = rust_fn_chunk("src/a.rs:1", "src/a.rs", "maybe_fn", "fn maybe_fn() {}");
+        store.upsert_chunk(&cand, &emb, Some(1)).unwrap();
+
+        // CALIBRATION: before any candidate row, `maybe_fn` is truly-dead and
+        // absent from the low-confidence-live set.
+        let (dead0, dead_pub0) = store.find_dead_code(true).unwrap();
+        let dead0_names: Vec<&str> = dead0
+            .iter()
+            .chain(dead_pub0.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            dead0_names.contains(&"maybe_fn"),
+            "without a candidate row `maybe_fn` must be truly-dead: {dead0_names:?}"
+        );
+        let (low0, low_pub0) = store.find_low_confidence_live_functions(true).unwrap();
+        let low0_names: Vec<&str> = low0
+            .iter()
+            .chain(low_pub0.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !low0_names.contains(&"maybe_fn"),
+            "without a candidate row `maybe_fn` must NOT be low-confidence-live: {low0_names:?}"
+        );
+
+        // Add a `candidate_edges` row naming `maybe_fn` (a bare fn-pointer arg
+        // the confident extractor declined to resolve).
+        store
+            .upsert_candidate_edges(
+                std::path::Path::new("src/b.rs"),
+                &[CandidateSite {
+                    file: std::path::PathBuf::from("src/b.rs"),
+                    callee_name: "maybe_fn".to_string(),
+                    ref_line: 7,
+                    candidate_kind: "bare_arg_unresolved".to_string(),
+                }],
+            )
+            .unwrap();
+
+        // FLIP: `maybe_fn` leaves truly-dead and enters low-confidence-live.
+        let (dead1, dead_pub1) = store.find_dead_code(true).unwrap();
+        let dead1_names: Vec<&str> = dead1
+            .iter()
+            .chain(dead_pub1.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !dead1_names.contains(&"maybe_fn"),
+            "a candidate-only callee must LEAVE the truly-dead set: {dead1_names:?}"
+        );
+        let (low1, low_pub1) = store.find_low_confidence_live_functions(true).unwrap();
+        let low1_names: Vec<&str> = low1
+            .iter()
+            .chain(low_pub1.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            low1_names.contains(&"maybe_fn"),
+            "a candidate-only callee must ENTER the low-confidence-live set: {low1_names:?}"
+        );
+
+        // The breakdown names the candidate kind/count.
+        let info = store.find_low_confidence_live_names().unwrap();
+        let maybe = info
+            .get("maybe_fn")
+            .expect("maybe_fn must be in the low-confidence-live breakdown");
+        assert_eq!(
+            maybe.total, 0,
+            "candidate-only callee has zero heuristic edges"
+        );
+        assert_eq!(maybe.candidate_total, 1, "one candidate reference");
+        assert_eq!(
+            maybe.candidate_counts,
+            vec![("bare_arg_unresolved".to_string(), 1)],
+            "candidate kind/count must be named"
+        );
+    }
+
+    /// Disjointness invariant, EXTENDED with candidates: the truly-dead set
+    /// (`find_dead_code`) and the low-confidence-live set
+    /// (`find_low_confidence_live_functions`) must never share a name when both a
+    /// candidate-only callee AND a genuinely-dead function are present. A
+    /// candidate-only callee belongs to exactly the low set; a no-edge no-candidate
+    /// function belongs to exactly the dead set; their intersection is empty.
+    #[test]
+    fn test_dead_and_low_confidence_live_disjoint_with_candidates() {
+        use crate::parser::CandidateSite;
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // Candidate-only callee → low set.
+        let cand = rust_fn_chunk(
+            "src/a.rs:1",
+            "src/a.rs",
+            "candidate_fn",
+            "fn candidate_fn() {}",
+        );
+        store.upsert_chunk(&cand, &emb, Some(1)).unwrap();
+        // Genuinely-dead function: no edges, no candidate → dead set.
+        let dead_fn = rust_fn_chunk(
+            "src/a.rs:5",
+            "src/a.rs",
+            "truly_dead_fn",
+            "fn truly_dead_fn() {}",
+        );
+        store.upsert_chunk(&dead_fn, &emb, Some(1)).unwrap();
+
+        store
+            .upsert_candidate_edges(
+                std::path::Path::new("src/b.rs"),
+                &[CandidateSite {
+                    file: std::path::PathBuf::from("src/b.rs"),
+                    callee_name: "candidate_fn".to_string(),
+                    ref_line: 3,
+                    candidate_kind: "macro_arg_unresolved".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let (dead, dead_pub) = store.find_dead_code(true).unwrap();
+        let dead_names: std::collections::HashSet<&str> = dead
+            .iter()
+            .chain(dead_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        let (low, low_pub) = store.find_low_confidence_live_functions(true).unwrap();
+        let low_names: std::collections::HashSet<&str> = low
+            .iter()
+            .chain(low_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        // Membership: each function is in exactly the right set.
+        assert!(
+            dead_names.contains("truly_dead_fn") && !low_names.contains("truly_dead_fn"),
+            "no-edge no-candidate fn must be ONLY in the dead set"
+        );
+        assert!(
+            low_names.contains("candidate_fn") && !dead_names.contains("candidate_fn"),
+            "candidate-only fn must be ONLY in the low-confidence-live set"
+        );
+        // Disjointness: the two sets share no name.
+        let overlap: Vec<&&str> = dead_names.intersection(&low_names).collect();
+        assert!(
+            overlap.is_empty(),
+            "truly-dead and low-confidence-live must stay disjoint with candidates added: {overlap:?}"
+        );
+    }
+
+    /// A callee with a TRUSTED `function_calls` edge AND a `candidate_edges` row
+    /// is genuinely live: it must be in NEITHER set. Fences the candidate
+    /// consult from resurrecting a function the trusted edge already proves live,
+    /// and from leaking it into low-confidence-live.
+    #[test]
+    fn test_candidate_with_trusted_edge_is_neither_dead_nor_low_conf() {
+        use crate::parser::{CallEdgeKind, CallSite, CandidateSite, FunctionCalls};
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        let target = rust_fn_chunk(
+            "src/a.rs:1",
+            "src/a.rs",
+            "live_target",
+            "fn live_target() {}",
+        );
+        store.upsert_chunk(&target, &emb, Some(1)).unwrap();
+        let caller = rust_fn_chunk(
+            "src/b.rs:1",
+            "src/b.rs",
+            "caller_fn",
+            "fn caller_fn() { live_target(); }",
+        );
+        store.upsert_chunk(&caller, &emb, Some(1)).unwrap();
+
+        // A trusted `call` edge to `live_target`.
+        store
+            .upsert_function_calls(
+                std::path::Path::new("src/b.rs"),
+                &[FunctionCalls {
+                    name: "caller_fn".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "live_target".to_string(),
+                        line_number: 1,
+                        kind: CallEdgeKind::Call,
+                    }],
+                }],
+            )
+            .unwrap();
+        // AND a candidate row naming the same callee.
+        store
+            .upsert_candidate_edges(
+                std::path::Path::new("src/b.rs"),
+                &[CandidateSite {
+                    file: std::path::PathBuf::from("src/b.rs"),
+                    callee_name: "live_target".to_string(),
+                    ref_line: 2,
+                    candidate_kind: "bare_arg_unresolved".to_string(),
+                }],
+            )
+            .unwrap();
+
+        let (dead, dead_pub) = store.find_dead_code(true).unwrap();
+        let dead_names: Vec<&str> = dead
+            .iter()
+            .chain(dead_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !dead_names.contains(&"live_target"),
+            "a trusted-called fn must not be dead even with a candidate row: {dead_names:?}"
+        );
+        let (low, low_pub) = store.find_low_confidence_live_functions(true).unwrap();
+        let low_names: Vec<&str> = low
+            .iter()
+            .chain(low_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            !low_names.contains(&"live_target"),
+            "a trusted-called fn must not be low-confidence-live even with a candidate row: {low_names:?}"
+        );
+        // The breakdown must also exclude it (trusted edge gates the candidate count).
+        let info = store.find_low_confidence_live_names().unwrap();
+        assert!(
+            !info.contains_key("live_target"),
+            "trusted-called callee must be absent from the low-confidence-live breakdown"
         );
     }
 }

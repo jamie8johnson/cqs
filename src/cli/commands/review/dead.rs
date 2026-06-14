@@ -168,20 +168,44 @@ fn classify_verdict(
         );
     }
     if let Some(info) = low_conf.get(&entry.chunk.name) {
-        // Name the heuristic kinds and counts rather than asserting "all
-        // callers are heuristic" generically.
-        let kinds = info
-            .kind_counts
-            .iter()
-            .map(|(kind, n)| format!("{kind}×{n}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        // Name the exact provenance and counts rather than asserting "all
+        // callers are heuristic" generically. Two populations may contribute:
+        // heuristic `function_calls` edges and `candidate_edges` (Lane 2)
+        // references. A candidate-ONLY callee has `total == 0` and
+        // `candidate_total > 0`; render only the populations that are present so
+        // the reason never claims "0 heuristic edge(s)".
+        let mut parts: Vec<String> = Vec::new();
+        if info.total > 0 {
+            let kinds = info
+                .kind_counts
+                .iter()
+                .map(|(kind, n)| format!("{kind}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("{} heuristic edge(s) [{}]", info.total, kinds));
+        }
+        if info.candidate_total > 0 {
+            let kinds = info
+                .candidate_counts
+                .iter()
+                .map(|(kind, n)| format!("{kind}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!(
+                "{} candidate edge(s) [{}]",
+                info.candidate_total, kinds
+            ));
+        }
+        let detail = if parts.is_empty() {
+            // Defensive: the name is in the map only when one population is
+            // nonzero, so this is unreachable in practice.
+            "heuristic/candidate evidence".to_string()
+        } else {
+            parts.join("; ")
+        };
         return (
             DeadVerdict::LowConfidenceLive,
-            format!(
-                "no trusted caller; reached only by {} heuristic edge(s) [{}]",
-                info.total, kinds
-            ),
+            format!("no trusted caller; reached only by {detail}"),
         );
     }
     if let Some(reason) = known_gap_reason(entry) {
@@ -648,6 +672,28 @@ mod tests {
             cqs::store::LowConfidenceLiveInfo {
                 total: 1,
                 kind_counts: vec![("macro_heuristic".to_string(), 1)],
+                candidate_total: 0,
+                candidate_counts: vec![],
+            },
+        );
+        m
+    }
+
+    /// Low-confidence map with one CANDIDATE-ONLY callee `name`: zero heuristic
+    /// `function_calls` edges, one `candidate_edges` (Lane 2) reference of
+    /// `kind`. Models the candidate-edge campaign Lane-3 flip.
+    fn candidate_only_low_conf(
+        name: &str,
+        kind: &str,
+    ) -> std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            name.to_string(),
+            cqs::store::LowConfidenceLiveInfo {
+                total: 0,
+                kind_counts: vec![],
+                candidate_total: 1,
+                candidate_counts: vec![(kind.to_string(), 1)],
             },
         );
         m
@@ -722,6 +768,47 @@ mod tests {
         assert!(
             reason.contains("macro_heuristic") && reason.contains("heuristic edge"),
             "reason should name heuristic kinds: {reason}"
+        );
+    }
+
+    /// A candidate-ONLY callee (zero heuristic `function_calls` edges, present
+    /// only in `candidate_edges`) classifies `low-confidence-live`, and the
+    /// reason names the candidate kind/count — NOT a generic "0 heuristic
+    /// edge(s)" claim. Calibration: an empty `low_conf` map would classify the
+    /// same entry `dead` (see `verdict_dead_residue`), so the consult is what
+    /// flips the verdict.
+    #[test]
+    fn verdict_candidate_only_callee_is_low_confidence_live() {
+        let f = dead_fn(
+            "maybe_fn",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn maybe_fn() {}",
+        );
+        let (v, reason) = classify_verdict(
+            &f,
+            &candidate_only_low_conf("maybe_fn", "bare_arg_unresolved"),
+        );
+        assert_eq!(
+            v,
+            DeadVerdict::LowConfidenceLive,
+            "candidate-only callee must be low-confidence-live, not dead"
+        );
+        assert!(
+            reason.contains("candidate edge") && reason.contains("bare_arg_unresolved"),
+            "reason must name the candidate kind/count, not a generic heuristic claim: {reason}"
+        );
+        assert!(
+            !reason.contains("heuristic edge"),
+            "candidate-only reason must NOT claim heuristic edges (it has zero): {reason}"
+        );
+
+        // Calibration: the SAME entry with an empty map is `dead`.
+        let (v_dead, _) = classify_verdict(&f, &no_low_conf());
+        assert_eq!(
+            v_dead,
+            DeadVerdict::Dead,
+            "without the candidate consult, the same entry would be dead"
         );
     }
 
