@@ -1942,3 +1942,16 @@ mentions = [
     "callers",
     "search_filtered",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "cargo-mutants discipline: ONE bounded run per private CARGO_TARGET_DIR — two concurrent runs collide on mutants.out; a long unscoped run can clobber its own git worktree (the adequacy-auditor test-fire's worktree was removed mid-run and its change landed on the shared checkout). Scope to one file/function; clean the multi-GB target after."
+mentions = ["adequacy-auditor"]
+
+[[note]]
+sentiment = 0.5
+text = "Magnet-area gate battery (seam + interleaving auditors) on the #1900 worktree-overlay seed routing caught a BLOCKING bug a green suite missed: gather/task fed overlay seeds into BFS as names then re-fetched chunks from the PARENT store, silently dropping worktree-added functions while _meta.overlay_graph=seed-only claimed they were present. scout was honest (consumed SearchResults directly). Run the full battery on every index/overlay change."
+mentions = [
+    "gather.rs",
+    "worktree_overlay.rs",
+]
