@@ -83,6 +83,11 @@ struct FileAccum {
     sentinel: Vec<Chunk>,
     function_calls: Vec<cqs::parser::FunctionCalls>,
     type_refs: Vec<cqs::parser::ChunkTypeRefs>,
+    /// Lane-2 low-confidence candidates for the file (file-level), written in
+    /// the same fused tx as `function_calls`. Carried with the same cumulative
+    /// wholesale-replace semantics so an additive re-flush rebuilds them rather
+    /// than wiping them.
+    candidate_edges: Vec<cqs::parser::CandidateSite>,
 }
 
 /// State retained for a file AFTER its first flush this run, so a late
@@ -106,6 +111,10 @@ struct FlushedFile {
     live_ids: HashSet<String>,
     function_calls: Vec<cqs::parser::FunctionCalls>,
     type_refs: Vec<cqs::parser::ChunkTypeRefs>,
+    /// Cumulative Lane-2 candidates carried forward for additive re-flush, same
+    /// rationale as `function_calls` (the `candidate_edges` write is a wholesale
+    /// DELETE-then-INSERT, so an empty late set would wipe them).
+    candidate_edges: Vec<cqs::parser::CandidateSite>,
 }
 
 /// Stage 3: per-file fused write of embedded chunks + call graph + function
@@ -183,6 +192,7 @@ pub(super) fn store_stage(
                       accum: &FileAccum,
                       function_calls: &[cqs::parser::FunctionCalls],
                       type_refs: &[cqs::parser::ChunkTypeRefs],
+                      candidate_edges: &[cqs::parser::CandidateSite],
                       fp: &cqs::store::FileFingerprint,
                       extra_live_ids: &HashSet<String>|
      -> (usize, usize, usize, Option<Vec<String>>) {
@@ -228,9 +238,11 @@ pub(super) fn store_stage(
             origin.as_path(),
             &live_refs,
             function_calls,
-            // v32 candidate_edges: empty until a later parser-emit lane produces
-            // candidate sites. An empty slice clears the file's candidates.
-            &[],
+            // v32 candidate_edges (Lane 2): the file's cumulative candidate set,
+            // written wholesale in the same fused tx as function_calls. An empty
+            // slice clears the file's candidates (a file that lost all its
+            // candidates this run).
+            candidate_edges,
             fp,
         ) {
             Ok(_) => {
@@ -315,6 +327,23 @@ pub(super) fn store_stage(
             }
         }
 
+        // Lane-2 candidate_edges ride the same batch as function_calls; route
+        // them identically (already-flushed → cumulative re-flush copy; else →
+        // per-file accumulator).
+        for (file, cands) in std::mem::take(&mut batch.relationships.candidate_edges) {
+            match flushed.get_mut(&file) {
+                Some(state) => {
+                    state.candidate_edges.extend(cands);
+                    rels_dirty.insert(file);
+                }
+                None => accums
+                    .entry(file)
+                    .or_default()
+                    .candidate_edges
+                    .extend(cands),
+            }
+        }
+
         // Type edges also ride the first batch; buffer per origin and write them
         // with the file's flush (after its chunks commit, so they always resolve).
         // Same already-flushed routing as function_calls.
@@ -366,6 +395,7 @@ pub(super) fn store_stage(
                         &accum,
                         &accum.function_calls,
                         &accum.type_refs,
+                        &accum.candidate_edges,
                         &fp,
                         &empty_live,
                     );
@@ -382,6 +412,7 @@ pub(super) fn store_stage(
                     entry.fp = fp.clone();
                     entry.function_calls = accum.function_calls;
                     entry.type_refs = accum.type_refs;
+                    entry.candidate_edges = accum.candidate_edges;
                     if let Some(ids) = committed {
                         entry.live_ids.extend(ids);
                     }
@@ -428,7 +459,7 @@ pub(super) fn store_stage(
             // snapshot fp + cumulative live ids + relationships and flush
             // additively. Cumulative relationships are re-supplied so the call
             // graph is reconstructed, not wiped.
-            let (fp, prior_ids, function_calls, type_refs) = {
+            let (fp, prior_ids, function_calls, type_refs, candidate_edges) = {
                 let Some(state) = flushed.get_mut(&file) else {
                     continue;
                 };
@@ -436,11 +467,15 @@ pub(super) fn store_stage(
                     .function_calls
                     .extend(accum.function_calls.iter().cloned());
                 state.type_refs.extend(accum.type_refs.iter().cloned());
+                state
+                    .candidate_edges
+                    .extend(accum.candidate_edges.iter().cloned());
                 (
                     state.fp.clone(),
                     state.live_ids.clone(),
                     state.function_calls.clone(),
                     state.type_refs.clone(),
+                    state.candidate_edges.clone(),
                 )
             };
             flushed_with_chunks.insert(file.clone());
@@ -451,6 +486,7 @@ pub(super) fn store_stage(
                 &accum,
                 &function_calls,
                 &type_refs,
+                &candidate_edges,
                 &fp,
                 &prior_ids,
             );
@@ -479,15 +515,17 @@ pub(super) fn store_stage(
             .collect();
         let empty_accum = FileAccum::default();
         for file in rels_only {
-            let (fp, prior_ids, function_calls, type_refs) = match flushed.get(&file) {
-                Some(state) => (
-                    state.fp.clone(),
-                    state.live_ids.clone(),
-                    state.function_calls.clone(),
-                    state.type_refs.clone(),
-                ),
-                None => continue,
-            };
+            let (fp, prior_ids, function_calls, type_refs, candidate_edges) =
+                match flushed.get(&file) {
+                    Some(state) => (
+                        state.fp.clone(),
+                        state.live_ids.clone(),
+                        state.function_calls.clone(),
+                        state.type_refs.clone(),
+                        state.candidate_edges.clone(),
+                    ),
+                    None => continue,
+                };
             // No committed chunks yet (fingerprint-with-no-chunks deferral) → the
             // file isn't on disk; relationships have no caller chunks to wire to.
             // Defer until its chunks arrive (the chunk pass will re-supply rels).
@@ -501,6 +539,7 @@ pub(super) fn store_stage(
                 &empty_accum,
                 &function_calls,
                 &type_refs,
+                &candidate_edges,
                 &fp,
                 &prior_ids,
             );
@@ -533,6 +572,7 @@ pub(super) fn store_stage(
                 &zero_chunk,
                 &accum.function_calls,
                 &accum.type_refs,
+                &accum.candidate_edges,
                 &fp,
                 &empty_live,
             );
@@ -566,7 +606,7 @@ pub(super) fn store_stage(
         let Some(accum) = accums.remove(&file) else {
             continue;
         };
-        let (fp, prior_ids, function_calls, type_refs) = {
+        let (fp, prior_ids, function_calls, type_refs, candidate_edges) = {
             let Some(state) = flushed.get_mut(&file) else {
                 continue;
             };
@@ -574,11 +614,15 @@ pub(super) fn store_stage(
                 .function_calls
                 .extend(accum.function_calls.iter().cloned());
             state.type_refs.extend(accum.type_refs.iter().cloned());
+            state
+                .candidate_edges
+                .extend(accum.candidate_edges.iter().cloned());
             (
                 state.fp.clone(),
                 state.live_ids.clone(),
                 state.function_calls.clone(),
                 state.type_refs.clone(),
+                state.candidate_edges.clone(),
             )
         };
         let (embedded, calls, type_edges, committed) = flush_file(
@@ -588,6 +632,7 @@ pub(super) fn store_stage(
             &accum,
             &function_calls,
             &type_refs,
+            &candidate_edges,
             &fp,
             &prior_ids,
         );

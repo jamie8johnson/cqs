@@ -304,7 +304,13 @@ pub(super) fn parser_stage(
                 |(mut all_chunks, mut all_rels, mut all_failed), rel_path| {
                     let abs_path = root.join(rel_path);
                     match parser.parse_file_all_with_chunk_calls(&abs_path) {
-                        Ok((mut chunks, function_calls, chunk_type_refs, mut chunk_calls)) => {
+                        Ok((
+                            mut chunks,
+                            function_calls,
+                            chunk_type_refs,
+                            mut chunk_calls,
+                            candidate_edges,
+                        )) => {
                             // Rewrite paths to be relative for storage
                             // Normalize path separators to forward slashes for cross-platform consistency
                             let path_str = normalize_path(rel_path);
@@ -439,6 +445,16 @@ pub(super) fn parser_stage(
                                 .entry(rel_path.clone())
                                 .or_default()
                                 .extend(function_calls);
+                            // Stash EVERY parsed file's candidate set keyed on
+                            // "file was parsed" (empty included) — the same
+                            // wholesale-per-file replace semantics as
+                            // function_calls, so a file that went has-candidates
+                            // → none clears its old `candidate_edges` rows.
+                            all_rels
+                                .candidate_edges
+                                .entry(rel_path.clone())
+                                .or_default()
+                                .extend(candidate_edges);
                         }
                         Err(e) => {
                             // Structured fields so a hot-path parse failure
@@ -468,6 +484,13 @@ pub(super) fn parser_stage(
                     }
                     for (file, calls) in rels_b.function_calls {
                         rels_a.function_calls.entry(file).or_default().extend(calls);
+                    }
+                    for (file, cands) in rels_b.candidate_edges {
+                        rels_a
+                            .candidate_edges
+                            .entry(file)
+                            .or_default()
+                            .extend(cands);
                     }
                     rels_a.chunk_calls.extend(rels_b.chunk_calls);
                     failed_a.extend(failed_b);
@@ -951,7 +974,8 @@ mod tests {
             }
             let has_rels = !b.relationships.type_refs.is_empty()
                 || !b.relationships.function_calls.is_empty()
-                || !b.relationships.chunk_calls.is_empty();
+                || !b.relationships.chunk_calls.is_empty()
+                || !b.relationships.candidate_edges.is_empty();
             if has_rels {
                 rels_seen += 1;
             }

@@ -7,10 +7,15 @@ use regex::Regex;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
-    capture_name_to_chunk_type, CallEdgeKind, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls,
-    Language, ParserError, TypeEdgeKind, TypeRef,
+    capture_name_to_chunk_type, CallEdgeKind, CallSite, CandidateSite, ChunkType, ChunkTypeRefs,
+    FunctionCalls, Language, ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
+
+/// Relationships extraction PLUS the file's Lane-2 candidate set:
+/// `(function_calls, type_refs, candidate_edges)`. Returned by
+/// [`Parser::parse_file_relationships_with_candidates`].
+pub type RelationshipsWithCandidates = (Vec<FunctionCalls>, Vec<ChunkTypeRefs>, Vec<CandidateSite>);
 
 /// serde string-callback attributes name a free/associated function (or, for
 /// `with`, a module) by path string. tree-sitter's call query never captures
@@ -230,6 +235,113 @@ fn collect_macro_calls(
     }
 }
 
+/// Collect low-confidence MACRO-argument candidates: the bare `identifier`
+/// inside a macro `token_tree` that [`collect_macro_calls`] DROPS because it is
+/// not followed by a `token_tree` AND not in `known_fns` — the cross-file
+/// code-gen-macro argument (`some_macro!(gen_dispatch)` where `gen_dispatch` is
+/// a `macro_rules!` / fn defined in another file). The macro EDGE pass gates
+/// this on `known_fns` (intra-file precision); the same drop reaching no
+/// candidate is the sweep gap with the fn-pointer pass, which this closes.
+///
+/// PRECISION (macro token-trees are the noisiest source — a flat run of tokens,
+/// no argument-position structure): a candidate is emitted ONLY for a bare ident
+/// that is genuinely reference-shaped:
+///   - NOT followed by a `token_tree` (that is the confident `func(args)` shape,
+///     already an edge), and
+///   - NOT in `known_fns` (an intra-file name is already a confident edge), and
+///   - NOT a path segment — neither the prev nor next anonymous sibling is `::`
+///     (`m::n` leading/trailing segments are not standalone references), and
+///   - NOT a field access — the prev anonymous sibling is not `.`, and
+///   - passes `should_skip_callee` (filters `self`/`Self`/keywords).
+/// This still admits ordinary local-variable tokens (`vec![count]`) the macro
+/// EDGE pass's `known_fns` gate would reject; candidates accept that lower bar
+/// (they are hints in a side-table, never caller-graph edges), but the path /
+/// field-access / keyword guards keep the obvious non-references out.
+///
+/// Disjoint from the macro EDGE pass by the same complement on `known_fns` the
+/// fn-pointer candidate uses, so a name is never both a macro edge and a macro
+/// candidate. No-op for non-Rust languages.
+pub(crate) fn collect_macro_arg_candidates(
+    node: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    let _span = tracing::debug_span!("collect_macro_arg_candidates", %language).entered();
+
+    if language != Language::Rust {
+        return;
+    }
+    collect_macro_arg_candidates_inner(node, source, line_offset, false, known_fns, file, out);
+}
+
+/// Recursive worker for [`collect_macro_arg_candidates`]. Mirrors
+/// [`collect_macro_calls`]'s `in_token_tree`-latching traversal exactly, but
+/// routes the dropped bare-ident case to a `macro_arg_unresolved`
+/// [`CandidateSite`].
+fn collect_macro_arg_candidates_inner(
+    node: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    in_token_tree: bool,
+    known_fns: &std::collections::HashSet<String>,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    let mut cursor = node.walk();
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+
+    for (i, child) in children.iter().enumerate() {
+        let kind = child.kind();
+
+        if in_token_tree && kind == "identifier" {
+            let next_kind = children.get(i + 1).map(|n| n.kind());
+            let prev_kind = i
+                .checked_sub(1)
+                .and_then(|p| children.get(p))
+                .map(|n| n.kind());
+            let next_is_token_tree = next_kind == Some("token_tree");
+            let name = &source[child.byte_range()];
+            // Complement of the macro EDGE pass's emit: the bare-ident drop.
+            // Plus the path-segment / field-access / keyword precision guards
+            // (the EDGE pass leans on `known_fns` for these; the candidate has
+            // no such gate, so it must exclude them explicitly).
+            let is_path_segment = next_kind == Some("::") || prev_kind == Some("::");
+            let is_field_access = prev_kind == Some(".");
+            if !next_is_token_tree
+                && !known_fns.contains(name)
+                && !is_path_segment
+                && !is_field_access
+                && !should_skip_callee(name)
+            {
+                let ref_line = (child.start_position().row as u32 + 1)
+                    .saturating_sub(line_offset)
+                    .max(1);
+                out.push(CandidateSite {
+                    file: file.to_path_buf(),
+                    callee_name: name.to_string(),
+                    ref_line,
+                    candidate_kind: CANDIDATE_MACRO_ARG_UNRESOLVED.to_string(),
+                });
+            }
+        }
+
+        let child_in_token_tree = in_token_tree || kind == "token_tree";
+        collect_macro_arg_candidates_inner(
+            *child,
+            source,
+            line_offset,
+            child_in_token_tree,
+            known_fns,
+            file,
+            out,
+        );
+    }
+}
+
 /// Collect the names of every Rust function (and macro) definition in `node`'s
 /// subtree.
 ///
@@ -425,9 +537,292 @@ fn push_arg_edge(
     });
 }
 
+/// `candidate_edges.candidate_kind` for a bare `identifier` passed in
+/// CALL-argument position that names something NOT defined in this file.
+/// The confident fn-pointer pass drops it (the intra-file `known_fns`
+/// gate guards against aliasing every same-named symbol in the index), so it
+/// never becomes a `function_calls` edge — but it is a real cross-file
+/// fn-pointer reference, so it lands here for a later query-time consumer
+/// (Lane 3) to surface as a low-confidence candidate.
+pub(crate) const CANDIDATE_BARE_ARG_UNRESOLVED: &str = "bare_arg_unresolved";
+
+/// `candidate_edges.candidate_kind` for a bare `identifier` inside a macro
+/// `token_tree` that the confident macro pass drops (not followed by a
+/// `token_tree`, not in `known_fns`) — the cross-file code-gen-macro argument
+/// (`some_macro!(gen_dispatch)`). Sibling of [`CANDIDATE_BARE_ARG_UNRESOLVED`]
+/// on the macro side of the same precision drop.
+pub(crate) const CANDIDATE_MACRO_ARG_UNRESOLVED: &str = "macro_arg_unresolved";
+
+/// `candidate_edges.candidate_kind` for a CONTAINER-level `#[serde(...)]`
+/// string callback (`#[serde(default = "fn")]` on the `struct`/`enum` itself,
+/// not a field). In tree-sitter-rust the container attribute is a prev-sibling
+/// OUTSIDE the item node's byte range, so the confident
+/// [`extract_serde_callback_calls`] pass (which scans only the item range)
+/// misses it. The dead-code `filter_serde_callbacks` backstop keeps the
+/// callback live; this candidate records the reference so Lane 3 can surface
+/// it without the corpus-wide content scan.
+pub(crate) const CANDIDATE_SERDE_CONTAINER: &str = "serde_container";
+
+/// `candidate_edges.candidate_kind` for the inner free functions of a
+/// `#[serde(with = "module")]` linkage. serde's derive calls
+/// `module::serialize` / `module::deserialize`, but the confident pass emits an
+/// edge only to the terminal segment as written (`module`) to avoid aliasing
+/// every `serialize`/`deserialize` in the index. The module's inner fns stay
+/// unlinked in `function_calls`; this candidate records the
+/// `module::serialize` / `module::deserialize` terminal segments so Lane 3 can
+/// surface the linkage as low-confidence.
+pub(crate) const CANDIDATE_SERDE_WITH_MODULE: &str = "serde_with_module";
+
+/// Collect low-confidence fn-pointer-ARGUMENT candidates: bare `identifier`
+/// args in CALL position that the confident [`extract_fn_pointer_arg_edges`]
+/// pass DROPS because they are not in `known_fns` (the cross-file case).
+///
+/// Sibling of [`extract_fn_pointer_arg_edges`]; it walks the same subtree and
+/// inspects the same argument shapes, but emits a [`CandidateSite`] precisely
+/// where the confident pass declines to emit a [`CallSite`]. The two passes are
+/// disjoint by construction: a name in `known_fns` becomes a confident edge and
+/// is NOT a candidate; a name absent from `known_fns` is dropped by the
+/// confident pass and becomes a candidate here. So a candidate-only callee
+/// never also appears in `function_calls` — preserving the Lane-1 invariant
+/// that candidates can never pollute the caller graph.
+///
+/// Only the bare-`identifier` arm of [`emit_fn_pointer_arg`] has a drop case:
+/// `scoped_identifier` args (`m::handler`) always emit a confident edge (a
+/// `::`-qualified value is a strong signal), so they yield no candidate.
+///
+/// `file` is the candidate's origin path (the `candidate_edges.file` column is
+/// keyed by the persistence layer's normalized path; this field carries the
+/// same path for descriptive parity). No-op for non-Rust languages.
+pub(crate) fn collect_fn_pointer_arg_candidates(
+    node: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    let _span = tracing::debug_span!("collect_fn_pointer_arg_candidates", %language).entered();
+
+    if language != Language::Rust {
+        return;
+    }
+    collect_fn_pointer_arg_candidates_inner(node, source, line_offset, known_fns, file, out);
+}
+
+/// Recursive worker for [`collect_fn_pointer_arg_candidates`]. Mirrors
+/// [`collect_fn_pointer_args`]'s traversal (every `call_expression`'s arguments,
+/// recursing the whole subtree) but routes each argument to the candidate arm
+/// of [`emit_fn_pointer_arg_candidate`].
+fn collect_fn_pointer_arg_candidates_inner(
+    node: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(args) = node.child_by_field_name("arguments") {
+            let mut cursor = args.walk();
+            for arg in args.named_children(&mut cursor) {
+                emit_fn_pointer_arg_candidate(arg, source, line_offset, known_fns, file, out);
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_fn_pointer_arg_candidates_inner(child, source, line_offset, known_fns, file, out);
+    }
+}
+
+/// Candidate-arm mirror of [`emit_fn_pointer_arg`]. Emits a
+/// `bare_arg_unresolved` [`CandidateSite`] for exactly the bare-identifier
+/// argument the confident pass DROPS — a name absent from `known_fns` (the
+/// cross-file case). Scoped paths, tuples/arrays, and casts are descended the
+/// same way so a bare ident nested in any of them is reached; none of those
+/// wrapper shapes themselves produce a candidate.
+fn emit_fn_pointer_arg_candidate(
+    arg: tree_sitter::Node,
+    source: &str,
+    line_offset: u32,
+    known_fns: &std::collections::HashSet<String>,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    match arg.kind() {
+        "identifier" => {
+            let name = &source[arg.byte_range()];
+            // The confident pass emits when `known_fns.contains(name)`. We emit
+            // the candidate on the complementary case: a syntactically-valid
+            // callee name NOT defined in this file. `should_skip_callee` filters
+            // the same noise (self/this/super/...) so a candidate is never a
+            // keyword token.
+            if !known_fns.contains(name) && !should_skip_callee(name) {
+                let ref_line = (arg.start_position().row as u32 + 1)
+                    .saturating_sub(line_offset)
+                    .max(1);
+                out.push(CandidateSite {
+                    file: file.to_path_buf(),
+                    callee_name: name.to_string(),
+                    ref_line,
+                    candidate_kind: CANDIDATE_BARE_ARG_UNRESOLVED.to_string(),
+                });
+            }
+        }
+        "tuple_expression" | "array_expression" => {
+            let mut cursor = arg.walk();
+            for inner in arg.named_children(&mut cursor) {
+                emit_fn_pointer_arg_candidate(inner, source, line_offset, known_fns, file, out);
+            }
+        }
+        "type_cast_expression" => {
+            if let Some(value) = arg.child_by_field_name("value") {
+                emit_fn_pointer_arg_candidate(value, source, line_offset, known_fns, file, out);
+            }
+        }
+        // `scoped_identifier` args always emit a confident edge (never dropped),
+        // so they yield no candidate.
+        _ => {}
+    }
+}
+
+/// Collect low-confidence serde-callback candidates the confident
+/// [`extract_serde_callback_calls`] pass does NOT reach:
+///
+/// - **`serde_container`** — CONTAINER-level `#[serde(...)]` string callbacks.
+///   The attribute decorating a `struct`/`enum` is a prev-sibling OUTSIDE the
+///   item node's byte range, so the confident pass (which scans only the item
+///   range) never sees it. We walk the whole file's `attribute_item` nodes,
+///   keep those whose next named sibling is a `struct_item`/`enum_item` (i.e.
+///   they decorate the container, not a field — field attrs live inside the
+///   body and are already covered), and emit the terminal segment of each
+///   serde-shaped callback path.
+/// - **`serde_with_module`** — for every `with = "module"` callback (anywhere,
+///   container OR field level), emit the `module::serialize` and
+///   `module::deserialize` terminal segments (`serialize` / `deserialize`)
+///   that serde's derive actually calls. The confident pass emits only the
+///   terminal segment of the path as written (`module`); the inner (de)ser fns
+///   stay unlinked in `function_calls`, so they land here.
+///
+/// `file` carries the candidate's origin path. No-op for non-Rust sources and
+/// for files with no `serde` substring (the common case pays only a `contains`
+/// scan). Scoped to `root`'s subtree so the chunk-range path can pass a
+/// chunk-covering node and still reach the container attributes preceding it
+/// (callers pass the file root for whole-file paths).
+pub(crate) fn collect_serde_candidates(
+    root: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    file: &Path,
+    out: &mut Vec<CandidateSite>,
+) {
+    let _span = tracing::debug_span!("collect_serde_candidates", %language).entered();
+
+    if language != Language::Rust || !source.contains("serde") {
+        return;
+    }
+
+    let mut seen: std::collections::HashSet<(String, u32, &'static str)> =
+        std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "attribute_item" {
+            collect_serde_attr_candidates(n, source, file, &mut seen, out);
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Inspect one `attribute_item` node for serde container-level / `with`-module
+/// candidates. Emits `serde_container` only when the attribute decorates a
+/// container (`struct`/`enum`) — field-level serde attrs are already covered by
+/// the confident range scan. Emits `serde_with_module` for `with = "module"`
+/// regardless of attachment level (the inner (de)ser fns are unreached either
+/// way). `seen` dedups within the file so the same callback on the same line is
+/// emitted once per kind.
+fn collect_serde_attr_candidates(
+    attr: tree_sitter::Node,
+    source: &str,
+    file: &Path,
+    seen: &mut std::collections::HashSet<(String, u32, &'static str)>,
+    out: &mut Vec<CandidateSite>,
+) {
+    let attr_text = &source[attr.byte_range()];
+    if !attr_text.contains("serde") {
+        return;
+    }
+    // Does this attribute decorate a container (`struct`/`enum`)? The next
+    // named sibling of a leading container attribute is the item it decorates
+    // (other attributes chain as siblings, so skip over sibling attribute_items
+    // to find the decorated node).
+    let mut decorates_container = false;
+    let mut sib = attr.next_named_sibling();
+    while let Some(s) = sib {
+        match s.kind() {
+            "attribute_item" => sib = s.next_named_sibling(),
+            "struct_item" | "enum_item" | "union_item" => {
+                decorates_container = true;
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    let line = attr.start_position().row as u32 + 1;
+    for cap in SERDE_CALLBACK_RE.captures_iter(attr_text) {
+        let Some(m) = cap.get(1) else { continue };
+        let path = m.as_str();
+        let terminal = path.rsplit("::").next().unwrap_or(path);
+        if terminal.is_empty() || should_skip_callee(terminal) {
+            continue;
+        }
+
+        // `with = "module"` → the inner `module::serialize` / `module::deserialize`
+        // terminal segments serde actually calls.
+        let is_with = cap
+            .get(0)
+            .map(|whole| whole.as_str().trim_start().starts_with("with"))
+            .unwrap_or(false);
+        if is_with {
+            for inner in ["serialize", "deserialize"] {
+                if seen.insert((inner.to_string(), line, CANDIDATE_SERDE_WITH_MODULE)) {
+                    out.push(CandidateSite {
+                        file: file.to_path_buf(),
+                        callee_name: inner.to_string(),
+                        ref_line: line,
+                        candidate_kind: CANDIDATE_SERDE_WITH_MODULE.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Container-level callback (the field-level case is already a confident
+        // edge from the range scan, so only emit the container candidate).
+        if decorates_container
+            && seen.insert((terminal.to_string(), line, CANDIDATE_SERDE_CONTAINER))
+        {
+            out.push(CandidateSite {
+                file: file.to_path_buf(),
+                callee_name: terminal.to_string(),
+                ref_line: line,
+                candidate_kind: CANDIDATE_SERDE_CONTAINER.to_string(),
+            });
+        }
+    }
+}
+
 impl Parser {
     /// Extract function calls from a chunk's source code
     /// Returns call sites found within the given byte range of the source.
+    ///
+    /// Thin wrapper over [`Self::extract_calls_with_candidates`] for callers
+    /// that only need the confident `function_calls` edges; the low-confidence
+    /// `candidate_edges` (Lane 2) are discarded.
     pub fn extract_calls(
         &self,
         source: &str,
@@ -436,6 +831,33 @@ impl Parser {
         end_byte: usize,
         line_offset: u32,
     ) -> Vec<CallSite> {
+        self.extract_calls_with_candidates(source, language, start_byte, end_byte, line_offset)
+            .0
+    }
+
+    /// Extract function calls AND low-confidence call-graph candidates from a
+    /// chunk's byte range — the CHUNK-RANGE call-extraction path.
+    ///
+    /// Returns `(calls, candidates)`. `calls` are confident `function_calls`
+    /// edges; `candidates` are the references the confident passes deliberately
+    /// DROP (cross-file bare fn-pointer args, container-level / `with`
+    /// serde callbacks) routed to the `candidate_edges` side-table so
+    /// they never pollute the caller graph (Lane 1's invariant). The two sets
+    /// are disjoint by construction.
+    ///
+    /// The returned candidates carry an EMPTY `file` (this surface has no path);
+    /// the only production caller, [`Self::extract_calls_from_chunk`], fills the
+    /// real origin. The whole-file path (`parse_file_all_inner`) collects
+    /// candidates directly with the file in scope — both paths route candidates
+    /// (the Lane-2 dual-path requirement).
+    pub fn extract_calls_with_candidates(
+        &self,
+        source: &str,
+        language: Language,
+        start_byte: usize,
+        end_byte: usize,
+        line_offset: u32,
+    ) -> (Vec<CallSite>, Vec<CandidateSite>) {
         // Span carries the language + chunk byte range so the tree-sitter
         // parse-failure warns below have enough identity to distinguish
         // "grammar broken globally" from "one weird chunk".
@@ -447,9 +869,11 @@ impl Parser {
         )
         .entered();
 
+        let mut candidates = Vec::new();
+
         // Grammar-less languages (Markdown) — no tree-sitter call extraction
         if language.def().grammar.is_none() {
-            return vec![];
+            return (vec![], candidates);
         }
 
         // Normalize CRLF → LF for consistency (callers typically pass normalized
@@ -461,7 +885,7 @@ impl Parser {
         };
 
         let Some(grammar) = language.try_grammar() else {
-            return vec![]; // Grammar-less language — custom parser handles it
+            return (vec![], candidates); // Grammar-less language — custom parser handles it
         };
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
@@ -472,7 +896,7 @@ impl Parser {
                 end_byte,
                 "set_language failed in extract_calls"
             );
-            return vec![];
+            return (vec![], candidates);
         }
 
         let tree = match parser.parse(source.as_ref(), None) {
@@ -484,7 +908,7 @@ impl Parser {
                     end_byte,
                     "tree-sitter parse returned None in extract_calls"
                 );
-                return vec![];
+                return (vec![], candidates);
             }
         };
 
@@ -498,7 +922,7 @@ impl Parser {
                     end_byte,
                     "Tree-sitter query failed in extract_calls"
                 );
-                return vec![];
+                return (vec![], candidates);
             }
         };
 
@@ -566,6 +990,34 @@ impl Parser {
                 line_offset,
                 &known_fns,
             ));
+
+            // --- Candidate edges (Lane 2): the references the confident passes
+            // above DROP. Empty `file` here — `extract_calls_from_chunk` fills
+            // the real origin. Cross-file bare fn-pointer args and
+            // serde container / `with`-module callbacks. The serde scan
+            // walks `scope`'s attribute_items, reaching container attributes
+            // that precede the chunk's def node when `scope` is the file root;
+            // for a tightly-scoped chunk node the leading container attr may sit
+            // just outside `scope`, which the whole-file path covers.
+            collect_fn_pointer_arg_candidates(
+                scope,
+                &source,
+                language,
+                line_offset,
+                &known_fns,
+                Path::new(""),
+                &mut candidates,
+            );
+            collect_macro_arg_candidates(
+                scope,
+                &source,
+                language,
+                line_offset,
+                &known_fns,
+                Path::new(""),
+                &mut candidates,
+            );
+            collect_serde_candidates(scope, &source, language, Path::new(""), &mut candidates);
         }
 
         // Deduplicate calls to the same function, keeping the MOST-TRUSTED kind
@@ -593,31 +1045,55 @@ impl Parser {
             k
         });
 
-        calls
+        (calls, candidates)
     }
 
     /// Extract function calls from a parsed chunk
     /// Convenience method that extracts calls from the chunk's content.
+    ///
+    /// Thin wrapper over [`Self::extract_calls_and_candidates_from_chunk`] for
+    /// callers that only need the confident edges; candidates are discarded.
+    pub fn extract_calls_from_chunk(&self, chunk: &super::types::Chunk) -> Vec<CallSite> {
+        self.extract_calls_and_candidates_from_chunk(chunk).0
+    }
+
+    /// Extract function calls AND low-confidence candidates from a parsed chunk.
     ///
     /// Per-chunk extractor consults `LanguageDef::chunk_call_parser` first.
     /// Markdown registers
     /// `extract_calls_from_markdown_chunk`; future grammar-less languages
     /// (SQL stored-proc cross-refs, L5X tag references, NL doc formats)
     /// can opt in by populating the field on their `LanguageDef`. Falls
-    /// through to the tree-sitter call extractor when unset.
-    pub fn extract_calls_from_chunk(&self, chunk: &super::types::Chunk) -> Vec<CallSite> {
+    /// through to the tree-sitter call extractor when unset. The custom /
+    /// markdown chunk-call parsers produce no candidates (the candidate kinds
+    /// are Rust-only), so this surface emits candidates only for the
+    /// tree-sitter path.
+    ///
+    /// The returned candidates carry `chunk.file` as their origin — the same
+    /// path the persistence layer keys the `candidate_edges` rows by.
+    pub fn extract_calls_and_candidates_from_chunk(
+        &self,
+        chunk: &super::types::Chunk,
+    ) -> (Vec<CallSite>, Vec<CandidateSite>) {
         if let Some(def) = chunk.language.try_def() {
             if let Some(extractor) = def.chunk_call_parser {
-                return extractor(chunk);
+                return (extractor(chunk), Vec::new());
             }
         }
-        let mut calls = self.extract_calls(
+        let (mut calls, mut candidates) = self.extract_calls_with_candidates(
             &chunk.content,
             chunk.language,
             0,
             chunk.content.len(),
             0, // No line offset since we're parsing the content directly
         );
+        // Stamp the real origin on candidates (the chunk-range surface emits
+        // them with an empty `file`). The persistence layer keys the
+        // `candidate_edges.file` column by the normalized path, but carrying the
+        // path here keeps `CandidateSite::file` descriptive and correct.
+        for cand in &mut candidates {
+            cand.file = chunk.file.clone();
+        }
         // Mirror the serde string-callback edges emitted by the whole-file
         // Pass-2 walk (parse_file_relationships / parse_file_all_inner) so the
         // per-chunk shape stays in parity. Content is parsed standalone with
@@ -645,7 +1121,7 @@ impl Parser {
                 }
             }
         }
-        calls
+        (calls, candidates)
     }
 
     /// Extract type references from a chunk's byte range
@@ -760,10 +1236,29 @@ impl Parser {
     /// (`node.start_position().row as u32 + 1`) and chunk identity (same query, same
     /// post-process hooks). If either changes, the other must be updated to keep
     /// chunk names and line_start values consistent across phases.
+    ///
+    /// Thin wrapper over [`Self::parse_file_relationships_with_candidates`] that
+    /// drops the Lane-2 candidate set.
     pub fn parse_file_relationships(
         &self,
         path: &Path,
     ) -> Result<(Vec<FunctionCalls>, Vec<ChunkTypeRefs>), ParserError> {
+        let (calls, types, _candidates) = self.parse_file_relationships_with_candidates(path)?;
+        Ok((calls, types))
+    }
+
+    /// Like [`Self::parse_file_relationships`] but also returns the file's
+    /// low-confidence `candidate_edges` (Lane 2). Returns
+    /// `(calls, type_refs, candidates)`. The candidate set holds the references
+    /// the confident passes DROP (cross-file bare fn-pointer args,
+    /// container-level / `with`-module serde callbacks) so they never
+    /// enter `function_calls` (Lane 1's caller-graph invariant) yet are
+    /// available to a query-time consumer (Lane 3). The whole-file serde scan
+    /// reaches container attributes that the per-chunk range scan cannot.
+    pub fn parse_file_relationships_with_candidates(
+        &self,
+        path: &Path,
+    ) -> Result<RelationshipsWithCandidates, ParserError> {
         let _span =
             tracing::info_span!("parse_file_relationships", path = %path.display()).entered();
 
@@ -777,7 +1272,7 @@ impl Parser {
                     path = %path.display(),
                     "Skipping large file; bump CQS_PARSER_MAX_FILE_SIZE if needed"
                 );
-                return Ok((vec![], vec![]));
+                return Ok((vec![], vec![], vec![]));
             }
             Ok(_) => {}
             Err(e) => return Err(e.into()),
@@ -787,7 +1282,7 @@ impl Parser {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                return Ok((vec![], vec![]));
+                return Ok((vec![], vec![], vec![]));
             }
             Err(e) => return Err(e.into()),
         };
@@ -806,18 +1301,21 @@ impl Parser {
         // The layered fallback means a language that only defines the
         // combined parser (like ASPX) still gets correct call/type
         // extraction here without a dedicated calls-only function.
+        // Grammar-less languages produce no candidates (the candidate kinds are
+        // Rust-only), so they return an empty candidate set.
         if language.def().grammar.is_none() {
             if let Some(f) = language.def().custom_call_parser {
-                return f(&source, path, self);
+                let (calls, chunk_types) = f(&source, path, self)?;
+                return Ok((calls, chunk_types, vec![]));
             }
             if let Some(f) = language.def().custom_all_parser {
                 let (_chunks, calls, chunk_types) = f(&source, path, self)?;
-                return Ok((calls, chunk_types));
+                return Ok((calls, chunk_types, vec![]));
             }
             // Markdown (and any future grammar-less language
             // that opts into the default line-based parser)
             let md_calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
-            return Ok((md_calls, vec![]));
+            return Ok((md_calls, vec![], vec![]));
         }
 
         let grammar = language.try_grammar().ok_or_else(|| {
@@ -843,6 +1341,7 @@ impl Parser {
 
         let mut call_results = Vec::new();
         let mut type_results = Vec::new();
+        let mut candidates: Vec<CandidateSite> = Vec::new();
         // Reuse these allocations across iterations
         let mut call_cursor = tree_sitter::QueryCursor::new();
         let mut calls = Vec::new();
@@ -860,6 +1359,13 @@ impl Parser {
         } else {
             std::collections::HashSet::new()
         };
+
+        // Whole-file serde candidate pre-pass (Lane 2): CONTAINER-level
+        // `#[serde(...)]` attributes sit OUTSIDE every item node's byte range
+        // (prev-siblings of the struct/enum), so the per-chunk confident scan
+        // never sees them — they need a file-root walk. `with = "module"` inner
+        // (de)ser fns also land here. ABSOLUTE line numbers (no chunk offset).
+        collect_serde_candidates(tree.root_node(), &source, language, path, &mut candidates);
 
         while let Some(m) = matches.next() {
             // Find chunk node
@@ -949,6 +1455,28 @@ impl Parser {
                 node, &source, language, 0, &known_fns,
             ));
 
+            // Cross-file bare fn-pointer-arg + macro-arg candidates (Lane 2):
+            // the bare-identifier references the confident passes above DROP
+            // (not in `known_fns`). ABSOLUTE line numbers → line_offset = 0.
+            collect_fn_pointer_arg_candidates(
+                node,
+                &source,
+                language,
+                0,
+                &known_fns,
+                path,
+                &mut candidates,
+            );
+            collect_macro_arg_candidates(
+                node,
+                &source,
+                language,
+                0,
+                &known_fns,
+                path,
+                &mut candidates,
+            );
+
             // Deduplicate calls
             seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
@@ -1009,6 +1537,17 @@ impl Parser {
                                 &group.container_lines,
                             )
                         });
+                        // Candidates inside the replaced outer container are
+                        // dropped alongside its calls/types (the inner-language
+                        // parse owns that range now; candidate kinds are
+                        // Rust-only, so the inner parse contributes none).
+                        candidates.retain(|c| {
+                            !super::injection::chunk_within_container(
+                                c.ref_line,
+                                c.ref_line,
+                                &group.container_lines,
+                            )
+                        });
                         call_results.extend(inner_calls);
                         type_results.extend(inner_types);
                     }
@@ -1026,7 +1565,7 @@ impl Parser {
             }
         }
 
-        Ok((call_results, type_results))
+        Ok((call_results, type_results, candidates))
     }
 }
 
@@ -1801,6 +2340,29 @@ const CFG: Config = Config {
                 .collect()
         }
 
+        /// Run ONLY the macro-arg candidate pass over the parsed source,
+        /// returning `(callee_name, candidate_kind)` pairs.
+        fn macro_candidates_for(content: &str) -> Vec<(String, String)> {
+            let grammar = Language::Rust.try_grammar().unwrap();
+            let mut ts = tree_sitter::Parser::new();
+            ts.set_language(&grammar).unwrap();
+            let tree = ts.parse(content, None).unwrap();
+            let known_fns = collect_rust_fn_names(tree.root_node(), content);
+            let mut out = Vec::new();
+            collect_macro_arg_candidates(
+                tree.root_node(),
+                content,
+                Language::Rust,
+                0,
+                &known_fns,
+                std::path::Path::new(""),
+                &mut out,
+            );
+            out.into_iter()
+                .map(|c| (c.callee_name, c.candidate_kind))
+                .collect()
+        }
+
         /// `println!("{}", f(x))` — a call inside a macro arg is invisible to
         /// the call query (opaque token_tree). The macro pass must surface it.
         #[test]
@@ -2095,9 +2657,11 @@ for_each_logged_batch_cmd!(gen_log_query_dispatch);
 
         /// SLICE B precision pin — a bare ident macro arg that is NOT a known
         /// same-file fn/macro (an arbitrary token / variable name) must NOT emit
-        /// an edge. This is the noise guard that justifies the known-fns gate.
+        /// a confident edge — but Lane 2 emits it as a `macro_arg_unresolved`
+        /// CANDIDATE (the cross-file code-gen-macro arg). Edge and candidate are
+        /// disjoint on `known_fns`, mirroring the fn-pointer bare-arg pair.
         #[test]
-        fn test_bare_macro_arg_unknown_not_emitted() {
+        fn test_bare_macro_arg_unknown_emitted_as_candidate_not_edge() {
             let content = r#"
 macro_rules! some_macro { ($x:ident) => {}; }
 
@@ -2106,7 +2670,55 @@ some_macro!(not_a_defined_fn);
             let callees = all_callees(content);
             assert!(
                 !callees.contains(&"not_a_defined_fn".to_string()),
-                "an unknown bare macro arg must NOT emit an edge, got: {callees:?}"
+                "an unknown bare macro arg must NOT emit a confident edge, got: {callees:?}"
+            );
+            let candidates = macro_candidates_for(content);
+            assert!(
+                candidates.contains(&(
+                    "not_a_defined_fn".to_string(),
+                    CANDIDATE_MACRO_ARG_UNRESOLVED.to_string()
+                )),
+                "an unknown bare macro arg must emit a macro_arg_unresolved candidate, got: {candidates:?}"
+            );
+        }
+
+        /// Precision pins for the macro candidate: the path-segment and
+        /// field-access guards must keep `m` (from `m::n`) and a `.field`
+        /// receiver out of the candidate set, and a same-file known fn must be
+        /// a confident edge (never a candidate).
+        #[test]
+        fn test_macro_arg_candidate_precision() {
+            // `m::n` inside a macro: neither `m` nor `n` is a standalone
+            // reference candidate (path segments).
+            let path_content = r#"
+macro_rules! m_macro { ($($t:tt)*) => {}; }
+
+m_macro!(some_mod::some_item);
+"#;
+            let path_cands: Vec<String> = macro_candidates_for(path_content)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            assert!(
+                !path_cands.contains(&"some_mod".to_string()),
+                "path leading segment `some_mod` must not be a macro candidate, got: {path_cands:?}"
+            );
+
+            // A same-file known fn passed bare is a confident edge, NOT a
+            // candidate (disjointness).
+            let known_content = r#"
+fn local_fn() {}
+macro_rules! k_macro { ($x:ident) => {}; }
+
+k_macro!(local_fn);
+"#;
+            let known_cands: Vec<String> = macro_candidates_for(known_content)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            assert!(
+                !known_cands.contains(&"local_fn".to_string()),
+                "a same-file known fn must be an edge, not a macro candidate, got: {known_cands:?}"
             );
         }
     }
@@ -2218,13 +2830,13 @@ fn default_ref_weight() -> f32 { 1.0 }
             );
         }
 
-        /// Documented limitation: container-level `#[serde(...)]` attributes
-        /// (preceding `struct`/`enum`) sit OUTSIDE the item node's byte range
-        /// in tree-sitter-rust, so this pass does not emit an edge for them —
-        /// they rely on the dead-code `filter_serde_callbacks` backstop. A
-        /// FIELD-level attribute on the same struct IS captured. This test
-        /// pins both halves so a future grammar change that pulls container
-        /// attributes into range is noticed.
+        /// Container-level `#[serde(...)]` attributes (preceding `struct`/`enum`)
+        /// sit OUTSIDE the item node's byte range in tree-sitter-rust, so they
+        /// are NOT a confident `function_calls` edge — but Lane 2 emits
+        /// them as a `serde_container` CANDIDATE via the whole-file attribute
+        /// walk. A FIELD-level attribute on the same struct stays a confident
+        /// edge (it lives inside the item body). This test pins all three halves:
+        /// field edge present, container NOT an edge, container IS a candidate.
         #[test]
         fn test_parse_file_relationships_container_vs_field_attr() {
             let content = r#"
@@ -2237,7 +2849,9 @@ struct Settings {
 "#;
             let file = write_temp_file(content, "rs");
             let parser = Parser::new().unwrap();
-            let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+            let (calls, _types, candidates) = parser
+                .parse_file_relationships_with_candidates(file.path())
+                .unwrap();
             let settings = calls
                 .iter()
                 .find(|fc| fc.name == "Settings")
@@ -2252,13 +2866,59 @@ struct Settings {
                 "field-level serde deserialize_with should emit an edge, got: {:?}",
                 callees
             );
-            // Container-level attribute is out of range — not emitted here.
+            // Container-level attribute is out of the item range — NOT a
+            // confident edge.
             assert!(
                 !callees.contains(&"container_default"),
-                "container-level serde attr is a known limitation (left to the \
-                 dead-code backstop); it must NOT be emitted by this pass, got: {:?}",
+                "container-level serde attr must NOT be a confident edge, got: {:?}",
                 callees
             );
+            // Lane 2: container-level attr IS a `serde_container` candidate.
+            let cand_pairs: Vec<(&str, &str)> = candidates
+                .iter()
+                .map(|c| (c.callee_name.as_str(), c.candidate_kind.as_str()))
+                .collect();
+            assert!(
+                cand_pairs.contains(&("container_default", CANDIDATE_SERDE_CONTAINER)),
+                "container-level serde attr must be a `serde_container` candidate, got: {cand_pairs:?}"
+            );
+            // The field-level callback is a confident edge, NOT a candidate —
+            // candidates and edges are disjoint.
+            assert!(
+                !cand_pairs.iter().any(|(name, _)| *name == "field_de"),
+                "field-level serde edge must NOT also be a candidate, got: {cand_pairs:?}"
+            );
+        }
+
+        /// Lane 2: `#[serde(with = "module")]` links serde's derive to
+        /// the module's `serialize` / `deserialize` free functions. The confident
+        /// pass emits only the terminal segment as written (`module`); the inner
+        /// (de)ser fns are unreachable, so they land as `serde_with_module`
+        /// candidates (`serialize` + `deserialize`).
+        #[test]
+        fn test_serde_with_module_emits_inner_fn_candidates() {
+            let content = r#"
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Cfg {
+    #[serde(with = "humantime_serde")]
+    timeout: Duration,
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (_calls, _types, candidates) = parser
+                .parse_file_relationships_with_candidates(file.path())
+                .unwrap();
+            let cand_pairs: Vec<(&str, &str)> = candidates
+                .iter()
+                .map(|c| (c.callee_name.as_str(), c.candidate_kind.as_str()))
+                .collect();
+            for inner in ["serialize", "deserialize"] {
+                assert!(
+                    cand_pairs.contains(&(inner, CANDIDATE_SERDE_WITH_MODULE)),
+                    "`with = module` should emit `{inner}` as a serde_with_module candidate, got: {cand_pairs:?}"
+                );
+            }
         }
     }
 
@@ -2284,6 +2944,20 @@ struct Settings {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
+        }
+
+        /// Run the whole-file relationship path and collect every candidate
+        /// `(callee_name, candidate_kind)` pair for `content`.
+        fn candidates_of(content: &str) -> Vec<(String, String)> {
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let (_calls, _types, candidates) = parser
+                .parse_file_relationships_with_candidates(file.path())
+                .unwrap();
+            candidates
+                .iter()
+                .map(|c| (c.callee_name.clone(), c.candidate_kind.clone()))
+                .collect()
         }
 
         /// axum-style `from_fn_with_state(state, handler)`: both `touch_state`
@@ -2477,26 +3151,121 @@ fn install() {
             );
         }
 
-        /// Documented limitation: a CROSS-FILE bare fn-pointer arg (the fn is
-        /// `use`d from another module, not defined in this file) is NOT emitted
-        /// — the intra-file known-fn filter can't see it. This is the v30-era
-        /// residual. Pins the boundary so a future query-time edge_kind filter
-        /// that closes it is noticed.
+        /// A CROSS-FILE bare fn-pointer arg (the fn is `use`d from another
+        /// module, not defined in this file) is still NOT a confident
+        /// `function_calls` edge — the intra-file known-fn filter can't see it,
+        /// so emitting one would alias every same-named symbol in the index.
+        /// Lane 2: it IS emitted as a `bare_arg_unresolved` CANDIDATE so
+        /// a later query-time consumer (Lane 3) can surface it without it ever
+        /// polluting the caller graph.
         #[test]
-        fn test_cross_file_bare_arg_not_emitted() {
+        fn test_cross_file_bare_arg_emitted_as_candidate_not_edge() {
             // `imported_handler` is referenced but never defined in this file,
-            // so it isn't in the known-fn set → no edge (the gap by design).
+            // so it isn't in the known-fn set → no confident edge, but a
+            // candidate.
             let content = r#"
 fn install() {
     set_handler(imported_handler);
 }
 "#;
+            // Still NOT a confident edge (the precision gate holds).
             let callees = callees_of(content, "install");
             assert!(
                 !callees.contains(&"imported_handler".to_string()),
-                "cross-file bare fn-pointer arg is the known v30 residual; it must \
-                 NOT be emitted by the intra-file filter, got: {callees:?}"
+                "cross-file bare fn-pointer arg must NOT be a confident edge, got: {callees:?}"
             );
+            // BUT it IS present as a `bare_arg_unresolved` candidate (Lane 2).
+            let candidates = candidates_of(content);
+            assert!(
+                candidates.contains(&(
+                    "imported_handler".to_string(),
+                    CANDIDATE_BARE_ARG_UNRESOLVED.to_string()
+                )),
+                "cross-file bare fn-pointer arg must be a `bare_arg_unresolved` \
+                 candidate, got: {candidates:?}"
+            );
+        }
+    }
+
+    /// Lane-2 candidate emit must land on BOTH the chunk-range path
+    /// (`extract_calls_with_candidates`) and the whole-file path
+    /// (`parse_file_all_with_chunk_calls` / `parse_file_relationships_*`). A
+    /// candidate emitted via one but not the other is an incomplete sweep — the
+    /// production index pipeline uses the whole-file path while the
+    /// grammar-less / injection inner-chunk routes use the chunk-range path, so
+    /// both must route candidates.
+    mod candidate_dual_path_tests {
+        use super::*;
+
+        const CONTENT: &str = r#"
+fn install() {
+    set_handler(imported_handler);
+}
+"#;
+
+        /// Chunk-range path: `extract_calls_with_candidates` over the file's
+        /// byte range emits the `bare_arg_unresolved` candidate.
+        #[test]
+        fn chunk_range_path_routes_candidate() {
+            let parser = Parser::new().unwrap();
+            let (_calls, candidates) =
+                parser.extract_calls_with_candidates(CONTENT, Language::Rust, 0, CONTENT.len(), 0);
+            assert!(
+                candidates
+                    .iter()
+                    .any(|c| c.callee_name == "imported_handler"
+                        && c.candidate_kind == CANDIDATE_BARE_ARG_UNRESOLVED),
+                "chunk-range path must emit the bare_arg_unresolved candidate, got: {:?}",
+                candidates
+                    .iter()
+                    .map(|c| (&c.callee_name, &c.candidate_kind))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        /// Whole-file path: the production `parse_file_all_with_chunk_calls`
+        /// emits the SAME candidate.
+        #[test]
+        fn whole_file_path_routes_candidate() {
+            let file = write_temp_file(CONTENT, "rs");
+            let parser = Parser::new().unwrap();
+            let (_chunks, _calls, _types, _chunk_calls, candidates) =
+                parser.parse_file_all_with_chunk_calls(file.path()).unwrap();
+            assert!(
+                candidates
+                    .iter()
+                    .any(|c| c.callee_name == "imported_handler"
+                        && c.candidate_kind == CANDIDATE_BARE_ARG_UNRESOLVED),
+                "whole-file path must emit the bare_arg_unresolved candidate, got: {:?}",
+                candidates
+                    .iter()
+                    .map(|c| (&c.callee_name, &c.candidate_kind))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        /// Both paths agree on the candidate set for the same source — the
+        /// dual-path guarantee stated as an equivalence on the candidate names.
+        #[test]
+        fn both_paths_agree_on_candidate() {
+            let parser = Parser::new().unwrap();
+            let (_c, chunk_range) =
+                parser.extract_calls_with_candidates(CONTENT, Language::Rust, 0, CONTENT.len(), 0);
+            let file = write_temp_file(CONTENT, "rs");
+            let (_ch, _ca, _t, _cc, whole_file) =
+                parser.parse_file_all_with_chunk_calls(file.path()).unwrap();
+
+            let mut a: Vec<(String, String)> = chunk_range
+                .iter()
+                .map(|c| (c.callee_name.clone(), c.candidate_kind.clone()))
+                .collect();
+            let mut b: Vec<(String, String)> = whole_file
+                .iter()
+                .map(|c| (c.callee_name.clone(), c.candidate_kind.clone()))
+                .collect();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "chunk-range and whole-file candidate sets must agree");
         }
     }
 }

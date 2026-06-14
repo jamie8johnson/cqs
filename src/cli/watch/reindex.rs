@@ -527,6 +527,9 @@ pub(crate) fn reindex_files(
     // wouldn't.
     use std::collections::HashMap;
     let mut all_function_calls: HashMap<PathBuf, Vec<cqs::parser::FunctionCalls>> = HashMap::new();
+    // Lane-2 candidate_edges per origin, written in the SAME per-file tx as
+    // chunks/calls/function_calls below — same atomicity rationale.
+    let mut all_candidate_edges: HashMap<PathBuf, Vec<cqs::parser::CandidateSite>> = HashMap::new();
     let chunks: Vec<_> = files
         .iter()
         .flat_map(|rel_path| {
@@ -543,7 +546,7 @@ pub(crate) fn reindex_files(
                 return vec![];
             }
             match parser.parse_file_all_with_chunk_calls(&abs_path) {
-                Ok((mut file_chunks, calls, chunk_type_refs, chunk_calls)) => {
+                Ok((mut file_chunks, calls, chunk_type_refs, chunk_calls, candidate_edges)) => {
                     // Rewrite paths to be relative — fix both file and id.
                     //
                     // Use `cqs::normalize_path` on both sides. On Windows
@@ -593,6 +596,9 @@ pub(crate) fn reindex_files(
                     // previously had function_calls but no longer do
                     // (`delete_phantom_chunks` cannot do this cleanup itself).
                     all_function_calls.insert(rel_path.clone(), calls);
+                    // Same wholesale-replace stash for candidate_edges (empty
+                    // included → clears a file that lost all candidates).
+                    all_candidate_edges.insert(rel_path.clone(), candidate_edges);
                     file_chunks
                 }
                 Err(e) => {
@@ -864,6 +870,12 @@ pub(crate) fn reindex_files(
             .get(file)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
+        // Lane-2 candidates for this file (empty slice clears them); folded into
+        // the same fused tx as function_calls.
+        let file_candidates = all_candidate_edges
+            .get(file)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         store.upsert_chunks_calls_and_prune_with_file_calls(
             pairs,
             mtime,
@@ -871,6 +883,7 @@ pub(crate) fn reindex_files(
             Some(file.as_path()),
             &live_ids,
             Some(file_fn_calls),
+            Some(file_candidates),
         )?;
 
         // Populate the reconcile fingerprint columns (`source_size`,
