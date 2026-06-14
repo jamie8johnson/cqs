@@ -3089,6 +3089,33 @@ mod tests {
         );
     }
 
+    /// Direction-B admissibility: a candidate whose definition lives in a
+    /// doc-shaped origin (`.md`) must NOT be added to the dead set even when its
+    /// merged caller set is empty — `fetch_uncalled_functions` excludes doc-path
+    /// origins, so the overlay addition must honor the same contract. Without the
+    /// doc-path filter in `resolve_dead_candidate_def`, masking the sole caller of
+    /// a `.md`-defined function would falsely report it dead.
+    #[test]
+    fn dead_overlay_does_not_add_doc_path_candidate() {
+        // `doc_fn` is defined in a markdown code block and called only by `caller`
+        // (in the to-be-masked src/edited.rs).
+        let (_dir, ctx) = parent_store_with(
+            &[("src/edited.rs", "caller"), ("docs/guide.md", "doc_fn")],
+            &[("caller", "src/edited.rs", 1, "doc_fn")],
+        );
+        // Worktree edits src/edited.rs and drops the call to `doc_fn`.
+        let overlay = overlay_with_edges(&[("src/edited.rs", "caller")], &[], &["src/edited.rs"]);
+        let (out, _participated) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), Some(&overlay))
+                .expect("dead_overlay");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            !dead_names(&json).contains(&"doc_fn".to_string()),
+            "a `.md`-defined function must NEVER be added to the dead set by the overlay \
+             (doc-path origins are excluded from dead candidacy): {json}"
+        );
+    }
+
     // ----- daemon-path marker honesty: impact -----
 
     /// impact direct-callers genuinely merged → `_meta.overlay_graph =

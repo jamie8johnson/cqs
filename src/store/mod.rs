@@ -177,6 +177,10 @@ pub use calls::CallStats;
 /// A dead function with confidence scoring.
 pub use calls::DeadFunction;
 
+/// Predicate: is `origin` a document-shaped path excluded from dead-code
+/// candidacy. Shared with the worktree-overlay dead path.
+pub use calls::is_dead_doc_path;
+
 /// Confidence level for dead code detection.
 pub use calls::DeadConfidence;
 

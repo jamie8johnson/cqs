@@ -520,11 +520,16 @@ fn apply_dead_overlay(
 }
 
 /// Resolve the definition chunk for a Direction-B dead candidate, applying the
-/// same Tier-1 admissibility filters `fetch_uncalled_functions` applies: the def
-/// must be a callable, top-level (`parent_id` None), non-test chunk. Prefers the
-/// overlay store's def (current worktree line range) when the name is defined
-/// there, else the parent's. Returns `None` for a name with no admissible def
-/// (an external/std call, a test, a nested chunk).
+/// Tier-1 admissibility filters `fetch_uncalled_functions` applies so an
+/// overlay-added entry can never be a shape the parent path would have excluded:
+/// the def must be a callable, NON-`Property`, NON-doc-path (`is_dead_doc_path`),
+/// top-level (`parent_id` None) chunk. The non-test exclusion is added on top —
+/// `fetch_uncalled_functions` does not test-filter at the SQL layer (it filters
+/// later in `filter_candidates`), so excluding tests here is the safe
+/// (under-report) direction. Prefers the overlay store's def (current worktree
+/// line range) when the name is defined there, else the parent's. Returns `None`
+/// for a name with no admissible def (an external/std call, a test, a nested
+/// chunk, a property, a doc-block fn).
 fn resolve_dead_candidate_def(
     store: &cqs::Store<cqs::store::ReadOnly>,
     ov: &cqs::worktree_overlay::WorktreeOverlay,
@@ -532,7 +537,9 @@ fn resolve_dead_candidate_def(
 ) -> Option<cqs::store::ChunkSummary> {
     let admissible = |c: &cqs::store::ChunkSummary| -> bool {
         c.chunk_type.is_callable()
+            && c.chunk_type != cqs::parser::ChunkType::Property
             && c.parent_id.is_none()
+            && !cqs::store::is_dead_doc_path(&c.file.to_string_lossy())
             && !cqs::is_test_chunk(&c.name, &c.file.to_string_lossy())
     };
     // Prefer the overlay def (worktree line range) when present + admissible.

@@ -14,6 +14,39 @@ use crate::parser::{ChunkType, Language};
 use crate::store::helpers::{clamp_line_number, ChunkRow, ChunkSummary, StoreError};
 use crate::store::Store;
 
+/// Document-shaped file extensions whose extracted code blocks are illustrative,
+/// not part of the project's call graph. A function chunked out of a fenced code
+/// block in one of these files is never a dead-code candidate. Single source for
+/// both the SQL `NOT LIKE` exclusions ([`dead_doc_path_excludes_sql`]) and the
+/// in-Rust predicate ([`is_dead_doc_path`]) the worktree-overlay dead path uses,
+/// so the two views of "doc-shaped origin" can never drift. `.css`/`.html` are
+/// covered by the chunk-type filter; `.scss`/`.sass`/`.less` are listed here in
+/// case a future parser treats them as code.
+pub(crate) const DEAD_DOC_PATH_EXTENSIONS: &[&str] = &[
+    ".md", ".mdx", ".adoc", ".rst", ".txt", ".tex", ".scss", ".sass", ".less",
+];
+
+/// SQL `AND c.origin NOT LIKE '%.ext'` clause set for the dead-candidate query,
+/// generated from [`DEAD_DOC_PATH_EXTENSIONS`]. Leading newline + indentation
+/// match the previous inline literal so the formatted SQL is unchanged.
+fn dead_doc_path_excludes_sql() -> String {
+    DEAD_DOC_PATH_EXTENSIONS
+        .iter()
+        .map(|ext| format!("\n                AND c.origin NOT LIKE '%{ext}'"))
+        .collect()
+}
+
+/// Whether `origin` is a document-shaped path (one of
+/// [`DEAD_DOC_PATH_EXTENSIONS`]) — the Rust counterpart of the SQL
+/// `dead_doc_path_excludes_sql`. The worktree-overlay dead path
+/// (`resolve_dead_candidate_def`) uses this so an overlay-added candidate is
+/// held to the same doc-path admissibility the parent SQL applies.
+pub fn is_dead_doc_path(origin: &str) -> bool {
+    DEAD_DOC_PATH_EXTENSIONS
+        .iter()
+        .any(|ext| origin.ends_with(ext))
+}
+
 impl<Mode> Store<Mode> {
     /// Find functions/methods never called by any real-caller edge (dead code
     /// detection). A function qualifies only when no `function_calls` row names
@@ -248,16 +281,7 @@ impl<Mode> Store<Mode> {
         let callable = ChunkType::callable_sql_list();
         // Document-shaped paths: code blocks inside these files are
         // illustrative, not part of the project's call graph.
-        let doc_path_excludes = "
-                AND c.origin NOT LIKE '%.md'
-                AND c.origin NOT LIKE '%.mdx'
-                AND c.origin NOT LIKE '%.adoc'
-                AND c.origin NOT LIKE '%.rst'
-                AND c.origin NOT LIKE '%.txt'
-                AND c.origin NOT LIKE '%.tex'
-                AND c.origin NOT LIKE '%.scss'
-                AND c.origin NOT LIKE '%.sass'
-                AND c.origin NOT LIKE '%.less'";
+        let doc_path_excludes = dead_doc_path_excludes_sql();
         // Dead-candidate population: strict zero-real-edge. A function qualifies
         // only when NO `function_calls` row names it as callee through a
         // real-caller kind — trusted or heuristic. A `doc_reference` edge is
@@ -299,16 +323,7 @@ impl<Mode> Store<Mode> {
     /// [`Store::find_low_confidence_live_names`].
     async fn fetch_heuristic_only_callees(&self) -> Result<Vec<LightChunk>, StoreError> {
         let callable = ChunkType::callable_sql_list();
-        let doc_path_excludes = "
-                AND c.origin NOT LIKE '%.md'
-                AND c.origin NOT LIKE '%.mdx'
-                AND c.origin NOT LIKE '%.adoc'
-                AND c.origin NOT LIKE '%.rst'
-                AND c.origin NOT LIKE '%.txt'
-                AND c.origin NOT LIKE '%.tex'
-                AND c.origin NOT LIKE '%.scss'
-                AND c.origin NOT LIKE '%.sass'
-                AND c.origin NOT LIKE '%.less'";
+        let doc_path_excludes = dead_doc_path_excludes_sql();
         let heuristic = crate::parser::CallEdgeKind::heuristic_kinds_sql();
         let trusted = crate::parser::CallEdgeKind::trusted_kinds_sql();
         let sql = format!(
