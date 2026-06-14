@@ -86,3 +86,27 @@ Already have: the orchestrator-by-hand (the autonomous `/loop`), the workers (th
 ## Prerequisite already in place
 
 The six-auditor family + the durable-guard-per-auditor discipline + the grant/withhold (per-finding verifiers) + residuals-to-issues + the magnet-area gate-battery habit. The factory is the automation layer over all of it.
+
+## Decision status — proposed defaults (2026-06-13 discussion; STILL PARKED, leans not final)
+
+The discussion resolved five questions and proposed defaults for the rest. Decide (or override) these before building.
+
+**Resolved:**
+- **Q8 (digest)** → curated **gh issues** (above-gate only, umbrella-batched, labeled by severity/shape/region); your triage *is* the digest; `/idle` closes the loop. Issues = the exception queue, NOT the ledger.
+- **Q12 (metric)** → denominated in the scarce resource (your attention): **fraction of cycles needing a human → 0**, user-touchpoints per real bug. (Matrix-green / guards-per-week / FP-rate are secondary.)
+- **Roles (was tangled in Q7)** → **orchestrator** (agent, the expensive seat — Fable's lane, opus until it returns) / **governor** (deterministic code, the budget/WIP leash) / **workers**. Never an LLM in the per-cycle budget path.
+- **Q1 gate *structure*** → the conductor may auto-close a finding only if (a) a verifier confirms it, (b) it passes the full magnet-area battery, (c) it's below a blast-radius threshold; else → an issue.
+- **Q13 *principle*** → optimize user-touchpoints first, model tier second.
+
+**Remaining — with proposed defaults:**
+- **Q2 ledger — GATES A BUILD:** derive the matrix from guards-present + git-blame (self-truthing, no drift), cache in SQLite for query speed. *Cost: a guard-tagging convention — a test names the (region, shape) it covers.* That convention is the real decision.
+- **Q1-residual — GATES A BUILD: v1 aggressiveness** → **hardening-guards-only + file all bugs as issues** in v1 (earn the trust that lets you leave the hot loop); enable gated auto-fix-and-land in v2.
+- **Q3 granularity** → invalidate at **file**, display/track at **module** (two granularities).
+- **Q4 invalidation** → **magnet-area heuristic** first; the lab tick proposes updates; promote to per-shape rules only where it mis-fires.
+- **Q6 concurrency** → **low (1–3)**; the governor caps it (swarm-risk knob).
+- **Q7-residual (driver)** → the existing autonomous **`/loop`**, on-merge-trigger + idle-filler; no new daemon.
+- **Q9 lab** → **defer** to post-v1.
+- **Q10 integration** → a **mode of `/idle`**; complements `/audit` (does not subsume the one-shot 16-category sweep).
+- **Tuning (safe initial values, re-tune from the metric):** Q5 governor knobs (small budget, backoff K=2–3), Q11 pause/scope (a config + an `audit-loop:paused` label the conductor respects), Q13-residual tiering (start with one orchestrator = the `/loop`; tier to cheap-dispatcher + expensive-conductor only if cost demands).
+
+**The two that actually gate a build:** Q2 (derived-vs-stored ledger + the guard-tagging convention) and Q1-residual (v1 aggressiveness). The rest have safe defaults.
