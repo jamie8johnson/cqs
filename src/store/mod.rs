@@ -125,6 +125,10 @@ pub use helpers::StaleReport;
 /// Store operation errors.
 pub use helpers::StoreError;
 
+/// Shared `index.db` freshness key (identity + data_version probe) for
+/// long-lived readers that cache data derived from an index.
+pub use helpers::{DataVersionProbe, FileIdentity};
+
 /// Unified search result (code chunk or note).
 pub use helpers::UnifiedResult;
 

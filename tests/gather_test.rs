@@ -299,14 +299,13 @@ fn test_gather_callees_only() {
 /// Helper: build a ReferenceIndex from a TestStore
 fn make_ref_index(store: &TestStore, name: &str) -> ReferenceIndex {
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    ReferenceIndex {
-        name: name.to_string(),
-        store: ref_store,
-        index: None,
-        weight: 1.0,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    }
+    ReferenceIndex::new_loaded(
+        name.to_string(),
+        ref_store,
+        None,
+        1.0,
+        std::path::PathBuf::new(),
+    )
 }
 
 #[test]

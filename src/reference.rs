@@ -5,12 +5,18 @@
 //! from references have their scores multiplied by a weight (default 0.8) to
 //! rank them below equally-similar project results.
 
+use std::sync::{Arc, Mutex};
+
 use rayon::prelude::*;
+use tokio::runtime::Runtime;
 
 use crate::config::ReferenceConfig;
 use crate::hnsw::HnswIndex;
 use crate::index::VectorIndex;
-use crate::store::{ReadOnly, SearchFilter, SearchResult, Store, StoreError, UnifiedResult};
+use crate::store::{
+    DataVersionProbe, FileIdentity, ReadOnly, SearchFilter, SearchResult, Store, StoreError,
+    UnifiedResult,
+};
 use crate::Embedding;
 
 /// A loaded reference index ready for searching
@@ -30,14 +36,27 @@ pub struct ReferenceIndex {
     /// Score multiplier (0.0-1.0)
     pub weight: f32,
     /// Path to the reference's `index.db` — kept so staleness checks can
-    /// re-stat the file without reconstructing the path from `name + path`.
+    /// re-stat the file and re-open the data_version probe without
+    /// reconstructing the path from `name + path`.
     pub db_path: std::path::PathBuf,
-    /// (mtime, size) of `index.db` at load time. Long-lived
-    /// daemons that cache loaded references need to invalidate them when
-    /// the reference's own `cqs ref update <name>` rewrites the DB. The
-    /// primary project's mtime change wouldn't catch this, so each
-    /// cached reference tracks its own identity.
-    pub loaded_identity: Option<(std::time::SystemTime, u64)>,
+    /// Freshness key of `index.db` at load time. Long-lived daemons that cache
+    /// loaded references need to invalidate them when the reference's own
+    /// `cqs ref update <name>` reindexes the DB. The primary project's identity
+    /// change wouldn't catch this, so each cached reference tracks its own.
+    pub loaded_identity: Option<FileIdentity>,
+    /// Long-lived `PRAGMA data_version` probe — the second freshness
+    /// discriminator. `cqs ref update` reindexes the DB *in place* (incremental
+    /// pipeline, not rename-over), so WAL-mode commits can land before the
+    /// closing checkpoint moves the file identity; the probe is the only
+    /// discriminator that catches that window. Interior-mutable (`Mutex`)
+    /// because [`Self::is_stale`] is `&self` — the index is shared across daemon
+    /// threads via `Arc<ReferenceIndex>` in the references LRU. `None` when the
+    /// probe couldn't be opened (warned, identity-only fallback); re-opened
+    /// lazily on the next staleness check.
+    data_version_probe: Mutex<Option<DataVersionProbe>>,
+    /// Runtime handle (cloned from the store) that drives the probe's async
+    /// sqlx queries, so the probe stays on the store's worker pool.
+    runtime: Arc<Runtime>,
 }
 
 impl std::fmt::Debug for ReferenceIndex {
@@ -131,57 +150,98 @@ fn load_single_reference(cfg: &ReferenceConfig) -> Option<ReferenceIndex> {
     // would otherwise load as `EMBEDDING_DIM`-dim garbage.
     let index = HnswIndex::try_load_with_ef(&cfg.path, None, store.dim());
 
-    // Capture (mtime, size) at load time so cached references can be
-    // invalidated when the reference itself is re-indexed. `None` on stat
-    // failure is fine — `is_stale` treats that as "can't tell, keep using it"
-    // rather than thrashing the cache on transient errors.
-    let loaded_identity = stat_identity(&db_path);
-
-    Some(ReferenceIndex {
-        name: cfg.name.clone(),
+    // `new_loaded` captures the freshness key (file identity + data_version
+    // probe) at load time so cached references can be invalidated when the
+    // reference itself is re-indexed.
+    Some(ReferenceIndex::new_loaded(
+        cfg.name.clone(),
         store,
         index,
-        weight: cfg.weight,
+        cfg.weight,
         db_path,
-        loaded_identity,
-    })
-}
-
-/// Stat `path` and return `(mtime, size)` if readable. Used for reference
-/// staleness detection. Errors are logged at debug and treated as "unknown"
-/// (caller falls back to keeping the cached value).
-fn stat_identity(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
-    match std::fs::metadata(path) {
-        Ok(md) => match md.modified() {
-            Ok(t) => Some((t, md.len())),
-            Err(e) => {
-                tracing::debug!(path = %path.display(), error = %e, "metadata.modified() failed");
-                None
-            }
-        },
-        Err(e) => {
-            tracing::debug!(path = %path.display(), error = %e, "stat failed");
-            None
-        }
-    }
+    ))
 }
 
 impl ReferenceIndex {
+    /// Construct a `ReferenceIndex` around an already-opened store, deriving the
+    /// freshness key (file identity + data_version probe) from `db_path`.
+    ///
+    /// The single construction path besides [`load_single_reference`], so the
+    /// freshness-key fields stay private and a caller cannot hand-assemble a
+    /// `ReferenceIndex` with an ad-hoc `(mtime, size)` key — the next hardening
+    /// of [`FileIdentity`] propagates here by construction. The runtime is
+    /// cloned from the store so the probe stays on the store's worker pool.
+    pub fn new_loaded(
+        name: String,
+        store: Store<ReadOnly>,
+        index: Option<Box<dyn VectorIndex>>,
+        weight: f32,
+        db_path: std::path::PathBuf,
+    ) -> Self {
+        let loaded_identity = FileIdentity::from_path(&db_path);
+        let runtime = Arc::clone(store.runtime());
+        let data_version_probe = Mutex::new(DataVersionProbe::open(&runtime, &db_path));
+        Self {
+            name,
+            store,
+            index,
+            weight,
+            db_path,
+            loaded_identity,
+            data_version_probe,
+            runtime,
+        }
+    }
+
     /// Has the reference's `index.db` been rewritten since load?
     ///
-    /// Returns `true` when the current (mtime, size) differs from the value
-    /// captured at construction. If we couldn't read the file at all (or
-    /// had no identity at load time), returns `false` so the caller keeps
-    /// using the cached index — transient NFS/permission glitches shouldn't
-    /// thrash the LRU.
+    /// Two discriminators, OR-combined:
+    /// 1. [`FileIdentity`] change — catches rename-over and checkpoint (the
+    ///    `cqs ref update` close folds the WAL back, moving size/mtime/inode).
+    /// 2. `PRAGMA data_version` movement on the long-lived probe — catches the
+    ///    in-place WAL-incremental window before that checkpoint.
+    ///
+    /// If we couldn't read the file (or had no identity at load), returns
+    /// `false` so the caller keeps using the cached index — transient
+    /// NFS/permission glitches shouldn't thrash the LRU. A `true` result causes
+    /// the references LRU to pop and reload this entry, so the probe baseline is
+    /// only meaningful for the steady-state "not stale" path, where each query
+    /// advances it to observe the next commit.
     pub fn is_stale(&self) -> bool {
         let Some(loaded) = self.loaded_identity else {
             return false;
         };
-        let Some(current) = stat_identity(&self.db_path) else {
+        let Some(current) = FileIdentity::from_path(&self.db_path) else {
             return false;
         };
-        current != loaded
+        if current != loaded {
+            return true;
+        }
+        // Identity unchanged — consult the probe for the WAL-incremental case.
+        let mut slot = self
+            .data_version_probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match slot.as_mut() {
+            Some(probe) => match probe.changed(&self.runtime) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    tracing::warn!(
+                        name = %self.name,
+                        error = %e,
+                        "data_version probe query failed — dropping probe; will re-open on next staleness check"
+                    );
+                    *slot = None;
+                    false
+                }
+            },
+            None => {
+                // Earlier open failed (or the probe was dropped after a query
+                // error) — retry. Freshly baselined, so nothing to compare.
+                *slot = DataVersionProbe::open(&self.runtime, &self.db_path);
+                false
+            }
+        }
     }
 }
 
@@ -652,5 +712,126 @@ mod tests {
     fn test_ref_path_rejects_traversal() {
         assert!(ref_path("../etc").is_none());
         assert!(ref_path("foo/bar").is_none());
+    }
+
+    /// Build a `ReferenceIndex` backed by a real on-disk `index.db` so the
+    /// freshness-key tests can rewrite the file underneath it. Keeps the
+    /// tempdir alive (`keep`) for the test duration. Returns the index and its
+    /// `index.db` path.
+    fn make_disk_reference() -> (ReferenceIndex, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+        let model_info = crate::store::ModelInfo::default();
+        let store =
+            Store::<ReadOnly>::open_readonly_after_init(&db_path, |s| s.init(&model_info)).unwrap();
+        let _keep = dir.keep();
+        let ref_idx =
+            ReferenceIndex::new_loaded("disk-ref".to_string(), store, None, 1.0, db_path.clone());
+        (ref_idx, db_path)
+    }
+
+    /// Sub-second, same-size, in-place replacement (rename-over) of the
+    /// reference's `index.db` must flip `is_stale()` true via the file-identity
+    /// inode bump — even when mtime and size are unchanged.
+    ///
+    /// Calibration: RED against the previous `(mtime, size)`-only key (a
+    /// same-size rewrite inside one WSL mtime bucket reads as unchanged → stale
+    /// serve from the LRU). GREEN with [`FileIdentity`], which mixes in the
+    /// inode. Pins the inode-catchable replace case.
+    #[cfg(unix)]
+    #[test]
+    fn test_is_stale_detects_same_size_rename_over() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (ref_idx, db_path) = make_disk_reference();
+        assert!(!ref_idx.is_stale(), "freshly loaded reference is not stale");
+
+        let size_before = std::fs::metadata(&db_path).unwrap().len();
+        let inode_before = std::fs::metadata(&db_path).unwrap().ino();
+        let orig_mtime = std::fs::metadata(&db_path).unwrap().modified().unwrap();
+
+        // Byte-identical copy → same size; rename-over → new inode. Force the
+        // original mtime so only the inode discriminator can fire.
+        let replacement = db_path.with_extension("db.replacement");
+        std::fs::copy(&db_path, &replacement).unwrap();
+        std::fs::File::open(&replacement)
+            .unwrap()
+            .set_modified(orig_mtime)
+            .unwrap();
+        std::fs::rename(&replacement, &db_path).unwrap();
+
+        let md_after = std::fs::metadata(&db_path).unwrap();
+        assert_eq!(md_after.len(), size_before, "precondition: size unchanged");
+        assert_ne!(
+            md_after.ino(),
+            inode_before,
+            "precondition: rename-over landed a new inode"
+        );
+        assert_eq!(
+            md_after.modified().unwrap(),
+            orig_mtime,
+            "precondition: mtime forced equal — only the inode discriminator can fire"
+        );
+
+        assert!(
+            ref_idx.is_stale(),
+            "same-size rename-over (new inode, same mtime/size) must flip is_stale()"
+        );
+    }
+
+    /// A WAL-mode commit with NO checkpoint leaves the reference's `index.db`
+    /// identity (inode/size/mtime) unchanged, yet the cached index is stale.
+    /// The `PRAGMA data_version` probe must catch it.
+    ///
+    /// Calibration: RED against EITHER `(mtime, size)`-only OR the
+    /// `FileIdentity`-only key (neither moves on an uncheckpointed WAL commit).
+    /// GREEN only with the long-lived data_version probe. Pins the
+    /// WAL-incremental case — the real `cqs ref update` shape (in-place
+    /// incremental reindex before the closing checkpoint).
+    #[test]
+    fn test_is_stale_detects_wal_commit_without_checkpoint() {
+        use sqlx::{ConnectOptions, Connection};
+
+        let (ref_idx, db_path) = make_disk_reference();
+        // Baseline both discriminators.
+        assert!(!ref_idx.is_stale(), "freshly loaded reference is not stale");
+
+        let id_before = FileIdentity::from_path(&db_path).unwrap();
+
+        // Second connection, WAL commit, NO checkpoint, kept open across the
+        // assertions so closing the last writer can't auto-checkpoint and mask
+        // the discriminator under test.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut writer = rt
+            .block_on(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .connect(),
+            )
+            .unwrap();
+        rt.block_on(async {
+            sqlx::query("CREATE TABLE IF NOT EXISTS wal_poke (x INTEGER)")
+                .execute(&mut writer)
+                .await?;
+            sqlx::query("INSERT INTO wal_poke (x) VALUES (1)")
+                .execute(&mut writer)
+                .await?;
+            Ok::<_, sqlx::Error>(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            FileIdentity::from_path(&db_path).unwrap(),
+            id_before,
+            "precondition: WAL commit must leave main-file identity unchanged"
+        );
+
+        assert!(
+            ref_idx.is_stale(),
+            "WAL commit with no checkpoint must flip is_stale() via data_version"
+        );
+
+        let _ = rt.block_on(writer.close());
     }
 }

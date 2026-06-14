@@ -10,27 +10,13 @@ use super::*;
 
 // ─── Data-version probe ──────────────────────────────────────────────────────
 
-/// Long-lived `PRAGMA data_version` probe connection.
-///
-/// `data_version` is a per-connection counter that SQLite bumps when *another*
-/// connection (including one in the same process — e.g. the watch loop's
-/// read-write Store) commits a change to the database. It moves on WAL commits
-/// that never touch the main `index.db` file, which is exactly the blind spot
-/// of the `DbFileIdentity` (inode/size/mtime) check: under WAL, incremental
-/// reindex writes land in `index.db-wal` and the main file's identity is
-/// unchanged until checkpoint.
-///
-/// The classic pitfall: the counter is only meaningful when queried repeatedly
-/// on the SAME connection — a fresh connection per check re-baselines every
-/// time and never observes a change. So the connection here must live as long
-/// as the `BatchContext` (and be re-opened when `index.db` is replaced via
-/// rename-over, since the old fd then points at the orphaned inode and its
-/// data_version never moves again).
-pub(super) struct DataVersionProbe {
-    conn: sqlx::SqliteConnection,
-    /// Last observed `PRAGMA data_version` value on `conn`.
-    last: i64,
-}
+/// Long-lived `PRAGMA data_version` probe — the shared type from
+/// [`cqs::store::DataVersionProbe`], so all three `index.db` readers
+/// (`BatchContext`, `CrossProjectContext`, `ReferenceIndex`) drive one probe
+/// implementation. Catches WAL-mode incremental commits that leave the main
+/// file's identity untouched until checkpoint — the false-negative class the
+/// `DbFileIdentity` (inode/size/mtime) check alone cannot see.
+use cqs::store::DataVersionProbe;
 
 // ─── Cross-project cache entry ───────────────────────────────────────────────
 
@@ -604,32 +590,7 @@ impl BatchContext {
     /// the open or the query fails — staleness detection then falls back to
     /// identity-only rather than panicking or silently skipping the check.
     fn open_data_version_probe(&self, index_path: &std::path::Path) -> Option<DataVersionProbe> {
-        use sqlx::ConnectOptions;
-        let result = self.runtime.block_on(async {
-            // Mirror the Store's read-only open shape (filename + read_only +
-            // WAL) so the probe sees the same journal-mode view of the DB.
-            let mut conn = sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(index_path)
-                .read_only(true)
-                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                .connect()
-                .await?;
-            let last: i64 = sqlx::query_scalar("PRAGMA data_version")
-                .fetch_one(&mut conn)
-                .await?;
-            Ok::<_, sqlx::Error>(DataVersionProbe { conn, last })
-        });
-        match result {
-            Ok(probe) => Some(probe),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    path = %index_path.display(),
-                    "Failed to open data_version probe — falling back to identity-only staleness detection"
-                );
-                None
-            }
-        }
+        DataVersionProbe::open(&self.runtime, index_path)
     }
 
     /// Query `PRAGMA data_version` on the long-lived probe connection and
@@ -650,26 +611,17 @@ impl BatchContext {
                 *slot = self.open_data_version_probe(&cqs::resolve_index_db(&self.cqs_dir));
                 false
             }
-            Some(probe) => {
-                let result = self.runtime.block_on(
-                    sqlx::query_scalar::<_, i64>("PRAGMA data_version").fetch_one(&mut probe.conn),
-                );
-                match result {
-                    Ok(v) => {
-                        let changed = v != probe.last;
-                        probe.last = v;
-                        changed
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "data_version probe query failed — dropping probe; will re-open on next staleness check"
-                        );
-                        *slot = None;
-                        false
-                    }
+            Some(probe) => match probe.changed(&self.runtime) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "data_version probe query failed — dropping probe; will re-open on next staleness check"
+                    );
+                    *slot = None;
+                    false
                 }
-            }
+            },
         }
     }
 
@@ -679,13 +631,12 @@ impl BatchContext {
     /// orphaned inode, so its counter would never move again. Also called at
     /// construction and on manual `refresh`.
     fn rebaseline_data_version_probe(&self, index_path: &std::path::Path) {
-        use sqlx::Connection;
         let mut slot = self.data_version_probe.borrow_mut();
         if let Some(old) = slot.take() {
             // Explicit close so sqlite finalizes the old handle now instead
             // of whenever Drop gets around to it. Best-effort — the fd is
             // dead-weight either way.
-            let _ = self.runtime.block_on(old.conn.close());
+            old.close(&self.runtime);
         }
         *slot = self.open_data_version_probe(index_path);
     }

@@ -2,6 +2,7 @@
 //!
 //! Submodules by responsibility:
 //! - `error` - Store error types
+//! - `file_identity` - Shared `index.db` freshness key (identity + data_version)
 //! - `rows` - Database row-to-struct conversions
 //! - `types` - Domain types (ChunkSummary, SearchResult, CallerInfo, etc.)
 //! - `search_filter` - Search filter and scoring options
@@ -11,6 +12,7 @@
 
 mod embeddings;
 mod error;
+mod file_identity;
 mod rows;
 mod scoring;
 mod search_filter;
@@ -23,6 +25,12 @@ mod types;
 
 // Error types
 pub use error::StoreError;
+
+// Shared file-freshness key. Every long-lived reader that caches data derived
+// from an `index.db` (the daemon BatchContext, cached CrossProjectContext,
+// LRU-resident ReferenceIndex) routes its staleness check through these so a
+// hardening propagates by construction instead of leaving a straggler behind.
+pub use file_identity::{DataVersionProbe, FileIdentity};
 
 // Row types (crate-internal)
 pub(crate) use rows::{

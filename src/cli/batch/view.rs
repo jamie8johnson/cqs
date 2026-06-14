@@ -175,7 +175,7 @@ pub(crate) fn get_ref_via_refs_lru(
             if existing.is_stale() {
                 tracing::info!(
                     reference = %name,
-                    "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                    "Cached reference stale (index.db changed) — evicting for reload"
                 );
                 cache.pop(name);
             } else {
@@ -233,7 +233,7 @@ pub(crate) fn get_all_refs_via_refs_lru(
                 if existing.is_stale() {
                     tracing::info!(
                         reference = %cfg.name,
-                        "Cached reference stale (index.db mtime/size changed) — evicting for reload"
+                        "Cached reference stale (index.db changed) — evicting for reload"
                     );
                     cache.pop(&cfg.name);
                     misses.push(cfg.clone());

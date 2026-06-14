@@ -322,8 +322,8 @@ src/
     types.rs    - Type edge storage and queries
     backup.rs   - Filesystem snapshots of `index.db` taken before schema migrations run (covers commit-time I/O failures the migration transaction's rollback can't)
     summary_queue.rs - Write-coalescing queue for streamed LLM-summary inserts (routes through WRITE_LOCK instead of bypassing it with a raw INSERT OR IGNORE)
-    helpers/    - Types, embedding conversion, scoring, SQL utilities
-      mod.rs, embeddings.rs, error.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
+    helpers/    - Types, embedding conversion, scoring, SQL utilities, shared index.db freshness key
+      mod.rs, embeddings.rs, error.rs, file_identity.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
     migrations.rs - Schema migration framework (v10-v29, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries, v28 chunks.canonical_hash for comment-canonical embedding reuse, v29 file_registry for zero-chunk fingerprint persistence + notes.sentiment discrete-value CHECK)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()

@@ -1800,14 +1800,7 @@ mod tests {
                     .expect("upsert ref chunk");
             }
             let store = Store::open_readonly(&db).expect("open ref readonly");
-            ReferenceIndex {
-                name: "stdlib".to_string(),
-                store,
-                index: None,
-                weight: 1.0,
-                db_path: db,
-                loaded_identity: None,
-            }
+            ReferenceIndex::new_loaded("stdlib".to_string(), store, None, 1.0, db)
         }
 
         /// Build a `CountingCtx` plus the seeded query embedding. The embedder's

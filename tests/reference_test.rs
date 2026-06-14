@@ -127,14 +127,13 @@ fn test_search_reference_applies_weight() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.7,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.7,
+        std::path::PathBuf::new(),
+    );
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
@@ -159,14 +158,13 @@ fn test_search_reference_weight_filters_below_threshold() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.5, // Low weight
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.5,
+        std::path::PathBuf::new(),
+    );
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
@@ -186,14 +184,13 @@ fn test_search_reference_by_name_weight() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.6,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.6,
+        std::path::PathBuf::new(),
+    );
 
     let results =
         reference::search_reference_by_name(&ref_idx, "lookup_fn", 10, 0.0, true).unwrap();
@@ -238,14 +235,13 @@ fn test_search_reference_unweighted_returns_raw_scores() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.5, // Low weight — should NOT be applied
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.5,
+        std::path::PathBuf::new(),
+    );
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
@@ -274,22 +270,20 @@ fn test_search_reference_unweighted_vs_weighted() {
     let ref_store_u = cqs::Store::open_readonly(&store.db_path()).unwrap();
 
     let weight = 0.6;
-    let ref_idx_w = ReferenceIndex {
-        name: "weighted".to_string(),
-        store: ref_store_w,
-        index: None,
+    let ref_idx_w = ReferenceIndex::new_loaded(
+        "weighted".to_string(),
+        ref_store_w,
+        None,
         weight,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
-    let ref_idx_u = ReferenceIndex {
-        name: "unweighted".to_string(),
-        store: ref_store_u,
-        index: None,
+        std::path::PathBuf::new(),
+    );
+    let ref_idx_u = ReferenceIndex::new_loaded(
+        "unweighted".to_string(),
+        ref_store_u,
+        None,
         weight,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+        std::path::PathBuf::new(),
+    );
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
@@ -331,14 +325,13 @@ fn test_search_reference_by_name_unweighted() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.5,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.5,
+        std::path::PathBuf::new(),
+    );
 
     let results =
         reference::search_reference_by_name(&ref_idx, "name_search_fn", 10, 0.0, false).unwrap();
@@ -361,14 +354,13 @@ fn test_search_reference_by_name_unweighted_threshold() {
     insert_chunks(&store, &[c1], 1.0);
 
     let ref_store = cqs::Store::open_readonly(&store.db_path()).unwrap();
-    let ref_idx = ReferenceIndex {
-        name: "test-ref".to_string(),
-        store: ref_store,
-        index: None,
-        weight: 0.5,
-        db_path: std::path::PathBuf::new(),
-        loaded_identity: None,
-    };
+    let ref_idx = ReferenceIndex::new_loaded(
+        "test-ref".to_string(),
+        ref_store,
+        None,
+        0.5,
+        std::path::PathBuf::new(),
+    );
 
     // Very high threshold should filter everything
     let results =
