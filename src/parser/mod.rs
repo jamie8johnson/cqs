@@ -26,8 +26,8 @@ pub fn parser_version() -> u32 {
     chunk::PARSER_VERSION
 }
 pub use types::{
-    CallEdgeKind, CallSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle, FunctionCalls, Language,
-    ParserError, SignatureStyle, TypeEdgeKind, TypeRef,
+    CallEdgeKind, CallSite, CandidateSite, Chunk, ChunkType, ChunkTypeRefs, FieldStyle,
+    FunctionCalls, Language, ParserError, SignatureStyle, TypeEdgeKind, TypeRef,
 };
 
 use once_cell::sync::OnceCell;

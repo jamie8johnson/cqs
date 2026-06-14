@@ -308,6 +308,28 @@ pub struct FunctionCalls {
     pub calls: Vec<CallSite>,
 }
 
+/// A low-confidence call-graph candidate extracted from code.
+///
+/// Sibling of [`CallSite`], carried in a SEPARATE collection alongside
+/// `Vec<CallSite>` so it can never be folded into the `function_calls` table.
+/// Candidates land in the `candidate_edges` side-table (callee-name-keyed,
+/// never joined by callers/callees/impact), so a candidate is invisible to the
+/// caller graph by construction — it cannot become a false caller, and it
+/// cannot move a callee into the wrong dead tier the way a new
+/// [`CallEdgeKind`] variant would (that enum's `is_real_caller` is the
+/// complement of `doc_reference`, so any new kind defaults to "real caller").
+#[derive(Debug, Clone)]
+pub struct CandidateSite {
+    /// Source file the candidate reference lives in.
+    pub file: PathBuf,
+    /// Name of the symbol the candidate points at.
+    pub callee_name: String,
+    /// Line number of the reference (1-indexed).
+    pub ref_line: u32,
+    /// Candidate provenance string (the kind of low-confidence reference).
+    pub candidate_kind: String,
+}
+
 /// Classification of how a type is referenced in code.
 /// Used for type-level dependency tracking.
 /// Stored as string in SQLite `type_edges.edge_kind` column.

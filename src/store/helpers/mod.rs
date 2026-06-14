@@ -177,7 +177,14 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   until its content changes. Without it a PARSER_VERSION bump re-queues an
 ///   unparseable file every reconcile tick forever (the mtime touch heals only
 ///   the fingerprint predicate, not drift).
-pub const CURRENT_SCHEMA_VERSION: i32 = 31;
+/// - v32: candidate_edges side-table (file, callee_name, ref_line,
+///   candidate_kind) for low-confidence call-graph candidates that must NOT
+///   surface as callers. A SEPARATE table, not a function_calls.edge_kind value:
+///   the graph queries SELECT every function_calls row for a callee with no kind
+///   exclusion, so a candidate stored there would read as a false caller. This
+///   table is callee-name-keyed and never joined by a graph query. Empty on
+///   migrate; no PARSER_VERSION bump (nothing emits rows yet).
+pub const CURRENT_SCHEMA_VERSION: i32 = 32;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.
