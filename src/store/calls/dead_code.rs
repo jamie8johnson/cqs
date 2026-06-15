@@ -1076,6 +1076,18 @@ pub fn apply_dead_overlay<M>(
         // `low_conf` HEURISTIC breakdown for it and instead consults the
         // overlay-merged CANDIDATE map (`build_overlay_candidate_map`) — a
         // candidate-only addition still relabels `low-confidence-live`.
+        //
+        // Precondition for that candidate consult: the entry has zero trusted
+        // merged callers. `build_overlay_candidate_map` omits the trusted-edge
+        // exclusion, so its output is only safe to read for a zero-trusted-caller
+        // name — consulting it for a possibly-live function would mislabel it.
+        // `has_real` is false here (zero real callers), and trusted is a subset of
+        // real, so zero-trusted holds; pin it.
+        debug_assert!(
+            !merged.iter().any(|c| c.edge_kind.is_trusted()),
+            "overlay_dead candidate {name} has a trusted merged caller — the \
+             overlay candidate map must only be consulted for zero-trusted-caller entries"
+        );
         let dead_fn = DeadFunction {
             chunk: def,
             confidence: DeadConfidence::Medium,
@@ -1129,6 +1141,19 @@ pub fn apply_dead_overlay<M>(
 /// candidate-only overlay-dead entry — a function dead over the merged real
 /// caller graph but still referenced by a worktree candidate edge — relabels
 /// `low-confidence-live` instead of `dead`.
+///
+/// CALLER CONTRACT: this output must only be consulted for names with zero
+/// trusted merged callers — the `overlay_dead` entries, computed dead over the
+/// authoritative merged real-caller graph (zero real callers ⇒ zero trusted
+/// callers, since trusted is a subset of real). Unlike
+/// [`Store::find_low_confidence_live_names`], this map OMITS the trusted-edge
+/// exclusion: it counts every candidate row, including rows for a function the
+/// trusted call graph already proves live. Consulting it for a possibly-live
+/// function (one with ≥1 trusted merged caller) would therefore relabel that
+/// genuinely-live function `low-confidence-live`, mislabeling it. The consult
+/// site in `apply_dead_overlay` (where `overlay_dead = true` is set, after
+/// `merge_callers` confirms zero real merged callers) is the only admissible
+/// reader; a `debug_assert!` there pins the zero-real-caller precondition.
 pub fn build_overlay_candidate_map<M>(
     store: &Store<M>,
     overlay: &crate::worktree_overlay::WorktreeOverlay,
