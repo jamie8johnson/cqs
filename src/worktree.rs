@@ -120,20 +120,20 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 /// Resolve a worktree's per-worktree gitdir to its canonical filesystem
 /// path, reading `<dir>/.git`'s `gitdir: <path>` line.
 ///
-/// **Security primitive.** [`resolve_main_project_dir`] trusts the worktree's
-/// own `.git` → `commondir` chain to discover the main root, which an attacker
-/// who controls `<dir>/.git` can forge to point at *any* project's `.git/`
-/// (the unregistered-worktree bypass). A registration check needs the
-/// *gitdir* itself — for a legitimate linked worktree the gitdir lives at
-/// `<main>/.git/worktrees/<name>/`, a directory *inside* the served project
-/// that the attacker does not control. Comparing the canonical gitdir against
-/// the served project's real `.git/worktrees/` therefore cannot be forged
-/// from the worktree side.
+/// For a legitimate linked worktree this is `<main>/.git/worktrees/<name>/`.
+/// Returns the canonicalized gitdir; returns `None` for a non-worktree (a
+/// regular repo where `.git` is a directory, no `.git`, a malformed link, or
+/// a gitdir that does not exist on disk). Bounded read mirrors
+/// [`resolve_main_project_dir`].
 ///
-/// Returns the canonicalized gitdir (so the caller can do an ancestor check
-/// against a likewise-canonicalized `.git/worktrees/`). Returns `None` for a
-/// non-worktree (regular repo, no `.git`, malformed link, or a gitdir that
-/// does not exist on disk). Bounded read mirrors [`resolve_main_project_dir`].
+/// **Not a security gate.** This resolves the worktree's *own* forward link,
+/// which the client controls. Path-layer comparison of this gitdir against
+/// `<served>/.git/worktrees/` was tried as an overlay-root registration check
+/// and defeated by a `.git` symlink that follows through to a real registered
+/// worktree's gitdir (a masquerade git's own registry never lists). The
+/// authoritative gate is `git -C <served> worktree list` membership
+/// ([`crate::worktree_overlay::registered_worktrees`]); this helper remains a
+/// general worktree-resolution utility.
 pub fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
     let dot_git = dir.join(".git");
     let metadata = std::fs::metadata(&dot_git).ok()?;
@@ -162,50 +162,10 @@ pub fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
     } else {
         dir.join(&gitdir)
     };
-    // Canonicalize so the ancestor check below compares real paths (symlinks
-    // and `..` resolved). A gitdir that does not exist canonicalizes to an
-    // error → `None`, which the caller treats as "not registered".
+    // Canonicalize so the returned path compares as a real path (symlinks and
+    // `..` resolved). A gitdir that does not exist canonicalizes to an error
+    // → `None`.
     dunce::canonicalize(&gitdir).ok()
-}
-
-/// Read git's BACK-POINTER from a per-worktree gitdir: `<gitdir>/gitdir`
-/// holds the absolute path of the worktree's real `.git` *file*. Returns
-/// it canonicalized.
-///
-/// **Security primitive (the second half of the registration check).**
-/// [`worktree_gitdir`] proves the worktree's *forward* link (its `.git` →
-/// gitdir) lands UNDER the served project's `.git/worktrees/`, but git's
-/// worktree link is *bidirectional* and an attacker controls only the
-/// forward half. A forged `<evil>/.git` can name *any* real registered
-/// gitdir of the served project (e.g. `gitdir: <served>/.git/worktrees/wt`),
-/// passing the forward check — but the back-pointer at
-/// `<served>/.git/worktrees/wt/gitdir` was written by git for the *real*
-/// `wt` and points at `wt`'s `.git`, not `<evil>/.git`. The attacker cannot
-/// rewrite it (it lives inside the served project's `.git/`). Requiring the
-/// back-pointer to equal `<overlay_root>/.git` therefore binds the registry
-/// entry to THIS specific overlay root, defeating the registered-gitdir
-/// hijack.
-///
-/// Returns `None` when the back-pointer file is absent, unreadable, empty,
-/// or does not canonicalize (a registry entry with no live `gitdir` back-link
-/// is not a binding the caller can trust). Bounded read mirrors
-/// [`resolve_main_project_dir`].
-pub fn read_gitdir_backpointer(gitdir: &Path) -> Option<PathBuf> {
-    let backpointer_file = gitdir.join("gitdir");
-    let mut raw = String::with_capacity(128);
-    std::fs::File::open(&backpointer_file)
-        .ok()?
-        .take(MAX_GIT_FILE_BYTES)
-        .read_to_string(&mut raw)
-        .ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    // The back-pointer is the absolute path of the worktree's `.git` file.
-    // Canonicalize so the caller compares real paths; a stale pointer to a
-    // moved/deleted worktree canonicalizes to an error → `None`.
-    dunce::canonicalize(raw).ok()
 }
 
 /// Convenience wrapper: resolve `dir` to the main project's `.cqs/`
@@ -616,48 +576,6 @@ mod tests {
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join(".git"), "gitdir: /no/such/path/.git/worktrees/x\n").unwrap();
         assert_eq!(worktree_gitdir(&wt), None);
-    }
-
-    /// `read_gitdir_backpointer` reads git's `<gitdir>/gitdir` back-link and
-    /// canonicalizes it to the worktree's real `.git` file path.
-    #[test]
-    fn read_gitdir_backpointer_returns_canonical_dot_git() {
-        let dir = TempDir::new().unwrap();
-        let gitdir = dir
-            .path()
-            .join("main")
-            .join(".git")
-            .join("worktrees")
-            .join("f");
-        let wt = dir.path().join("wt");
-        std::fs::create_dir_all(&gitdir).unwrap();
-        std::fs::create_dir_all(&wt).unwrap();
-        // The worktree's real `.git` file (target of the back-pointer).
-        let dot_git = wt.join(".git");
-        std::fs::write(&dot_git, "gitdir: whatever\n").unwrap();
-        // git's back-link: `<gitdir>/gitdir` holds the abs path of `<wt>/.git`.
-        std::fs::write(gitdir.join("gitdir"), format!("{}\n", dot_git.display())).unwrap();
-
-        let expected = dunce::canonicalize(&dot_git).unwrap();
-        assert_eq!(read_gitdir_backpointer(&gitdir), Some(expected));
-    }
-
-    /// `read_gitdir_backpointer` returns `None` when the back-link file is
-    /// absent, empty, or points at a path that does not exist — the cases the
-    /// registration check treats as an unbound (untrusted) registry entry.
-    #[test]
-    fn read_gitdir_backpointer_none_when_absent_empty_or_dangling() {
-        let dir = TempDir::new().unwrap();
-        let gitdir = dir.path().join("g");
-        std::fs::create_dir_all(&gitdir).unwrap();
-        // Absent back-link file.
-        assert_eq!(read_gitdir_backpointer(&gitdir), None);
-        // Empty back-link file.
-        std::fs::write(gitdir.join("gitdir"), "\n").unwrap();
-        assert_eq!(read_gitdir_backpointer(&gitdir), None);
-        // Dangling back-link (points at a non-existent path).
-        std::fs::write(gitdir.join("gitdir"), "/no/such/wt/.git\n").unwrap();
-        assert_eq!(read_gitdir_backpointer(&gitdir), None);
     }
 
     /// A stray `.cqs` *file* (mistaken `touch .cqs`, packaged tarball with

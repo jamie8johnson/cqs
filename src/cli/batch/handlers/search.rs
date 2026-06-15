@@ -1395,29 +1395,24 @@ mod tests {
         );
     }
 
-    /// SECURITY (Attack A) — the registered-gitdir hijack. The forward
-    /// under-registry check alone is bypassable: git's worktree link is
-    /// bidirectional and the client controls only the forward half. An attacker
-    /// forges their tree's `.git` to point `gitdir:` at a REAL, legitimately
-    /// registered worktree gitdir of the served project
-    /// (`<served>/.git/worktrees/wt`). Then:
+    /// SECURITY (Attack A) — the registered-gitdir hijack. The attacker forges
+    /// their tree's `.git` to point `gitdir:` at a REAL, legitimately registered
+    /// worktree gitdir of the served project (`<served>/.git/worktrees/wt`).
+    /// Then:
     ///   - `resolve_main_project_dir(evilA)` resolves main to the served root
-    ///     (step 2 passes),
-    ///   - `worktree_gitdir(evilA)` is `<served>/.git/worktrees/wt`, which is
-    ///     under the registry (forward check passes),
+    ///     (the cheap pre-check passes),
+    ///   - `worktree_gitdir(evilA)` is `<served>/.git/worktrees/wt` (a real
+    ///     registered gitdir — every file-parsing forward/back-pointer check is
+    ///     satisfied),
     ///   - but `overlay_request` would be stamped with evilA (the attacker tree),
     ///     re-arming the arbitrary out-of-tree read/embed/relay primitive.
     /// The precondition (≥1 registered worktree of served) is the common case —
     /// every `.claude/worktrees/` agent worktree satisfies it.
     ///
-    /// The back-pointer check defeats this: `<served>/.git/worktrees/wt/gitdir`
-    /// was written by git for the REAL `wt` and points at `wt`'s `.git`, not at
-    /// evilA's `.git` (the attacker can't rewrite it — it lives inside the
-    /// served `.git/`). Validation must REJECT evilA and leave `overlay_request`
-    /// unset.
-    ///
-    /// Fails on the back-pointer-less code (forward check passes, evilA
-    /// accepted) and passes once the back-pointer bind is added.
+    /// The authoritative gate defeats this: evilA is not a directory git itself
+    /// tracks, so `git -C <served> worktree list` never lists it → it is absent
+    /// from the membership set → rejected. Validation must REJECT evilA and
+    /// leave `overlay_request` unset.
     #[test]
     fn overlay_daemon_rejects_forged_gitdir_pointing_at_real_registered_worktree() {
         let (holder, ctx, parent, wt) = overlay_ctx();
@@ -1460,9 +1455,9 @@ mod tests {
             Some(served_canonical.as_path()),
             "hijack must resolve its main to the served root"
         );
-        // Precondition 2: the hijack's gitdir IS under the registry (so the
-        // FORWARD check passes — proving the back-pointer is what rejects it,
-        // not the forward check).
+        // Precondition 2: the hijack's gitdir IS under the registry (so every
+        // file-parsing path check is satisfied — proving the authoritative
+        // git-registry membership is what rejects it, not a path-layer mismatch).
         let hijack_gitdir =
             cqs::worktree::worktree_gitdir(&attacker).expect("hijack gitdir resolves");
         let registry = dunce::canonicalize(parent.join(".git").join("worktrees"))
@@ -1470,10 +1465,10 @@ mod tests {
         assert!(
             hijack_gitdir.starts_with(&registry),
             "hijack's gitdir must be under the served registry (else this test \
-             proves nothing about the back-pointer check)"
+             proves nothing about the registry-membership check)"
         );
 
-        // The fix must reject it loudly via the back-pointer bind.
+        // The fix must reject it loudly: evilA is absent from git's registry.
         let err = view
             .set_validated_overlay_request(&attacker)
             .expect_err("forged gitdir pointing at a real registered worktree must be rejected");
@@ -1486,6 +1481,122 @@ mod tests {
             view.overlay_request.borrow().is_none(),
             "a rejected hijack must leave overlay_request unset"
         );
+    }
+
+    /// SECURITY (Attack B) — the symlinked-`.git` masquerade. The file-parsing
+    /// registration checks (forward gitdir-under-registry, then `<gitdir>/gitdir`
+    /// back-pointer) are defeated by a SYMLINK: `EVIL/.git` is a symlink to a
+    /// real registered worktree `wt`'s `.git`. Then `worktree_gitdir(EVIL)`
+    /// follows the symlink → `wt`'s gitdir (under registry), and
+    /// `canonicalize(EVIL/.git)` ALSO follows the symlink → `wt/.git`, so the
+    /// back-pointer matches → ACCEPTED, `overlay_request` stamped with EVIL.
+    /// But `git -C EVIL ls-files --others` enumerates EVIL's OWN out-of-tree
+    /// files (a linked worktree has no `core.worktree`; git takes the gitdir
+    /// from the symlinked `.git` but the working-tree top from the `-C` cwd =
+    /// EVIL) → the arbitrary-read primitive is back.
+    ///
+    /// The authoritative gate defeats this: EVIL is a symlink masquerade git's
+    /// own registry never lists, so `git -C <served> worktree list` does not
+    /// contain canonical(EVIL) → absent → rejected. Exercised for BOTH an
+    /// absolute and a relative symlink target.
+    ///
+    /// Fails on the back-pointer code (canonicalize follows the symlink, bind
+    /// matches, EVIL accepted) and passes once the gate is the git registry.
+    /// Unix-only (Windows symlink semantics differ and require privilege).
+    #[cfg(unix)]
+    #[test]
+    fn overlay_daemon_rejects_symlinked_git_to_real_worktree() {
+        use std::os::unix::fs::symlink;
+
+        // Helper: run one masquerade with a given symlink target, asserting
+        // rejection + unset request. `make_target` receives (evil_dir, real_wt)
+        // and returns the path to symlink `evil/.git` to (absolute or relative).
+        fn run_case(
+            label: &str,
+            make_target: impl Fn(&std::path::Path, &std::path::Path) -> PathBuf,
+        ) {
+            let (holder, ctx, parent, wt) = overlay_ctx();
+            let view = ctx.build_view(None);
+
+            // `wt` is a REAL `git worktree add` worktree of the served project
+            // (created by overlay_ctx), with a real `.git` FILE.
+            let real_dot_git = wt.join(".git");
+            assert!(
+                real_dot_git.is_file(),
+                "{label}: real worktree must have a `.git` file to symlink to"
+            );
+
+            // Attacker tree: `EVIL/.git` is a SYMLINK to the real worktree's
+            // `.git` (the masquerade). EVIL holds its own out-of-tree content.
+            let evil = holder.path().join(format!("evilB_{label}"));
+            std::fs::create_dir_all(&evil).expect("mkdir evil");
+            std::fs::write(evil.join("attacker_secret.rs"), "pub fn leak() {}\n")
+                .expect("write evil secret");
+            let target = make_target(&evil, &wt);
+            symlink(&target, evil.join(".git")).expect("create .git symlink");
+
+            let evil = dunce::canonicalize(&evil).unwrap_or(evil);
+
+            // Precondition: the masquerade satisfies the cheap pre-check — its
+            // `.git` symlink follows through so resolve_main_project_dir lands on
+            // the served root (proving the registry membership is what bites).
+            let resolved_main = cqs::worktree::resolve_main_project_dir(&evil);
+            let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+            assert_eq!(
+                resolved_main.as_deref(),
+                Some(served_canonical.as_path()),
+                "{label}: symlinked `.git` must resolve main to the served root"
+            );
+            // Precondition: canonicalize(EVIL/.git) follows the symlink to the
+            // REAL worktree's `.git` — exactly what defeated the back-pointer
+            // bind (it compared this against the resolved gitdir's back-pointer
+            // and matched).
+            let canon_evil_dot_git =
+                dunce::canonicalize(evil.join(".git")).expect("canon evil .git");
+            let canon_real_dot_git = dunce::canonicalize(&real_dot_git).expect("canon real .git");
+            assert_eq!(
+                canon_evil_dot_git, canon_real_dot_git,
+                "{label}: the symlink must resolve EVIL/.git to the real worktree's .git \
+                 (else this test does not reproduce Attack B)"
+            );
+
+            // The fix must reject: EVIL is absent from git's worktree registry.
+            let err = match view.set_validated_overlay_request(&evil) {
+                Ok(()) => panic!("{label}: symlinked-`.git` masquerade must be rejected"),
+                Err(e) => e,
+            };
+            assert!(
+                format!("{err:#}").contains("not a registered worktree of the served project"),
+                "{label}: expected a registration rejection; got: {err:#}"
+            );
+            assert!(
+                view.overlay_request.borrow().is_none(),
+                "{label}: a rejected masquerade must leave overlay_request unset"
+            );
+        }
+
+        // Absolute symlink target: EVIL/.git -> /abs/path/to/wt/.git
+        run_case("absolute", |_evil, wt| wt.join(".git"));
+
+        // Relative symlink target: EVIL/.git -> ../<wt_basename>/.git
+        // (evil and wt are siblings under the same tmp holder; the relative
+        // link still resolves to the real worktree's `.git`).
+        run_case("relative", |evil, wt| pathdiff_rel(evil, &wt.join(".git")));
+    }
+
+    /// Compute a relative path from a symlink's containing dir `link_dir` to
+    /// `target`, for the relative-symlink Attack B case. The link is created at
+    /// `<link_dir>/.git`, so a relative target is resolved relative to
+    /// `link_dir`. `link_dir` and the target's worktree are siblings under the
+    /// same tmp holder, so the form is `../<wt>/.git`; we build it from
+    /// components rather than pulling a crate.
+    #[cfg(unix)]
+    fn pathdiff_rel(link_dir: &std::path::Path, target: &std::path::Path) -> PathBuf {
+        // link_dir = <holder>/<evil>, target = <holder>/<wt>/.git.
+        // From <evil>/, the target is `../<wt>/.git`.
+        let holder = link_dir.parent().expect("link_dir parent");
+        let target_from_holder = target.strip_prefix(holder).expect("target under holder");
+        std::path::Path::new("..").join(target_from_holder)
     }
 
     /// Control: a bare non-git directory is rejected (no `.git` at all → not a
