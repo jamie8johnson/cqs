@@ -46,7 +46,15 @@ use super::Parser;
 /// Structured-Text routine chunks. The chunk class, ids, and content change
 /// wholesale for every indexed L5X/L5K file, so a refresh is required even for
 /// byte-identical content.
-pub const PARSER_VERSION: u32 = 12;
+/// 13: Dart call-graph wiring + body-inclusive chunk ranges. `LANG_DART` now
+/// has a `call_query` (was unwired — Dart yielded zero call edges), and the
+/// chunk span of a Dart function/method/getter/setter is extended to include
+/// its adjacent `function_body` (the grammar inlines the top-level-definition
+/// rule, so the signature node alone excluded the body). A byte-identical Dart
+/// file re-parsed under v13 produces call edges and body-inclusive chunk
+/// content + line_end + content_hash + id that it did not under v12, so a
+/// refresh is required even when the file's bytes are unchanged.
+pub const PARSER_VERSION: u32 = 13;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -159,6 +167,19 @@ pub fn canonical_hash_fallback(content: &str) -> String {
 ///   affected comment range is skipped with a `warn!`, degrading to a
 ///   slightly-less-canonical (but still valid) hash rather than panicking.
 pub(crate) fn canonical_hash(node: tree_sitter::Node, content: &str) -> String {
+    canonical_hash_spanning(node, None, content)
+}
+
+/// Like [`canonical_hash`], but additionally strips comment descendants of an
+/// optional `extra` node whose subtree extends `content` past `node`'s own
+/// `byte_range()` (the Dart body-span case — see `extract_chunk`). The `extra`
+/// node's absolute byte ranges are rebased by the SAME `node.start_byte()` base
+/// because both nodes occupy one contiguous content slice that begins at `node`.
+pub(crate) fn canonical_hash_spanning(
+    node: tree_sitter::Node,
+    extra: Option<tree_sitter::Node>,
+    content: &str,
+) -> String {
     let _span = tracing::debug_span!("canonical_hash", kind = node.kind()).entered();
     let base = node.start_byte();
     let content_len = content.len();
@@ -166,6 +187,9 @@ pub(crate) fn canonical_hash(node: tree_sitter::Node, content: &str) -> String {
     // Collect chunk-local byte ranges of all comment descendants.
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     collect_comment_ranges(node, base, content_len, &mut ranges);
+    if let Some(extra) = extra {
+        collect_comment_ranges(extra, base, content_len, &mut ranges);
+    }
 
     if ranges.is_empty() {
         return canonical_hash_fallback(content);
@@ -287,6 +311,18 @@ impl Parser {
                 ParserError::ParseFailed("No definition capture found in match".into())
             })?;
 
+        // Dart body-range span: the tree-sitter-dart grammar inlines its
+        // top-level-definition rule, so a `function_signature` and its
+        // `function_body` are ADJACENT SIBLINGS with no node spanning both. The
+        // chunk query captures the signature, whose `byte_range()` covers only
+        // the signature — excluding the body, which starves per-chunk call
+        // extraction (it is scoped to the captured node's byte range). When a
+        // captured signature has an associated `function_body`, extend the chunk
+        // span to include it. Other languages have a real spanning node, so this
+        // returns `None` for them and the chunk range is unchanged.
+        let body_node = dart_function_body(node, language);
+        let span_end_byte = body_node.map_or_else(|| node.end_byte(), |b| b.end_byte());
+
         // Get name capture
         let name_idx = query.capture_index_for_name("name");
         let name_capture = name_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx));
@@ -299,8 +335,10 @@ impl Parser {
             })
             .unwrap_or_else(|| "<anonymous>".to_string());
 
-        // Extract content
-        let content = source[node.byte_range()].to_string();
+        // Extract content over the (possibly body-extended) span. For all
+        // non-Dart languages `span_end_byte == node.end_byte()`, so this is the
+        // captured node's range unchanged.
+        let content = source[node.start_byte()..span_end_byte].to_string();
 
         // Validate name position: if the @name capture is far from the definition
         // start, tree-sitter error recovery likely matched the wrong node.
@@ -315,9 +353,13 @@ impl Parser {
             }
         }
 
-        // Line numbers (1-indexed for display)
+        // Line numbers (1-indexed for display). `line_end` tracks the extended
+        // span so a body-inclusive Dart chunk reports the body's last line.
         let line_start = node.start_position().row as u32 + 1;
-        let line_end = node.end_position().row as u32 + 1;
+        let line_end = body_node
+            .map_or_else(|| node.end_position(), |b| b.end_position())
+            .row as u32
+            + 1;
 
         // Extract signature
         let signature = extract_signature(&content, language);
@@ -362,8 +404,12 @@ impl Parser {
         );
 
         // Comment- and whitespace-normalized hash for embedding cache reuse.
-        // Tree-precise: strips all comment descendants of `node`.
-        let canonical = canonical_hash(node, &content);
+        // Tree-precise: strips all comment descendants of `node`. For a
+        // body-extended Dart chunk the body's comment descendants live under
+        // `body_node`, not `node`, so they are collected from both — otherwise a
+        // comment-only edit inside the body would change the canonical hash and
+        // force a needless re-embed.
+        let canonical = canonical_hash_spanning(node, body_node, &content);
 
         Ok(Chunk {
             id,
@@ -818,6 +864,45 @@ fn extract_name_fallback(content: &str) -> Option<String> {
             let name = rest[..name_end].trim();
             if !name.is_empty() {
                 return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Locate the `function_body` node associated with a captured Dart
+/// signature/member node, so [`Parser::extract_chunk`] can extend the chunk
+/// span to include the body.
+///
+/// The tree-sitter-dart grammar inlines `_top_level_definition`, so a top-level
+/// `function_signature` / `getter_signature` / `setter_signature` and its
+/// `function_body` are adjacent siblings of `source_file` with no spanning
+/// node; in-class members nest as `class_member > method_signature >
+/// {function,getter,setter}_signature`, with `function_body` a sibling of
+/// `method_signature`. Two cases cover both shapes:
+///   1. the captured node's immediate next sibling is `function_body`
+///      (top-level signature, or an in-class method captured at
+///      `method_signature`), and
+///   2. the captured node's parent is `method_signature` whose next sibling is
+///      `function_body` (an in-class getter/setter captured at the inner
+///      `getter_signature`/`setter_signature`).
+/// Abstract members and signature-only declarations have no `function_body` and
+/// yield `None` (the chunk keeps its signature-only range). Returns `None` for
+/// every non-Dart language.
+fn dart_function_body(node: tree_sitter::Node, language: Language) -> Option<tree_sitter::Node> {
+    if language != Language::Dart {
+        return None;
+    }
+    if let Some(sib) = node.next_sibling() {
+        if sib.kind() == "function_body" {
+            return Some(sib);
+        }
+    }
+    let parent = node.parent()?;
+    if parent.kind() == "method_signature" {
+        if let Some(sib) = parent.next_sibling() {
+            if sib.kind() == "function_body" {
+                return Some(sib);
             }
         }
     }
