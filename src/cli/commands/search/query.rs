@@ -837,10 +837,11 @@ pub(crate) fn retrieve_project(
         results
     };
 
-    // Cross-encoder re-ranking. Note: overlay hits are NOT cross-encoded in
-    // phase 1 (the `--include-refs` + `--rerank` precedent — only the project
-    // half reranks); the overlay merge below layers raw-scored overlay hits on
-    // top of the reranked project pool.
+    // Cross-encoder re-ranking of the project pool. When an overlay is active
+    // and a reranker is set, `apply_overlay` re-runs the cross-encoder over the
+    // *merged* (project + overlay) set so both legs share one comparable frame
+    // — this project-only rerank still serves the no-overlay rerank path and
+    // supplies a frame-consistent, truncated project pool to the merge.
     let results = if let Some(reranker) = prepared.reranker.as_deref() {
         rerank_unified(reranker, query, results, post_limit)?
     } else {
@@ -978,13 +979,29 @@ pub(crate) fn apply_overlay(
     };
 
     // 3. Merge: overlay hits as a `"worktree"` leg, weight 1.0, no demotion.
-    //    `merge_results` sorts by score, dedups by content hash, truncates.
+    //    `merge_results` concatenates + dedups by content hash + sorts by score.
     let leg = if overlay_hits.is_empty() {
         Vec::new()
     } else {
         vec![("worktree".to_string(), overlay_hits)]
     };
-    let merged = reference::merge_results(masked, leg, args.limit);
+
+    // Frame-correct merge. When a reranker is active the project leg
+    // arrives in sigmoid frame `[0, 1]` (rescored by `retrieve_project`) while
+    // the overlay leg is raw cosine — incomparable in `merge_results`' raw
+    // `score` sort. The cross-encoder scores `(query, passage)` pairs, so it
+    // ranks both legs in one frame: merge the full pool (`merge_results` to the
+    // pre-rerank pool size, not yet truncated to `limit`), rerank the merged
+    // set, then truncate to `limit`. With no reranker the merge truncates to
+    // `limit` directly — the default cosine-family path is unchanged (byte-
+    // identical), and that recall-sensitive path keeps today's score sort.
+    let merged = if let Some(reranker) = prepared.reranker.as_deref() {
+        let pool_limit = crate::cli::limits::rerank_pool_size(args.limit);
+        let pool = reference::merge_results(masked, leg, pool_limit);
+        rerank_tagged(reranker, args.query.as_str(), pool, args.limit)?
+    } else {
+        reference::merge_results(masked, leg, args.limit)
+    };
 
     // Record the envelope outcome before folding back.
     cqs::worktree_overlay::set_overlay_meta(cqs::worktree_overlay::OverlayMeta::Active {
@@ -1058,22 +1075,29 @@ fn run_project_search<Mode>(
 /// over the project results before the merge consumes them. The reference
 /// stores come from [`search_ctx::SearchCtx::references`] (the multi-store
 /// seam); each is searched with `apply_weight = true` so its scores rank below
-/// equally-similar project results, then [`reference::merge_results`] dedups by
-/// content hash and truncates to `limit`.
+/// equally-similar project results.
+///
+/// Frame-correct merge: when a reranker is active the project leg arrives in
+/// sigmoid frame `[0, 1]` (rescored by [`retrieve_project`]) while the reference
+/// legs carry weighted cosine — incomparable in [`reference::merge_results`]'
+/// raw `score` sort. The cross-encoder scores `(query, passage)` pairs, so it
+/// ranks both legs in one comparable frame: concatenate + dedup the full pool,
+/// rerank the merged set, then truncate to `limit`. With no reranker the merge
+/// truncates to `limit` directly — the default cosine-family path is unchanged.
 pub(crate) fn merge_references(
     args: &QueryArgs,
     prepared: &PreparedQuery<'_>,
     project_results: Vec<UnifiedResult>,
     references: &[std::sync::Arc<cqs::reference::ReferenceIndex>],
-) -> Vec<reference::TaggedResult> {
+) -> Result<Vec<reference::TaggedResult>> {
     if references.is_empty() {
-        return project_results
+        return Ok(project_results
             .into_iter()
             .map(|result| reference::TaggedResult {
                 result,
                 source: None,
             })
-            .collect();
+            .collect());
     }
 
     use rayon::prelude::*;
@@ -1098,7 +1122,23 @@ pub(crate) fn merge_references(
         })
         .collect();
 
-    reference::merge_results(project_results, ref_results, args.limit)
+    if let Some(reranker) = prepared.reranker.as_deref() {
+        // Frame-correct: rerank the merged (project + reference) pool so the
+        // cross-encoder ranks both legs on one scale. Merge to the pre-rerank
+        // pool size (not yet truncated to `limit`) so the reranker sees the full
+        // candidate set, then truncate to `limit` in the rerank step.
+        let pool_limit = crate::cli::limits::rerank_pool_size(args.limit);
+        let pool = reference::merge_results(project_results, ref_results, pool_limit);
+        rerank_tagged(reranker, args.query.as_str(), pool, args.limit)
+    } else {
+        // No reranker: today's score-sort path, unchanged. The default
+        // cosine-family legs are frame-adjacent and recall-sensitive.
+        Ok(reference::merge_results(
+            project_results,
+            ref_results,
+            args.limit,
+        ))
+    }
 }
 
 /// `--ref`-scoped retrieval: search exactly the one named reference store, no
@@ -1380,15 +1420,9 @@ pub(crate) fn cmd_query(
     // `--include-refs`: project results merged with all references. The
     // project half (`retrieve_project`) drives the staleness warning and
     // parent-context resolution exactly as the plain path does; the reference
-    // merge then layers on top.
-    if cli.rerank_active() {
-        // The project half IS reranked (`retrieve_project` applies the
-        // reranker). Only the merged reference results bypass the cross-encoder
-        // — `merge_references` ranks them by their weighted retrieval score.
-        tracing::warn!(
-            "--rerank applies to project results only; merged reference results are not reranked"
-        );
-    }
+    // merge then layers on top. When `--rerank` is set, `merge_references`
+    // cross-encodes the merged (project + reference) set so both legs rank in
+    // one comparable frame.
     let project_results = retrieve_project(ctx, &args, &prepared)?;
 
     // Staleness warning over the project results (reference origins aren't
@@ -1420,7 +1454,7 @@ pub(crate) fn cmd_query(
     };
 
     let references = ctx.references()?;
-    let tagged = merge_references(&args, &prepared, project_results, &references);
+    let tagged = merge_references(&args, &prepared, project_results, &references)?;
 
     let (tagged, token_info) = pack_tagged_cli(ctx, &args, tagged)?;
 
@@ -1500,6 +1534,64 @@ fn rerank_unified(
     }
 
     Ok(code_results.into_iter().map(UnifiedResult::Code).collect())
+}
+
+/// Re-rank a merged, leg-tagged result set through the cross-encoder while
+/// preserving each result's `source` (leg-of-origin) tag.
+///
+/// The cross-encoder scores `(query, passage)` pairs, so it is the one scorer
+/// that ranks both legs of a merged set in a single comparable frame regardless
+/// of which leg supplied each passage. Reranking the *merged* set fixes the
+/// frame-mismatch sort: without it, a leg already carrying sigmoid-frame scores
+/// `[0, 1]` and a raw-cosine leg would be interleaved by an incomparable raw
+/// `score` comparator. The merged-set rerank rescores every survivor on one
+/// scale, so the sort is well-defined.
+///
+/// The `Reranker::rerank` contract reorders `SearchResult`s in place by the new
+/// score (chunk-id secondary key) and truncates to `limit`; it preserves each
+/// result's `chunk.id`. The source tag rides along via an `id -> source` lookup
+/// captured before the reorder. Within a merged set the ids are effectively
+/// unique (each leg's hits carry distinct origins, and `merge_results` already
+/// deduplicated by content hash), so the lookup re-pairs the reordered results
+/// with their legs deterministically.
+///
+/// `results.len() <= 1` is a no-op (the rerank contract itself no-ops there);
+/// the single-or-empty set keeps its incoming order and tags.
+fn rerank_tagged(
+    reranker: &dyn cqs::Reranker,
+    query: &str,
+    results: Vec<reference::TaggedResult>,
+    limit: usize,
+) -> Result<Vec<reference::TaggedResult>> {
+    // Source tags, keyed on chunk id, captured before the reorder.
+    let mut source_by_id: HashMap<String, Option<String>> = HashMap::new();
+    let mut code_results: Vec<cqs::store::SearchResult> = Vec::with_capacity(results.len());
+    for t in results {
+        let reference::TaggedResult { result, source } = t;
+        let UnifiedResult::Code(sr) = result;
+        source_by_id.insert(sr.chunk.id.clone(), source);
+        code_results.push(sr);
+    }
+
+    if code_results.len() > 1 {
+        reranker
+            .rerank(query, &mut code_results, limit)
+            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+    }
+
+    // Re-pair each reordered result with its leg tag. A missing id (only
+    // possible if two legs shared an id and dedup collapsed them) falls back to
+    // the project leg (`None`) rather than dropping the result.
+    Ok(code_results
+        .into_iter()
+        .map(|sr| {
+            let source = source_by_id.remove(&sr.chunk.id).flatten();
+            reference::TaggedResult {
+                result: UnifiedResult::Code(sr),
+                source,
+            }
+        })
+        .collect())
 }
 
 /// Ref-scoped name-only search: search only the named reference by name
@@ -1678,6 +1770,56 @@ fn resolve_parent_context<Mode>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Deterministic stub cross-encoder (no model load), shared by the
+    //    frame-correct merge tests in both `project_surface` (merge_references)
+    //    and `overlay_merge` (apply_overlay).
+    //
+    // Scores each result by a name → score map (the true relevance order);
+    // unknown names get a sentinel-low score. Mirrors the `Reranker::rerank`
+    // contract exactly: writes scores, re-sorts descending with a chunk-id
+    // tiebreak, truncates to `limit`, and no-ops at `len() <= 1`.
+    struct StubReranker {
+        scores: std::collections::HashMap<String, f32>,
+    }
+
+    impl cqs::Reranker for StubReranker {
+        fn rerank(
+            &self,
+            _query: &str,
+            results: &mut Vec<cqs::store::SearchResult>,
+            limit: usize,
+        ) -> Result<(), cqs::reranker::RerankerError> {
+            if results.len() <= 1 {
+                return Ok(());
+            }
+            for r in results.iter_mut() {
+                r.score = self.scores.get(&r.chunk.name).copied().unwrap_or(-1.0);
+            }
+            results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.chunk.id.cmp(&b.chunk.id))
+            });
+            results.truncate(limit);
+            Ok(())
+        }
+
+        fn rerank_with_passages(
+            &self,
+            query: &str,
+            results: &mut Vec<cqs::store::SearchResult>,
+            _passages: &[&str],
+            limit: usize,
+        ) -> Result<(), cqs::reranker::RerankerError> {
+            self.rerank(query, results, limit)
+        }
+    }
+
+    fn stub_reranker(pairs: &[(&str, f32)]) -> std::sync::Arc<dyn cqs::Reranker> {
+        let scores = pairs.iter().map(|(n, s)| ((*n).to_string(), *s)).collect();
+        std::sync::Arc::new(StubReranker { scores })
+    }
 
     // ─── ProjectSurface::Skip pin ────────────────────────────────────────────
     //
@@ -1904,6 +2046,167 @@ mod tests {
             // fan-out reads are the surface-independent ones: the project fields
             // it ignores are `None` on Skip, confirming they never participate.
             assert!(skip.index.is_none() && skip.splade_index.is_none());
+        }
+
+        // ── Frame-correct merge at the `merge_references` seam ────────────────
+
+        /// A project-side `UnifiedResult::Code` for `(name, score)`, content
+        /// hash derived from the name so the merge dedup is predictable.
+        fn project_hit(name: &str, score: f32) -> UnifiedResult {
+            let summary = cqs::store::ChunkSummary {
+                id: format!("src/core.rs:{name}"),
+                file: PathBuf::from("src/core.rs"),
+                language: cqs::parser::Language::Rust,
+                chunk_type: cqs::parser::ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 2,
+                content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                window_idx: None,
+                parent_id: None,
+                parent_type_name: None,
+                parser_version: 0,
+                vendored: false,
+            };
+            UnifiedResult::Code(cqs::store::SearchResult::new(summary, score))
+        }
+
+        /// A hand-built `PreparedQuery` carrying the seeded query embedding, a
+        /// default filter, and a reranker handle — drives the frame-correct
+        /// merged-set rerank branch of `merge_references` without going through
+        /// `prepare_query` (whose reranker resolution reads the panicking ctx).
+        fn prepared_for_refs(
+            emb: Embedding,
+            reranker: std::sync::Arc<dyn cqs::Reranker>,
+        ) -> PreparedQuery<'static> {
+            PreparedQuery {
+                query_embedding: emb,
+                filter: cqs::SearchFilter::default(),
+                splade_query: None,
+                splade_index: None,
+                index: None,
+                audit_mode: cqs::audit::AuditMode::default(),
+                search_limit: 10,
+                reranker: Some(reranker),
+            }
+        }
+
+        // merge_references: the project leg arrives in sigmoid frame (0.55)
+        // while the reference leg carries weighted cosine (~1.0 — the seeded
+        // `ref_target` chunk sits at the query embedding). Today's raw-score
+        // sort would rank the numerically-higher reference hit first even though
+        // the stub cross-encoder judges the project hit more relevant. The
+        // merged-set rerank rescores both legs in one frame, so the project hit
+        // wins.
+        //
+        // Fail-before: raw-score merge → top-1 is `ref_target` (cosine ~1.0) →
+        // the project-hit assertion fails. Pass-after: merged-set rerank
+        // reorders to `relevant_fn` first.
+        #[test]
+        fn merge_references_merged_set_rerank_beats_high_cosine_ref() {
+            let (_dir, ctx, emb) = ctx_with_seeded_query("frame-correct merge");
+            let args = QueryArgs {
+                query: "frame-correct merge".to_string(),
+                limit: 5,
+                threshold: 0.0,
+                fts_first: false,
+                ..QueryArgs::default()
+            };
+
+            // The truly-relevant project hit in sigmoid frame; the reference's
+            // `ref_target` is the high-cosine distractor.
+            let project_results = vec![project_hit("relevant_fn", 0.55)];
+            let reranker = stub_reranker(&[("relevant_fn", 0.99), ("ref_target", 0.10)]);
+            let prepared = prepared_for_refs(emb, reranker);
+            let references = ctx.references().expect("references");
+
+            let tagged = merge_references(&args, &prepared, project_results, &references)
+                .expect("merge_references");
+            let names: Vec<&str> = tagged
+                .iter()
+                .map(|t| {
+                    let UnifiedResult::Code(sr) = &t.result;
+                    sr.chunk.name.as_str()
+                })
+                .collect();
+            assert!(
+                names.contains(&"ref_target"),
+                "the high-cosine reference hit is still retrieved; got {names:?}"
+            );
+            assert_eq!(
+                names.first().copied(),
+                Some("relevant_fn"),
+                "merged-set rerank must put the cross-encoder's top hit first, \
+                 not the numerically-higher cosine reference hit; got {names:?}"
+            );
+            // The leg-of-origin tag rides through the rerank: the reference hit
+            // keeps its `stdlib` source, the project hit keeps `None`.
+            let ref_tag = tagged
+                .iter()
+                .find(|t| {
+                    let UnifiedResult::Code(sr) = &t.result;
+                    sr.chunk.name == "ref_target"
+                })
+                .map(|t| t.source.as_deref());
+            assert_eq!(
+                ref_tag,
+                Some(Some("stdlib")),
+                "the reference leg's source tag survives the merged-set rerank"
+            );
+            let proj_tag = tagged
+                .iter()
+                .find(|t| {
+                    let UnifiedResult::Code(sr) = &t.result;
+                    sr.chunk.name == "relevant_fn"
+                })
+                .map(|t| t.source.clone());
+            assert_eq!(
+                proj_tag,
+                Some(None),
+                "the project leg stays untagged through the merged-set rerank"
+            );
+        }
+
+        // merge_references GUARD: with NO reranker the merge keeps today's
+        // raw-score sort, byte-for-byte. Same fixtures, reranker omitted: the
+        // high-cosine reference hit wins. Pins the default (recall-sensitive,
+        // frame-adjacent) path as a no-op so the fix cannot leak churn onto it.
+        #[test]
+        fn merge_references_no_reranker_keeps_raw_score_sort() {
+            let (_dir, ctx, emb) = ctx_with_seeded_query("frame-correct merge default");
+            let args = QueryArgs {
+                query: "frame-correct merge default".to_string(),
+                limit: 5,
+                threshold: 0.0,
+                fts_first: false,
+                ..QueryArgs::default()
+            };
+
+            let project_results = vec![project_hit("relevant_fn", 0.55)];
+            // No reranker.
+            let prepared = PreparedQuery {
+                query_embedding: emb,
+                filter: cqs::SearchFilter::default(),
+                splade_query: None,
+                splade_index: None,
+                index: None,
+                audit_mode: cqs::audit::AuditMode::default(),
+                search_limit: 10,
+                reranker: None,
+            };
+            let references = ctx.references().expect("references");
+
+            let tagged = merge_references(&args, &prepared, project_results, &references)
+                .expect("merge_references");
+            let UnifiedResult::Code(top) = &tagged[0].result;
+            assert_eq!(
+                top.chunk.name, "ref_target",
+                "no reranker ⇒ raw-score sort is unchanged: the cosine ~1.0 \
+                 reference hit outranks the 0.55 project hit"
+            );
         }
     }
 
@@ -2297,6 +2600,17 @@ mod tests {
                 search_limit: 10,
                 reranker: None,
             }
+        }
+
+        /// `prepared_with` plus a reranker handle — drives the frame-correct
+        /// merged-set rerank branch of `apply_overlay`.
+        fn prepared_with_reranker(
+            emb: Embedding,
+            reranker: std::sync::Arc<dyn cqs::Reranker>,
+        ) -> PreparedQuery<'static> {
+            let mut p = prepared_with(emb);
+            p.reranker = Some(reranker);
+            p
         }
 
         fn args_limit(limit: usize) -> QueryArgs {
@@ -2698,6 +3012,89 @@ mod tests {
             assert_eq!(
                 OverlayMeta::SkippedDeltaTooLarge.to_json(),
                 serde_json::Value::String("skipped-delta-too-large".into())
+            );
+        }
+
+        // The deterministic stub cross-encoder + `stub_reranker` helper live in
+        // the parent `tests` module (shared with the `merge_references` tests).
+        use super::stub_reranker;
+
+        // ── apply_overlay: a merged set carrying incomparable score
+        //    frames must be reranked, not raw-score-sorted. The project leg
+        //    arrives in sigmoid frame (0.55), the overlay leg in raw cosine
+        //    (~1.0 — seeded at the query slot). Today's score-sort would put the
+        //    numerically-higher overlay hit on top even though the stub
+        //    cross-encoder judges the project hit more relevant. The merged-set
+        //    rerank rescores both legs in one frame, so the project hit wins.
+        //
+        //    Fail-before: with the raw-score merge, top-1 is `shiny_distractor`
+        //    (cosine ~1.0) → the project-hit assertion fails. Pass-after: the
+        //    merged-set rerank reorders to `relevant_fn` first.
+        #[test]
+        fn overlay_merged_set_rerank_beats_high_cosine_distractor() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // Overlay file src/distractor.rs is in the delta; its one chunk
+            // `shiny_distractor` is seeded at slot 4, so a query at slot 4
+            // retrieves it with cosine ~1.0 — numerically above the project leg.
+            let overlay = overlay_with(
+                &[("src/distractor.rs", "shiny_distractor", 4)],
+                &["src/distractor.rs"],
+            );
+            // The truly-relevant project hit carries a sigmoid-frame 0.55 (as the
+            // project rerank in `retrieve_project` would have produced), on an
+            // unmasked origin so the mask keeps it.
+            let project = vec![UnifiedResult::Code(project_result(
+                "src/core.rs",
+                "relevant_fn",
+                0.55,
+            ))];
+            // Stub cross-encoder: the project hit is the most relevant; the
+            // high-cosine overlay hit is the distractor.
+            let reranker = stub_reranker(&[("relevant_fn", 0.99), ("shiny_distractor", 0.10)]);
+            let prepared = prepared_with_reranker(one_hot(4), reranker);
+
+            let out = apply_overlay(&args_limit(5), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                got.contains(&"shiny_distractor".to_string()),
+                "the high-cosine overlay hit is still retrieved (it just must not \
+                 win the raw-score sort); got {got:?}"
+            );
+            assert_eq!(
+                got.first().map(String::as_str),
+                Some("relevant_fn"),
+                "merged-set rerank must put the cross-encoder's top hit first, \
+                 not the numerically-higher cosine distractor; got {got:?}"
+            );
+        }
+
+        // ── apply_overlay GUARD: with NO reranker the merge keeps today's
+        //    raw-score sort, byte-for-byte. Same fixtures as the rerank test,
+        //    reranker omitted: the high-cosine overlay hit wins. This pins the
+        //    default (recall-sensitive, frame-adjacent) path as a no-op so the
+        //    fix cannot leak rerank/RRF churn onto it.
+        #[test]
+        fn overlay_no_reranker_keeps_raw_score_sort() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            let overlay = overlay_with(
+                &[("src/distractor.rs", "shiny_distractor", 4)],
+                &["src/distractor.rs"],
+            );
+            let project = vec![UnifiedResult::Code(project_result(
+                "src/core.rs",
+                "relevant_fn",
+                0.55,
+            ))];
+            // No reranker on the prepared query.
+            let prepared = prepared_with(one_hot(4));
+
+            let out = apply_overlay(&args_limit(5), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert_eq!(
+                got.first().map(String::as_str),
+                Some("shiny_distractor"),
+                "no reranker ⇒ raw-score sort is unchanged: the cosine ~1.0 \
+                 overlay hit outranks the 0.55 project hit; got {got:?}"
             );
         }
     }
