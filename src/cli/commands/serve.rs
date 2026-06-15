@@ -116,6 +116,10 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
 /// (`bind = "127.0.0.1:8080/&calc&"`) could spawn an extra command. The token
 /// alphabet is alnum-only, but `bind` accepts arbitrary user input. Reject up
 /// front rather than rely on cmd.exe's quoting heuristics.
+///
+/// Only the Windows and Linux/WSL branches of `open_browser` hand a URL to
+/// cmd.exe, so this is dead on macOS — gate it to match its callers.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn url_safe_for_cmd(url: &str) -> bool {
     !url.chars()
         .any(|c| matches!(c, '&' | '|' | '^' | '<' | '>' | '%' | '(' | ')'))
