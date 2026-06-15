@@ -1019,17 +1019,28 @@ impl BatchView {
     ///    this daemon serves. A regular repo (`.git` is a dir) returns `None`
     ///    and is rejected; a worktree of a *different* project resolves to a
     ///    different main root and is rejected.
-    /// 3. **Registration check.** Step 2 alone trusts the worktree's *own*
-    ///    `.git` → `commondir` chain, which the socket client controls: a forged
-    ///    `.git` whose `commondir` resolves to the served project's `.git/`
-    ///    makes step 2 pass for an *unregistered* attacker tree, turning the
-    ///    daemon into an arbitrary out-of-tree read/embed primitive. So we
-    ///    additionally require the worktree's resolved gitdir to be canonically
-    ///    under `<served_root>/.git/worktrees/`. A legitimate linked worktree's
-    ///    gitdir lives exactly there (a directory inside the served project the
-    ///    attacker does not control), so this cannot be forged from the
-    ///    worktree side; an unregistered tree's gitdir is elsewhere and is
-    ///    rejected.
+    /// 3. **Registration check (bidirectional).** Step 2 alone trusts the
+    ///    worktree's *own* `.git` → `commondir` chain, which the socket client
+    ///    controls: a forged `.git` whose `commondir` resolves to the served
+    ///    project's `.git/` makes step 2 pass for an attacker tree, turning the
+    ///    daemon into an arbitrary out-of-tree read/embed primitive. Git's
+    ///    worktree link is *bidirectional*, so we verify BOTH halves — the
+    ///    client controls only the forward one:
+    ///
+    ///    - **Forward:** the worktree's resolved gitdir must be canonically
+    ///      under `<served_root>/.git/worktrees/`. A legitimate linked
+    ///      worktree's gitdir lives there (a directory inside the served
+    ///      project the attacker can't create); an unregistered tree's gitdir
+    ///      is elsewhere and is rejected.
+    ///    - **Back-pointer:** the forward check alone is still bypassable — a
+    ///      forged `.git` can name a REAL registered gitdir of the served
+    ///      project (`gitdir: <served>/.git/worktrees/<name>`), passing the
+    ///      under-registry test while the request is stamped with the attacker
+    ///      tree. So we additionally read `<resolved_gitdir>/gitdir` (git's
+    ///      back-link, written for the real worktree and living inside the
+    ///      served `.git/` the attacker can't touch) and require it to equal
+    ///      `<overlay_root>/.git`. This binds the registry entry to *this*
+    ///      specific overlay root, defeating the registered-gitdir hijack.
     ///
     /// Mirrors `run_git_diff`'s input-validation posture: reject loudly with a
     /// wire error rather than silently degrade. Returns an error the caller
@@ -1083,13 +1094,47 @@ impl BatchView {
                 let gitdir = cqs::worktree::worktree_gitdir(&canonical);
                 match &gitdir {
                     Some(g) if g.starts_with(&registry) => {
-                        tracing::debug!(
-                            worktree = %canonical.display(),
-                            gitdir = %g.display(),
-                            "overlay-root validated (registered worktree)"
-                        );
-                        *self.overlay_request.borrow_mut() = Some(canonical);
-                        Ok(())
+                        // Forward link OK. But git's worktree link is
+                        // bidirectional and the client controls only the forward
+                        // half: a forged `.git` can name a REAL registered gitdir
+                        // of the served project (`gitdir: <served>/.git/worktrees/
+                        // <name>`), passing the under-registry check while
+                        // `overlay_request` is still stamped with the ATTACKER
+                        // tree. Verify the BACK-POINTER: `<gitdir>/gitdir` (written
+                        // by git for the real worktree, inside the served `.git/`
+                        // the attacker can't touch) must point back at THIS
+                        // overlay root's `.git`. This binds the registry entry to
+                        // exactly this overlay root.
+                        let expected_dot_git = dunce::canonicalize(canonical.join(".git"))
+                            .unwrap_or_else(|_| canonical.join(".git"));
+                        match cqs::worktree::read_gitdir_backpointer(g) {
+                            Some(back) if back == expected_dot_git => {
+                                tracing::debug!(
+                                    worktree = %canonical.display(),
+                                    gitdir = %g.display(),
+                                    "overlay-root validated (registered worktree, back-pointer bound)"
+                                );
+                                *self.overlay_request.borrow_mut() = Some(canonical);
+                                Ok(())
+                            }
+                            other_back => {
+                                tracing::warn!(
+                                    requested = %canonical.display(),
+                                    gitdir = %g.display(),
+                                    backpointer = ?other_back,
+                                    expected_dot_git = %expected_dot_git.display(),
+                                    served_root = %root_canonical.display(),
+                                    "overlay-root's gitdir is under the registry but its back-pointer \
+                                     does not bind to this overlay root (forged gitdir pointing at a \
+                                     real registered worktree) — rejecting"
+                                );
+                                anyhow::bail!(
+                                    "overlay-root {} is not a registered worktree of the served project {}",
+                                    canonical.display(),
+                                    root_canonical.display()
+                                )
+                            }
+                        }
                     }
                     other => {
                         tracing::warn!(

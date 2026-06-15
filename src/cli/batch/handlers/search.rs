@@ -1395,6 +1395,99 @@ mod tests {
         );
     }
 
+    /// SECURITY (Attack A) — the registered-gitdir hijack. The forward
+    /// under-registry check alone is bypassable: git's worktree link is
+    /// bidirectional and the client controls only the forward half. An attacker
+    /// forges their tree's `.git` to point `gitdir:` at a REAL, legitimately
+    /// registered worktree gitdir of the served project
+    /// (`<served>/.git/worktrees/wt`). Then:
+    ///   - `resolve_main_project_dir(evilA)` resolves main to the served root
+    ///     (step 2 passes),
+    ///   - `worktree_gitdir(evilA)` is `<served>/.git/worktrees/wt`, which is
+    ///     under the registry (forward check passes),
+    ///   - but `overlay_request` would be stamped with evilA (the attacker tree),
+    ///     re-arming the arbitrary out-of-tree read/embed/relay primitive.
+    /// The precondition (≥1 registered worktree of served) is the common case —
+    /// every `.claude/worktrees/` agent worktree satisfies it.
+    ///
+    /// The back-pointer check defeats this: `<served>/.git/worktrees/wt/gitdir`
+    /// was written by git for the REAL `wt` and points at `wt`'s `.git`, not at
+    /// evilA's `.git` (the attacker can't rewrite it — it lives inside the
+    /// served `.git/`). Validation must REJECT evilA and leave `overlay_request`
+    /// unset.
+    ///
+    /// Fails on the back-pointer-less code (forward check passes, evilA
+    /// accepted) and passes once the back-pointer bind is added.
+    #[test]
+    fn overlay_daemon_rejects_forged_gitdir_pointing_at_real_registered_worktree() {
+        let (holder, ctx, parent, wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // The served project's REAL registered worktree gitdir
+        // (`<served>/.git/worktrees/<name>`). overlay_ctx() created `wt` via a
+        // real `git worktree add`, so this entry exists and is bound to `wt`.
+        let real_registered_gitdir =
+            cqs::worktree::worktree_gitdir(&wt).expect("real worktree must resolve its gitdir");
+        assert!(
+            real_registered_gitdir.starts_with(parent.join(".git").join("worktrees"))
+                || real_registered_gitdir.starts_with(
+                    dunce::canonicalize(parent.join(".git").join("worktrees"))
+                        .unwrap_or_else(|_| parent.join(".git").join("worktrees"))
+                ),
+            "real worktree's gitdir must live under the served project's registry"
+        );
+
+        // Attacker tree: a directory the client controls. Its `.git` is a FILE
+        // pointing `gitdir:` at the served project's REAL registered gitdir —
+        // NOT at a forged dir of its own. This is the hijack the forward check
+        // alone cannot catch.
+        let attacker = holder.path().join("attackerA");
+        std::fs::create_dir_all(&attacker).expect("mkdir attackerA");
+        std::fs::write(
+            attacker.join(".git"),
+            format!("gitdir: {}\n", real_registered_gitdir.display()),
+        )
+        .expect("write attacker .git pointing at real registered gitdir");
+
+        let attacker = dunce::canonicalize(&attacker).unwrap_or(attacker);
+
+        // Precondition 1: the hijack resolves its main to the served root
+        // (so step 2 passes — the registration check is what must bite).
+        let resolved_main = cqs::worktree::resolve_main_project_dir(&attacker);
+        let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+        assert_eq!(
+            resolved_main.as_deref(),
+            Some(served_canonical.as_path()),
+            "hijack must resolve its main to the served root"
+        );
+        // Precondition 2: the hijack's gitdir IS under the registry (so the
+        // FORWARD check passes — proving the back-pointer is what rejects it,
+        // not the forward check).
+        let hijack_gitdir =
+            cqs::worktree::worktree_gitdir(&attacker).expect("hijack gitdir resolves");
+        let registry = dunce::canonicalize(parent.join(".git").join("worktrees"))
+            .unwrap_or_else(|_| parent.join(".git").join("worktrees"));
+        assert!(
+            hijack_gitdir.starts_with(&registry),
+            "hijack's gitdir must be under the served registry (else this test \
+             proves nothing about the back-pointer check)"
+        );
+
+        // The fix must reject it loudly via the back-pointer bind.
+        let err = view
+            .set_validated_overlay_request(&attacker)
+            .expect_err("forged gitdir pointing at a real registered worktree must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a registered worktree of the served project"),
+            "expected a registration rejection; got: {err:#}"
+        );
+        // The attacker tree must NOT have been stamped as the overlay root.
+        assert!(
+            view.overlay_request.borrow().is_none(),
+            "a rejected hijack must leave overlay_request unset"
+        );
+    }
+
     /// Control: a bare non-git directory is rejected (no `.git` at all → not a
     /// worktree of anything). Pins that the registration check does not change
     /// the existing non-worktree rejection.
