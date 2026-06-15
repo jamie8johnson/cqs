@@ -123,8 +123,8 @@ impl HnswIndex {
                 if idx < self.id_map.len() {
                     // Distance → similarity. Holds for both supported
                     // metrics: DistCosine returns 1 − cos (score = cos) and
-                    // DistDot returns 1 − a·b (score = a·b) — see
-                    // `DistanceMetric`.
+                    // the clamped dot returns 1 − min(a·b, 1) (score =
+                    // min(a·b, 1)) — see `DistanceMetric`.
                     let score = 1.0 - n.distance;
                     if !score.is_finite() {
                         tracing::warn!(
