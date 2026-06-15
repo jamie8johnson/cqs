@@ -3097,25 +3097,27 @@ mod tests {
     }
 
     /// Seam guard (overlay × verdict-classification): a Direction-B overlay
-    /// addition whose name ALSO sits in the parent-truth `low_conf` map must
-    /// carry verdict `dead`, NOT be relabeled `low-confidence-live` and hidden
-    /// from `--verdict dead`. The addition is computed dead over the
-    /// authoritative merged graph in this worktree; the parent `low_conf` map is
-    /// stale here. RED without the `overlay_dead` bypass (verdict would be
-    /// `low-confidence-live`), GREEN with it.
+    /// addition whose name ALSO sits in the parent-truth `low_conf` HEURISTIC map
+    /// must carry verdict `dead`, NOT be relabeled `low-confidence-live` and
+    /// hidden from `--verdict dead`. The heuristic edge that put `handler` in
+    /// `low_conf` lives in the MASKED `src/edited.rs`, so it is stale here — the
+    /// merged caller graph has zero real callers AND there is no candidate
+    /// evidence, so `dead` is correct. RED without the heuristic-map skip for
+    /// `overlay_dead` (verdict would be `low-confidence-live`), GREEN with it.
+    /// (The companion `dead_overlay_addition_candidate_in_live_origin_relabels`
+    /// pins the opposite: a candidate row in an UNMASKED origin DOES relabel,
+    /// because it is a live worktree reference.)
     ///
     /// Reachability of the collision: a Direction-B addition is, by definition, a
-    /// name NOT already in the parent dead populations. A heuristic/candidate-only
-    /// callee is normally folded into the parent low-confidence-live set (so it
-    /// would be in `already` and never re-added) — UNLESS its definition is
-    /// dropped by a Phase-1 filter the addition path does NOT apply. The
-    /// entry-point filter is exactly such a gap: `find_low_confidence_live_…`
-    /// drops entry-point names (here `handler`) from its CHUNK population, but
+    /// name NOT already in the parent dead populations. A heuristic-only callee is
+    /// normally folded into the parent low-confidence-live set (so it would be in
+    /// `already` and never re-added) — UNLESS its definition is dropped by a
+    /// Phase-1 filter the addition path does NOT apply. The entry-point filter is
+    /// exactly such a gap: `find_low_confidence_live_…` drops entry-point names
+    /// (here `handler`) from its CHUNK population, but
     /// `find_low_confidence_live_names` keeps them in the `low_conf` NAME map, and
     /// `resolve_overlay_dead_candidate_def` admits them. So `handler` is absent
     /// from the parent dead set yet present in `low_conf` — the precise collision.
-    /// The Lane-3 candidate consult widens that name map further (an extra
-    /// `candidate_edges` row here), making the collision more likely.
     #[test]
     fn dead_overlay_addition_classifies_dead_despite_low_conf_collision() {
         // Parent: `handler` (an ENTRY-POINT name) is reached only by `caller` (in
@@ -3123,8 +3125,7 @@ mod tests {
         // NON-trusted, so `handler` lands in the `low_conf` NAME map. As an entry
         // point its definition is filtered out of the parent low-confidence-live
         // CHUNK population, so it is NOT in the parent dead set (Direction-B can
-        // add it). A `candidate_edges` row naming `handler` (the Lane-3 widening)
-        // co-populates the same `low_conf` map.
+        // add it). NO candidate edge: this isolates the heuristic-collision case.
         let dir = TempDir::new().expect("tempdir");
         let cqs_dir = dir.path().join(".cqs");
         std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
@@ -3143,7 +3144,8 @@ mod tests {
                     .expect("upsert parent chunk");
             }
             // Heuristic real caller: handler has a real edge (so it's not in the
-            // strict dead set) but no trusted edge (so it's in low_conf).
+            // strict dead set) but no trusted edge (so it's in low_conf). This edge
+            // lives in src/edited.rs, which the worktree masks below.
             let fc = FunctionCalls {
                 name: "caller".into(),
                 line_start: 1,
@@ -3156,18 +3158,6 @@ mod tests {
             store
                 .upsert_function_calls(Path::new("src/edited.rs"), &[fc])
                 .expect("upsert parent heuristic edge");
-            // Candidate-edges row naming `handler` (Lane-3 widening of low_conf).
-            store
-                .upsert_candidate_edges(
-                    Path::new("src/other.rs"),
-                    &[cqs::parser::CandidateSite {
-                        file: PathBuf::from("src/other.rs"),
-                        callee_name: "handler".into(),
-                        ref_line: 3,
-                        candidate_kind: "bare_arg_unresolved".into(),
-                    }],
-                )
-                .expect("upsert candidate edge");
         }
         let ctx = create_test_context(&cqs_dir).expect("create_test_context");
 
@@ -3195,13 +3185,95 @@ mod tests {
             "masking the sole caller must flip `handler` into the dead set: {json}"
         );
         // The seam assertion: the Direction-B addition's VERDICT must be `dead`,
-        // not `low-confidence-live` (which the stale parent low_conf map would
-        // assign, hiding it from `--verdict dead`).
+        // not `low-confidence-live` (which the stale parent low_conf HEURISTIC map
+        // would assign, hiding it from `--verdict dead`).
         assert_eq!(
             dead_verdict_for(&json, "handler").as_deref(),
             Some("dead"),
-            "an overlay-dead addition colliding with a parent candidate/heuristic name \
+            "an overlay-dead addition colliding with a parent heuristic name \
              must classify `dead`, NOT `low-confidence-live` (or `--verdict dead` hides it): {json}"
+        );
+    }
+
+    /// The candidate-recompute fix (this PR), end-to-end through `dead_overlay`: a
+    /// Direction-B addition still referenced by a `candidate_edges` row in an
+    /// UNMASKED origin relabels `low-confidence-live`, NOT `dead`. The candidate
+    /// is a LIVE worktree reference (its origin is not delta-touched, so the
+    /// mask-then-union keeps it), so the function is reached by a candidate edge
+    /// and is low-confidence-live, not genuinely dead. RED before the fix (the
+    /// blanket `overlay_dead` skip forced `dead`, ignoring the merged candidate
+    /// map); GREEN after. Calibration sibling:
+    /// `dead_overlay_addition_classifies_dead_despite_low_conf_collision` (no
+    /// candidate evidence → `dead`).
+    #[test]
+    fn dead_overlay_addition_candidate_in_live_origin_relabels() {
+        // Parent: `target` is called ONLY by `caller` (in src/edited.rs) via a
+        // TRUSTED `call` edge → live, NOT in low_conf. A `candidate_edges` row
+        // names `target` from src/live.rs — an origin the worktree does NOT touch.
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            for (file, name) in [("src/edited.rs", "caller"), ("src/lib.rs", "target")] {
+                let mut c = make_chunk(&format!("{file}:{name}"), name);
+                c.file = PathBuf::from(file);
+                store
+                    .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                    .expect("upsert parent chunk");
+            }
+            // Trusted sole caller in src/edited.rs (masked below).
+            let fc = FunctionCalls {
+                name: "caller".into(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "target".into(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            };
+            store
+                .upsert_function_calls(Path::new("src/edited.rs"), &[fc])
+                .expect("upsert parent trusted edge");
+            // Candidate row naming `target` from an UNMASKED origin (src/live.rs).
+            store
+                .upsert_candidate_edges(
+                    Path::new("src/live.rs"),
+                    &[cqs::parser::CandidateSite {
+                        file: PathBuf::from("src/live.rs"),
+                        callee_name: "target".into(),
+                        ref_line: 3,
+                        candidate_kind: "bare_arg_unresolved".into(),
+                    }],
+                )
+                .expect("upsert candidate edge");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+
+        // Worktree edits src/edited.rs and drops the trusted call to `target` →
+        // the merged caller graph has zero REAL callers, so Direction-B adds it.
+        // src/live.rs (the candidate origin) is NOT masked, so its candidate row
+        // survives the merge and relabels the addition low-confidence-live.
+        let overlay = overlay_with_edges(&[("src/edited.rs", "caller")], &[], &["src/edited.rs"]);
+        let (out, participated) =
+            dead_overlay(&ctx.store(), &ctx.root, &dead_core_args(), Some(&overlay))
+                .expect("overlay");
+        assert!(participated, "a live→dead flip must report participation");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            dead_names(&json).contains(&"target".to_string()),
+            "masking the sole trusted caller must surface `target` as a Direction-B addition: {json}"
+        );
+        assert_eq!(
+            dead_verdict_for(&json, "target").as_deref(),
+            Some("low-confidence-live"),
+            "a Direction-B addition still referenced by a candidate edge in an UNMASKED \
+             origin must relabel `low-confidence-live`, not `dead`: {json}"
         );
     }
 

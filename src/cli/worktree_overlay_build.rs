@@ -491,4 +491,187 @@ mod tests {
             "overlay1 (rebuilt after the notes update) carries the +0.5 boost"
         );
     }
+
+    /// End-to-end candidate-recompute under the overlay: a parent-LIVE function
+    /// `target` (real `call` edge from `caller` in `src/lib.rs`) loses that edge
+    /// in the worktree (the worktree's `src/lib.rs` no longer calls it), so it is
+    /// a Direction-B addition (`overlay_dead`). A worktree-NEW file
+    /// `src/feature.rs` references `target` as a bare fn-pointer argument
+    /// (`register(target)`) — a `bare_arg_unresolved` `candidate_edges` row the
+    /// confident extractor declines to resolve, landing in the OVERLAY store.
+    /// The verdict classifier must consult the overlay-merged candidate map and
+    /// relabel `target` `low-confidence-live`, NOT `dead` — the bug this fixes.
+    /// The `_meta.overlay_graph` marker stays `"full"` (the candidate section is
+    /// now overlaid too), gated on participation, which a Direction-B addition
+    /// raises. Mirrors `build_overlay_indexes_dirty_delta` for the real-overlay
+    /// scaffolding; cold-loads the embedder, so `slow-tests`.
+    #[test]
+    fn overlay_candidate_recompute_relabels_low_confidence_live() {
+        use cqs::embedder::ModelConfig;
+        use cqs::store::{DeadConfidence, ReadOnly};
+
+        let embedder = match cqs::Embedder::new_cpu(ModelConfig::resolve(None, None)) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Skipping overlay candidate-recompute e2e: embedder init failed: {e}");
+                return;
+            }
+        };
+        let parser = CqParser::new().expect("parser");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).unwrap();
+        // Parent: `caller` makes a real `call` edge to `target`, so `target` is
+        // LIVE in the parent index.
+        std::fs::write(
+            parent.join("src/lib.rs"),
+            "pub fn target() -> i32 { 1 }\npub fn caller() -> i32 { target() }\n",
+        )
+        .unwrap();
+        git(&parent, &["init", "-q", "-b", "main"]);
+        git(&parent, &["config", "user.email", "t@e.com"]);
+        git(&parent, &["config", "user.name", "T"]);
+        git(&parent, &["add", "-A"]);
+        git(&parent, &["commit", "-q", "-m", "init"]);
+
+        let wt = tmp.path().join("wt");
+        git(
+            &parent,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+
+        // Worktree edit: `caller` no longer calls `target` — its only real-caller
+        // edge lived in `src/lib.rs` (now masked + re-served from the overlay
+        // without the call), so the merged real caller graph has zero callers for
+        // `target` → it becomes a Direction-B addition.
+        std::fs::write(
+            wt.join("src/lib.rs"),
+            "pub fn target() -> i32 { 1 }\npub fn caller() -> i32 { 0 }\n",
+        )
+        .unwrap();
+        // Worktree-new file: a bare fn-pointer arg `target` the confident pass
+        // drops (cross-file, not defined here) → a `bare_arg_unresolved`
+        // candidate naming `target`, landing in the overlay store.
+        std::fs::write(
+            wt.join("src/feature.rs"),
+            "fn register(_f: fn() -> i32) {}\npub fn use_it() { register(target); }\n",
+        )
+        .unwrap();
+
+        let parent = dunce::canonicalize(&parent).unwrap_or(parent);
+        let wt = dunce::canonicalize(&wt).unwrap_or(wt);
+
+        // Build the parent index ON DISK so it can be re-opened ReadOnly (the
+        // dead-overlay core takes a `Store<ReadOnly>`). Index parent `src/lib.rs`
+        // through the real pipeline so the parent's `caller→target` call edge and
+        // `target`'s def chunk are present.
+        let parent_db = parent.join("parent-index.db");
+        {
+            let parent_store = Store::open(&parent_db).expect("open parent store");
+            let parent_model =
+                ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
+            parent_store.init(&parent_model).expect("init parent store");
+            crate::cli::watch::overlay_reindex_files(
+                &parent,
+                &parent_store,
+                &[std::path::PathBuf::from("src/lib.rs")],
+                &parser,
+                &embedder,
+                None,
+                /* quiet */ true,
+            )
+            .expect("index parent files");
+        }
+        let parent_store_ro = Store::<ReadOnly>::open_readonly(&parent_db).expect("reopen parent");
+
+        // Parent-truth sanity: `target` is NOT dead (it has a real caller).
+        let parent_only = crate::cli::commands::dead_overlay(
+            &parent_store_ro,
+            &parent,
+            &crate::cli::commands::DeadArgs {
+                include_pub: true,
+                min_confidence: DeadConfidence::Low,
+                verdict: None,
+            },
+            None,
+        )
+        .expect("parent-only dead")
+        .0;
+        assert!(
+            !parent_only.dead.iter().any(|e| e.name == "target"),
+            "parent-truth: `target` has a real caller and must not be dead: {:?}",
+            parent_only.dead.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+
+        // Build the worktree overlay against the on-disk parent store.
+        let overlay = {
+            let parent_store_for_build = Store::open(&parent_db).expect("open parent for build");
+            build_overlay(
+                &wt,
+                &parent,
+                &parser,
+                &embedder,
+                &parent_store_for_build,
+                None,
+            )
+            .expect("build_overlay")
+            .expect("non-clean worktree yields Some(overlay)")
+        };
+
+        // The candidate landed in the overlay store (the KEY FACT this fix rests
+        // on): `target` is named in the overlay's `candidate_edges`.
+        let overlay_cands = overlay
+            .store
+            .candidate_edge_contributions()
+            .expect("overlay candidate contributions");
+        assert!(
+            overlay_cands.iter().any(|(name, _, _)| name == "target"),
+            "the worktree candidate edge must land in the overlay store: {overlay_cands:?}"
+        );
+
+        // Run the overlay-aware dead core: `apply_dead_overlay` adds `target` as a
+        // Direction-B `overlay_dead` entry, and `build_dead_output` consults the
+        // overlay-merged candidate map → `low-confidence-live`.
+        let (output, participated) = crate::cli::commands::dead_overlay(
+            &parent_store_ro,
+            &parent,
+            &crate::cli::commands::DeadArgs {
+                include_pub: true,
+                min_confidence: DeadConfidence::Low,
+                verdict: None,
+            },
+            Some(&overlay),
+        )
+        .expect("overlay dead");
+
+        let entry = output
+            .dead
+            .iter()
+            .find(|e| e.name == "target")
+            .unwrap_or_else(|| {
+                panic!(
+                    "`target` must surface as a Direction-B addition: {:?}",
+                    output.dead.iter().map(|e| &e.name).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            entry.verdict, "low-confidence-live",
+            "a candidate-only Direction-B addition must relabel low-confidence-live, not dead: \
+             {entry:?}"
+        );
+        assert!(
+            entry.verdict_reason.contains("candidate edge")
+                && entry.verdict_reason.contains("bare_arg_unresolved"),
+            "reason must name the merged candidate kind/count: {}",
+            entry.verdict_reason
+        );
+
+        // Participation is true (a Direction-B addition changed the set), which is
+        // what gates the honest `_meta.overlay_graph = "full"` marker.
+        assert!(
+            participated,
+            "a Direction-B addition must report overlay participation (gates the `full` marker)"
+        );
+    }
 }

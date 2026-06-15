@@ -34,6 +34,11 @@ pub use dead_code::is_dead_doc_path;
 // merged caller graph — single source, no surface drift.
 pub use dead_code::apply_dead_overlay;
 
+// Re-export the worktree-overlay candidate-map merge so the verdict classifier
+// relabels a candidate-only Direction-B addition `low-confidence-live` over the
+// merged candidate graph — same mask-then-union as the caller-graph merge.
+pub use dead_code::build_overlay_candidate_map;
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -53,11 +58,13 @@ pub struct DeadFunction {
     pub confidence: DeadConfidence,
     /// Set only by `apply_dead_overlay` Direction B: this entry was computed
     /// dead over the authoritative merged (parent+overlay) caller graph in this
-    /// worktree, not read off the parent dead set. Verdict classification must
-    /// not relabel it via the parent-truth `low_conf` heuristic-caller map — that
-    /// map is parent-graph-derived and stale under the overlay, so a
+    /// worktree, not read off the parent dead set. Verdict classification skips
+    /// the parent-truth `low_conf` heuristic-caller map for it — that map is
+    /// parent-graph-derived and stale under the overlay, so a
     /// genuinely-worktree-dead function whose name collides with a parent
-    /// candidate/heuristic name would otherwise be hidden from `--verdict dead`.
+    /// heuristic name would otherwise be hidden from `--verdict dead`. It instead
+    /// consults the overlay-merged CANDIDATE map (`build_overlay_candidate_map`),
+    /// so a candidate-only addition still relabels `low-confidence-live`.
     /// Internal-only; entries reach user-facing JSON as `DeadFunctionEntry`.
     #[serde(skip)]
     pub overlay_dead: bool,

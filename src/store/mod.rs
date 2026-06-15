@@ -185,6 +185,11 @@ pub use calls::is_dead_doc_path;
 /// Shared by the `cqs dead` core and the lib-level `cqs ci` analysis.
 pub use calls::apply_dead_overlay;
 
+/// Worktree-overlay candidate-map merge (mask-then-union over the merged
+/// candidate graph). Lets the verdict classifier relabel a candidate-only
+/// Direction-B addition `low-confidence-live`.
+pub use calls::build_overlay_candidate_map;
+
 /// Confidence level for dead code detection.
 pub use calls::DeadConfidence;
 

@@ -135,3 +135,19 @@ fn attach_overlay_graph_marker(value: &mut serde_json::Value, marker: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod overlay_marker_tests {
+    use super::*;
+
+    /// `dead`'s overlay marker is `"full"` — the candidate-recompute strengthening
+    /// keeps the whole answer (caller graph AND candidate section) overlaid, so the
+    /// honest marker stays `"full"`, not downgraded to `"callers-only"`. Guards the
+    /// exact string `dispatch_dead` attaches on a participating overlay.
+    #[test]
+    fn dead_overlay_marker_is_full() {
+        let mut v = serde_json::json!({"dead": []});
+        attach_overlay_graph_meta_full(&mut v);
+        assert_eq!(v["_meta"]["overlay_graph"], "full");
+    }
+}
