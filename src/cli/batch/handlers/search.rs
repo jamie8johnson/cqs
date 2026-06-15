@@ -1313,6 +1313,150 @@ mod tests {
         );
     }
 
+    /// SECURITY — the unregistered-forged-worktree bypass. An attacker tree
+    /// whose hand-forged `.git` → `commondir` chain resolves to the served
+    /// project's real `.git/` (so `resolve_main_project_dir == served_root`)
+    /// but which is NOT registered under `<served>/.git/worktrees/` must be
+    /// rejected. Validating it would let any socket client read+embed+relay
+    /// arbitrary out-of-tree files as trusted `user-code`.
+    ///
+    /// Fails on the pre-fix code (step 2 passes, no registration check) and
+    /// passes after the gitdir-under-served-`.git/worktrees/` check is added.
+    #[test]
+    fn overlay_daemon_rejects_forged_unregistered_worktree() {
+        let (holder, ctx, parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // Served project's real `.git/` (parent is already canonicalized).
+        let served_git = parent.join(".git");
+        assert!(
+            served_git.is_dir(),
+            "served project must have a real .git/ for the forgery to target"
+        );
+
+        // Attacker tree: a directory the client controls end to end. Its `.git`
+        // is a FILE (so resolve_main_project_dir takes the worktree branch),
+        // pointing at a forged gitdir the attacker also owns.
+        let attacker = holder.path().join("attacker");
+        let fake_gitdir = attacker.join(".fakegit");
+        std::fs::create_dir_all(&fake_gitdir).expect("mkdir attacker/.fakegit");
+
+        // Forge the `commondir` back-link so it resolves to the SERVED
+        // project's real `.git/`. We give an absolute path here — that is the
+        // strongest forgery (it makes resolve_main_project_dir land squarely on
+        // the served root regardless of relative-path arithmetic).
+        std::fs::write(
+            fake_gitdir.join("commondir"),
+            format!("{}\n", served_git.display()),
+        )
+        .expect("write forged commondir");
+        // Minimal git metadata so the forged gitdir looks plausible.
+        std::fs::write(fake_gitdir.join("HEAD"), "ref: refs/heads/attack\n")
+            .expect("write forged HEAD");
+        std::fs::write(
+            fake_gitdir.join("gitdir"),
+            format!("{}\n", attacker.display()),
+        )
+        .expect("write forged gitdir");
+        // The `.git` link file pointing at the forged gitdir.
+        std::fs::write(
+            attacker.join(".git"),
+            format!("gitdir: {}\n", fake_gitdir.display()),
+        )
+        .expect("write attacker .git");
+
+        let attacker = dunce::canonicalize(&attacker).unwrap_or(attacker);
+
+        // Precondition: the forgery DOES satisfy the old step-2 check (its main
+        // resolves to the served root) — proving the registration check is what
+        // does the work, not an incidental mismatch.
+        let resolved_main = cqs::worktree::resolve_main_project_dir(&attacker);
+        let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+        assert_eq!(
+            resolved_main.as_deref(),
+            Some(served_canonical.as_path()),
+            "forgery must resolve its main to the served root (else the test \
+             proves nothing about the registration check)"
+        );
+
+        // The fix must reject it loudly.
+        let err = view
+            .set_validated_overlay_request(&attacker)
+            .expect_err("forged unregistered worktree must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not a registered worktree of the served project"),
+            "expected an unregistered-worktree rejection; got: {msg}"
+        );
+        // The request must NOT have been stamped.
+        assert!(
+            view.overlay_request.borrow().is_none(),
+            "a rejected forged overlay-root must leave overlay_request unset"
+        );
+    }
+
+    /// Control: a bare non-git directory is rejected (no `.git` at all → not a
+    /// worktree of anything). Pins that the registration check does not change
+    /// the existing non-worktree rejection.
+    #[test]
+    fn overlay_daemon_rejects_bare_non_git_dir() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+        let bare = holder.path().join("bare");
+        std::fs::create_dir_all(&bare).expect("mkdir bare");
+        let err = view
+            .set_validated_overlay_request(&bare)
+            .expect_err("a bare non-git dir must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a worktree of the served project"),
+            "bare dir must hit the not-a-worktree rejection"
+        );
+        assert!(view.overlay_request.borrow().is_none());
+    }
+
+    /// Control: a foreign PROJECT's genuine linked worktree is rejected. The
+    /// foreign worktree is registered under the foreign project's
+    /// `.git/worktrees/`, not the served project's, so step 2 already rejects
+    /// it (its main resolves elsewhere) — this pins that the registration check
+    /// did not accidentally widen acceptance to other projects' worktrees.
+    #[test]
+    fn overlay_daemon_rejects_foreign_project_worktree() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // A second, unrelated git project with its own linked worktree.
+        let foreign_root = holder.path().join("foreign_proj");
+        std::fs::create_dir_all(foreign_root.join("src")).expect("mkdir foreign/src");
+        std::fs::write(foreign_root.join("src/lib.rs"), "pub fn z() {}\n").expect("write");
+        git(&foreign_root, &["init", "-q", "-b", "main"]);
+        git(&foreign_root, &["config", "user.email", "f@e.com"]);
+        git(&foreign_root, &["config", "user.name", "F"]);
+        git(&foreign_root, &["add", "-A"]);
+        git(&foreign_root, &["commit", "-q", "-m", "init"]);
+        let foreign_wt = holder.path().join("foreign_wt");
+        git(
+            &foreign_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "flane",
+                foreign_wt.to_str().unwrap(),
+            ],
+        );
+        let foreign_wt = dunce::canonicalize(&foreign_wt).unwrap_or(foreign_wt);
+
+        let err = view
+            .set_validated_overlay_request(&foreign_wt)
+            .expect_err("a foreign project's worktree must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a worktree of the served project"),
+            "foreign project's worktree must hit the not-a-worktree rejection"
+        );
+        assert!(view.overlay_request.borrow().is_none());
+    }
+
     /// `prepare_overlay_request` clears any leftover per-thread overlay meta at
     /// the top of dispatch — an error path on a prior query must not leak its
     /// `_meta.worktree_overlay` into the next request on a reused worker thread.

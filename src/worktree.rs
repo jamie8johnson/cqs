@@ -117,6 +117,57 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
     Some(main_root)
 }
 
+/// Resolve a worktree's per-worktree gitdir to its canonical filesystem
+/// path, reading `<dir>/.git`'s `gitdir: <path>` line.
+///
+/// **Security primitive.** [`resolve_main_project_dir`] trusts the worktree's
+/// own `.git` → `commondir` chain to discover the main root, which an attacker
+/// who controls `<dir>/.git` can forge to point at *any* project's `.git/`
+/// (the unregistered-worktree bypass). A registration check needs the
+/// *gitdir* itself — for a legitimate linked worktree the gitdir lives at
+/// `<main>/.git/worktrees/<name>/`, a directory *inside* the served project
+/// that the attacker does not control. Comparing the canonical gitdir against
+/// the served project's real `.git/worktrees/` therefore cannot be forged
+/// from the worktree side.
+///
+/// Returns the canonicalized gitdir (so the caller can do an ancestor check
+/// against a likewise-canonicalized `.git/worktrees/`). Returns `None` for a
+/// non-worktree (regular repo, no `.git`, malformed link, or a gitdir that
+/// does not exist on disk). Bounded read mirrors [`resolve_main_project_dir`].
+pub fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
+    let dot_git = dir.join(".git");
+    let metadata = std::fs::metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        // Regular repo — not a linked worktree, so there is no per-worktree
+        // gitdir under any project's `.git/worktrees/`.
+        return None;
+    }
+
+    let mut raw = String::new();
+    std::fs::File::open(&dot_git)
+        .ok()?
+        .take(MAX_GIT_FILE_BYTES)
+        .read_to_string(&mut raw)
+        .ok()?;
+    let gitdir_path_str = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    if gitdir_path_str.is_empty() {
+        return None;
+    }
+    let gitdir = PathBuf::from(gitdir_path_str);
+    let gitdir = if gitdir.is_absolute() {
+        gitdir
+    } else {
+        dir.join(&gitdir)
+    };
+    // Canonicalize so the ancestor check below compares real paths (symlinks
+    // and `..` resolved). A gitdir that does not exist canonicalizes to an
+    // error → `None`, which the caller treats as "not registered".
+    dunce::canonicalize(&gitdir).ok()
+}
+
 /// Convenience wrapper: resolve `dir` to the main project's `.cqs/`
 /// directory if `dir` is a worktree without its own `.cqs/`. Returns
 /// `None` when `dir` is not a worktree, when `dir` has its own
@@ -484,6 +535,47 @@ mod tests {
             resolve_main_project_dir(&worktree_root),
             Some(canonical_main),
         );
+    }
+
+    /// `worktree_gitdir` returns the canonical per-worktree gitdir for a
+    /// real-shape linked worktree (the directory under
+    /// `<main>/.git/worktrees/<name>/`). This is the path the overlay
+    /// registration check compares against the served project's
+    /// `.git/worktrees/`.
+    #[test]
+    fn worktree_gitdir_resolves_canonical_gitdir() {
+        let dir = TempDir::new().unwrap();
+        let main_git = dir.path().join("main").join(".git");
+        let gitdir = main_git.join("worktrees").join("feature");
+        let wt_root = dir.path().join("wt");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(&wt_root).unwrap();
+        std::fs::write(
+            wt_root.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+
+        let expected = dunce::canonicalize(&gitdir).unwrap();
+        assert_eq!(worktree_gitdir(&wt_root), Some(expected));
+    }
+
+    /// `worktree_gitdir` returns `None` for a regular repo (`.git` is a dir,
+    /// not a link) and for a worktree whose gitdir does not exist on disk
+    /// (canonicalize fails) — the "not a registered worktree" cases.
+    #[test]
+    fn worktree_gitdir_none_for_non_worktree_and_missing_gitdir() {
+        let dir = TempDir::new().unwrap();
+        // Regular repo.
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        assert_eq!(worktree_gitdir(&repo), None);
+
+        // Worktree link pointing at a gitdir that does not exist.
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /no/such/path/.git/worktrees/x\n").unwrap();
+        assert_eq!(worktree_gitdir(&wt), None);
     }
 
     /// A stray `.cqs` *file* (mistaken `touch .cqs`, packaged tarball with

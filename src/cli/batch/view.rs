@@ -1019,6 +1019,17 @@ impl BatchView {
     ///    this daemon serves. A regular repo (`.git` is a dir) returns `None`
     ///    and is rejected; a worktree of a *different* project resolves to a
     ///    different main root and is rejected.
+    /// 3. **Registration check.** Step 2 alone trusts the worktree's *own*
+    ///    `.git` → `commondir` chain, which the socket client controls: a forged
+    ///    `.git` whose `commondir` resolves to the served project's `.git/`
+    ///    makes step 2 pass for an *unregistered* attacker tree, turning the
+    ///    daemon into an arbitrary out-of-tree read/embed primitive. So we
+    ///    additionally require the worktree's resolved gitdir to be canonically
+    ///    under `<served_root>/.git/worktrees/`. A legitimate linked worktree's
+    ///    gitdir lives exactly there (a directory inside the served project the
+    ///    attacker does not control), so this cannot be forged from the
+    ///    worktree side; an unregistered tree's gitdir is elsewhere and is
+    ///    rejected.
     ///
     /// Mirrors `run_git_diff`'s input-validation posture: reject loudly with a
     /// wire error rather than silently degrade. Returns an error the caller
@@ -1042,9 +1053,60 @@ impl BatchView {
         let root_canonical = dunce::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
         match main {
             Some(m) if m == root_canonical => {
-                tracing::debug!(worktree = %canonical.display(), "overlay-root validated");
-                *self.overlay_request.borrow_mut() = Some(canonical);
-                Ok(())
+                // Step 2 passed, but it trusted the worktree's own (forgeable)
+                // `.git` → `commondir` chain. Confirm the worktree is actually
+                // REGISTERED under the served project: its resolved gitdir must
+                // be canonically under `<served_root>/.git/worktrees/` — a
+                // directory inside the served project the client cannot forge.
+                let registry = match dunce::canonicalize(
+                    root_canonical.join(".git").join("worktrees"),
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // The served project has no `.git/worktrees/` (no linked
+                        // worktree has ever been registered), so nothing can be a
+                        // registered worktree of it. Reject loudly.
+                        tracing::warn!(
+                            requested = %canonical.display(),
+                            served_root = %root_canonical.display(),
+                            error = %e,
+                            "served project has no .git/worktrees registry — rejecting overlay-root"
+                        );
+                        anyhow::bail!(
+                            "overlay-root {} is not a registered worktree of the served project {} \
+                             (no worktrees registry)",
+                            canonical.display(),
+                            root_canonical.display()
+                        );
+                    }
+                };
+                let gitdir = cqs::worktree::worktree_gitdir(&canonical);
+                match &gitdir {
+                    Some(g) if g.starts_with(&registry) => {
+                        tracing::debug!(
+                            worktree = %canonical.display(),
+                            gitdir = %g.display(),
+                            "overlay-root validated (registered worktree)"
+                        );
+                        *self.overlay_request.borrow_mut() = Some(canonical);
+                        Ok(())
+                    }
+                    other => {
+                        tracing::warn!(
+                            requested = %canonical.display(),
+                            resolved_gitdir = ?other,
+                            registry = %registry.display(),
+                            served_root = %root_canonical.display(),
+                            "overlay-root's main resolves to the served project but it is NOT a \
+                             registered worktree (forged/unregistered gitdir) — rejecting"
+                        );
+                        anyhow::bail!(
+                            "overlay-root {} is not a registered worktree of the served project {}",
+                            canonical.display(),
+                            root_canonical.display()
+                        )
+                    }
+                }
             }
             other => {
                 tracing::warn!(
