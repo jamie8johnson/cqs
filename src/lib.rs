@@ -488,13 +488,14 @@ pub fn unix_secs_i64() -> Option<i64> {
 /// Used by scout, impact, and where_to_add to filter out tests from analysis.
 ///
 /// **Not** used by `store::calls::find_dead_code`, which has its own SQL-based
-/// detection (`TEST_NAME_PATTERNS`, `TEST_CONTENT_MARKERS`, `TEST_PATH_PATTERNS`)
-/// that also checks content markers like `#[test]` and `@Test`.
+/// detection (`build_test_chunk_filter` — keyed on the `chunk_type = 'test'` tag,
+/// plus `build_test_content_markers`/`build_test_path_patterns` for tagless
+/// languages) that also checks content markers like `#[test]` and `@Test`.
 pub fn is_test_chunk(name: &str, file: &str) -> bool {
     // Name-based patterns from the language registry.
     //
     // Single source of truth for both this matcher and
-    // `store::calls::TEST_NAME_PATTERNS`. The default set uses `Test\_%`, which
+    // `store::calls::build_test_chunk_filter`. The default set uses `Test\_%`, which
     // matches `Test_bar` but NOT `TestRegistry` (a looser `Test%` would
     // incorrectly demote test-framework API types). Languages
     // with their own conventions (Kotlin/Swift `should_*`, JUnit5

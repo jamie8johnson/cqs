@@ -303,7 +303,7 @@ src/
   output_format.rs - Wire-envelope selector: EnvelopeShape (V1Envelope | V2Bare; gated by CQS_OUTPUT_FORMAT, process-lifetime cached). Default V2Bare emits the bare payload on the CLI direct success path; v1 restores the full envelope. Consumed by emission helpers in src/cli/json_envelope.rs. Distinct from the CLI `--format` flag enum `OutputFormat` in src/cli/definitions.rs. (The CQS_ULTRASECURITY posture knob was removed in #1690 — security signals always emit when meaningful.)
   language/     - Tree-sitter language support (54 languages + L5X/L5K)
     mod.rs      - Language enum (define_languages! macro), LanguageRegistry, LanguageDef, ChunkType
-    languages.rs - All 54 language definitions (LanguageDef statics with ..DEFAULTS) + custom functions
+    languages.rs - All 55 LanguageDef statics with ..DEFAULTS (54 general languages + the L5X/L5K PLC extractor) + custom functions
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
