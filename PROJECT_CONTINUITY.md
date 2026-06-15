@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**✅ SESSION 2026-06-14 — #1858 OVERLAY EPIC + KEY-DESIGN CLASS BOTH CLOSED. main @ 1c523ab3 + this PR, clean; daemon active, schema 31, PARSER_VERSION 9, 16610 chunks (reindexed for the v8→v9 migration). 9 PRs merged.**
+**✅ v1.45.0 SHIPPED (2026-06-14).** Merged #1940, tagged `v1.45.0`, **published to crates.io**, release.yml binaries building, daemon binary rebuilt + reinstalled. main @ the release commit, clean. **Standing directive: after release → `/idle` residual-issue loop** (enumerate open issues, triage, fix, file new as they surface). Prior arcs all CLOSED: #1858 overlay epic + #1821, the key-design class (#1909/#1911), the candidate-edge campaign (#1933/#1934/#1936), level_scale (#1939).
 
 **#1858 WORKTREE OVERLAY — COMPLETE (#1858 + #1821 CLOSED).** Every graph-adjacent command reflects worktree edits in a `.claude/worktrees/` checkout: search + scout/gather/task (seed) + callers/callees + impact + dead + review. Read `_meta.overlay_graph`: `"full"` (search/callers/callees/dead), `"callers-only"` (impact + review — their affected-tests/transitive/risk sections stay parent-truth), `"seed-only"` (scout/gather/task — seed overlaid, BFS expansion parent-truth), absent (parent-truth early-return). Every marker gated on ACTUAL overlay participation, never `overlay.is_some()` (the seam-audit discipline). The "treat results as hints" re-read tax is RETIRED in CLAUDE.md. Lanes: PR1 #1908 (callers/callees), PR2 #1921 (impact/dead + #1910 dead-code edge-kind fix), PR3 #1924 (review). Known gap: `cqs ci`'s embedded review still parent-truth → #1926.
 
@@ -16,11 +16,11 @@
 
 **9 PRs MERGED this session:** #1908, #1909 (PR #1917), #1914, #1915, #1918, #1920, #1921, #1923, #1924.
 
-**INDEX STATE (live):** schema 31, PARSER_VERSION 9, 16610 chunks, daemon active + serving, binary current (v9, installed). ⚠️ **DON'T `rm index.db`** — nukes the llm_summaries cache; use `cqs index --force` ([[feedback_summary_cross_slot]]).
-**RECALL (v1.44.0 baseline, eval.md):** R@5 72.5 / R@1 47.7 / R@20 88.5. v1.44.0 shipped + on crates.io.
+**INDEX STATE (live):** schema **32**, PARSER_VERSION **10**, ~16,720 chunks, level_scale 0.5, EmbeddingGemma-300m, daemon active + serving, binary current (v1.45.0). ⚠️ **DON'T `rm index.db`** — nukes the llm_summaries cache; use `cqs index --force` ([[feedback_summary_cross_slot]]).
+**RECALL (v1.45.0 RELEASE GATE, eval.md):** agg **47.7 / 72.0 / 88.5** (test 46.8/67.9/86.2, dev 48.6/76.1/90.8), **0 dead golds**. R@1+R@20 flat vs v1.44.0, R@5 −0.5 agg = corpus determinacy churn (scoring code unchanged), the reduced-indeterminacy call — not a regression.
 **SUBAGENT NESTING:** subagents can spawn subagents (CC v2.1.172); bg capped depth 5, fg unbounded ([[reference_subagent_nesting]]).
 
-**OPEN (idle pool):** #1916 (name_match coverage-gap survivors — chip away), #1925 (legacy-state guard for the v8→v9 table-chunk migration), #1926 (overlay `cqs ci`'s embedded review), #1893 (loom dup-edge HashSet→multiset), #1888 (L5X region-relative byte_start). CLOSED this session: #1858, #1821, #1909, #1910, #1911, #1912, #1914.
+**OPEN (idle pool — the loop's queue):** #1935 (candidate-edges: watch zero-chunk oversize-fn path clears but doesn't write), #1937 (candidate-edges: recompute under the worktree overlay — Direction-B), #1888 (L5X region-relative byte_start — forces a PV bump). Older backlog: #1573 (`cqs dead` tier 2/3 false-positives), #1804 (tiered daemon-held handle), tier-3 architecture umbrellas (#1459/#1463). CLOSED in the v1.45.0 cycle: #1858, #1821, #1909–#1912, #1914, #1916 (#1930), #1919, #1920, #1925 (#1929), #1926 (#1928), #1893 (#1932), #1933/#1934/#1936 (candidate-edge), #1939 (level_scale).
 
 ---
 
@@ -386,6 +386,9 @@ All 15 open issues confirmed still open against GitHub — none stale.
 
 ## Recent release history (compressed)
 
+- **v1.45.0** (2026-06-14) — candidate-edge dead-accuracy (schema v32, PARSER_VERSION 10; #1933/#1934/#1936), worktree overlay COMPLETE (#1858/#1821), HNSW `modify_level_scale(0.5)` (#1939). Gate agg 47.7/72.0/88.5, 0 dead golds.
+- **v1.44.0** (2026-06-13) — result-trust calibration metadata (#1821: edge provenance, `dead --verdict`, `rank_signals`, search overlay), macro/fn-pointer/serde call-graph edges, #1892 chunk-loss fix. Gate agg 47.7/72.5/88.5.
+- **v1.43.0** (2026-06-11) — v1.42.0 16-category audit campaign close-out (107 findings, ~35 PRs): daemon per-request cache, generation-stamped HNSW sidecars, store/search/serve boundary refactor.
 - **v1.39.0** (2026-05-07) — 88-commit minor release. v1.38 audit cycle + post-cycle hardening (atomic reindex #1575, TRT blocklist #1577, cqs dead noise filter #1572). Schema unchanged at v27.
 - **v1.38.0** (2026-05-06) — 13 audit-driven PRs closing #1460/#1461/#1462. Per-slot SPLADE α tables (#1472), TOML overlays for FTS synonyms + classifier vocab, `cqs serve` concurrent-request cap (#1477), daemon socket TOCTOU hardening (#1478). No schema bump.
 - **v1.37.0** (2026-05-05) — v1.36.2 audit close-out (#1456): 120/163 findings addressed. Dim-scaled batch sizes (#1464). Promoted `cqs::limits` to `pub`. `RerankerMode::Llm` removed.
@@ -398,6 +401,7 @@ All 15 open issues confirmed still open against GitHub — none stale.
 
 ## Schema state
 
+- **CURRENT: v32** (v1.45.0), PARSER_VERSION **10**. v30 `function_calls.edge_kind` (edge provenance: call|serde_callback|macro_heuristic|fn_pointer|doc_reference), v31 `file_registry.parse_failed_parser_version` (parser-drift re-queue suppression), v32 `candidate_edges` side-table (name-keyed low-confidence call candidates; `cqs dead` → low-confidence-live; **never joined by graph queries** so it can't surface a phantom caller). Earlier recent: v28 `chunks.canonical_hash`, v29 `file_registry` + notes-sentiment CHECK.
 - **v27** (post-#1497, v1.38.0+) — `chunks.needs_embedding INTEGER NOT NULL DEFAULT 0` plus partial index. Drives `--llm-summaries` skip-first-pass embed: chunks land with zero-vec sentinel + `needs_embedding=1`; HNSW build and search hide them until `enrichment_pass` clears the flag.
 - v27 migration backfills `needs_embedding=1` for any pre-v27 row with `embedding_base IS NULL` so legacy chunks repopulate the base-HNSW on the next index pass.
 - HNSW build, `Store::search_by_name`, `Store::search_fts_only` all filter `WHERE needs_embedding = 0`.
@@ -434,6 +438,8 @@ Declare the variant with `#[cqs_cmd(group = "a"|"b", batch = "cli"|"daemon"|"run
 ## Eval baselines
 
 Canonical slate: `evals/queries/v3_test.v2.json` (109q) + `evals/queries/v3_dev.v2.json` (109q). Both fixtures refreshed 2026-04-25 (PR #1109).
+
+**CURRENT (v1.45.0 RELEASE GATE, 2026-06-14, 16,720 chunks, schema 32):** agg **47.7 / 72.0 / 88.5** — test 46.8/67.9/86.2, dev 48.6/76.1/90.8, **0 dead golds**. Full writeup + verdict in `~/training-data/research/eval.md`. Not comparable to the 2026-05 baseline below — different corpus, and the #1891 chunk-loss correction reset the baseline at v1.44.0 (47.7/72.5/88.5).
 
 **Baseline (v3.v2 218q dual-judge, 2026-05-08 post-v1.39.1 cliff fix + LLM summaries refresh + identifier_lookup α retune):**
 
