@@ -68,6 +68,33 @@ jobs:
       - name: Build (release)
         run: cargo build --release --verbose
 
+      - name: Warm + verify embedder model
+        # The model-loading tests pull the default EmbeddingGemma ONNX,
+        # including its big external-weights sidecar `model.onnx_data`. HF
+        # downloads are flaky (429 / truncation) and `ensure_model` only WARNS
+        # on a failed sidecar fetch — ORT then panics mid-suite with "cannot
+        # get file size". Warm via `cqs doctor` (the same `Embedder::new`
+        # download path the tests use), retry, and verify the sidecar is
+        # present + non-empty, so a bad download fails THIS step loudly instead
+        # of poisoning the suite. (#1973 / #1959)
+        run: |
+          set -uo pipefail
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::model warm attempt $attempt"
+            cargo run --release --quiet -- doctor || true
+            echo "::endgroup::"
+            data=$(find "$HOME/.cache/huggingface/hub" -name 'model.onnx_data' -path '*embeddinggemma*' 2>/dev/null | head -1)
+            if [ -n "$data" ] && [ -s "$data" ]; then
+              ok=1
+              echo "model warmed: $data ($(du -h "$data" | cut -f1))"
+              break
+            fi
+            echo "attempt $attempt: model.onnx_data still missing/empty; backing off"
+            sleep $((attempt * 20))
+          done
+          [ "$ok" = 1 ] || { echo "::error::EmbeddingGemma model.onnx_data could not be fetched after 3 attempts"; exit 1; }
+
       - name: Run full test suite (incl. ignored)
         if: ${{ github.event_name == 'schedule' || inputs.include_ignored != 'false' }}
         # --include-ignored is for #[ignore]d unit/integration tests (GPU,
@@ -86,12 +113,14 @@ jobs:
         run: cargo test --release --verbose
 
   slow-tests-feature:
-    # Self-contained tests gated behind the `slow-tests` cargo feature
-    # (subprocess-spawning CLI tests + the heaviest e2e binaries — onboard,
-    # eval_subcommand). No HF model download dependency; all use mock or
-    # local-only embedders. Could later graduate to PR-time CI if the wall
-    # time stays under budget. See Cargo.toml `slow-tests` comment for
-    # the gated file inventory. (#1286 Phase 2)
+    # Tests gated behind the `slow-tests` cargo feature (subprocess-spawning
+    # CLI tests + the heaviest e2e binaries — onboard, eval_subcommand). Most
+    # use mock or local-only embedders, but the overlay/embedding tests index a
+    # real parent and DO need the default EmbeddingGemma ONNX — so this job
+    # warms + verifies the model like full-suite (#1973; the stale "no model
+    # download dependency" assumption is what let #1959 panic mid-suite). Could
+    # later graduate to PR-time CI if the wall time stays under budget. See
+    # Cargo.toml `slow-tests` comment for the gated file inventory. (#1286 Phase 2)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -105,6 +134,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-slow-feature
+
+      - name: Cache HF models
+        # The overlay tests need the default EmbeddingGemma ONNX (incl. the
+        # ~1GB `model.onnx_data` sidecar); persist it across nights so a good
+        # download is reused and a partial one is caught by the warm step.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-slow-feature-v1
+          restore-keys: |
+            hf-models-
+
+      - name: Warm + verify embedder model
+        # See full-suite's warm step — same flaky-download / WARN-on-sidecar
+        # rationale. The overlay tests in this suite index a real parent, so a
+        # missing `model.onnx_data` panics them at ORT session init. Fail here,
+        # not mid-suite. (#1973 / #1959)
+        run: |
+          set -uo pipefail
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::model warm attempt $attempt"
+            cargo run --release --features slow-tests --quiet -- doctor || true
+            echo "::endgroup::"
+            data=$(find "$HOME/.cache/huggingface/hub" -name 'model.onnx_data' -path '*embeddinggemma*' 2>/dev/null | head -1)
+            if [ -n "$data" ] && [ -s "$data" ]; then
+              ok=1
+              echo "model warmed: $data ($(du -h "$data" | cut -f1))"
+              break
+            fi
+            echo "attempt $attempt: model.onnx_data still missing/empty; backing off"
+            sleep $((attempt * 20))
+          done
+          [ "$ok" = 1 ] || { echo "::error::EmbeddingGemma model.onnx_data could not be fetched after 3 attempts"; exit 1; }
 
       - name: Run slow-tests feature suite
         run: cargo test --release --features slow-tests --verbose
