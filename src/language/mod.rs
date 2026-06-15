@@ -1206,6 +1206,8 @@ define_languages! {
     Aspx => "aspx", feature = "lang-aspx", def = languages::definition_aspx;
     /// IEC 61131-3 Structured Text (.st, .stl files)
     StructuredText => "structured_text", feature = "lang-st", def = languages::definition_structured_text;
+    /// Rockwell/Allen-Bradley PLC exports (.l5x, .l5k files — embedded Structured Text)
+    L5x => "l5x", feature = "lang-l5x", def = languages::definition_l5x;
     /// Dart (.dart files)
     Dart => "dart", feature = "lang-dart", def = languages::definition_dart;
 }
@@ -1833,6 +1835,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-st")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-l5x")]
         {
             expected += 1;
         }
@@ -2673,7 +2679,7 @@ mod tests {
     /// fails and reminds the contributor to update the constant.
     #[test]
     fn test_language_variant_count() {
-        const EXPECTED_LANGUAGE_COUNT: usize = 54;
+        const EXPECTED_LANGUAGE_COUNT: usize = 55;
         let actual = Language::all_variants().len();
         assert_eq!(
             actual, EXPECTED_LANGUAGE_COUNT,

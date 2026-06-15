@@ -258,14 +258,9 @@ impl Parser {
         let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext = ext_raw.to_ascii_lowercase();
 
-        // Rockwell PLC exports need custom ST extraction
-        if ext == "l5x" {
-            return l5x::parse_l5x_chunks(&source, path, self);
-        }
-        if ext == "l5k" {
-            return l5x::parse_l5k_chunks(&source, path, self);
-        }
-
+        // Rockwell PLC exports (.l5x/.l5k) route through their grammar-less
+        // LanguageDef's custom_chunk_parser via parse_source — a single
+        // declarative routing path shared with parse_file_all_inner.
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 

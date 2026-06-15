@@ -201,7 +201,7 @@ libc = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt", "half"] }
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-dart", "convert", "llm-summaries", "serve"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-l5x", "lang-dart", "convert", "llm-summaries", "serve"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -257,8 +257,9 @@ lang-vue = ["dep:tree-sitter-vue"]
 lang-markdown = []  # No external deps — custom parser
 lang-aspx = ["lang-csharp", "lang-vbnet"]  # Delegates to C#/VB.NET grammars
 lang-st = ["dep:tree-sitter-structured-text"]
+lang-l5x = ["lang-st"]  # Rockwell PLC exports — delegates to the ST grammar
 lang-dart = ["dep:tree-sitter-dart"]
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-dart"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-elm", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "lang-st", "lang-l5x", "lang-dart"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
