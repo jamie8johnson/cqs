@@ -307,7 +307,7 @@ src/
     queries/    - Tree-sitter queries (.scm files, loaded via include_str!())
       <lang>.chunks.scm, <lang>.calls.scm, <lang>.types.scm
   test_helpers.rs - Shared test fixtures module
-  store/        - SQLite storage layer (Schema v29, WAL mode)
+  store/        - SQLite storage layer (Schema v32, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, split_sql_statements (BEGIN/END-aware)
     metadata.rs - Chunk metadata queries, file-level operations
     search.rs   - Store-owned SQL search: search_fts, fts_match_ids (v27 needs_embedding gate), search_by_name (imports nothing from search/ — scoring lives there)
@@ -319,12 +319,16 @@ src/
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
     calls/      - Call graph storage and queries
       mod.rs, crud.rs, cross_project.rs, dead_code.rs, query.rs, related.rs, test_map.rs
+                  candidate_edges (v32 side-table: file, callee_name, ref_line, candidate_kind;
+                  indexed on callee_name + file) — low-confidence call-graph candidates that must
+                  NOT surface as callers (never joined by graph queries). `cqs dead` consults it so a
+                  candidate-only callee classifies as low-confidence-live rather than dead.
     types.rs    - Type edge storage and queries
     backup.rs   - Filesystem snapshots of `index.db` taken before schema migrations run (covers commit-time I/O failures the migration transaction's rollback can't)
     summary_queue.rs - Write-coalescing queue for streamed LLM-summary inserts (routes through WRITE_LOCK instead of bypassing it with a raw INSERT OR IGNORE)
     helpers/    - Types, embedding conversion, scoring, SQL utilities, shared index.db freshness key
       mod.rs, embeddings.rs, error.rs, file_identity.rs, rows.rs, scoring.rs, search_filter.rs, sql.rs, types.rs
-    migrations.rs - Schema migration framework (v10-v29, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries, v28 chunks.canonical_hash for comment-canonical embedding reuse, v29 file_registry for zero-chunk fingerprint persistence + notes.sentiment discrete-value CHECK)
+    migrations.rs - Schema migration framework (v10-v32, including v19 FK cascade, v20 trigger, v21 splade tokens, v22 chunks.umap_x/y, v23 reconcile fingerprint, v24 vendored-code trust, v25 notes.kind, v26 composite (source_type, origin) index on chunks, v27 chunks.needs_embedding for skip-first-pass embed under --llm-summaries, v28 chunks.canonical_hash for comment-canonical embedding reuse, v29 file_registry for zero-chunk fingerprint persistence + notes.sentiment discrete-value CHECK, v30 function_calls.edge_kind TEXT NOT NULL DEFAULT 'call' for edge provenance (call|serde_callback|macro_heuristic|fn_pointer|doc_reference), v31 file_registry.parse_failed_parser_version for parser-drift re-queue suppression, v32 candidate_edges side-table)
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
@@ -450,6 +454,9 @@ src/
     tests.rs    - Router + auth integration tests (test_router_with_auth helper, host allowlist, gzip)
   main.rs       - Binary entry point: clap parse, tracing-subscriber init, dispatch into `cli`
   lib.rs        - Public API
+examples/
+  exp_level_scale.rs - HNSW level-scale sweep harness (the modify_level_scale(0.5) / LEVEL_SCALE_FACTOR tuning study: orphan rate + recall across M / ef-construction)
+  bench_embed.rs     - Embedding throughput micro-benchmark
 .claude/
   skills/       - Claude Code skills (auto-discovered)
     groom-notes/  - Interactive note review and cleanup

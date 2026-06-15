@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-06-14
+
+### Added
+
+- **Candidate-edge dead-code accuracy — a name-keyed side-table that suppresses false dead-verdicts without inventing false callers (schema v32, PARSER_VERSION 10; #1933 / #1934 / #1936).** A three-lane campaign. **L1 (#1933)** adds the `candidate_edges` side-table (`file`, `callee_name`, `ref_line`, `candidate_kind`; indexed on `callee_name` + `file`) with store plumbing folded into the per-file fused write — it is callee-NAME-keyed and **never joined by graph queries**, so by construction it can never surface a phantom caller. **L2 (#1934)** has the parser emit the call-graph references it previously *dropped* into this table across all three extraction paths, with four kinds: `bare_arg_unresolved`, `macro_arg_unresolved`, `serde_container`, `serde_with_module`. **L3 (#1936)** has `cqs dead` consult the table: a callee referenced only by a candidate edge classifies **`low-confidence-live`** instead of `dead`, with per-kind candidate counts surfaced on the verdict.
+- **Worktree overlay completed — the graph + scout commands now reflect your uncommitted edits, not just `cqs search` (#1858, closing #1821).** Part A (#1900) overlays the seed search of scout/gather/task; Part B overlays callers/callees (#1908), impact + dead (#1921, with #1910), and review (#1924, closing the epic), then extends to `cqs ci`'s review + dead surfaces (#1928 / #1926). Each result carries a `_meta.overlay_graph` marker recording *actual* participation — `full` (search/callers/callees/dead), `callers-only` (impact + review keep their tests/transitive/risk sections at parent-truth), `seed-only` (scout/gather/task), or absent. The overlay stays daemon-path-only and is gated on real participation, never on `overlay.is_some()`.
+
+### Changed
+
+- **HNSW build applies `modify_level_scale(0.5)` (#1939).** hnsw_rs's default level scale (`1/ln(M)`) over-populates the upper layers under parallel insert, leaving a fraction of points self-unreachable (orphaned) by construction; a 0.5 factor cut that orphaning ~26–100× (M=32: 0 orphaned / 40 builds) with recall flat-to-slightly-up. Single-sourced as `LEVEL_SCALE_FACTOR` in `HnswGraph::new`. No schema/PARSER_VERSION change, but a reindex is required to rebuild the graph. (Root cause — an entry-point write race during parallel insert — confirmed by the hnswlib-rs maintainer: jean-pierreBoth/hnswlib-rs#32.) Caveat: the underlying hnsw_rs call prints a scale line to stdout, so JSON consumers should parse the last object.
+- **Centralized the `index.db` freshness key across all three readers (#1917).** A shared `FileIdentity` (`dev`, `inode`, `size`, `mtime`) + `DataVersionProbe` in `src/store/helpers/file_identity.rs` replaces three independently-assembled staleness keys, closing an incomplete-sweep class where a hardening applied to one reader could miss its peers.
+
+### Fixed
+
+- **Chunk-id non-injectivity for markdown tables + a re-id suffix drop (#1923; PARSER_VERSION 9).** Two byte-distinct markdown table chunks on the same heading line could collide onto one id and one was dropped; `chunk_id_suffixed` restores injectivity, moved in lockstep across all id-construction and consumption sites.
+- **Genuine worktree deaths no longer mislabeled `low-confidence-live` (dead-overlay seam; in #1936).** A seam audit caught that overlay-introduced functions (present only in the worktree) were being run through the parent-truth candidate relabel and filtered out of `--verdict dead`; an `overlay_dead` bypass classifies them honestly. The full test sweep and an opus code-review both passed this — only the seam-auditor found it.
+- **`cqs neighbors --limit` clamped to `SIMILAR_LIMIT_MAX` (#1920).** Recovers a sweep guard lost to an incomplete migration.
+- **Cross-project cache cell epoch-tagged — WAL stale-serve race closed (#1919).** The daemon's cross-project context cell now adopts a cached value only at the current invalidation epoch, matching the rest of the write-back cache.
+
+### Internal
+
+- **The #1826 auditor family rounded out.** Agent definitions added for the `sweep-auditor` (#1897), `legacy-state-auditor` (#1899), `red-team-auditor` (extracted from the `/red-team` skill, #1901), and `adequacy-auditor` (#1902), plus an RT-EXFIL data-egress category (#1903) and a convergence pass folding the test-fires' durable guards (#1904). The `Agent` tool is granted to decomposable roles and withheld from the relational auditors whose finding *is* a relation (#1896).
+- **Test hardening from the audit family.** name_match adequacy guards (#1918) + coverage-gap mutant kills (#1930, closing #1916); frozen-artifact guards for the v8→v9 markdown chunk-id migration (#1929) and for fresh-init ≡ full-migration + the notes_fts rebuild seam (#1931); a loom multiset call-graph store so the model can express a duplicate-edge regression (#1932); gather's BFS depth clamp migrated to a named cap with a completeness guard (#1898).
+
 ## [1.44.0] - 2026-06-13
 
 ### Added
@@ -3739,7 +3763,8 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.44.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...HEAD
+[1.45.0]: https://github.com/jamie8johnson/cqs/compare/v1.44.0...v1.45.0
 [1.44.0]: https://github.com/jamie8johnson/cqs/compare/v1.43.0...v1.44.0
 [1.25.0]: https://github.com/jamie8johnson/cqs/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/jamie8johnson/cqs/compare/v1.23.0...v1.24.0
