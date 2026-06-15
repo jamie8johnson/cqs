@@ -325,14 +325,6 @@ enum ChannelOutcome {
 /// Priority is (header > cookie > query), documented at the channel array's
 /// construction site, not implicit in the trait.
 trait AuthChannel {
-    /// Stable short name. Used only for tracing; an observability follow-up
-    /// could log the matched channel here.
-    #[allow(
-        dead_code,
-        reason = "reserved for the audit-logging follow-up flagged in #1218"
-    )]
-    fn name(&self) -> &'static str;
-
     /// Inspect the request for this channel's credential and compare
     /// constant-time against `expected`. Returns
     /// [`ChannelOutcome::Authenticated`] / `Mismatch` / `NotPresent`.
@@ -362,10 +354,6 @@ trait AuthChannel {
 struct BearerHeaderChannel;
 
 impl AuthChannel for BearerHeaderChannel {
-    fn name(&self) -> &'static str {
-        "bearer"
-    }
-
     fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
         let bearer = req
             .headers()
@@ -401,10 +389,6 @@ struct CookieChannel<'a> {
 }
 
 impl AuthChannel for CookieChannel<'_> {
-    fn name(&self) -> &'static str {
-        "cookie"
-    }
-
     fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
         let cookie_header = req
             .headers()
@@ -441,10 +425,6 @@ impl AuthChannel for CookieChannel<'_> {
 struct QueryParamChannel;
 
 impl AuthChannel for QueryParamChannel {
-    fn name(&self) -> &'static str {
-        "query"
-    }
-
     fn check(&self, req: &Request, expected: &AuthToken) -> ChannelOutcome {
         let Some(query) = req.uri().query() else {
             return ChannelOutcome::NotPresent;
