@@ -400,7 +400,7 @@ fn dispatch_search_with_refs(ctx: &BatchView, args: &SearchArgs) -> Result<serde
     let project_origins = result_origins(&project_results);
 
     let references = ctx.get_all_refs()?;
-    let tagged = merge_references(&qargs, &prepared, project_results, &references);
+    let tagged = merge_references(&qargs, &prepared, project_results, &references)?;
 
     let (tagged, token_info) = pack_tagged(ctx, args, tagged)?;
     let mut value = crate::cli::display::build_tagged_results_value(
