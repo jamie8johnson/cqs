@@ -25,6 +25,14 @@ struct StRegion {
     source: String,
     /// Line number (1-indexed) where the region starts in the original file
     line_start: u32,
+    /// File-relative byte offset of where the region begins in the original
+    /// file. Each chunk's region-relative `byte_start` is lifted by this base
+    /// so chunk ids stay injective ACROSS regions: two regions can begin on the
+    /// same file line and contain byte-identical leading ST, which would
+    /// otherwise collide on (line_start, region-relative byte_start,
+    /// content_hash). Regions occupy distinct byte offsets, so the lifted
+    /// `byte_start` is unique per chunk file-wide.
+    byte_offset: u32,
     /// Context: parent routine name (if known)
     routine_name: Option<String>,
     /// Context: parent program name (if known)
@@ -116,13 +124,15 @@ fn parse_st_regions(
                 // fall back to whitespace-collapse only.
                 let canonical = super::chunk::canonical_hash_fallback(&content);
                 all_chunks.push(Chunk {
-                    // Synthetic whole-routine chunk: one per region, and each
-                    // region has a distinct `line_start`, so `byte_start` 0 is
-                    // safe — `line_start` alone disambiguates across regions.
+                    // Synthetic whole-routine chunk: one per region. Use the
+                    // region's file-relative base offset (not 0) so two regions
+                    // beginning on the same file line with byte-identical source
+                    // get distinct ids — region.line_start alone does NOT
+                    // disambiguate when regions share a file line.
                     id: super::chunk::chunk_id(
                         &path.display().to_string(),
                         region.line_start,
-                        0,
+                        region.byte_offset,
                         &content_hash,
                     ),
                     name: name.clone(),
@@ -130,7 +140,7 @@ fn parse_st_regions(
                     content,
                     file: path.to_path_buf(),
                     line_start: region.line_start,
-                    byte_start: 0,
+                    byte_start: region.byte_offset,
                     // line_end is inclusive 1-indexed. saturating_add so a high
                     // `region.line_start` plus a large line_count clamps at
                     // u32::MAX instead of overflowing.
@@ -215,10 +225,16 @@ fn extract_st_chunk(
     let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
     // Tree-precise: the ST node is available, so strip comment descendants.
     let canonical = super::chunk::canonical_hash(node, &content);
-    // Region-relative start byte. Combined with the file-relative `line_start`
-    // it is injective file-wide: distinct ST chunks within a region have
-    // distinct offsets, and regions occupy disjoint line ranges.
-    let byte_start = node.byte_range().start as u32;
+    // Lift the region-relative start byte to a file-relative offset by adding
+    // the region's base offset. Region source is reconstructed from independent
+    // CDATA matches with no enforced line-disjointness, so two regions can begin
+    // on the same file line and carry byte-identical leading ST — colliding on
+    // (line_start, region-relative byte_start, content_hash) and dropping a
+    // chunk via the id PRIMARY KEY. The lift makes byte_start unique per chunk
+    // file-wide because regions occupy distinct byte offsets. saturating_add
+    // clamps at u32::MAX on a pathological file rather than wrapping.
+    let region_byte_start: u32 = node.byte_range().start.try_into().unwrap_or(u32::MAX);
+    let byte_start = region.byte_offset.saturating_add(region_byte_start);
 
     Ok(Chunk {
         id: super::chunk::chunk_id(
@@ -284,6 +300,9 @@ fn extract_l5x_regions(source: &str) -> Vec<StRegion> {
             .expect("L5X_ST_CONTENT_RE: group 1 is unconditional");
         let start_byte = full.start();
         let line_start = line_of(source, start_byte);
+        // File-relative base offset for lifting each chunk's region-relative
+        // byte_start. Clamp the usize->u32 cast so a >4 GB file saturates.
+        let byte_offset: u32 = start_byte.try_into().unwrap_or(u32::MAX);
 
         let mut lines = Vec::new();
         for cdata in CDATA_RE.captures_iter(inner.as_str()) {
@@ -304,6 +323,7 @@ fn extract_l5x_regions(source: &str) -> Vec<StRegion> {
         regions.push(StRegion {
             source: lines.join("\n"),
             line_start,
+            byte_offset,
             routine_name,
             program_name,
         });
@@ -415,6 +435,9 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
         }
 
         let line_start = line_of(source, block_start);
+        // File-relative base offset for lifting each chunk's region-relative
+        // byte_start. Clamp the usize->u32 cast so a >4 GB file saturates.
+        let byte_offset: u32 = block_start.try_into().unwrap_or(u32::MAX);
 
         // Try ST_CONTENT := [ ... ]; block first
         let st_source = if let Some(st_block) = L5K_ST_CONTENT_BLOCK_RE.captures(block_content) {
@@ -468,6 +491,7 @@ fn extract_l5k_regions(source: &str) -> Vec<StRegion> {
         regions.push(StRegion {
             source: st_source,
             line_start,
+            byte_offset,
             routine_name: Some(routine_name),
             program_name,
         });
@@ -543,6 +567,71 @@ mod tests {
         assert!(regions[0].source.contains("myTimer"));
         assert!(regions[0].source.contains("END_IF"));
         assert!(!regions[0].source.contains("XIC"));
+    }
+
+    /// FILE-WIDE INJECTIVITY (the byte_start lift).
+    ///
+    /// Two `<STContent>` regions begin on the SAME file line and carry
+    /// byte-identical leading ST. With a region-relative `byte_start` both
+    /// chunks would share (line_start, byte_start, content_hash) → identical
+    /// id → one chunk dropped by the `chunks.id` PRIMARY KEY. Lifting
+    /// `byte_start` to a file-relative offset (regions occupy distinct byte
+    /// offsets) separates them.
+    ///
+    /// RED before the lift: revert `byte_start` to `node.byte_range().start`
+    /// (and the synthetic chunk to 0) and this asserts a collision.
+    #[test]
+    fn test_l5x_same_line_regions_ids_injective() {
+        // Two ST routines whose `<STContent>` tags sit on ONE physical line,
+        // each containing byte-identical ST (`x := 1;`). The two `<Routine>`
+        // wrappers and `<STContent>` blocks are on the same source line, so
+        // both regions get the same `line_start`; the ST is identical, so the
+        // region-relative byte_start and content_hash also match pre-lift.
+        let source = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>",
+            // both routines + their STContent on the SAME line:
+            "<Routine Name=\"A\" Type=\"ST\"><STContent><Line Number=\"0\"><![CDATA[x := 1;]]></Line></STContent></Routine>",
+            "<Routine Name=\"B\" Type=\"ST\"><STContent><Line Number=\"0\"><![CDATA[x := 1;]]></Line></STContent></Routine>",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>\n",
+        );
+
+        let regions = extract_l5x_regions(source);
+        assert_eq!(regions.len(), 2, "expected two ST regions");
+        assert_eq!(
+            regions[0].line_start, regions[1].line_start,
+            "test precondition: both regions must start on the same file line"
+        );
+        assert_eq!(
+            regions[0].source, regions[1].source,
+            "test precondition: both regions must have byte-identical ST"
+        );
+        assert_ne!(
+            regions[0].byte_offset, regions[1].byte_offset,
+            "regions must occupy distinct file byte offsets (the disambiguator)"
+        );
+
+        let parser = Parser::new().unwrap();
+        let chunks = parse_l5x_chunks(source, Path::new("twins.l5x"), &parser).unwrap();
+        assert!(
+            chunks.len() >= 2,
+            "expected at least two chunks (one per region), got {}",
+            chunks.len()
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for c in &chunks {
+            assert!(
+                seen.insert(c.id.clone()),
+                "L5X chunk id collision: {} reused by a second distinct chunk \
+                 (name={:?}, line_start={}, byte_start={}) — file-wide \
+                 injectivity violated",
+                c.id,
+                c.name,
+                c.line_start,
+                c.byte_start,
+            );
+        }
     }
 
     #[test]
@@ -922,6 +1011,7 @@ END_PROGRAM
         let regions = vec![StRegion {
             source: source.to_string(),
             line_start: u32::MAX - 1, // forces overflow on `+ (line_count - 1)`
+            byte_offset: 0,
             routine_name: Some("OverflowRoutine".to_string()),
             program_name: Some("OverflowProg".to_string()),
         }];
@@ -963,6 +1053,7 @@ END_PROGRAM
         let regions = vec![StRegion {
             source: source.to_string(),
             line_start: u32::MAX, // any tree-sitter row added overflows u32
+            byte_offset: 0,
             routine_name: Some("Saturate".to_string()),
             program_name: Some("Prog".to_string()),
         }];

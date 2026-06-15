@@ -278,6 +278,107 @@ fn markdown_whole_file_table_no_trailing_newline_ids_injective() {
     );
 }
 
+// ── Real-parser injectivity over the L5X path ───────────────────────────────
+//
+// The L5X parser reconstructs each ST region's source from independent
+// `<STContent>` CDATA matches with no enforced line-disjointness. Two regions
+// can begin on the SAME file line and carry byte-identical leading ST, so a
+// region-relative `byte_start` collided on (line_start, byte_start,
+// content_hash) → identical id → one chunk dropped by the `chunks.id` PRIMARY
+// KEY. The fix lifts each chunk's region-relative `byte_start` to a
+// file-relative offset (regions occupy distinct byte offsets), restoring
+// file-wide injectivity. The arithmetic `chunk_coords` property cannot express
+// this: its generator DEDUPS by byte_start, structurally excluding the equal
+// region-relative offsets two same-line byte-identical regions produce.
+
+/// Generate L5X documents that stress the same-line region overlap: N ST
+/// routines whose `<STContent>` tags all sit on ONE physical line, each
+/// containing the SAME single ST statement. Pre-lift, the chunks share
+/// (line_start, region-relative byte_start, content_hash) and collide; the
+/// file-relative lift separates them by region byte offset.
+///
+/// Coverage: spans {2..=4 same-line routines} × {short ST statements} and
+/// deliberately makes the ST byte-identical across routines — the corner the
+/// arithmetic generator's byte_start-dedup can never reach.
+fn l5x_same_line_regions() -> impl Strategy<Value = String> {
+    (
+        2usize..5,    // number of same-line ST routines
+        "[a-z]{1,4}", // variable name (shared → byte-identical ST)
+        prop::sample::select(vec!["1", "2", "TRUE", "FALSE"]),
+    )
+        .prop_map(|(n, var, rhs)| {
+            let mut s = String::from(
+                "<?xml version=\"1.0\"?>\n\
+                 <RSLogix5000Content><Controller Name=\"C\"><Programs>\
+                 <Program Name=\"P\"><Routines>",
+            );
+            // All routines + their <STContent> on a SINGLE source line, each
+            // carrying byte-identical ST so line_start, region-relative
+            // byte_start, and content_hash all collide pre-lift.
+            for i in 0..n {
+                s.push_str(&format!(
+                    "<Routine Name=\"R{i}\" Type=\"ST\"><STContent>\
+                     <Line Number=\"0\"><![CDATA[{var} := {rhs};]]></Line>\
+                     </STContent></Routine>"
+                ));
+            }
+            s.push_str("</Routines></Program></Programs></Controller></RSLogix5000Content>\n");
+            s
+        })
+}
+
+proptest! {
+    /// REAL-PARSER INJECTIVITY (L5X): every chunk emitted for a single L5X file
+    /// must have a distinct id, even when multiple ST regions begin on the same
+    /// file line with byte-identical leading ST. Pre-lift, same-line
+    /// byte-identical regions collided on (line_start, region-relative
+    /// byte_start, content_hash); the file-relative byte_start lift separates
+    /// them. proptest shrinks to the minimal two-region case, re-verifying the
+    /// fix. Minimal case pinned below.
+    #[test]
+    fn l5x_chunk_ids_injective_within_file(doc in l5x_same_line_regions()) {
+        let file = write_temp(&doc, "l5x");
+        let parser = Parser::new().expect("init parser");
+        let chunks = parser.parse_file(file.path()).expect("parse");
+
+        let mut seen: HashSet<&str> = HashSet::with_capacity(chunks.len());
+        for c in &chunks {
+            prop_assert!(
+                seen.insert(c.id.as_str()),
+                "L5X id collision: {} reused by a second distinct chunk \
+                 (name={:?}, line_start={}, byte_start={}); source:\n{}",
+                c.id, c.name, c.line_start, c.byte_start, doc,
+            );
+        }
+    }
+}
+
+/// Minimal falsifier pin (L5X same-line region collision): two ST routines
+/// whose `<STContent>` tags share a file line and carry byte-identical ST. Pre
+/// the file-relative `byte_start` lift, both chunks had id `{path}:N:0:{hash8}`
+/// (region-relative byte_start, identical content_hash) — the second dropped by
+/// the `chunks.id` PRIMARY KEY. The lift gives each region a distinct
+/// file-relative `byte_start`, so the ids diverge.
+#[test]
+fn l5x_same_line_byte_identical_regions_ids_injective() {
+    // Two ST routines + their STContent on ONE physical line, identical ST.
+    let src = "<?xml version=\"1.0\"?>\n\
+        <RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\
+        <Routine Name=\"A\" Type=\"ST\"><STContent><Line Number=\"0\"><![CDATA[x := 1;]]></Line></STContent></Routine>\
+        <Routine Name=\"B\" Type=\"ST\"><STContent><Line Number=\"0\"><![CDATA[x := 1;]]></Line></STContent></Routine>\
+        </Routines></Program></Programs></Controller></RSLogix5000Content>\n";
+    let file = write_temp(src, "l5x");
+    let parser = Parser::new().expect("init parser");
+    let chunks = parser.parse_file(file.path()).expect("parse");
+
+    assert!(
+        chunks.len() >= 2,
+        "expected at least two chunks (one per region), got {}",
+        chunks.len()
+    );
+    assert_ids_injective(&chunks, "l5x_same_line_regions");
+}
+
 // ── Real-parser pins (falsifier reproductions) ──────────────────────────────
 //
 // These are the concrete inputs the property generalizes. They run the REAL

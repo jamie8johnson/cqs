@@ -32,7 +32,14 @@ use super::Parser;
 /// callbacks — alongside the confident `function_calls`. A
 /// byte-identical file re-parsed under v10 produces candidate rows it did not
 /// under v9, so a refresh is required even when `content_hash` is unchanged.
-pub const PARSER_VERSION: u32 = 10;
+/// 11: L5X/L5K chunk `byte_start` is now lifted to a file-relative offset (was
+/// region-relative). Two ST regions can begin on the same file line with
+/// byte-identical leading ST, which collided on (line_start, region-relative
+/// byte_start, content_hash) and dropped a chunk via the id PRIMARY KEY. The
+/// lift changes the stored `byte_start` and thus the `id` for every L5X/L5K
+/// chunk past the first region, so a refresh is required even for unchanged
+/// content.
+pub const PARSER_VERSION: u32 = 11;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
