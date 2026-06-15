@@ -743,4 +743,52 @@ mod tests {
         let nan_query = Embedding::new(vec![f32::NAN; crate::EMBEDDING_DIM]);
         assert!(index.search(&nan_query, 5).is_empty());
     }
+
+    /// The DotProduct arm must build AND self-query without panicking on
+    /// f32-L2-normalized vectors. A vector L2-normalized in f32 has a self-dot
+    /// fractionally above 1.0 (≈ 1.0000005); the stock dot distance asserts
+    /// `a·b <= 1` and would unwind a parallel-insert worker on the build path
+    /// (killing the whole build) and panic on the self-match search path. The
+    /// clamped dot distance maps that to distance 0 instead. Sweeping a wide
+    /// seed band exercises the many seeds that produce a >1.0 self-dot.
+    #[test]
+    fn dot_build_and_self_query_does_not_panic_over_seed_band() {
+        use crate::index::DistanceMetric;
+        // Build one DotProduct index over a band of make_test_embedding seeds,
+        // then self-query EACH indexed vector. The previous failure unwound
+        // during parallel_insert_data (build) or during search_neighbours
+        // (the self-match dot > 1.0), so reaching the end without a panic IS
+        // the assertion.
+        let embeddings: Vec<(String, Embedding)> = (0..64u32)
+            .map(|i| (format!("chunk_{i}"), make_embedding(i)))
+            .collect();
+        let index = HnswIndex::build_with_dim_and_metric(
+            embeddings,
+            crate::EMBEDDING_DIM,
+            DistanceMetric::DotProduct,
+        )
+        .expect("DotProduct build must not panic on f32-normalized vectors");
+        assert_eq!(index.len(), 64);
+
+        for i in 0..64u32 {
+            // The query is an indexed vector; its self-dot is the >1.0 input
+            // that previously tripped the assert. Search must return finite,
+            // in-range scores rather than panic.
+            let q = make_embedding(i);
+            let hits = index.search(&q, 5);
+            for h in &hits {
+                assert!(
+                    h.score.is_finite(),
+                    "non-finite dot score for seed {i}: {}",
+                    h.score
+                );
+                // score = 1 - dist = min(a·b, 1) — never exceeds 1.0.
+                assert!(
+                    h.score <= 1.0 + 1e-5,
+                    "clamped dot score must not exceed 1.0 for seed {i}: {}",
+                    h.score
+                );
+            }
+        }
+    }
 }

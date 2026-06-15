@@ -30,11 +30,12 @@ use crate::store::{ClearHnswDirty, Store, StoreError};
 /// - [`Cosine`](Self::Cosine) (default): HNSW uses `DistCosine`; CAGRA keeps
 ///   cuVS's default `L2Expanded`, which is rank-equivalent to cosine on the
 ///   unit-norm embeddings cqs produces (`d² = 2 − 2·cos`).
-/// - [`DotProduct`](Self::DotProduct): HNSW uses `DistDot`
-///   (`dist = 1 − a·b`); CAGRA sets cuVS `InnerProduct`. Note hnsw_rs's
-///   `DistDot` asserts `a·b <= 1`, so un-normalized embedding models whose
-///   pairwise dot products exceed 1 are not usable on the HNSW backend
-///   without a scaling pass.
+/// - [`DotProduct`](Self::DotProduct): HNSW uses `DistDotClamped`
+///   (`dist = 1 − min(a·b, 1)`); CAGRA sets cuVS `InnerProduct`. anndists'
+///   stock `DistDot` asserts `a·b <= 1` and would panic on the f32-L2-norm
+///   margin (a self-dot ≈ 1.0000005) or any pairwise dot above 1; cqs clamps
+///   the dot to `<= 1` before the subtraction, so the distance is always
+///   `>= 0` and a near-identical pair maps to distance 0 (most similar).
 ///
 /// `L2` is deliberately absent: both score-conversion paths
 /// (`1 − dist` for HNSW, `1 − d²/2` for CAGRA) are cosine-similarity-shaped

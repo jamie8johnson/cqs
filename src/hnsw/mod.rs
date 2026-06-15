@@ -33,7 +33,7 @@ pub use persist::{
 
 use std::cell::UnsafeCell;
 
-use hnsw_rs::anndists::dist::distances::{DistCosine, DistDot};
+use hnsw_rs::anndists::dist::distances::{DistCosine, Distance};
 use hnsw_rs::api::AnnT;
 use hnsw_rs::hnsw::{Hnsw, Neighbour};
 use hnsw_rs::hnswio::HnswIo;
@@ -267,6 +267,36 @@ pub enum HnswError {
 // Note: Uses crate::index::IndexResult instead of a separate HnswResult type
 // since they have identical structure (id: String, score: f32)
 
+/// Dot-product distance with the dot product clamped to `<= 1.0` before the
+/// `1 - a·b` subtraction, so the result is always `>= 0`.
+///
+/// anndists' stock `DistDot` asserts `a·b <= 1.0` (scalar path) / the SIMD
+/// equivalent, and `DistCosine`-style renormalization is NOT applied for the
+/// dot metric. f32 L2-normalization is only approximately unit-norm: a
+/// vector normalized in f32 can have `a·a` slightly above `1.0` (observed
+/// ≈ 1.0000005), and a self-match or near-collinear pair then yields
+/// `a·b > 1.0`, tripping anndists' assert and unwinding the rayon insert
+/// worker (build path) or the search call. Computing the dot here and
+/// clamping it to `1.0` first makes the precondition unconditionally true:
+/// a near-identical pair correctly maps to distance `0` (most similar),
+/// and a genuinely closer-than-unit pair can never produce a negative
+/// distance. The dot is computed locally rather than delegated to
+/// anndists' `DistDot`, so BOTH its scalar and SIMD asserts are bypassed.
+#[derive(Default, Copy, Clone)]
+pub(crate) struct DistDotClamped;
+
+impl Distance<f32> for DistDotClamped {
+    fn eval(&self, va: &[f32], vb: &[f32]) -> f32 {
+        debug_assert_eq!(va.len(), vb.len());
+        let dot: f32 = va.iter().zip(vb.iter()).map(|(a, b)| a * b).sum();
+        // Clamp BEFORE subtracting so `1 - dot` is always `>= 0`. f32
+        // L2-normalization leaves `a·a` slightly above 1.0, so an unclamped
+        // self-dot would yield a negative distance and trip the downstream
+        // ordering invariants the library relies on.
+        1.0 - dot.min(1.0)
+    }
+}
+
 /// Metric-dispatching wrapper over the concrete `Hnsw<f32, D>` types.
 ///
 /// hnsw_rs bakes the distance into the type parameter (`Hnsw<'a, f32, D>`),
@@ -281,9 +311,12 @@ pub enum HnswError {
 pub(crate) enum HnswGraph<'a> {
     /// `DistCosine` — the default metric.
     Cosine(Hnsw<'a, f32, DistCosine>),
-    /// `DistDot` (`dist = 1 − a·b`). NOTE: anndists asserts `a·b <= 1`, so
-    /// this variant expects unit-norm (or sub-unit-dot) embeddings.
-    Dot(Hnsw<'a, f32, DistDot>),
+    /// `DistDotClamped` (`dist = 1 − min(a·b, 1)`). The dot is clamped to
+    /// `<= 1` before the subtraction, so the distance is always `>= 0` even
+    /// for the f32-L2-normalized vectors whose self-dot exceeds 1.0 by a
+    /// rounding margin — the precondition can never be violated, on either
+    /// the build or the search path.
+    Dot(Hnsw<'a, f32, DistDotClamped>),
 }
 
 /// Dispatch a method body across every [`HnswGraph`] variant. Local macro
@@ -333,7 +366,7 @@ impl<'a> HnswGraph<'a> {
                     nb_elem,
                     max_layer,
                     ef_construction,
-                    DistDot,
+                    DistDotClamped,
                 );
                 h.modify_level_scale(LEVEL_SCALE_FACTOR);
                 HnswGraph::Dot(h)
@@ -360,7 +393,7 @@ impl<'a> HnswGraph<'a> {
     pub(crate) fn load(io: &'a mut HnswIo, metric: DistanceMetric) -> Result<Self, HnswError> {
         match metric {
             DistanceMetric::Cosine => io.load_hnsw::<f32, DistCosine>().map(HnswGraph::Cosine),
-            DistanceMetric::DotProduct => io.load_hnsw::<f32, DistDot>().map(HnswGraph::Dot),
+            DistanceMetric::DotProduct => io.load_hnsw::<f32, DistDotClamped>().map(HnswGraph::Dot),
         }
         .map_err(|e| HnswError::Internal(format!("Failed to load HNSW: {}", e)))
     }
@@ -753,8 +786,8 @@ impl VectorIndex for HnswIndex {
     /// HNSW with the `Cosine` metric returns `1 - DistCosine`, which on full
     /// vectors is exactly the cosine similarity the brute-force path
     /// recomputes — so its scores are reusable. The `DotProduct` metric
-    /// returns `1 - DistDot = a·b`, a different scale from cosine, so it leaves
-    /// the default `false`.
+    /// returns `1 - min(a·b, 1) = min(a·b, 1)`, a different scale from
+    /// cosine, so it leaves the default `false`.
     fn index_scores_are_cosine(&self) -> bool {
         self.metric() == DistanceMetric::Cosine
     }
@@ -965,6 +998,42 @@ mod send_sync_tests {
     fn test_hnsw_index_is_send_sync() {
         assert_send::<HnswIndex>();
         assert_sync::<HnswIndex>();
+    }
+
+    /// The clamped dot distance must never return a negative value, even when
+    /// the raw dot exceeds 1.0 — that is the precondition the stock `DistDot`
+    /// asserts and the f32-normalization margin violates. A self-dot above
+    /// 1.0 must map to distance exactly 0 (most similar), not a negative.
+    #[test]
+    fn dist_dot_clamped_never_negative_on_overunit_dot() {
+        use hnsw_rs::anndists::dist::distances::Distance;
+        let d = super::DistDotClamped;
+        // Raw dot = 1.0000005 > 1.0 (the observed f32 self-norm margin).
+        let a = [1.0f32, 0.0007f32];
+        // a·a = 1 + 0.0007^2 = 1.00000049 > 1.0.
+        let dist = d.eval(&a, &a);
+        assert!(
+            dist >= 0.0,
+            "clamped dot distance must be >= 0 for an over-unit dot, got {dist}"
+        );
+        assert!(
+            dist.abs() < 1e-6,
+            "over-unit self-dot must clamp to ~0, got {dist}"
+        );
+
+        // A sub-unit dot is unaffected: dist = 1 - a·b.
+        let x = [0.6f32, 0.0f32];
+        let y = [0.5f32, 0.0f32]; // a·b = 0.30
+        let dist2 = d.eval(&x, &y);
+        assert!(
+            (dist2 - 0.70).abs() < 1e-6,
+            "sub-unit dot must pass through: {dist2}"
+        );
+
+        // Orthogonal vectors: dot = 0 => distance 1.0 (most dissimilar).
+        let p = [1.0f32, 0.0f32];
+        let q = [0.0f32, 1.0f32];
+        assert!((d.eval(&p, &q) - 1.0).abs() < 1e-6);
     }
 
     #[test]
