@@ -654,7 +654,11 @@ impl CagraIndex {
             }
             if idx < self.id_map.len() {
                 let score = match self.metric {
-                    DistanceMetric::Cosine => 1.0 - dist / 2.0,
+                    // Clamp the f32 overshoot: a near-self match where the
+                    // unit-norm self-dot rounds just above 1.0 makes cos = 1 - d/2
+                    // exceed 1.0; cap it so a downstream acos/sqrt-of-(1-score)
+                    // consumer can't NaN.
+                    DistanceMetric::Cosine => (1.0 - dist / 2.0).min(1.0),
                     DistanceMetric::DotProduct => dist,
                 };
                 results.push(IndexResult {

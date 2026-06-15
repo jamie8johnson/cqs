@@ -1808,6 +1808,174 @@ mod tests {
                 prop_assert_eq!(emb.as_slice().len(), EMBEDDING_DIM);
                 prop_assert_eq!(emb.as_vec().len(), EMBEDDING_DIM);
             }
+
+            /// Property (#1949 boundary characterization): the self-dot of an
+            /// f32-`normalize_l2`'d vector is NOT guaranteed `<= 1.0`. It is
+            /// `~1.0` but can overshoot by a tiny epsilon — `normalize` divides
+            /// by `sqrt(sum(x^2))` accumulated in f32, and `sum(x^2) /
+            /// sum(x^2)` rounds slightly above 1 on ~40% of realistic inputs
+            /// (worst observed excess ≈ 1.7e-6 at dim 768). This is WHY
+            /// `DistDotClamped` (`hnsw/mod.rs`) clamps `dot.min(1.0)` and why
+            /// every downstream cosine consumer (MMR, name-blend, note-boost)
+            /// clamps its score range. The guard pins the magnitude of the
+            /// overshoot: it must stay tiny (a regression that let it grow —
+            /// e.g. a buggy normalize — would surface here), but it must NOT
+            /// be asserted away as exactly `<= 1.0`, because that is false.
+            /// A hand-written example can pick one vector that happens to land
+            /// at-or-below 1.0 and conclude (wrongly) the bound holds; only a
+            /// generator over the input space exposes the over-unit cases.
+            #[test]
+            fn prop_normalize_l2_self_dot_overshoot_bounded(
+                v in prop::collection::vec(-10.0f32..10.0f32, 64..=1024)
+            ) {
+                let norm_sq: f32 = v.iter().map(|x| x * x).sum();
+                prop_assume!(norm_sq > 1e-6); // skip near-zero-norm (left unscaled)
+                let n = normalize_l2(v);
+                let self_dot: f32 = n.iter().map(|x| x * x).sum();
+                // The overshoot, when present, is bounded by a tiny epsilon.
+                // 1e-3 is generous headroom over the ~1.7e-6 observed worst
+                // case — a real regression (wrong divisor, missing sqrt) would
+                // blow past it.
+                prop_assert!(
+                    (1.0 - 1e-3..=1.0 + 1e-3).contains(&self_dot),
+                    "self-dot of normalized vector must be ~1.0 (±1e-3), got {self_dot}"
+                );
+            }
+
+            /// Property (idempotence): `normalize_l2(normalize_l2(v)) ==
+            /// normalize_l2(v)` within f32 tolerance. An already-unit vector
+            /// must survive a second pass unchanged — a divisor bug or an
+            /// `if norm_sq != 1.0` short-circuit would break this. Example
+            /// tests apply normalize once and never the second time.
+            #[test]
+            fn prop_normalize_l2_idempotent(
+                v in prop::collection::vec(-10.0f32..10.0f32, 64..=1024)
+            ) {
+                let norm_sq: f32 = v.iter().map(|x| x * x).sum();
+                prop_assume!(norm_sq > 1e-6);
+                let n1 = normalize_l2(v);
+                let n2 = normalize_l2(n1.clone());
+                for (a, b) in n1.iter().zip(n2.iter()) {
+                    prop_assert!(
+                        (a - b).abs() < 1e-5,
+                        "normalize_l2 not idempotent: {a} vs {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ===== Pooling batch-vs-single equivalence (proptest) =====
+    //
+    // The core inference-correctness invariant the example suite never
+    // expresses: a row's pooled vector must be invariant to which OTHER rows
+    // share its batch. Real BERT/decoder inference with right-padding +
+    // attention masking produces the same per-token hidden states regardless
+    // of batch composition; the poolers must preserve that. The hand-written
+    // pooling tests (`mean_pool_respects_mask`, `cls_pool_returns_first_token`,
+    // `last_token_pool_picks_last_unmasked`) each use ONE fixed batch and never
+    // compare a row against the same row pooled alone — so a pooling bug that
+    // leaked a neighbor's padded positions into a row's mean would pass them.
+    mod pooling_batch_eq_single {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Build a `[batch, seq, dim]` hidden tensor + right-padded mask from
+        /// per-row true lengths. The SAME (token-position, dim) coordinate
+        /// gets the SAME hidden value across every batch composition, modeling
+        /// batch-invariant inference; padded positions (`j >= true_len`) get
+        /// distinct junk that correct masking must cancel.
+        fn build_batch(
+            lens: &[usize],
+            seed: &[f32],
+            seq_len: usize,
+            dim: usize,
+        ) -> (Array3<f32>, Array2<i64>) {
+            let batch = lens.len();
+            let mut hidden = Array3::<f32>::zeros((batch, seq_len, dim));
+            let mut mask = Array2::<i64>::zeros((batch, seq_len));
+            for (i, &true_len) in lens.iter().enumerate() {
+                for j in 0..seq_len {
+                    for d in 0..dim {
+                        let base = seed[d % seed.len()];
+                        hidden[[i, j, d]] = if j < true_len {
+                            base + (j as f32) * 0.5 + (d as f32) * 0.01
+                        } else {
+                            999.0 + j as f32 // padded junk — must be masked
+                        };
+                    }
+                    mask[[i, j]] = if j < true_len { 1 } else { 0 };
+                }
+            }
+            (hidden, mask)
+        }
+
+        proptest! {
+            /// mean_pool: a row's mean is invariant to batch padding.
+            #[test]
+            fn prop_mean_pool_batch_eq_single(
+                lens in prop::collection::vec(1usize..=12, 1..=5),
+                seed in prop::collection::vec(-3.0f32..3.0, 4..=8),
+            ) {
+                let dim = seed.len();
+                let max_len = *lens.iter().max().unwrap();
+                let (hb, mb) = build_batch(&lens, &seed, max_len, dim);
+                let batched = mean_pool(&hb, &mb, dim);
+                for (i, &l) in lens.iter().enumerate() {
+                    let (hs, ms) = build_batch(&[l], &seed, l, dim);
+                    let single = mean_pool(&hs, &ms, dim);
+                    for d in 0..dim {
+                        prop_assert!(
+                            (batched[i][d] - single[0][d]).abs() < 1e-3,
+                            "mean_pool batch != single: row {i} dim {d} (len {l}): {} vs {}",
+                            batched[i][d], single[0][d]
+                        );
+                    }
+                }
+            }
+
+            /// cls_pool: the first token is invariant to batch padding.
+            #[test]
+            fn prop_cls_pool_batch_eq_single(
+                lens in prop::collection::vec(1usize..=12, 1..=5),
+                seed in prop::collection::vec(-3.0f32..3.0, 4..=8),
+            ) {
+                let dim = seed.len();
+                let max_len = *lens.iter().max().unwrap();
+                let (hb, _mb) = build_batch(&lens, &seed, max_len, dim);
+                let batched = cls_pool(&hb);
+                for (i, &l) in lens.iter().enumerate() {
+                    let (hs, _ms) = build_batch(&[l], &seed, l, dim);
+                    let single = cls_pool(&hs);
+                    for d in 0..dim {
+                        prop_assert!((batched[i][d] - single[0][d]).abs() < 1e-3);
+                    }
+                }
+            }
+
+            /// last_token_pool: the last unmasked token is invariant to batch
+            /// padding (padding lives to the RIGHT of the last real token, so
+            /// a longer sibling in the batch must not shift the pick).
+            #[test]
+            fn prop_last_token_pool_batch_eq_single(
+                lens in prop::collection::vec(1usize..=12, 1..=5),
+                seed in prop::collection::vec(-3.0f32..3.0, 4..=8),
+            ) {
+                let dim = seed.len();
+                let max_len = *lens.iter().max().unwrap();
+                let (hb, mb) = build_batch(&lens, &seed, max_len, dim);
+                let batched = last_token_pool(&hb, &mb);
+                for (i, &l) in lens.iter().enumerate() {
+                    let (hs, ms) = build_batch(&[l], &seed, l, dim);
+                    let single = last_token_pool(&hs, &ms);
+                    for d in 0..dim {
+                        prop_assert!(
+                            (batched[i][d] - single[0][d]).abs() < 1e-3,
+                            "last_token_pool batch != single: row {i} dim {d} (len {l})"
+                        );
+                    }
+                }
+            }
         }
     }
 

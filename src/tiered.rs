@@ -495,8 +495,10 @@ impl TieredIndex {
             if idx < id_map.len() {
                 let score = match self.metric {
                     // L2Expanded squared distance on unit-norm vectors:
-                    // d = 2 - 2cos → cos = 1 - d/2.
-                    DistanceMetric::Cosine => 1.0 - dist / 2.0,
+                    // d = 2 - 2cos → cos = 1 - d/2. Clamp the f32 overshoot (a
+                    // near-self match's self-dot rounds just above 1.0) so a
+                    // downstream acos/sqrt-of-(1-score) consumer can't NaN.
+                    DistanceMetric::Cosine => (1.0 - dist / 2.0).min(1.0),
                     // InnerProduct returns the raw dot product (best-first).
                     DistanceMetric::DotProduct => dist,
                 };
