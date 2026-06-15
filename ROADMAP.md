@@ -1,6 +1,8 @@
 # Roadmap
 
-## Unreleased (on main since v1.45.0)
+## Current: v1.46.0 (cut 2026-06-15)
+
+Minor release. Schema v32, PARSER_VERSION 10→13 (L5X byte_start + production wire-up, Dart call_query — reindex required). Recall: **72.0% R@5 / 48.7% R@1 / 87.6% R@20** (v3.v2 dual-judge, 218q; R@5 headline flat vs v1.45.0, R@1 +1.0 / R@20 −0.9 = PV13-reindex corpus churn, default scoring path byte-for-byte unchanged).
 
 **Idle loop + 3 audit rounds — 10 fixes merged, PARSER_VERSION 10→13.**
 - **Idle loop (5 issues):** #1942 (candidate_edges watch write gap), #1943 (overlay candidate recompute → low-confidence-live), #1945 (test-fn `ChunkType::Test`) + #1946 (framework-trait `KNOWN_GAP`) closing #1573, #1947 (L5X file-relative byte_start, PV→11). `cqs dead --verdict dead` → 1 genuine entry (was 9).
@@ -8,9 +10,10 @@
 - **Security #1953 (#1956):** daemon overlay-root validation hardened against forged/symlinked worktrees + a TOCTOU swap — git-registry membership (`git worktree list`) + a dirfd inode-pin (`openat2 RESOLVE_NO_SYMLINKS`, git via `/proc/self/fd/N`). 4 attempts, each bypass caught by review. Residual same-uid check-then-recreate race + non-CLOEXEC fd tracked low-severity in #1969.
 - 6 dependabot dependency bumps.
 
-**Deferred:** #1952 (overlay/reference merge sorts incomparable score-frames — recall-adjacent, needs an eval-gated fix; bounded since `--rerank` is opt-in/net-negative). #1969 (overlay same-uid TOCTOU residual; airtight = kernel peer-cwd redesign). #1573-Tier-3a (dyn-dispatch dead false-positives, deferred-by-design).
+**Landed since:** #1952 (overlay/reference merge sorted incomparable score-frames → merged-set rerank, PR #1974; default no-rerank path byte-for-byte unchanged).
+**Deferred:** #1969 (overlay same-uid TOCTOU residual; airtight = kernel peer-cwd redesign). #1973 (nightly model-cache hardening, CI-infra). #1975 (pool-truncation, low-sev). #1573-Tier-3a (dyn-dispatch dead false-positives, deferred-by-design).
 
-## Current: v1.45.0 (cut 2026-06-14, crates.io published)
+## Previous: v1.45.0 (cut 2026-06-14, crates.io published)
 
 Minor release. Schema v32, PARSER_VERSION 10. Recall: **72.0% R@5 / 47.7% R@1 / 88.5% R@20** (v3.v2 dual-judge, 218q; R@5 headline; R@1+R@20 flat vs v1.44.0, R@5 −0.5 agg = corpus-determinacy churn, scoring code unchanged — the reduced-indeterminacy call). Three threads:
 
