@@ -2181,15 +2181,18 @@ mod tests {
         );
     }
 
-    /// v32 COMPLETENESS GUARD: every wholesale `function_calls` replace/delete
-    /// path must also sweep `candidate_edges` for the same files — both are
-    /// file-keyed call-graph tables refreshed wholesale per file, and a path
-    /// that refreshes one but not the other strands orphan rows. This pins the
-    /// parse-driven batch writer `upsert_function_calls_for_files` (the watch
-    /// zero-chunk finalize path): it does NOT receive candidate sites, so the
-    /// symmetric action is to CLEAR the files' candidates. Seed a candidate
-    /// directly, then run the batch writer for the same file and assert the
-    /// candidate is gone.
+    /// COMPLETENESS GUARD (clear-on-empty half): every wholesale
+    /// `function_calls` replace/delete path must also sweep `candidate_edges`
+    /// for the same files — both are file-keyed call-graph tables refreshed
+    /// wholesale per file, and a path that refreshes one but not the other
+    /// strands orphan rows. This pins the parse-driven batch writer
+    /// `upsert_function_calls_for_files` (the watch zero-chunk finalize path):
+    /// when a file is refreshed with an EMPTY candidate slice, its stale
+    /// candidate rows must be cleared. Seed a candidate directly, then run the
+    /// batch writer for the same file with NO candidates and assert the
+    /// candidate is gone. The PERSIST half (a file refreshed WITH a candidate
+    /// keeps it) is pinned by
+    /// `upsert_function_calls_for_files_persists_candidate_edges`.
     #[test]
     fn upsert_function_calls_for_files_clears_candidate_edges() {
         let (store, _dir) = setup_store();
@@ -2236,7 +2239,8 @@ mod tests {
         });
 
         // Run the parse-driven batch function_calls replace for the same file
-        // (the watch zero-chunk finalize path). It must clear the candidates.
+        // (the watch zero-chunk finalize path) with NO candidates. It must
+        // clear the seeded candidate.
         let entries = vec![(
             std::path::PathBuf::from("src/q.rs"),
             vec![FunctionCalls {
@@ -2250,7 +2254,7 @@ mod tests {
             }],
         )];
         store
-            .upsert_function_calls_for_files(&entries)
+            .upsert_function_calls_for_files(&entries, &[])
             .expect("batch function_calls replace must succeed");
 
         store.runtime().block_on(async {
@@ -2262,10 +2266,147 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 n, 0,
-                "upsert_function_calls_for_files must clear the file's candidate_edges \
-                 (wholesale call-graph replace must sweep both file-keyed tables)"
+                "upsert_function_calls_for_files with no candidates must clear the file's \
+                 candidate_edges (wholesale call-graph replace must sweep both file-keyed tables)"
             );
         });
+    }
+
+    /// COMPLETENESS GUARD (persist half — the watch zero-chunk × candidate gap):
+    /// the parse-driven batch writer `upsert_function_calls_for_files` is the
+    /// store half of the WATCH zero-chunk finalize path. When an oversize
+    /// function (zero chunks, non-empty calls) is reindexed via watch and
+    /// carries a cross-file bare-arg / serde candidate, that candidate must be
+    /// PERSISTED — the watch path must mirror the bulk pipeline's fused
+    /// zero-chunk flush, which writes both `function_calls` and
+    /// `candidate_edges`. Previously this writer received no candidate sites and
+    /// only CLEARED, so the candidate was silently dropped → a possible
+    /// false-DEAD on the oversize-fn × candidate × watch-only path. This test
+    /// seeds a candidate via the fused write, then re-runs the batch writer for
+    /// the SAME file WITH a fresh candidate set, and asserts the new candidate
+    /// is persisted (not cleared). It also asserts the clear-on-empty contract
+    /// still holds for a SECOND file refreshed in the same call with NO
+    /// candidates — a wholesale replace clears one file while persisting
+    /// another. Fails on the pre-fix signature (no candidate parameter to pass).
+    #[test]
+    fn upsert_function_calls_for_files_persists_candidate_edges() {
+        let (store, _dir) = setup_store();
+
+        // Seed a STALE candidate on src/keep.rs and a stale one on src/drop.rs
+        // via the fused write (the only store-public Lane-1 candidate writer).
+        let seed_candidate = |origin: &str, callee: &str| {
+            let emb = mock_embedding(1.0);
+            let chunk = make_chunk("seed_fn", origin);
+            let pairs = [(chunk.clone(), emb)];
+            let fp = crate::store::chunks::staleness::FileFingerprint {
+                mtime: Some(1),
+                size: Some(2),
+                content_hash: Some(*blake3::hash(origin.as_bytes()).as_bytes()),
+            };
+            let candidates = vec![CandidateSite {
+                file: std::path::PathBuf::from(origin),
+                callee_name: callee.to_string(),
+                ref_line: 4,
+                candidate_kind: "bare_arg_unresolved".to_string(),
+            }];
+            store
+                .upsert_file_fused(
+                    &pairs,
+                    &[],
+                    fp.mtime,
+                    &[],
+                    std::path::Path::new(origin),
+                    &[chunk.id.as_str()],
+                    &[],
+                    &candidates,
+                    &fp,
+                )
+                .expect("seed fused write must succeed");
+        };
+        seed_candidate("src/keep.rs", "stale_callee");
+        seed_candidate("src/drop.rs", "doomed_callee");
+
+        // Both files start with exactly one candidate.
+        let count_for = |file: &str| -> i64 {
+            store.runtime().block_on(async {
+                let (n,): (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM candidate_edges WHERE file = ?1")
+                        .bind(file)
+                        .fetch_one(&store.pool)
+                        .await
+                        .unwrap();
+                n
+            })
+        };
+        assert_eq!(count_for("src/keep.rs"), 1, "precondition: keep.rs seeded");
+        assert_eq!(count_for("src/drop.rs"), 1, "precondition: drop.rs seeded");
+
+        // Re-finalize BOTH files via the batch writer (the watch zero-chunk
+        // path). keep.rs carries a FRESH candidate set; drop.rs carries none.
+        let entries = vec![
+            (
+                std::path::PathBuf::from("src/keep.rs"),
+                vec![FunctionCalls {
+                    name: "big_fn".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "real_callee".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    }],
+                }],
+            ),
+            (
+                std::path::PathBuf::from("src/drop.rs"),
+                vec![FunctionCalls {
+                    name: "other_fn".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "real_callee".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    }],
+                }],
+            ),
+        ];
+        let candidate_entries = vec![(
+            std::path::PathBuf::from("src/keep.rs"),
+            vec![CandidateSite {
+                file: std::path::PathBuf::from("src/keep.rs"),
+                callee_name: "fresh_callee".to_string(),
+                ref_line: 9,
+                candidate_kind: "serde_container".to_string(),
+            }],
+        )];
+        store
+            .upsert_function_calls_for_files(&entries, &candidate_entries)
+            .expect("batch function_calls replace must succeed");
+
+        // keep.rs: the stale candidate is gone, the FRESH one is persisted
+        // (DELETE-then-INSERT wholesale-per-file; the new row survives).
+        store.runtime().block_on(async {
+            let rows: Vec<(String, i64, String)> = sqlx::query_as(
+                "SELECT callee_name, ref_line, candidate_kind FROM candidate_edges \
+                 WHERE file = ?1 ORDER BY callee_name",
+            )
+            .bind("src/keep.rs")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                rows,
+                vec![("fresh_callee".to_string(), 9, "serde_container".to_string())],
+                "watch zero-chunk finalize must PERSIST the file's fresh candidate \
+                 (not silently clear it) — mirrors the bulk fused zero-chunk flush"
+            );
+        });
+
+        // drop.rs: refreshed with no candidates → cleared (clear-on-empty).
+        assert_eq!(
+            count_for("src/drop.rs"),
+            0,
+            "a file refreshed with no candidates must have its candidate_edges cleared"
+        );
     }
 
     /// Passing `None` for file_function_calls leaves the existing

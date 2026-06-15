@@ -337,7 +337,8 @@ impl InProcessFixture {
             }
         }
         if !all_calls.is_empty() {
-            self.store.upsert_function_calls_for_files(&all_calls)?;
+            self.store
+                .upsert_function_calls_for_files(&all_calls, &[])?;
         }
         if !all_types.is_empty() {
             self.store.upsert_type_edges_for_files(&all_types)?;
