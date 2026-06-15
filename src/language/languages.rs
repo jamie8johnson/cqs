@@ -8254,9 +8254,10 @@ fn post_process_xml_xml(
 static LANG_XML: LanguageDef = LanguageDef {
     name: "xml",
     grammar: Some(|| tree_sitter_xml::LANGUAGE_XML.into()),
-    extensions: &[
-        "xml", "xsl", "xslt", "xsd", "svg", "wsdl", "rss", "plist", "l5x", "l5k",
-    ],
+    // L5X/L5K (Rockwell PLC exports) are XML/ASCII on the surface but carry
+    // Structured-Text routines — routed to their own grammar-less LanguageDef
+    // (LANG_L5X) with a custom ST extractor, not parsed as generic XML.
+    extensions: &["xml", "xsl", "xslt", "xsd", "svg", "wsdl", "rss", "plist"],
     chunk_query: include_str!("queries/xml.chunks.scm"),
     signature_style: SignatureStyle::FirstLine,
     doc_nodes: &["Comment"],
@@ -8281,6 +8282,43 @@ static LANG_XML: LanguageDef = LanguageDef {
 
 pub fn definition_xml() -> &'static LanguageDef {
     &LANG_XML
+}
+
+// ============================================================================
+// L5X / L5K (Rockwell/Allen-Bradley PLC exports — Structured Text)
+// ============================================================================
+
+static LANG_L5X: LanguageDef = LanguageDef {
+    name: "l5x",
+    grammar: None, // Custom parser — extracts embedded Structured Text routines.
+    extensions: &["l5x", "l5k"],
+    signature_style: SignatureStyle::FirstLine,
+    stopwords: &[
+        "routine",
+        "program",
+        "rung",
+        "tag",
+        "controller",
+        "datatype",
+        "rll",
+        "stcontent",
+        "addonInstr",
+    ],
+    // Grammar-less dispatch: a separate LanguageDef (not LANG_XML) so
+    // `Language::from_extension` routes `.l5x`/`.l5k` to the custom ST
+    // extractor on BOTH the chunks-only (`parse_source`) and combined
+    // (`parse_file_all_inner`) paths. The emitted chunks carry
+    // `Language::StructuredText`, whose call/type queries power per-chunk
+    // relationship extraction.
+    custom_chunk_parser: Some(crate::parser::l5x::parse_l5x_chunks_dispatch),
+    custom_all_parser: Some(crate::parser::l5x::parse_l5x_all),
+    line_comment_prefixes: &["//", "(*", "<!--"],
+    aliases: &["l5k", "rockwell"],
+    ..DEFAULTS
+};
+
+pub fn definition_l5x() -> &'static LanguageDef {
+    &LANG_L5X
 }
 
 // ============================================================================

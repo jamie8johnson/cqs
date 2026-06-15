@@ -39,7 +39,14 @@ use super::Parser;
 /// lift changes the stored `byte_start` and thus the `id` for every L5X/L5K
 /// chunk past the first region, so a refresh is required even for unchanged
 /// content.
-pub const PARSER_VERSION: u32 = 11;
+/// 12: L5X/L5K files are now routed to their own grammar-less LanguageDef
+/// (custom ST extractor) on the production index path instead of being parsed
+/// as generic XML. Previously `parse_file_all_inner` resolved `.l5x`/`.l5k`
+/// to `Language::Xml` and emitted XML-element chunks; now it emits
+/// Structured-Text routine chunks. The chunk class, ids, and content change
+/// wholesale for every indexed L5X/L5K file, so a refresh is required even for
+/// byte-identical content.
+pub const PARSER_VERSION: u32 = 12;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///

@@ -12,7 +12,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use tree_sitter::StreamingIterator;
 
-use super::types::{capture_name_to_chunk_type, Chunk, ChunkType, Language, ParserError};
+use super::types::{
+    capture_name_to_chunk_type, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
+    ParserError, TypeRef,
+};
+use super::ParseAllResult;
 use super::Parser;
 
 // ===========================================================================
@@ -518,6 +522,133 @@ pub(crate) fn parse_l5k_chunks(
         "L5K parse complete"
     );
     Ok(chunks)
+}
+
+// ===========================================================================
+// Production entry point (custom_all_parser)
+// ===========================================================================
+
+/// Chunks-only extractor for Rockwell PLC exports.
+///
+/// Registered as `LanguageDef::custom_chunk_parser` so the chunks-only path
+/// (`Parser::parse_source`) routes `.l5x`/`.l5k` to the ST extractor too,
+/// keeping a single declarative routing surface (the old explicit `if
+/// ext == "l5x"` block in `Parser::parse_file` is removed). Dispatches by
+/// extension to the format-specific extractor.
+pub fn parse_l5x_chunks_dispatch(
+    source: &str,
+    path: &Path,
+    parser: &Parser,
+) -> Result<Vec<Chunk>, ParserError> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "l5k" => parse_l5k_chunks(source, path, parser),
+        // Default to the XML form for "l5x" and any future alias routed here.
+        _ => parse_l5x_chunks(source, path, parser),
+    }
+}
+
+/// Combined chunks + calls + type-refs extractor for Rockwell PLC exports.
+///
+/// Registered as `LanguageDef::custom_all_parser` on the L5X/L5K language row,
+/// so the production index path (`Parser::parse_file_all_inner`) routes
+/// `.l5x`/`.l5k` here instead of the generic XML grammar. Dispatches by
+/// extension to the format-specific chunk extractor (`parse_l5x_chunks` for the
+/// XML form, `parse_l5k_chunks` for the legacy ASCII form), then derives
+/// file-level call and type-reference relationships from each emitted chunk.
+///
+/// The chunks carry `Language::StructuredText`, whose definition has both a
+/// call and a type query, so relationships are extracted with the same
+/// per-chunk machinery the grammar-less indexing path independently runs for
+/// `chunk_calls`. Calls are grouped under the chunk's name (the
+/// `function_calls` table joins on `caller_name` + `file`); types are grouped
+/// per chunk like `parse_aspx_all` does, with the chunk's own name filtered out
+/// of its type-ref set.
+pub fn parse_l5x_all(
+    source: &str,
+    path: &Path,
+    parser: &Parser,
+) -> Result<ParseAllResult, ParserError> {
+    let _span = tracing::info_span!("parse_l5x_all", path = %path.display()).entered();
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let chunks = match ext.as_str() {
+        "l5k" => parse_l5k_chunks(source, path, parser)?,
+        // Default to the XML form for "l5x" and any future alias routed here.
+        _ => parse_l5x_chunks(source, path, parser)?,
+    };
+
+    let mut all_calls: Vec<FunctionCalls> = Vec::new();
+    let mut all_types: Vec<ChunkTypeRefs> = Vec::new();
+
+    for chunk in &chunks {
+        // Reuse the per-chunk extractors so file-level relationships match the
+        // `chunk_calls`/candidate path the grammar-less indexing route runs.
+        let calls = parser.extract_calls_from_chunk(chunk);
+        if !calls.is_empty() {
+            all_calls.push(FunctionCalls {
+                name: chunk.name.clone(),
+                line_start: chunk.line_start,
+                calls,
+            });
+        }
+
+        let type_refs = extract_chunk_type_refs(chunk, parser);
+        if !type_refs.is_empty() {
+            all_types.push(ChunkTypeRefs {
+                name: chunk.name.clone(),
+                line_start: chunk.line_start,
+                type_refs,
+            });
+        }
+    }
+
+    tracing::info!(
+        chunks = chunks.len(),
+        calls = all_calls.len(),
+        types = all_types.len(),
+        "L5X/L5K parse_all complete"
+    );
+
+    Ok((chunks, all_calls, all_types))
+}
+
+/// Extract type references from a single ST chunk's content via a standalone
+/// tree-sitter parse, dropping the chunk's own name (a self-reference is not a
+/// dependency edge — same filter `parse_aspx_all` applies).
+fn extract_chunk_type_refs(chunk: &Chunk, parser: &Parser) -> Vec<TypeRef> {
+    let st_lang = Language::StructuredText;
+    let grammar = match st_lang.try_grammar() {
+        Some(g) => g,
+        None => {
+            tracing::warn!("Structured Text grammar unavailable; skipping ST type refs");
+            return Vec::new();
+        }
+    };
+    let mut ts_parser = tree_sitter::Parser::new();
+    if ts_parser.set_language(&grammar).is_err() {
+        tracing::warn!("Failed to set ST grammar for type-ref extraction");
+        return Vec::new();
+    }
+    let tree = match ts_parser.parse(&chunk.content, None) {
+        Some(t) => t,
+        None => {
+            tracing::warn!("ST type-ref parse returned no tree");
+            return Vec::new();
+        }
+    };
+    let mut refs = parser.extract_types(&chunk.content, &tree, st_lang, 0, chunk.content.len());
+    refs.retain(|t| t.type_name != chunk.name);
+    refs
 }
 
 // ===========================================================================
@@ -1074,5 +1205,125 @@ END_PROGRAM
                 "line_end must saturate at u32::MAX, not wrap"
             );
         }
+    }
+
+    // --- Production-path wiring tests ---
+    //
+    // These exercise the PRODUCTION entry `Parser::parse_file_all` (NOT
+    // `parse_file`), which routes by `Language::from_extension`. Before the
+    // wireup, `.l5x`/`.l5k` resolved to `Language::Xml` (generic XML grammar)
+    // and yielded XML-element chunks; after, they resolve to the grammar-less
+    // L5X def and yield Structured-Text routine chunks.
+
+    /// Write `content` to a temp file with the given extension so the
+    /// extension-based production router sees a real `.l5x`/`.l5k` path.
+    fn write_temp_with_ext(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{ext}"))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    /// PRODUCTION PATH: `parse_file_all` on a `.l5x` file must return the
+    /// custom ST routine chunk, not generic XML-element chunks.
+    ///
+    /// FAIL-BEFORE: with `.l5x` registered under `LANG_XML`, this path resolved
+    /// to the XML grammar and produced chunks whose language is `Xml` and whose
+    /// names are XML element/attribute names (`Routine`, `STContent`, ...),
+    /// never a `StructuredText` chunk named `MainRoutine`.
+    #[test]
+    fn test_l5x_production_path_yields_st_chunks() {
+        let parser = Parser::new().unwrap();
+        let f = write_temp_with_ext(SAMPLE_L5X, "l5x");
+        let (chunks, _calls, _types) = parser.parse_file_all(f.path()).unwrap();
+
+        assert!(
+            !chunks.is_empty(),
+            "production parse_file_all must produce chunks for .l5x"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.language == Language::StructuredText),
+            "every production chunk must be StructuredText, not Xml: got {:?}",
+            chunks.iter().map(|c| c.language).collect::<Vec<_>>()
+        );
+        assert!(
+            chunks.iter().any(|c| c.name == "MainRoutine"),
+            "expected the ST routine 'MainRoutine'; got {:?}",
+            chunks.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+        );
+        // The ladder (RLL) routine carries no ST and must NOT surface as a chunk.
+        assert!(
+            !chunks.iter().any(|c| c.content.contains("XIC")),
+            "RLL ladder content must not be extracted as ST"
+        );
+    }
+
+    /// PRODUCTION PATH: `parse_file_all` on a `.l5k` file must return the
+    /// custom ST routine chunk, not generic XML-element chunks.
+    ///
+    /// FAIL-BEFORE: `.l5k` was an XML extension, so the XML grammar parsed this
+    /// ASCII file (yielding either no chunks or junk element chunks), never a
+    /// `StructuredText` chunk named `MainRoutine`.
+    #[test]
+    fn test_l5k_production_path_yields_st_chunks() {
+        let parser = Parser::new().unwrap();
+        let f = write_temp_with_ext(SAMPLE_L5K, "l5k");
+        let (chunks, _calls, _types) = parser.parse_file_all(f.path()).unwrap();
+
+        assert!(
+            !chunks.is_empty(),
+            "production parse_file_all must produce chunks for .l5k"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.language == Language::StructuredText),
+            "every production chunk must be StructuredText, not Xml: got {:?}",
+            chunks.iter().map(|c| c.language).collect::<Vec<_>>()
+        );
+        assert!(
+            chunks.iter().any(|c| c.name == "MainRoutine"),
+            "expected the ST routine 'MainRoutine'; got {:?}",
+            chunks.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    /// PRODUCTION PATH: `.l5x`/`.l5k` must resolve to the grammar-less L5X
+    /// LanguageDef (not XML), so both `parse_file` and `parse_file_all` share a
+    /// single declarative routing path.
+    #[test]
+    fn test_l5x_l5k_resolve_to_grammarless_l5x_def() {
+        let lang_l5x = Language::from_extension("l5x").expect("l5x must resolve");
+        let lang_l5k = Language::from_extension("l5k").expect("l5k must resolve");
+        let def_l5x = lang_l5x.def();
+        let def_l5k = lang_l5k.def();
+        assert!(
+            def_l5x.grammar.is_none(),
+            "l5x must route to a grammar-less custom parser, not the XML grammar"
+        );
+        assert!(
+            def_l5k.grammar.is_none(),
+            "l5k must route to a grammar-less custom parser, not the XML grammar"
+        );
+        assert!(def_l5x.custom_all_parser.is_some());
+        assert!(def_l5k.custom_all_parser.is_some());
+        // And XML must NO LONGER claim these extensions.
+        let xml = Language::from_extension("xml")
+            .expect("xml must resolve")
+            .def();
+        assert!(
+            !xml.extensions.contains(&"l5x"),
+            "XML def must not claim .l5x after the wireup"
+        );
+        assert!(
+            !xml.extensions.contains(&"l5k"),
+            "XML def must not claim .l5k after the wireup"
+        );
     }
 }
