@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Manual cross-build dry-run: trigger on a release/* branch BEFORE tagging to
+  # validate all three targets — notably aarch64-apple-darwin, which PR CI
+  # never builds, so a platform-specific break is invisible until the tag (the
+  # v1.46.0 darwin failure). Builds + uploads artifacts but does NOT publish a
+  # release (that job is gated on a tag ref below).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,7 +50,10 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME}"
+          # Sanitize: on a workflow_dispatch dry-run GITHUB_REF_NAME is a branch
+          # (e.g. release/v1.2.3) whose '/' would break archive filenames; on a
+          # tag it is already slash-free, so this is a no-op for real releases.
+          VERSION="${GITHUB_REF_NAME//\//-}"
           STAGING="cqs-${VERSION}-${{ matrix.target }}"
           mkdir -p "${STAGING}"
 
@@ -77,6 +86,9 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
+    # Only a tag push publishes a release; a workflow_dispatch dry-run stops
+    # after the cross-build (validation only).
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write

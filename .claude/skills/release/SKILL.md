@@ -63,6 +63,13 @@ Release a new version of cqs.
      powershell.exe -Command 'cd C:\Projects\cqs; gh run list --branch release/vX.Y.Z --workflow CI --limit 1'
      powershell.exe -Command 'cd C:\Projects\cqs; gh run watch RUN_ID --exit-status'
      ```
+   - **Pre-tag cross-build dry-run (REQUIRED — catches macOS/Windows breaks the Linux-only PR CI can't see).** The `v*` tag is the only thing that builds all three release targets, so a platform-specific break (e.g. the v1.46.0 `aarch64-apple-darwin` E0277) is otherwise invisible until you've already tagged and published the crate. Trigger release.yml on the release branch as a build-only dry-run (it skips the "Create GitHub Release" job, which is gated on a tag ref) and confirm all three Build jobs pass BEFORE tagging:
+     ```
+     powershell.exe -Command 'cd C:\Projects\cqs; gh workflow run release.yml --ref release/vX.Y.Z'
+     sleep 45
+     powershell.exe -Command 'cd C:\Projects\cqs; gh run list --workflow release.yml --limit 1 --json databaseId,headBranch'
+     # poll `gh run view <id> --json status,conclusion,jobs`; every Build job must be green before you tag
+     ```
 
 7. **After PR merge**:
    - Sync main: `git checkout main && git pull`, then `cqs index` (watch misses bulk git ops on WSL)
