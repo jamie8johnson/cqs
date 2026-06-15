@@ -117,6 +117,158 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
     Some(main_root)
 }
 
+/// A worktree directory pinned by a held file descriptor, with a stable
+/// canonical key for caching.
+///
+/// **Security primitive — the overlay-root TOCTOU pin.** The overlay validates
+/// `overlay_root` (canonicalize + `git worktree list` membership) at time T1,
+/// but the later `git -C <path>` / file-read ops in `discover_delta` /
+/// `build_overlay` run at T2 against the path *string*. A same-uid client can
+/// swap a path component between T1 and T2 (`mv realwt hidden; ln -s attacker
+/// realwt`) so the T2 ops follow the swapped component into an arbitrary tree.
+///
+/// This type closes that window by opening the validated directory and HOLDING
+/// the fd: the fd pins the directory *inode*, immune to later path-component
+/// renames/symlink swaps. All subsequent ops run against [`Self::ops_path`]
+/// (`/proc/self/fd/<fd>` on Linux), so `git -C` and file reads follow the
+/// magic symlink to the pinned inode rather than re-resolving the original
+/// path. [`Self::canonical`] is the stable key for the overlay LRU (the
+/// proc-fd path varies per fd, so it can't key the cache).
+///
+/// **Platform.** Pinning is implemented for Linux (`/proc/self/fd`). On other
+/// unix targets [`Self::pin`] returns `None` (the caller fails closed — serves
+/// the parent index rather than running unpinned, vulnerable path-string ops).
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct PinnedWorktree {
+    canonical: PathBuf,
+    // Held for the lifetime of the pin: dropping it closes the fd and
+    // invalidates `ops_path`. Never read directly — its job is to keep the
+    // inode pinned and back the `/proc/self/fd/<n>` symlink.
+    fd: std::os::fd::OwnedFd,
+}
+
+#[cfg(unix)]
+impl PinnedWorktree {
+    /// Pin `canonical` (a path the caller has already canonicalized AND
+    /// validated as a registered worktree) by opening it as a directory with
+    /// no-follow / cloexec semantics and holding the fd.
+    ///
+    /// On Linux this prefers `openat2` with `RESOLVE_NO_SYMLINKS` (rejects a
+    /// symlink in ANY path component, so a concurrent swap of an intermediate
+    /// component during the open itself can't redirect it); it falls back to
+    /// `open(O_DIRECTORY | O_NOFOLLOW)` when the kernel lacks `openat2`
+    /// (pre-5.6), which still rejects a symlinked final component and pins the
+    /// resulting inode. Returns `None` on a non-Linux target (no
+    /// `/proc/self/fd` to express the pinned path for `git -C`) or on any open
+    /// error — the caller treats `None` as "do not overlay" (fail closed).
+    ///
+    /// The fd is opened **without** `O_CLOEXEC` on purpose: `git -C
+    /// /proc/self/fd/<n>` only resolves if fd `<n>` is open in the git child,
+    /// so it must inherit across fork+exec. It is an `O_PATH` directory fd
+    /// (cannot read data, only resolve paths) held for the brief overlay-build
+    /// window, so the inheritance exposure is narrow.
+    pub fn pin(canonical: &Path) -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            let fd = open_dir_no_symlinks_linux(canonical)?;
+            Some(Self {
+                canonical: canonical.to_path_buf(),
+                fd,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // No `/proc/self/fd` path to hand to `git -C`. Fail closed.
+            let _ = canonical;
+            tracing::warn!(
+                "worktree-root pinning is unavailable on this platform — overlay disabled for safety"
+            );
+            None
+        }
+    }
+
+    /// The pinned directory's stable canonical path — use as the overlay LRU
+    /// key (NOT for filesystem ops; ops must go through [`Self::ops_path`]).
+    pub fn canonical(&self) -> &Path {
+        &self.canonical
+    }
+
+    /// The path to run all git/file ops against: `/proc/self/fd/<fd>` on Linux.
+    /// Resolving through this magic symlink reaches the pinned inode, so a
+    /// post-validation rename/swap of the original path cannot redirect the op.
+    #[cfg(target_os = "linux")]
+    pub fn ops_path(&self) -> PathBuf {
+        use std::os::fd::AsRawFd;
+        PathBuf::from(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
+    }
+}
+
+/// Open `dir` as a directory rejecting symlinked components, returning the
+/// held fd. Tries `openat2(RESOLVE_NO_SYMLINKS)` first (full no-symlink
+/// resolution), falling back to `open(O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)`.
+#[cfg(target_os = "linux")]
+fn open_dir_no_symlinks_linux(dir: &Path) -> Option<std::os::fd::OwnedFd> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(dir.as_os_str().as_bytes()).ok()?;
+
+    // `openat2` is Linux 5.6+. `RESOLVE_NO_SYMLINKS` makes the kernel reject a
+    // symlink in any component, so even a concurrent swap of an intermediate
+    // component DURING the open fails rather than redirecting. `libc` exposes
+    // the struct + constants; the syscall goes through `syscall(2)`.
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+    // No O_CLOEXEC: the fd must inherit so `git -C /proc/self/fd/<n>` resolves
+    // in the git child (see `pin` docs). O_PATH: we only resolve paths through
+    // it, never read its data directly.
+    let how = OpenHow {
+        flags: (libc::O_DIRECTORY | libc::O_PATH) as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: `syscall` with SYS_openat2, a valid NUL-terminated path, and a
+    // correctly-shaped `open_how` of the given size. The returned fd (if ≥0) is
+    // owned via `OwnedFd::from_raw_fd`.
+    let raw = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+            &how as *const OpenHow,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if raw >= 0 {
+        // SAFETY: `raw` is a fresh, owned fd returned by openat2.
+        return Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as i32) });
+    }
+    // openat2 unavailable (ENOSYS on pre-5.6) or rejected the path: fall back
+    // to a no-follow directory open. This still pins the inode and rejects a
+    // symlinked FINAL component; intermediate components were already
+    // canonicalized by the caller (real dirs at validation time). No O_CLOEXEC
+    // (inherit for `git -C`); O_PATH (path-resolution only).
+    // SAFETY: standard `open(2)` with a valid NUL-terminated path and flags.
+    let raw = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_PATH,
+        )
+    };
+    if raw < 0 {
+        return None;
+    }
+    // SAFETY: `raw` is a fresh, owned fd returned by open.
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) })
+}
+
 /// Resolve a worktree's per-worktree gitdir to its canonical filesystem
 /// path, reading `<dir>/.git`'s `gitdir: <path>` line.
 ///
@@ -919,5 +1071,72 @@ mod tests {
             "an out-of-tree worktree resolved to itself is overlay-eligible \
              (the index redirects to main even though the project root is the wt)"
         );
+    }
+
+    /// `PinnedWorktree::pin` succeeds on a real directory and its `ops_path`
+    /// resolves back to that directory's inode.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_worktree_ops_path_resolves_to_pinned_dir() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("wt");
+        std::fs::create_dir_all(&target).unwrap();
+        let canon = dunce::canonicalize(&target).unwrap();
+
+        let pin = PinnedWorktree::pin(&canon).expect("pin a real dir");
+        assert_eq!(pin.canonical(), canon.as_path());
+        let resolved = std::fs::canonicalize(pin.ops_path()).expect("ops_path resolves");
+        assert_eq!(resolved, canon, "ops_path must resolve to the pinned dir");
+    }
+
+    /// The core TOCTOU property: after the pinned path is renamed away and its
+    /// name re-pointed at a DIFFERENT directory, the held pin's `ops_path` still
+    /// resolves to the ORIGINAL inode (now at the new name), never the swapped
+    /// target. This is what defeats the post-validation path-component swap.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_worktree_survives_post_pin_rename_swap() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        let attacker = dir.path().join("attacker");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&attacker).unwrap();
+        std::fs::write(real.join("marker_real"), b"r").unwrap();
+        std::fs::write(attacker.join("marker_attacker"), b"a").unwrap();
+        let canon_real = dunce::canonicalize(&real).unwrap();
+
+        // Pin the real dir, THEN swap its name to point at the attacker.
+        let pin = PinnedWorktree::pin(&canon_real).expect("pin real");
+        let hidden = dir.path().join("hidden");
+        std::fs::rename(&real, &hidden).unwrap();
+        std::os::unix::fs::symlink(&attacker, &real).unwrap();
+
+        // ops_path still reaches the original inode (now at `hidden`).
+        let resolved = std::fs::canonicalize(pin.ops_path()).expect("ops_path resolves");
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(&hidden).unwrap(),
+            "pin must follow the inode through the rename, not the swapped name"
+        );
+        // And the original marker is reachable through the pin; the attacker's
+        // is not.
+        assert!(
+            pin.ops_path().join("marker_real").exists(),
+            "real marker reachable via pin"
+        );
+        assert!(
+            !pin.ops_path().join("marker_attacker").exists(),
+            "attacker marker must NOT be reachable via the pin"
+        );
+    }
+
+    /// `PinnedWorktree::pin` returns `None` for a path that does not exist (the
+    /// caller fails closed → no overlay).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_worktree_pin_none_for_missing_path() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert!(PinnedWorktree::pin(&missing).is_none());
     }
 }

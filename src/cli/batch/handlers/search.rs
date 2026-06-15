@@ -1599,6 +1599,115 @@ mod tests {
         std::path::Path::new("..").join(target_from_holder)
     }
 
+    /// SECURITY (Attack C) — the post-validation path-component swap (TOCTOU).
+    /// Validation canonicalizes + checks `git worktree list` membership at T1,
+    /// but `discover_delta` / `build_overlay` run `git -C <path>` / file reads
+    /// at T2. A same-uid client that passed validation with a REAL registered
+    /// worktree then swaps a path component before T2
+    /// (`mv realwt hidden; ln -s attacker realwt`): the T2 ops would re-resolve
+    /// the path string and follow the swap into the attacker tree, reading
+    /// `attacker_secret.rs` as first-party user-code.
+    ///
+    /// The dirfd pin defeats it: `set_validated_overlay_request` opens + holds an
+    /// fd on the validated inode at T1, and `resolve_overlay` runs all ops
+    /// against the pin's `/proc/self/fd/<n>` ops_path. After the swap, that path
+    /// still resolves to the PINNED inode (the real worktree), so
+    /// `discover_delta(ops_path, ...)` sees the real worktree's untracked file,
+    /// NEVER the attacker's. The test asserts both directions: through the pin →
+    /// real file; through the swapped path STRING → attacker file (the
+    /// vulnerability the pin closes — the fail-before evidence in one shot).
+    /// Unix-gated (`/proc/self/fd` is the pin's ops mechanism).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn overlay_daemon_pins_worktree_against_post_validation_swap() {
+        use cqs::worktree_overlay::discover_delta;
+
+        let (holder, ctx, parent, wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // Real worktree gains an untracked file (the legitimate delta).
+        std::fs::write(wt.join("real_new.rs"), "pub fn real() {}\n").expect("write real_new");
+
+        // Attacker tree: a CLONE of the parent (so it shares the parent's HEAD
+        // object — `git -C attacker diff <parent_oid>` resolves and succeeds,
+        // faithfully reproducing the leak rather than self-aborting on a bad
+        // object), holding an out-of-tree secret as an untracked file.
+        let attacker = holder.path().join("attacker_tree");
+        git(
+            &parent,
+            &[
+                "clone",
+                "-q",
+                parent.to_str().unwrap(),
+                attacker.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(attacker.join("attacker_secret.rs"), "pub fn leak() {}\n")
+            .expect("write attacker secret");
+
+        // T1 — validation pins the real worktree's inode.
+        view.set_validated_overlay_request(&wt)
+            .expect("real registered worktree must validate + pin");
+        let ops_path = {
+            let pin = view.overlay_pin.borrow();
+            pin.as_ref()
+                .expect("pin must be held after validation")
+                .ops_path()
+        };
+
+        // T1→T2 swap: hide the real worktree, point its name at the attacker.
+        let hidden = holder.path().join("hidden_realwt");
+        std::fs::rename(&wt, &hidden).expect("mv realwt hidden");
+        std::os::unix::fs::symlink(&attacker, &wt).expect("ln -s attacker realwt");
+
+        // Fail-before evidence: the swapped path STRING now resolves into the
+        // attacker tree — `discover_delta` against it sees the attacker's secret.
+        // (This is exactly the primitive the pin closes; asserting it here pins
+        // that the swap is real and effective on the unprotected path.)
+        let via_string = discover_delta(&wt, &parent).expect("discover via swapped path string");
+        let string_paths: Vec<String> = via_string
+            .parse_set
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            string_paths
+                .iter()
+                .any(|p| p.contains("attacker_secret.rs")),
+            "control: the swapped path string must leak the attacker file (else the swap \
+             is ineffective and the pin test proves nothing); got {string_paths:?}"
+        );
+
+        // Wiring proof: the pin's ops_path still resolves to the REAL
+        // worktree's inode (now reachable only at `hidden`) after the swap —
+        // NOT the attacker symlink target. `resolve_overlay` feeds exactly this
+        // ops_path into discover/build, so production ops follow the pin.
+        let resolved = std::fs::canonicalize(&ops_path).expect("ops_path resolves");
+        let canon_hidden = std::fs::canonicalize(&hidden).expect("hidden resolves");
+        assert_eq!(
+            resolved, canon_hidden,
+            "the pinned ops_path must resolve to the real (now-hidden) worktree inode, \
+             not the swapped attacker target"
+        );
+
+        // The fix: ops through the PINNED fd path see the REAL worktree's
+        // untracked file and NEVER the attacker's, despite the swap.
+        let via_pin = discover_delta(&ops_path, &parent).expect("discover via pinned ops_path");
+        let pin_paths: Vec<String> = via_pin
+            .parse_set
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            pin_paths.iter().any(|p| p.contains("real_new.rs")),
+            "the pinned ops_path must see the REAL worktree's untracked file; got {pin_paths:?}"
+        );
+        assert!(
+            !pin_paths.iter().any(|p| p.contains("attacker_secret.rs")),
+            "the pinned ops_path must NOT leak the attacker file after the swap; got {pin_paths:?}"
+        );
+    }
+
     /// Control: a bare non-git directory is rejected (no `.git` at all → not a
     /// worktree of anything). Pins that the registration check does not change
     /// the existing non-worktree rejection.
@@ -1773,6 +1882,7 @@ mod tests {
         let embedder_ref = view.embedder().expect("embedder");
         let rebuilt = super::super::super::view::get_overlay_via_lru(
             &view.overlays,
+            &wt,
             &wt,
             &view.root,
             &parser,
