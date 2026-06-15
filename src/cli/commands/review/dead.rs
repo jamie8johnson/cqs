@@ -152,10 +152,14 @@ fn is_test_only(entry: &DeadFunction) -> bool {
 /// Classify a dead entry into its verdict. Ordered, first-match-wins:
 /// test-only → low-confidence-live → known-gap → dead. `low_conf` maps a
 /// callee name to its §1-derived heuristic-caller breakdown (present only for
-/// functions reached solely by heuristic edges).
+/// functions reached solely by heuristic edges). `overlay_candidate` maps a
+/// callee name to its candidate-edge breakdown recomputed over the merged
+/// (parent+overlay) candidate graph — consulted for Direction-B additions, whose
+/// parent-truth `low_conf` is stale.
 fn classify_verdict(
     entry: &DeadFunction,
     low_conf: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
+    overlay_candidate: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
 ) -> (DeadVerdict, String) {
     if is_test_only(entry) {
         // Softened to claim only what the substring scan actually knows: a
@@ -167,63 +171,64 @@ fn classify_verdict(
             "origin under tests/ path or content contains '#[cfg(test)]'".to_string(),
         );
     }
-    // Direction-B overlay additions were computed dead over the authoritative
-    // merged (parent+overlay) caller graph in this worktree — they ARE dead
-    // here. The `low_conf` map is parent-graph-derived and stale under the
-    // overlay, so consulting it would relabel a genuinely-worktree-dead function
-    // `low-confidence-live` whenever its bare name collides with a parent
-    // heuristic/candidate name, hiding it from `--verdict dead`. Skip the
-    // parent-truth relabel for these; the remaining tiers (known-gap, dead) are
-    // name/path/content-derived and stay valid under the overlay.
-    //
-    // This also classifies a candidate-only addition `dead` rather than
-    // `low-confidence-live` — intentional: `candidate_edges` is parent-truth
-    // (never recomputed over the overlay), so trusting it to override the
-    // authoritative merged-`function_calls` verdict would itself be a stale
-    // claim, and the error direction (surface a possibly-dead fn vs. hide a
-    // genuinely-dead one) is the safe one for `cqs dead`.
-    if !entry.overlay_dead {
-        if let Some(info) = low_conf.get(&entry.chunk.name) {
-            // Name the exact provenance and counts rather than asserting "all
-            // callers are heuristic" generically. Two populations may contribute:
-            // heuristic `function_calls` edges and `candidate_edges` (Lane 2)
-            // references. A candidate-ONLY callee has `total == 0` and
-            // `candidate_total > 0`; render only the populations that are present so
-            // the reason never claims "0 heuristic edge(s)".
-            let mut parts: Vec<String> = Vec::new();
-            if info.total > 0 {
-                let kinds = info
-                    .kind_counts
-                    .iter()
-                    .map(|(kind, n)| format!("{kind}×{n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                parts.push(format!("{} heuristic edge(s) [{}]", info.total, kinds));
-            }
-            if info.candidate_total > 0 {
-                let kinds = info
-                    .candidate_counts
-                    .iter()
-                    .map(|(kind, n)| format!("{kind}×{n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                parts.push(format!(
-                    "{} candidate edge(s) [{}]",
-                    info.candidate_total, kinds
-                ));
-            }
-            let detail = if parts.is_empty() {
-                // Defensive: the name is in the map only when one population is
-                // nonzero, so this is unreachable in practice.
-                "heuristic/candidate evidence".to_string()
-            } else {
-                parts.join("; ")
-            };
-            return (
-                DeadVerdict::LowConfidenceLive,
-                format!("no trusted caller; reached only by {detail}"),
-            );
+    // Pick the liveness-evidence map for this entry. A Direction-B overlay
+    // addition (`overlay_dead`) was computed dead over the authoritative merged
+    // (parent+overlay) caller graph in this worktree, so its parent-graph-derived
+    // `low_conf` HEURISTIC breakdown is stale — consulting it would relabel a
+    // genuinely-worktree-dead function `low-confidence-live` whenever its bare
+    // name collides with a parent heuristic/candidate name, hiding it from
+    // `--verdict dead`. For these we consult only the CANDIDATE map, which is
+    // recomputed over the merged candidate graph (mask-then-union of parent +
+    // overlay `candidate_edges`), so a candidate-only addition — dead over the
+    // merged real caller graph but still referenced by a worktree candidate edge
+    // — correctly relabels `low-confidence-live`. A parent entry keeps the full
+    // parent `low_conf` breakdown (heuristic + candidate). The remaining tiers
+    // (known-gap, dead) are name/path/content-derived and stay valid for both.
+    let evidence = if entry.overlay_dead {
+        overlay_candidate
+    } else {
+        low_conf
+    };
+    if let Some(info) = evidence.get(&entry.chunk.name) {
+        // Name the exact provenance and counts rather than asserting "all
+        // callers are heuristic" generically. Two populations may contribute:
+        // heuristic `function_calls` edges and `candidate_edges` (Lane 2)
+        // references. A candidate-ONLY callee has `total == 0` and
+        // `candidate_total > 0`; render only the populations that are present so
+        // the reason never claims "0 heuristic edge(s)".
+        let mut parts: Vec<String> = Vec::new();
+        if info.total > 0 {
+            let kinds = info
+                .kind_counts
+                .iter()
+                .map(|(kind, n)| format!("{kind}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("{} heuristic edge(s) [{}]", info.total, kinds));
         }
+        if info.candidate_total > 0 {
+            let kinds = info
+                .candidate_counts
+                .iter()
+                .map(|(kind, n)| format!("{kind}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!(
+                "{} candidate edge(s) [{}]",
+                info.candidate_total, kinds
+            ));
+        }
+        let detail = if parts.is_empty() {
+            // Defensive: the name is in the map only when one population is
+            // nonzero, so this is unreachable in practice.
+            "heuristic/candidate evidence".to_string()
+        } else {
+            parts.join("; ")
+        };
+        return (
+            DeadVerdict::LowConfidenceLive,
+            format!("no trusted caller; reached only by {detail}"),
+        );
     }
     if let Some(reason) = known_gap_reason(entry) {
         return (DeadVerdict::KnownGap, reason.to_string());
@@ -438,7 +443,24 @@ pub(crate) fn dead_overlay(
         false
     };
 
-    let mut output = build_dead_output(&confident, &possibly_pub, root, &low_conf);
+    // Overlay-merged candidate map (mask-then-union of parent + overlay
+    // `candidate_edges`), keyed by callee name. The verdict classifier consults
+    // it for Direction-B additions, whose parent-truth `low_conf` is stale: a
+    // candidate-only addition relabels `low-confidence-live` instead of `dead`.
+    // Empty when there is no overlay (parent entries never consult it).
+    let overlay_candidate = match overlay {
+        Some(ov) => cqs::store::build_overlay_candidate_map(store, ov)
+            .context("Failed to build overlay candidate map")?,
+        None => std::collections::HashMap::new(),
+    };
+
+    let mut output = build_dead_output(
+        &confident,
+        &possibly_pub,
+        root,
+        &low_conf,
+        &overlay_candidate,
+    );
 
     // Apply the `--verdict` filter to both lists, then recount.
     if let Some(want) = args.verdict {
@@ -459,11 +481,14 @@ pub(crate) fn dead_overlay(
 /// Build the typed dead-code report shared between CLI and batch. Each entry
 /// is classified into a [`DeadVerdict`] via the ordered `classify_verdict`;
 /// `low_conf` is the §1-derived heuristic-caller breakdown keyed by callee name.
+/// `overlay_candidate` is the overlay-merged candidate breakdown (empty without
+/// an overlay) the classifier consults for Direction-B additions.
 pub(crate) fn build_dead_output(
     confident: &[DeadFunction],
     possibly_pub: &[DeadFunction],
     root: &Path,
     low_conf: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
+    overlay_candidate: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
 ) -> DeadOutput {
     let _span = tracing::info_span!(
         "build_dead_output",
@@ -473,7 +498,7 @@ pub(crate) fn build_dead_output(
     .entered();
 
     let format = |d: &DeadFunction| {
-        let (verdict, reason) = classify_verdict(d, low_conf);
+        let (verdict, reason) = classify_verdict(d, low_conf, overlay_candidate);
         DeadFunctionEntry {
             name: d.chunk.name.clone(),
             file: cqs::rel_display(&d.chunk.file, root).to_string(),
@@ -679,6 +704,22 @@ mod tests {
         std::collections::HashMap::new()
     }
 
+    /// Empty overlay-merged candidate map. Parent-form classifier tests (no
+    /// overlay) pass this so the `overlay_dead` consult never fires.
+    fn no_overlay_cand() -> std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo> {
+        std::collections::HashMap::new()
+    }
+
+    /// Parent-form classify wrapper: no overlay candidate map. The bulk of the
+    /// verdict tests classify a parent entry (`overlay_dead = false`), which
+    /// never consults the overlay map, so this keeps them at two args.
+    fn classify_parent(
+        entry: &DeadFunction,
+        low_conf: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
+    ) -> (DeadVerdict, String) {
+        classify_verdict(entry, low_conf, &no_overlay_cand())
+    }
+
     /// Low-confidence map with one heuristic-only callee `name`.
     fn low_conf_with(
         name: &str,
@@ -756,7 +797,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn make_x() {}",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -768,7 +809,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "#[cfg(test)]\nmod t { fn helper() {} }",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -780,7 +821,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn cb() {}",
         );
-        let (v, reason) = classify_verdict(&f, &low_conf_with("cb"));
+        let (v, reason) = classify_parent(&f, &low_conf_with("cb"));
         assert_eq!(v, DeadVerdict::LowConfidenceLive);
         // Reason names the heuristic kinds/counts, not a generic claim.
         assert!(
@@ -803,7 +844,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn maybe_fn() {}",
         );
-        let (v, reason) = classify_verdict(
+        let (v, reason) = classify_parent(
             &f,
             &candidate_only_low_conf("maybe_fn", "bare_arg_unresolved"),
         );
@@ -822,7 +863,7 @@ mod tests {
         );
 
         // Calibration: the SAME entry with an empty map is `dead`.
-        let (v_dead, _) = classify_verdict(&f, &no_low_conf());
+        let (v_dead, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(
             v_dead,
             DeadVerdict::Dead,
@@ -831,17 +872,18 @@ mod tests {
     }
 
     /// Seam guard (overlay × verdict-classification): a Direction-B overlay
-    /// addition (`overlay_dead = true`) is computed dead over the authoritative
-    /// merged graph in this worktree, so it must classify `dead` EVEN when its
-    /// name collides with an entry in the parent-truth `low_conf` map — the map
-    /// is parent-graph-derived and stale under the overlay. The candidate
-    /// consult (Lane 3) widened that map to candidate-only bare names, making
-    /// this collision likely. Calibration: the SAME `low_conf` map applied to
-    /// the SAME name with `overlay_dead = false` (a parent entry) yields
-    /// `low-confidence-live` — see `verdict_candidate_only_callee_is_low_…`,
-    /// which is exactly this scenario minus the overlay flag. So the flag, not
-    /// the map, is what flips the verdict; without the bypass the addition would
-    /// be relabeled `low-confidence-live` and filtered out of `--verdict dead`.
+    /// addition (`overlay_dead = true`) skips the parent-truth `low_conf`
+    /// HEURISTIC map — that map is parent-graph-derived and stale under the
+    /// overlay, so a genuinely-worktree-dead function whose name collides with a
+    /// parent heuristic name must NOT be relabeled `low-confidence-live` (which
+    /// would hide it from `--verdict dead`). The overlay_dead leg here passes the
+    /// stale map as `low_conf` and an EMPTY overlay candidate map, so with no
+    /// merged-candidate evidence it classifies `dead`. Calibration: the same map
+    /// applied to the same name with `overlay_dead = false` (a parent entry, via
+    /// `classify_parent`) yields `low-confidence-live`. So the flag, not the map,
+    /// is what flips the verdict. (The companion candidate-recompute relabel — an
+    /// overlay_dead entry WITH merged-candidate evidence → low-confidence-live —
+    /// is pinned by `verdict_overlay_dead_candidate_recompute_relabels`.)
     #[test]
     fn verdict_overlay_dead_bypasses_parent_low_conf_relabel() {
         let mut f = dead_fn(
@@ -850,21 +892,26 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn foo() {}",
         );
-        // Calibration RED: the parent-entry form (overlay_dead = false) collides
-        // with the parent candidate map → low-confidence-live (the bug).
+        // Calibration: the parent-entry form (overlay_dead = false) collides
+        // with the parent candidate map → low-confidence-live.
         let (v_parent, _) =
-            classify_verdict(&f, &candidate_only_low_conf("foo", "bare_arg_unresolved"));
+            classify_parent(&f, &candidate_only_low_conf("foo", "bare_arg_unresolved"));
         assert_eq!(
             v_parent,
             DeadVerdict::LowConfidenceLive,
             "calibration: a PARENT entry whose name is in the candidate map is low-confidence-live"
         );
 
-        // GREEN: mark it a Direction-B overlay addition → it must classify `dead`
-        // despite the identical colliding `low_conf` map.
+        // Mark it a Direction-B overlay addition. With the stale parent map as
+        // `low_conf` and an EMPTY overlay candidate map, it must classify `dead`:
+        // the parent heuristic map is skipped and there is no merged-candidate
+        // evidence.
         f.overlay_dead = true;
-        let (v, reason) =
-            classify_verdict(&f, &candidate_only_low_conf("foo", "bare_arg_unresolved"));
+        let (v, reason) = classify_verdict(
+            &f,
+            &candidate_only_low_conf("foo", "bare_arg_unresolved"),
+            &no_overlay_cand(),
+        );
         assert_eq!(
             v,
             DeadVerdict::Dead,
@@ -877,15 +924,70 @@ mod tests {
         );
     }
 
-    /// The overlay-dead bypass is scoped to the parent-truth `low_conf` relabel
-    /// only: a Direction-B addition that is GENUINELY test-only (origin under
-    /// `tests/`) still classifies `test-only`, and a known-gap origin still
-    /// classifies `known-gap`. Those tiers are name/path/content-derived and stay
-    /// valid under the overlay — only the parent-graph-derived `low_conf` map is
-    /// stale, so only it is bypassed.
+    /// The candidate-recompute fix (this PR): a Direction-B overlay addition
+    /// (`overlay_dead = true`) that IS named in the overlay-merged candidate map
+    /// — a function dead over the merged real caller graph but still referenced
+    /// by a worktree candidate edge — relabels `low-confidence-live`, not `dead`.
+    /// RED before the fix: the classifier forced `dead` for every `overlay_dead`
+    /// entry (the blanket `!overlay_dead` skip), ignoring any candidate evidence.
+    /// Calibration: the SAME entry with an EMPTY overlay candidate map is `dead`
+    /// (see `verdict_overlay_dead_bypasses_parent_low_conf_relabel`), so the
+    /// merged-candidate consult is exactly what flips the verdict.
+    #[test]
+    fn verdict_overlay_dead_candidate_recompute_relabels() {
+        let mut f = dead_fn(
+            "maybe_overlay_fn",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn maybe_overlay_fn() {}",
+        );
+        f.overlay_dead = true;
+
+        // The overlay-merged candidate map names this entry (a candidate-only
+        // reference the confident extractor declined to resolve). The parent
+        // `low_conf` map is empty — the relabel must come from the overlay map.
+        let (v, reason) = classify_verdict(
+            &f,
+            &no_low_conf(),
+            &candidate_only_low_conf("maybe_overlay_fn", "bare_arg_unresolved"),
+        );
+        assert_eq!(
+            v,
+            DeadVerdict::LowConfidenceLive,
+            "an overlay-dead entry named in the overlay-merged candidate map must \
+             relabel low-confidence-live, not dead"
+        );
+        assert!(
+            reason.contains("candidate edge") && reason.contains("bare_arg_unresolved"),
+            "reason must name the merged candidate kind/count: {reason}"
+        );
+        assert!(
+            !reason.contains("heuristic edge"),
+            "candidate-only relabel must NOT claim heuristic edges: {reason}"
+        );
+
+        // Calibration: an EMPTY overlay candidate map leaves the same entry dead.
+        let (v_dead, _) = classify_verdict(&f, &no_low_conf(), &no_overlay_cand());
+        assert_eq!(
+            v_dead,
+            DeadVerdict::Dead,
+            "without the merged-candidate consult, the same overlay-dead entry is dead"
+        );
+    }
+
+    /// Tier ordering holds for a Direction-B addition: a GENUINELY test-only
+    /// origin (under `tests/`) still classifies `test-only`, and a known-gap
+    /// origin (with no candidate evidence) still classifies `known-gap`.
+    /// test-only is checked BEFORE the candidate consult, so it wins even when
+    /// the entry is named in the overlay-merged candidate map. known-gap is
+    /// checked AFTER the candidate consult (the documented order is
+    /// `test-only → low-confidence-live → known-gap → dead`), so it survives only
+    /// when there is no candidate evidence — the candidate consult, like the
+    /// parent `low_conf` consult, intentionally outranks known-gap.
     #[test]
     fn verdict_overlay_dead_still_honors_test_only_and_known_gap() {
-        // test-only: origin under tests/ → TestOnly even when overlay_dead.
+        // test-only: origin under tests/ → TestOnly even when overlay_dead and
+        // named in the overlay candidate map (test-only is checked first).
         let mut t = dead_fn(
             "helper",
             "tests/support.rs",
@@ -895,15 +997,19 @@ mod tests {
         t.overlay_dead = true;
         let (vt, _) = classify_verdict(
             &t,
+            &no_low_conf(),
             &candidate_only_low_conf("helper", "bare_arg_unresolved"),
         );
         assert_eq!(
             vt,
             DeadVerdict::TestOnly,
-            "an overlay-dead test-helper must stay test-only (bypass is scoped to low_conf)"
+            "an overlay-dead test-helper must stay test-only (test-only beats the candidate consult)"
         );
 
-        // known-gap: a served-asset JS handler → KnownGap even when overlay_dead.
+        // known-gap: a served-asset JS handler with NO candidate evidence →
+        // KnownGap even when overlay_dead. (With candidate evidence the
+        // documented order relabels it low-confidence-live first — same as a
+        // parent known-gap entry that also has a heuristic edge.)
         let mut k = dead_fn(
             "onClick",
             "src/serve/assets/app.js",
@@ -911,14 +1017,11 @@ mod tests {
             "function onClick() {}",
         );
         k.overlay_dead = true;
-        let (vk, _) = classify_verdict(
-            &k,
-            &candidate_only_low_conf("onClick", "bare_arg_unresolved"),
-        );
+        let (vk, _) = classify_verdict(&k, &no_low_conf(), &no_overlay_cand());
         assert_eq!(
             vk,
             DeadVerdict::KnownGap,
-            "an overlay-dead served-asset handler must stay known-gap (bypass is scoped to low_conf)"
+            "an overlay-dead served-asset handler with no candidate evidence must stay known-gap"
         );
     }
 
@@ -930,7 +1033,7 @@ mod tests {
             cqs::parser::Language::JavaScript,
             "function onClick() {}",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::KnownGap);
     }
 
@@ -946,7 +1049,7 @@ mod tests {
             cqs::parser::Language::JavaScript,
             "function buildBundle() {}",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(
             v,
             DeadVerdict::Dead,
@@ -969,7 +1072,7 @@ mod tests {
         );
         // The map carries it because the store query found a heuristic edge and
         // no trusted edge; the doc edge was ignored.
-        let (v, _) = classify_verdict(&f, &low_conf_with("doc_mentioned"));
+        let (v, _) = classify_parent(&f, &low_conf_with("doc_mentioned"));
         assert_eq!(v, DeadVerdict::LowConfidenceLive);
     }
 
@@ -981,7 +1084,7 @@ mod tests {
             cqs::parser::Language::Python,
             "def __aenter__(self): ...",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::KnownGap);
     }
 
@@ -993,7 +1096,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn genuinely_dead() {}",
         );
-        let (v, _) = classify_verdict(&f, &no_low_conf());
+        let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::Dead);
     }
 
@@ -1006,7 +1109,7 @@ mod tests {
             cqs::parser::Language::Rust,
             "fn make_x() {}",
         );
-        let (v, _) = classify_verdict(&f, &low_conf_with("make_x"));
+        let (v, _) = classify_parent(&f, &low_conf_with("make_x"));
         assert_eq!(v, DeadVerdict::TestOnly);
     }
 
@@ -1035,7 +1138,13 @@ mod tests {
     fn dead_verdict_serialized_on_entry() {
         let low = no_low_conf();
         let f = dead_fn("x", "src/lib.rs", cqs::parser::Language::Rust, "fn x() {}");
-        let out = build_dead_output(&[f], &[], std::path::Path::new("."), &low);
+        let out = build_dead_output(
+            &[f],
+            &[],
+            std::path::Path::new("."),
+            &low,
+            &no_overlay_cand(),
+        );
         let json = serde_json::to_value(&out).unwrap();
         assert_eq!(json["dead"][0]["verdict"], "dead");
         assert!(json["dead"][0].get("verdict_reason").is_some());

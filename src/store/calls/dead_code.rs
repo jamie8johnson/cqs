@@ -301,6 +301,32 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Raw per-row `candidate_edges` contributions: `(callee_name, candidate_kind,
+    /// reference-origin file)` for every candidate row in this store. The `file`
+    /// column is the CALLER/reference origin (where the bare-name / macro-arg /
+    /// serde linkage appears), symmetric to `function_calls.file` — so it is the
+    /// masking key for the worktree-overlay merge ([`build_overlay_candidate_map`]),
+    /// which masks parent rows whose reference origin is delta-touched and unions
+    /// the overlay store's rows. Unlike [`Store::find_low_confidence_live_names`]'s
+    /// pre-aggregated candidate arm, this exposes the row-level `file` the merge
+    /// needs and applies NO trusted-edge exclusion: the merge consults this map
+    /// only to relabel a function already computed dead over the merged caller
+    /// graph (zero real callers, so zero trusted callers by construction), where a
+    /// parent trusted edge — if any — lived in a masked origin and is no longer
+    /// authoritative.
+    pub fn candidate_edge_contributions(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, StoreError> {
+        let _span = tracing::info_span!("candidate_edge_contributions").entered();
+        self.rt.block_on(async {
+            let rows: Vec<(String, String, String)> =
+                sqlx::query_as("SELECT callee_name, candidate_kind, file FROM candidate_edges")
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows)
+        })
+    }
+
     /// Phase 1: Query all callable chunks with no callers in the call graph.
     /// Returns lightweight metadata without content/doc to minimize memory.
     ///
@@ -1045,9 +1071,11 @@ pub fn apply_dead_overlay<M>(
 
         // Newly dead. `Medium` is the honest floor — the file-activity recompute
         // `score_confidence` runs for the parent set is not re-run here.
-        // `overlay_dead`: computed dead over the authoritative merged graph in
-        // this worktree, so verdict classification must not relabel it via the
-        // parent-truth `low_conf` map (stale under the overlay).
+        // `overlay_dead`: computed dead over the authoritative merged caller graph
+        // in this worktree, so verdict classification skips the stale parent-truth
+        // `low_conf` HEURISTIC breakdown for it and instead consults the
+        // overlay-merged CANDIDATE map (`build_overlay_candidate_map`) — a
+        // candidate-only addition still relabels `low-confidence-live`.
         let dead_fn = DeadFunction {
             chunk: def,
             confidence: DeadConfidence::Medium,
@@ -1074,6 +1102,87 @@ pub fn apply_dead_overlay<M>(
     }
 
     Ok(participated)
+}
+
+/// Build the overlay-merged candidate map keyed by callee name, mirroring
+/// [`crate::worktree_overlay::WorktreeOverlay::merge_callers`]'s mask-then-union.
+/// The map carries ONLY the candidate-edge fields of [`LowConfidenceLiveInfo`]
+/// (`candidate_total` + `candidate_counts`); the heuristic-edge fields stay zero
+/// because the candidate graph is the only population recomputed over the overlay
+/// here.
+///
+/// A `candidate_edges` row's `file` column is the CALLER/reference origin
+/// (symmetric to `function_calls.file`), so the merge is the same single-key mask
+/// plus union the caller-graph merge uses:
+///
+/// 1. **Mask**: drop every parent candidate row whose reference origin is in
+///    `masked_origins` — that file's references may have changed or vanished in
+///    the worktree, so its parent rows are no longer authoritative.
+/// 2. **Union**: add every overlay candidate row. Every chunk in the overlay
+///    store comes from a masked origin, so every overlay candidate row's
+///    reference origin is masked too — the mask above already removed any parent
+///    counterpart, so the union cannot double-count.
+///
+/// The result is the candidate references the parent had minus the suspect
+/// (masked-origin) ones, plus the worktree's fresh view of those same origins.
+/// `cqs dead`'s verdict classifier consults this for a Direction-B addition so a
+/// candidate-only overlay-dead entry — a function dead over the merged real
+/// caller graph but still referenced by a worktree candidate edge — relabels
+/// `low-confidence-live` instead of `dead`.
+pub fn build_overlay_candidate_map<M>(
+    store: &Store<M>,
+    overlay: &crate::worktree_overlay::WorktreeOverlay,
+) -> Result<std::collections::HashMap<String, LowConfidenceLiveInfo>, StoreError> {
+    let _span = tracing::info_span!(
+        "build_overlay_candidate_map",
+        masked = overlay.masked_origins.len()
+    )
+    .entered();
+
+    // Reference-origin paths normalized the same way `masked_origins` are stored,
+    // so a parent row's `file` and the mask set are comparable string-for-string.
+    let masked: std::collections::HashSet<String> = overlay
+        .masked_origins
+        .iter()
+        .map(|p| crate::normalize_path(p))
+        .collect();
+
+    // Mask parent rows whose reference origin is delta-touched, then union the
+    // overlay store's rows (every one of which is from a masked origin).
+    let mut merged: Vec<(String, String)> = store
+        .candidate_edge_contributions()?
+        .into_iter()
+        .filter(|(_, _, file)| !masked.contains(&crate::normalize_path(std::path::Path::new(file))))
+        .map(|(name, kind, _)| (name, kind))
+        .collect();
+    merged.extend(
+        overlay
+            .store
+            .candidate_edge_contributions()?
+            .into_iter()
+            .map(|(name, kind, _)| (name, kind)),
+    );
+
+    // Aggregate into per-callee candidate counts (heuristic fields left zero).
+    let mut out: std::collections::HashMap<String, LowConfidenceLiveInfo> =
+        std::collections::HashMap::new();
+    let mut per_kind: std::collections::HashMap<(String, String), u64> =
+        std::collections::HashMap::new();
+    for (name, kind) in merged {
+        let info = out.entry(name.clone()).or_default();
+        info.candidate_total += 1;
+        *per_kind.entry((name, kind)).or_default() += 1;
+    }
+    for ((name, kind), n) in per_kind {
+        if let Some(info) = out.get_mut(&name) {
+            info.candidate_counts.push((kind, n));
+        }
+    }
+    // Stable kind order for deterministic reason strings.
+    for info in out.values_mut() {
+        info.candidate_counts.sort();
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
