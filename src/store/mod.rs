@@ -406,6 +406,9 @@ struct StoreOpenConfig {
 /// to the Windows host (paths under `/mnt/c/`, `/mnt/d/`, etc.). `cifs`,
 /// `smb3`, `smbfs` cover SMB shares. `nfs`, `nfs4` cover NFS mounts.
 /// `ntfs`, `ntfs3`, `fuseblk` cover native-Linux NTFS access (ntfs-3g).
+// Used only by the `#[cfg(unix)]` arm of `is_slow_mmap_fs` (+ tests); dead on
+// a Windows release build, where that arm is replaced by the GetDriveType path.
+#[cfg(any(unix, test))]
 const SLOW_MMAP_FSTYPES: &[&str] = &[
     "9p",
     "cifs",
@@ -684,6 +687,10 @@ fn has_reparse_ancestor(path: &Path) -> bool {
 ///
 /// Picks the longest mount point that is a path-prefix of `abs_path`
 /// (so nested mounts like `/mnt/c/WINDOWS` inside `/mnt/c` win correctly).
+///
+/// Parses Linux `/proc/self/mountinfo`; reachable only via the `#[cfg(unix)]`
+/// arm of `is_slow_mmap_fs` (+ tests), so gate to match — dead on Windows.
+#[cfg(any(unix, test))]
 fn fstype_for_path(mountinfo: &str, abs_path: &Path) -> Option<String> {
     let abs_str = abs_path.to_str()?;
     let mut best: Option<(usize, String)> = None;
@@ -726,6 +733,9 @@ fn fstype_for_path(mountinfo: &str, abs_path: &Path) -> Option<String> {
 /// since those are sibling mounts. The prefix matches only if `path == prefix`
 /// or `path` continues with `/` after the prefix. Also handles the special
 /// case where `prefix == "/"` (root mount) — always a prefix.
+///
+/// Helper for `fstype_for_path`; same `#[cfg(any(unix, test))]` gate.
+#[cfg(any(unix, test))]
 fn path_starts_with(path: &str, prefix: &str) -> bool {
     if prefix == "/" {
         return path.starts_with('/');

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.46.1] - 2026-06-15
+
+Patch release. Fixes the macOS (`aarch64-apple-darwin`) release build, which failed for v1.46.0 — Linux and Windows built fine, but the all-three-targets gate meant no GitHub Release binaries were published for v1.46.0. No functional or library changes; **no reindex needed** (PARSER_VERSION and schema are identical to 1.46.0). crates.io 1.46.0 is superseded (it does not compile on macOS).
+
+### Fixed
+
+- **macOS build (`E0277`) in `BatchView::resolve_overlay`.** The `#[cfg(unix)] let ops_root = { … }` block took its only non-diverging value from a `#[cfg(target_os = "linux")]` arm (`PinnedWorktree::ops_path`, Linux-only). On macOS every arm diverges, so the binding back-inferred the unsized `Path` from its downstream `&Path` use — `the size for values of type [u8] cannot be known at compilation time`. Pinned with a `: std::path::PathBuf` annotation; behaviour on every platform is unchanged. The Linux-only CI build never saw it; the release cross-build did.
+- **Two dead-code-on-a-sibling-target warnings** gated to match their callers: `url_safe_for_cmd` (`serve`) is used only by the Windows + Linux/WSL browser-launch branches → dead on macOS; the `SLOW_MMAP_FSTYPES` / `fstype_for_path` / `path_starts_with` cluster (`store`) is used only by the `#[cfg(unix)]` arm of `is_slow_mmap_fs` (+ tests) → dead on a Windows release build.
+
+### Added
+
+- **Platform-cfg completeness guard** (`tests/platform_cfg_sweep_test.rs`) — scans `src/` on Linux for the exact straggler shape (a `#[cfg(unix)] let X = { … }` block with a Linux-only value arm but no type annotation), so the next such divergence is caught at PR time instead of at the tagged cross-build. Found via a sweep-auditor pass over every platform-cfg site.
+
 ## [1.46.0] - 2026-06-15
 
 Post-v1.45.0 idle loop + a 3-round audit. **PARSER_VERSION 10 → 13 — a reindex is required** (drift-driven on the next `cqs index`, or `cqs index --force`); cqs's own (Rust) corpus is unaffected by the Dart/L5X parser changes.
@@ -3797,7 +3810,8 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.46.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.46.1...HEAD
+[1.46.1]: https://github.com/jamie8johnson/cqs/compare/v1.46.0...v1.46.1
 [1.46.0]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...v1.46.0
 [1.45.0]: https://github.com/jamie8johnson/cqs/compare/v1.44.0...v1.45.0
 [1.44.0]: https://github.com/jamie8johnson/cqs/compare/v1.43.0...v1.44.0

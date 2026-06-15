@@ -1206,6 +1206,14 @@ impl BatchView {
     /// hot path does the same); the cache is the parent project's
     /// `embeddings_cache.db` (the intentional cross-boundary cache write,
     /// documented in `worktree_overlay_build`).
+    // On macOS/BSD the overlay is unavailable (`PinnedWorktree::pin` always
+    // returns `None` — there is no `/proc/self/fd` to express the pinned path),
+    // so the post-pin build body is unreachable there. That is intentional
+    // fail-closed behaviour, not dead wiring; the lint only fires off-Linux.
+    #[cfg_attr(
+        all(unix, not(target_os = "linux")),
+        allow(unreachable_code, unused_variables)
+    )]
     fn resolve_overlay(&self) -> Option<Arc<cqs::worktree_overlay::WorktreeOverlay>> {
         // Test seam: a directly-injected overlay short-circuits the LRU /
         // embedder / git-delta build, so daemon-path handler tests can exercise
@@ -1230,8 +1238,11 @@ impl BatchView {
         // skip the overlay (parent index) rather than fall back to the unpinned
         // path. `worktree_root` (the canonical path) stays the stable LRU key;
         // `ops_root` (the `/proc/self/fd/<n>` path) drives discover/build.
+        // Annotated `PathBuf` so non-Linux unix targets (macOS/BSD), where every
+        // arm below diverges (`ops_path` is Linux-only), don't back-infer the
+        // unsized `Path` from the `&ops_root: &Path` use site downstream.
         #[cfg(unix)]
-        let ops_root = {
+        let ops_root: std::path::PathBuf = {
             let pin = self.overlay_pin.borrow();
             match pin.as_ref() {
                 #[cfg(target_os = "linux")]

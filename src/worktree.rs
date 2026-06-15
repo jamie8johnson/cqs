@@ -143,8 +143,10 @@ pub fn resolve_main_project_dir(dir: &Path) -> Option<PathBuf> {
 pub struct PinnedWorktree {
     canonical: PathBuf,
     // Held for the lifetime of the pin: dropping it closes the fd and
-    // invalidates `ops_path`. Never read directly — its job is to keep the
-    // inode pinned and back the `/proc/self/fd/<n>` symlink.
+    // invalidates `ops_path`. On Linux it is read by `ops_path`
+    // (`/proc/self/fd/<n>`); off-Linux the struct is never constructed
+    // (`pin` returns `None`), so the field is dead there — silence that.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fd: std::os::fd::OwnedFd,
 }
 
