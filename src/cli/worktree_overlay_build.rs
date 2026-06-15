@@ -31,10 +31,18 @@ use cqs::parser::Parser as CqParser;
 use cqs::store::{ModelInfo, Store};
 use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeOverlay};
 
-/// Build a [`WorktreeOverlay`] for `worktree_root` against `parent_root`.
+/// Build a [`WorktreeOverlay`] for the dirty checkout against `parent_root`.
 ///
-/// - `worktree_root`: the dirty checkout to overlay (validated by the
-///   caller via `cqs::worktree::overlay_root` / daemon-side root checks).
+/// - `ops_root`: the path ALL git/file ops run against. The daemon passes the
+///   pinned `/proc/self/fd/<n>` path (see `BatchView::overlay_pin`) so
+///   `discover_delta` + the parse-set file reads follow the held fd to the
+///   validated inode, immune to a post-validation path-component swap (TOCTOU).
+///   For non-daemon / CLI callers it is just the canonical worktree path.
+/// - `canonical_root`: the worktree's stable canonical path, recorded as the
+///   overlay's identity (`WorktreeOverlay::worktree_root`). NOT used for ops —
+///   a live `/proc/self/fd/<n>` path is meaningless once the fd closes, and the
+///   canonical path is what callers expect to see. Must already be validated by
+///   the caller (`cqs::worktree::overlay_root` / the daemon registry+pin check).
 /// - `parent_root`: the parent project root whose index the overlay shadows
 ///   (the diff base is *its* HEAD — see plan correction #2).
 /// - `parser` / `embedder`: the session's resident parser + embedder (the
@@ -57,7 +65,8 @@ use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeO
 // `build_overlay_indexes_dirty_delta` below.
 #[allow(dead_code)]
 pub(crate) fn build_overlay<M>(
-    worktree_root: &Path,
+    ops_root: &Path,
+    canonical_root: &Path,
     parent_root: &Path,
     parser: &CqParser,
     embedder: &Embedder,
@@ -66,12 +75,12 @@ pub(crate) fn build_overlay<M>(
 ) -> Result<Option<WorktreeOverlay>, cqs::worktree_overlay::OverlayError> {
     let _span = tracing::info_span!(
         "build_overlay",
-        worktree = %worktree_root.display()
+        worktree = %canonical_root.display()
     )
     .entered();
     let started = Instant::now();
 
-    let delta = discover_delta(worktree_root, parent_root)?;
+    let delta = discover_delta(ops_root, parent_root)?;
     // Fold the parent's notes-revision token into the overlay's cache identity.
     // Notes are copied into the shadow store below (so its `note_boost` matches
     // the parent), so they must participate in the fingerprint too: a parent
@@ -84,7 +93,7 @@ pub(crate) fn build_overlay<M>(
         tracing::warn!(error = %e, "overlay: failed to read parent notes-revision — fingerprint will not track notes for this build");
         [0u8; 32]
     });
-    let fp = fingerprint(worktree_root, &delta, &notes_revision);
+    let fp = fingerprint(ops_root, &delta, &notes_revision);
 
     // A clean worktree (no touched origins) has nothing to overlay. Return
     // None so the caller skips the merge entirely rather than building an
@@ -127,7 +136,7 @@ pub(crate) fn build_overlay<M>(
     // delete branch inside it is never reached here (D paths are masked-only,
     // excluded from the parse set in `discover_delta`).
     let (chunks_indexed, errors) = crate::cli::watch::overlay_reindex_files(
-        worktree_root,
+        ops_root,
         &store,
         &delta.parse_set,
         parser,
@@ -161,7 +170,7 @@ pub(crate) fn build_overlay<M>(
         store,
         masked_origins: delta.masked_origins,
         fingerprint: fp,
-        worktree_root: worktree_root.to_path_buf(),
+        worktree_root: canonical_root.to_path_buf(),
         stats,
     }))
 }
@@ -233,7 +242,7 @@ mod tests {
         let parent_model = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
         parent_store.init(&parent_model).expect("init parent store");
 
-        let overlay = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+        let overlay = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
             .expect("build_overlay")
             .expect("non-clean worktree yields Some(overlay)");
 
@@ -312,7 +321,7 @@ mod tests {
             .upsert_notes_batch(&[note], std::path::Path::new("docs/notes.toml"), 100)
             .expect("seed parent note");
 
-        let overlay = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+        let overlay = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
             .expect("build_overlay")
             .expect("non-clean worktree yields Some(overlay)");
 
@@ -428,7 +437,7 @@ mod tests {
             .upsert_notes_batch(&[note_neg], std::path::Path::new("docs/notes.toml"), 100)
             .expect("seed parent note");
 
-        let overlay0 = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+        let overlay0 = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
             .expect("build_overlay (neg)")
             .expect("non-clean worktree yields Some(overlay)");
         let fp0 = overlay0.fingerprint;
@@ -446,7 +455,7 @@ mod tests {
             .upsert_notes_batch(&[note_pos], std::path::Path::new("docs/notes.toml"), 200)
             .expect("update parent note");
 
-        let overlay1 = build_overlay(&wt, &parent, &parser, &embedder, &parent_store, None)
+        let overlay1 = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
             .expect("build_overlay (pos)")
             .expect("non-clean worktree yields Some(overlay)");
         let fp1 = overlay1.fingerprint;
@@ -608,6 +617,7 @@ mod tests {
         let overlay = {
             let parent_store_for_build = Store::open(&parent_db).expect("open parent for build");
             build_overlay(
+                &wt,
                 &wt,
                 &parent,
                 &parser,

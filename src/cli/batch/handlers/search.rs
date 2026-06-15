@@ -1313,6 +1313,463 @@ mod tests {
         );
     }
 
+    /// SECURITY — the unregistered-forged-worktree bypass. An attacker tree
+    /// whose hand-forged `.git` → `commondir` chain resolves to the served
+    /// project's real `.git/` (so `resolve_main_project_dir == served_root`)
+    /// but which is NOT registered under `<served>/.git/worktrees/` must be
+    /// rejected. Validating it would let any socket client read+embed+relay
+    /// arbitrary out-of-tree files as trusted `user-code`.
+    ///
+    /// Fails on the pre-fix code (step 2 passes, no registration check) and
+    /// passes after the gitdir-under-served-`.git/worktrees/` check is added.
+    #[test]
+    fn overlay_daemon_rejects_forged_unregistered_worktree() {
+        let (holder, ctx, parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // Served project's real `.git/` (parent is already canonicalized).
+        let served_git = parent.join(".git");
+        assert!(
+            served_git.is_dir(),
+            "served project must have a real .git/ for the forgery to target"
+        );
+
+        // Attacker tree: a directory the client controls end to end. Its `.git`
+        // is a FILE (so resolve_main_project_dir takes the worktree branch),
+        // pointing at a forged gitdir the attacker also owns.
+        let attacker = holder.path().join("attacker");
+        let fake_gitdir = attacker.join(".fakegit");
+        std::fs::create_dir_all(&fake_gitdir).expect("mkdir attacker/.fakegit");
+
+        // Forge the `commondir` back-link so it resolves to the SERVED
+        // project's real `.git/`. We give an absolute path here — that is the
+        // strongest forgery (it makes resolve_main_project_dir land squarely on
+        // the served root regardless of relative-path arithmetic).
+        std::fs::write(
+            fake_gitdir.join("commondir"),
+            format!("{}\n", served_git.display()),
+        )
+        .expect("write forged commondir");
+        // Minimal git metadata so the forged gitdir looks plausible.
+        std::fs::write(fake_gitdir.join("HEAD"), "ref: refs/heads/attack\n")
+            .expect("write forged HEAD");
+        std::fs::write(
+            fake_gitdir.join("gitdir"),
+            format!("{}\n", attacker.display()),
+        )
+        .expect("write forged gitdir");
+        // The `.git` link file pointing at the forged gitdir.
+        std::fs::write(
+            attacker.join(".git"),
+            format!("gitdir: {}\n", fake_gitdir.display()),
+        )
+        .expect("write attacker .git");
+
+        let attacker = dunce::canonicalize(&attacker).unwrap_or(attacker);
+
+        // Precondition: the forgery DOES satisfy the old step-2 check (its main
+        // resolves to the served root) — proving the registration check is what
+        // does the work, not an incidental mismatch.
+        let resolved_main = cqs::worktree::resolve_main_project_dir(&attacker);
+        let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+        assert_eq!(
+            resolved_main.as_deref(),
+            Some(served_canonical.as_path()),
+            "forgery must resolve its main to the served root (else the test \
+             proves nothing about the registration check)"
+        );
+
+        // The fix must reject it loudly.
+        let err = view
+            .set_validated_overlay_request(&attacker)
+            .expect_err("forged unregistered worktree must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not a registered worktree of the served project"),
+            "expected an unregistered-worktree rejection; got: {msg}"
+        );
+        // The request must NOT have been stamped.
+        assert!(
+            view.overlay_request.borrow().is_none(),
+            "a rejected forged overlay-root must leave overlay_request unset"
+        );
+    }
+
+    /// SECURITY (Attack A) — the registered-gitdir hijack. The attacker forges
+    /// their tree's `.git` to point `gitdir:` at a REAL, legitimately registered
+    /// worktree gitdir of the served project (`<served>/.git/worktrees/wt`).
+    /// Then:
+    ///   - `resolve_main_project_dir(evilA)` resolves main to the served root
+    ///     (the cheap pre-check passes),
+    ///   - `worktree_gitdir(evilA)` is `<served>/.git/worktrees/wt` (a real
+    ///     registered gitdir — every file-parsing forward/back-pointer check is
+    ///     satisfied),
+    ///   - but `overlay_request` would be stamped with evilA (the attacker tree),
+    ///     re-arming the arbitrary out-of-tree read/embed/relay primitive.
+    /// The precondition (≥1 registered worktree of served) is the common case —
+    /// every `.claude/worktrees/` agent worktree satisfies it.
+    ///
+    /// The authoritative gate defeats this: evilA is not a directory git itself
+    /// tracks, so `git -C <served> worktree list` never lists it → it is absent
+    /// from the membership set → rejected. Validation must REJECT evilA and
+    /// leave `overlay_request` unset.
+    #[test]
+    fn overlay_daemon_rejects_forged_gitdir_pointing_at_real_registered_worktree() {
+        let (holder, ctx, parent, wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // The served project's REAL registered worktree gitdir
+        // (`<served>/.git/worktrees/<name>`). overlay_ctx() created `wt` via a
+        // real `git worktree add`, so this entry exists and is bound to `wt`.
+        let real_registered_gitdir =
+            cqs::worktree::worktree_gitdir(&wt).expect("real worktree must resolve its gitdir");
+        assert!(
+            real_registered_gitdir.starts_with(parent.join(".git").join("worktrees"))
+                || real_registered_gitdir.starts_with(
+                    dunce::canonicalize(parent.join(".git").join("worktrees"))
+                        .unwrap_or_else(|_| parent.join(".git").join("worktrees"))
+                ),
+            "real worktree's gitdir must live under the served project's registry"
+        );
+
+        // Attacker tree: a directory the client controls. Its `.git` is a FILE
+        // pointing `gitdir:` at the served project's REAL registered gitdir —
+        // NOT at a forged dir of its own. This is the hijack the forward check
+        // alone cannot catch.
+        let attacker = holder.path().join("attackerA");
+        std::fs::create_dir_all(&attacker).expect("mkdir attackerA");
+        std::fs::write(
+            attacker.join(".git"),
+            format!("gitdir: {}\n", real_registered_gitdir.display()),
+        )
+        .expect("write attacker .git pointing at real registered gitdir");
+
+        let attacker = dunce::canonicalize(&attacker).unwrap_or(attacker);
+
+        // Precondition 1: the hijack resolves its main to the served root
+        // (so step 2 passes — the registration check is what must bite).
+        let resolved_main = cqs::worktree::resolve_main_project_dir(&attacker);
+        let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+        assert_eq!(
+            resolved_main.as_deref(),
+            Some(served_canonical.as_path()),
+            "hijack must resolve its main to the served root"
+        );
+        // Precondition 2: the hijack's gitdir IS under the registry (so every
+        // file-parsing path check is satisfied — proving the authoritative
+        // git-registry membership is what rejects it, not a path-layer mismatch).
+        let hijack_gitdir =
+            cqs::worktree::worktree_gitdir(&attacker).expect("hijack gitdir resolves");
+        let registry = dunce::canonicalize(parent.join(".git").join("worktrees"))
+            .unwrap_or_else(|_| parent.join(".git").join("worktrees"));
+        assert!(
+            hijack_gitdir.starts_with(&registry),
+            "hijack's gitdir must be under the served registry (else this test \
+             proves nothing about the registry-membership check)"
+        );
+
+        // The fix must reject it loudly: evilA is absent from git's registry.
+        let err = view
+            .set_validated_overlay_request(&attacker)
+            .expect_err("forged gitdir pointing at a real registered worktree must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a registered worktree of the served project"),
+            "expected a registration rejection; got: {err:#}"
+        );
+        // The attacker tree must NOT have been stamped as the overlay root.
+        assert!(
+            view.overlay_request.borrow().is_none(),
+            "a rejected hijack must leave overlay_request unset"
+        );
+    }
+
+    /// SECURITY (Attack B) — the symlinked-`.git` masquerade. The file-parsing
+    /// registration checks (forward gitdir-under-registry, then `<gitdir>/gitdir`
+    /// back-pointer) are defeated by a SYMLINK: `EVIL/.git` is a symlink to a
+    /// real registered worktree `wt`'s `.git`. Then `worktree_gitdir(EVIL)`
+    /// follows the symlink → `wt`'s gitdir (under registry), and
+    /// `canonicalize(EVIL/.git)` ALSO follows the symlink → `wt/.git`, so the
+    /// back-pointer matches → ACCEPTED, `overlay_request` stamped with EVIL.
+    /// But `git -C EVIL ls-files --others` enumerates EVIL's OWN out-of-tree
+    /// files (a linked worktree has no `core.worktree`; git takes the gitdir
+    /// from the symlinked `.git` but the working-tree top from the `-C` cwd =
+    /// EVIL) → the arbitrary-read primitive is back.
+    ///
+    /// The authoritative gate defeats this: EVIL is a symlink masquerade git's
+    /// own registry never lists, so `git -C <served> worktree list` does not
+    /// contain canonical(EVIL) → absent → rejected. Exercised for BOTH an
+    /// absolute and a relative symlink target.
+    ///
+    /// Fails on the back-pointer code (canonicalize follows the symlink, bind
+    /// matches, EVIL accepted) and passes once the gate is the git registry.
+    /// Unix-only (Windows symlink semantics differ and require privilege).
+    #[cfg(unix)]
+    #[test]
+    fn overlay_daemon_rejects_symlinked_git_to_real_worktree() {
+        use std::os::unix::fs::symlink;
+
+        // Helper: run one masquerade with a given symlink target, asserting
+        // rejection + unset request. `make_target` receives (evil_dir, real_wt)
+        // and returns the path to symlink `evil/.git` to (absolute or relative).
+        fn run_case(
+            label: &str,
+            make_target: impl Fn(&std::path::Path, &std::path::Path) -> PathBuf,
+        ) {
+            let (holder, ctx, parent, wt) = overlay_ctx();
+            let view = ctx.build_view(None);
+
+            // `wt` is a REAL `git worktree add` worktree of the served project
+            // (created by overlay_ctx), with a real `.git` FILE.
+            let real_dot_git = wt.join(".git");
+            assert!(
+                real_dot_git.is_file(),
+                "{label}: real worktree must have a `.git` file to symlink to"
+            );
+
+            // Attacker tree: `EVIL/.git` is a SYMLINK to the real worktree's
+            // `.git` (the masquerade). EVIL holds its own out-of-tree content.
+            let evil = holder.path().join(format!("evilB_{label}"));
+            std::fs::create_dir_all(&evil).expect("mkdir evil");
+            std::fs::write(evil.join("attacker_secret.rs"), "pub fn leak() {}\n")
+                .expect("write evil secret");
+            let target = make_target(&evil, &wt);
+            symlink(&target, evil.join(".git")).expect("create .git symlink");
+
+            let evil = dunce::canonicalize(&evil).unwrap_or(evil);
+
+            // Precondition: the masquerade satisfies the cheap pre-check — its
+            // `.git` symlink follows through so resolve_main_project_dir lands on
+            // the served root (proving the registry membership is what bites).
+            let resolved_main = cqs::worktree::resolve_main_project_dir(&evil);
+            let served_canonical = dunce::canonicalize(&parent).unwrap_or_else(|_| parent.clone());
+            assert_eq!(
+                resolved_main.as_deref(),
+                Some(served_canonical.as_path()),
+                "{label}: symlinked `.git` must resolve main to the served root"
+            );
+            // Precondition: canonicalize(EVIL/.git) follows the symlink to the
+            // REAL worktree's `.git` — exactly what defeated the back-pointer
+            // bind (it compared this against the resolved gitdir's back-pointer
+            // and matched).
+            let canon_evil_dot_git =
+                dunce::canonicalize(evil.join(".git")).expect("canon evil .git");
+            let canon_real_dot_git = dunce::canonicalize(&real_dot_git).expect("canon real .git");
+            assert_eq!(
+                canon_evil_dot_git, canon_real_dot_git,
+                "{label}: the symlink must resolve EVIL/.git to the real worktree's .git \
+                 (else this test does not reproduce Attack B)"
+            );
+
+            // The fix must reject: EVIL is absent from git's worktree registry.
+            let err = match view.set_validated_overlay_request(&evil) {
+                Ok(()) => panic!("{label}: symlinked-`.git` masquerade must be rejected"),
+                Err(e) => e,
+            };
+            assert!(
+                format!("{err:#}").contains("not a registered worktree of the served project"),
+                "{label}: expected a registration rejection; got: {err:#}"
+            );
+            assert!(
+                view.overlay_request.borrow().is_none(),
+                "{label}: a rejected masquerade must leave overlay_request unset"
+            );
+        }
+
+        // Absolute symlink target: EVIL/.git -> /abs/path/to/wt/.git
+        run_case("absolute", |_evil, wt| wt.join(".git"));
+
+        // Relative symlink target: EVIL/.git -> ../<wt_basename>/.git
+        // (evil and wt are siblings under the same tmp holder; the relative
+        // link still resolves to the real worktree's `.git`).
+        run_case("relative", |evil, wt| pathdiff_rel(evil, &wt.join(".git")));
+    }
+
+    /// Compute a relative path from a symlink's containing dir `link_dir` to
+    /// `target`, for the relative-symlink Attack B case. The link is created at
+    /// `<link_dir>/.git`, so a relative target is resolved relative to
+    /// `link_dir`. `link_dir` and the target's worktree are siblings under the
+    /// same tmp holder, so the form is `../<wt>/.git`; we build it from
+    /// components rather than pulling a crate.
+    #[cfg(unix)]
+    fn pathdiff_rel(link_dir: &std::path::Path, target: &std::path::Path) -> PathBuf {
+        // link_dir = <holder>/<evil>, target = <holder>/<wt>/.git.
+        // From <evil>/, the target is `../<wt>/.git`.
+        let holder = link_dir.parent().expect("link_dir parent");
+        let target_from_holder = target.strip_prefix(holder).expect("target under holder");
+        std::path::Path::new("..").join(target_from_holder)
+    }
+
+    /// SECURITY (Attack C) — the post-validation path-component swap (TOCTOU).
+    /// Validation canonicalizes + checks `git worktree list` membership at T1,
+    /// but `discover_delta` / `build_overlay` run `git -C <path>` / file reads
+    /// at T2. A same-uid client that passed validation with a REAL registered
+    /// worktree then swaps a path component before T2
+    /// (`mv realwt hidden; ln -s attacker realwt`): the T2 ops would re-resolve
+    /// the path string and follow the swap into the attacker tree, reading
+    /// `attacker_secret.rs` as first-party user-code.
+    ///
+    /// The dirfd pin defeats it: `set_validated_overlay_request` opens + holds an
+    /// fd on the validated inode at T1, and `resolve_overlay` runs all ops
+    /// against the pin's `/proc/self/fd/<n>` ops_path. After the swap, that path
+    /// still resolves to the PINNED inode (the real worktree), so
+    /// `discover_delta(ops_path, ...)` sees the real worktree's untracked file,
+    /// NEVER the attacker's. The test asserts both directions: through the pin →
+    /// real file; through the swapped path STRING → attacker file (the
+    /// vulnerability the pin closes — the fail-before evidence in one shot).
+    /// Unix-gated (`/proc/self/fd` is the pin's ops mechanism).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn overlay_daemon_pins_worktree_against_post_validation_swap() {
+        use cqs::worktree_overlay::discover_delta;
+
+        let (holder, ctx, parent, wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // Real worktree gains an untracked file (the legitimate delta).
+        std::fs::write(wt.join("real_new.rs"), "pub fn real() {}\n").expect("write real_new");
+
+        // Attacker tree: a CLONE of the parent (so it shares the parent's HEAD
+        // object — `git -C attacker diff <parent_oid>` resolves and succeeds,
+        // faithfully reproducing the leak rather than self-aborting on a bad
+        // object), holding an out-of-tree secret as an untracked file.
+        let attacker = holder.path().join("attacker_tree");
+        git(
+            &parent,
+            &[
+                "clone",
+                "-q",
+                parent.to_str().unwrap(),
+                attacker.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(attacker.join("attacker_secret.rs"), "pub fn leak() {}\n")
+            .expect("write attacker secret");
+
+        // T1 — validation pins the real worktree's inode.
+        view.set_validated_overlay_request(&wt)
+            .expect("real registered worktree must validate + pin");
+        let ops_path = {
+            let pin = view.overlay_pin.borrow();
+            pin.as_ref()
+                .expect("pin must be held after validation")
+                .ops_path()
+        };
+
+        // T1→T2 swap: hide the real worktree, point its name at the attacker.
+        let hidden = holder.path().join("hidden_realwt");
+        std::fs::rename(&wt, &hidden).expect("mv realwt hidden");
+        std::os::unix::fs::symlink(&attacker, &wt).expect("ln -s attacker realwt");
+
+        // Fail-before evidence: the swapped path STRING now resolves into the
+        // attacker tree — `discover_delta` against it sees the attacker's secret.
+        // (This is exactly the primitive the pin closes; asserting it here pins
+        // that the swap is real and effective on the unprotected path.)
+        let via_string = discover_delta(&wt, &parent).expect("discover via swapped path string");
+        let string_paths: Vec<String> = via_string
+            .parse_set
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            string_paths
+                .iter()
+                .any(|p| p.contains("attacker_secret.rs")),
+            "control: the swapped path string must leak the attacker file (else the swap \
+             is ineffective and the pin test proves nothing); got {string_paths:?}"
+        );
+
+        // Wiring proof: the pin's ops_path still resolves to the REAL
+        // worktree's inode (now reachable only at `hidden`) after the swap —
+        // NOT the attacker symlink target. `resolve_overlay` feeds exactly this
+        // ops_path into discover/build, so production ops follow the pin.
+        let resolved = std::fs::canonicalize(&ops_path).expect("ops_path resolves");
+        let canon_hidden = std::fs::canonicalize(&hidden).expect("hidden resolves");
+        assert_eq!(
+            resolved, canon_hidden,
+            "the pinned ops_path must resolve to the real (now-hidden) worktree inode, \
+             not the swapped attacker target"
+        );
+
+        // The fix: ops through the PINNED fd path see the REAL worktree's
+        // untracked file and NEVER the attacker's, despite the swap.
+        let via_pin = discover_delta(&ops_path, &parent).expect("discover via pinned ops_path");
+        let pin_paths: Vec<String> = via_pin
+            .parse_set
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            pin_paths.iter().any(|p| p.contains("real_new.rs")),
+            "the pinned ops_path must see the REAL worktree's untracked file; got {pin_paths:?}"
+        );
+        assert!(
+            !pin_paths.iter().any(|p| p.contains("attacker_secret.rs")),
+            "the pinned ops_path must NOT leak the attacker file after the swap; got {pin_paths:?}"
+        );
+    }
+
+    /// Control: a bare non-git directory is rejected (no `.git` at all → not a
+    /// worktree of anything). Pins that the registration check does not change
+    /// the existing non-worktree rejection.
+    #[test]
+    fn overlay_daemon_rejects_bare_non_git_dir() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+        let bare = holder.path().join("bare");
+        std::fs::create_dir_all(&bare).expect("mkdir bare");
+        let err = view
+            .set_validated_overlay_request(&bare)
+            .expect_err("a bare non-git dir must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a worktree of the served project"),
+            "bare dir must hit the not-a-worktree rejection"
+        );
+        assert!(view.overlay_request.borrow().is_none());
+    }
+
+    /// Control: a foreign PROJECT's genuine linked worktree is rejected. The
+    /// foreign worktree is registered under the foreign project's
+    /// `.git/worktrees/`, not the served project's, so step 2 already rejects
+    /// it (its main resolves elsewhere) — this pins that the registration check
+    /// did not accidentally widen acceptance to other projects' worktrees.
+    #[test]
+    fn overlay_daemon_rejects_foreign_project_worktree() {
+        let (holder, ctx, _parent, _wt) = overlay_ctx();
+        let view = ctx.build_view(None);
+
+        // A second, unrelated git project with its own linked worktree.
+        let foreign_root = holder.path().join("foreign_proj");
+        std::fs::create_dir_all(foreign_root.join("src")).expect("mkdir foreign/src");
+        std::fs::write(foreign_root.join("src/lib.rs"), "pub fn z() {}\n").expect("write");
+        git(&foreign_root, &["init", "-q", "-b", "main"]);
+        git(&foreign_root, &["config", "user.email", "f@e.com"]);
+        git(&foreign_root, &["config", "user.name", "F"]);
+        git(&foreign_root, &["add", "-A"]);
+        git(&foreign_root, &["commit", "-q", "-m", "init"]);
+        let foreign_wt = holder.path().join("foreign_wt");
+        git(
+            &foreign_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "flane",
+                foreign_wt.to_str().unwrap(),
+            ],
+        );
+        let foreign_wt = dunce::canonicalize(&foreign_wt).unwrap_or(foreign_wt);
+
+        let err = view
+            .set_validated_overlay_request(&foreign_wt)
+            .expect_err("a foreign project's worktree must be rejected");
+        assert!(
+            format!("{err:#}").contains("not a worktree of the served project"),
+            "foreign project's worktree must hit the not-a-worktree rejection"
+        );
+        assert!(view.overlay_request.borrow().is_none());
+    }
+
     /// `prepare_overlay_request` clears any leftover per-thread overlay meta at
     /// the top of dispatch — an error path on a prior query must not leak its
     /// `_meta.worktree_overlay` into the next request on a reused worker thread.
@@ -1425,6 +1882,7 @@ mod tests {
         let embedder_ref = view.embedder().expect("embedder");
         let rebuilt = super::super::super::view::get_overlay_via_lru(
             &view.overlays,
+            &wt,
             &wt,
             &view.root,
             &parser,

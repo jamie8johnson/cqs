@@ -286,13 +286,23 @@ pub(crate) fn get_all_refs_via_refs_lru(
 /// the latter to `skipped-delta-too-large`.
 ///
 /// `worktree_root` MUST already be validated (canonicalized + proven a
-/// worktree of `parent_root`) by the caller — this function reads + embeds its
-/// files, so an unvalidated path would be an arbitrary-directory read primitive
-/// (the security seam, plan §8).
+/// registered worktree of `parent_root`) by the caller — this function reads +
+/// embeds its files, so an unvalidated path would be an arbitrary-directory
+/// read primitive (the security seam, plan §8).
+///
+/// `worktree_root` is the stable canonical path, used ONLY as the LRU cache key
+/// (a stable identity across dispatches). `ops_root` is the path all git/file
+/// ops actually run against — the caller passes the pinned `/proc/self/fd/<n>`
+/// path so `discover_delta` / `build_overlay` follow the held fd to the
+/// validated inode, immune to a post-validation path-component swap (the TOCTOU
+/// defense; see `BatchView::overlay_pin`). The fingerprint is path-independent
+/// (it hashes file *content* + records, not the root path), so re-validation
+/// across dispatches still matches even though `ops_root`'s fd number varies.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_overlay_via_lru<M>(
     overlays: &Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>,
     worktree_root: &Path,
+    ops_root: &Path,
     parent_root: &Path,
     parser: &cqs::parser::Parser,
     embedder: &Embedder,
@@ -328,8 +338,9 @@ pub(crate) fn get_overlay_via_lru<M>(
         // Past the debounce: recompute the fingerprint against the live
         // worktree state. A match means the delta is unchanged — touch the
         // stamp and reuse the cached store (no rebuild). A mismatch (or a
-        // discovery error) falls through to a rebuild below.
-        match cqs::worktree_overlay::discover_delta(worktree_root, parent_root) {
+        // discovery error) falls through to a rebuild below. Run discover
+        // against the PINNED `ops_root`, not the canonical path string.
+        match cqs::worktree_overlay::discover_delta(ops_root, parent_root) {
             Ok(delta) => {
                 // Recompute the same fingerprint the build stamped — including
                 // the notes-revision token, so a parent notes mutation since the
@@ -341,7 +352,7 @@ pub(crate) fn get_overlay_via_lru<M>(
                     tracing::warn!(error = %e, "overlay re-validation: failed to read parent notes-revision — using zero token");
                     [0u8; 32]
                 });
-                let fp = cqs::worktree_overlay::fingerprint(worktree_root, &delta, &notes_revision);
+                let fp = cqs::worktree_overlay::fingerprint(ops_root, &delta, &notes_revision);
                 if fp == entry.overlay.fingerprint {
                     tracing::debug!(
                         "overlay fingerprint re-validated (unchanged) — reusing cached build"
@@ -367,7 +378,11 @@ pub(crate) fn get_overlay_via_lru<M>(
     }
 
     // Miss, or hit with a changed fingerprint: build outside the LRU lock.
+    // Ops run against the PINNED `ops_root`; the canonical `worktree_root` is
+    // recorded as the overlay's identity (a live `/proc/self/fd/<n>` path is
+    // meaningless once the fd closes).
     let built = crate::cli::worktree_overlay_build::build_overlay(
+        ops_root,
         worktree_root,
         parent_root,
         parser,
@@ -483,6 +498,17 @@ pub(crate) struct BatchView {
     /// is single-threaded per dispatch (handlers run outside the BatchContext
     /// lock on one connection thread), so interior mutability is sound.
     pub(super) overlay_request: RefCell<Option<PathBuf>>,
+    /// The held file-descriptor pin for the validated overlay worktree (the
+    /// TOCTOU defense). Set alongside `overlay_request` by
+    /// `set_validated_overlay_request` AFTER registry membership confirms, and
+    /// held for the whole dispatch so the later git/file ops in
+    /// `resolve_overlay` run against the pinned inode (`pin.ops_path()`) rather
+    /// than re-resolving the path string a same-uid client could have swapped.
+    /// Unix-only (the daemon is unix; pinning is implemented for Linux). When
+    /// `set_validated_overlay_request` cannot pin (non-Linux / open failure) it
+    /// leaves BOTH this and `overlay_request` unset (fail closed → parent index).
+    #[cfg(unix)]
+    pub(super) overlay_pin: RefCell<Option<cqs::worktree::PinnedWorktree>>,
     /// Cheap clones at checkout. A reload mid-flight returns stale data for
     /// the in-flight query.
     pub(super) config: cqs::config::Config,
@@ -1012,16 +1038,31 @@ impl BatchView {
     /// files the daemon then reads + embeds. Validation:
     ///
     /// 1. `dunce::canonicalize` the path (rejects non-existent paths and
-    ///    normalizes symlinks / `..` so the equality check below can't be
-    ///    fooled by a path that merely *spells* like a worktree).
-    /// 2. Require `resolve_main_project_dir(canonical) == self.root` — the path
-    ///    must be a real git worktree whose main project is exactly the project
-    ///    this daemon serves. A regular repo (`.git` is a dir) returns `None`
-    ///    and is rejected; a worktree of a *different* project resolves to a
-    ///    different main root and is rejected.
+    ///    normalizes symlinks / `..` so the membership check below compares the
+    ///    real path, not a name that merely *spells* like a worktree).
+    /// 2. Cheap pre-check (fast reject, NOT the security gate): require
+    ///    `resolve_main_project_dir(canonical) == self.root`. This trusts the
+    ///    worktree's own `.git` → `commondir` chain (which the socket client
+    ///    controls and can forge), so it filters obvious foreign / non-worktree
+    ///    inputs but is never relied on alone.
+    /// 3. **The gate — authoritative registry membership.** Earlier
+    ///    file-parsing checks (forward gitdir-under-`.git/worktrees/`, then the
+    ///    `<gitdir>/gitdir` back-pointer) were each defeated at the
+    ///    symlink-following path layer: a `.git` symlink to a real registered
+    ///    worktree's `.git` makes BOTH the forward resolution and the
+    ///    back-pointer follow through to the real worktree, so the masquerade
+    ///    passes while the daemon still enumerates the ATTACKER tree's files.
+    ///    Instead, query git's OWN registry — `git -C <self.root> worktree
+    ///    list --porcelain`, rooted at the daemon-controlled served root, NOT
+    ///    the attacker's tree — and require the canonical `overlay_root` to be a
+    ///    member. A symlink/forgery masquerade is invisible to that registry, so
+    ///    it is absent and rejected; this single check subsumes the forged-gitdir
+    ///    hijack, the symlinked-`.git` masquerade, and the unregistered-forgery
+    ///    case. A real `git worktree add` worktree is listed and accepted.
     ///
-    /// Mirrors `run_git_diff`'s input-validation posture: reject loudly with a
-    /// wire error rather than silently degrade. Returns an error the caller
+    /// Mirrors the overlay path's existing `git -C ...` posture (`discover_delta`
+    /// already shells git): a git-invocation failure rejects loudly with a wire
+    /// error rather than silently degrading. Returns an error the caller
     /// surfaces over the socket; on success the request is stamped and `Ok(())`.
     pub(in crate::cli) fn set_validated_overlay_request(&self, overlay_root: &Path) -> Result<()> {
         let _span = tracing::info_span!(
@@ -1040,12 +1081,14 @@ impl BatchView {
 
         let main = cqs::worktree::resolve_main_project_dir(&canonical);
         let root_canonical = dunce::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+
+        // Cheap pre-check (fast reject, NOT the security gate): the requested
+        // path must at least resolve its main project to the served root. This
+        // is forgeable (it trusts the worktree's own `.git` → `commondir`
+        // chain), so it cannot be trusted alone — it only filters obvious
+        // foreign/non-worktree inputs before the authoritative query below.
         match main {
-            Some(m) if m == root_canonical => {
-                tracing::debug!(worktree = %canonical.display(), "overlay-root validated");
-                *self.overlay_request.borrow_mut() = Some(canonical);
-                Ok(())
-            }
+            Some(m) if m == root_canonical => {}
             other => {
                 tracing::warn!(
                     requested = %canonical.display(),
@@ -1059,6 +1102,95 @@ impl BatchView {
                     root_canonical.display()
                 )
             }
+        }
+
+        // THE GATE — authoritative membership in git's own registry. We query
+        // `git -C <served_root> worktree list` rooted at the DAEMON-controlled
+        // served root, not the attacker's tree, and require the canonical
+        // overlay_root to be one of the worktrees git itself tracks. This
+        // subsumes every file-parsing bypass: a forged `.git` that points at a
+        // real registered gitdir (Attack A), or a `.git` symlink to a real
+        // worktree's `.git` (Attack B), is a masquerade git's registry never
+        // lists, so it is absent → rejected. The unregistered-forgery case is
+        // likewise absent. A real `git worktree add` worktree IS listed → kept.
+        let registered =
+            cqs::worktree_overlay::registered_worktrees(&root_canonical).map_err(|e| {
+                tracing::warn!(
+                    requested = %canonical.display(),
+                    served_root = %root_canonical.display(),
+                    error = %e,
+                    "could not enumerate the served project's worktrees — rejecting overlay-root"
+                );
+                anyhow::anyhow!(
+                    "overlay-root {} could not be validated against the served project {}: {e}",
+                    canonical.display(),
+                    root_canonical.display()
+                )
+            })?;
+
+        if !registered.contains(&canonical) {
+            tracing::warn!(
+                requested = %canonical.display(),
+                served_root = %root_canonical.display(),
+                registered_count = registered.len(),
+                "overlay-root is not a registered worktree of the served project \
+                 (absent from git worktree list — forged/symlinked/unregistered) — rejecting"
+            );
+            anyhow::bail!(
+                "overlay-root {} is not a registered worktree of the served project {}",
+                canonical.display(),
+                root_canonical.display()
+            )
+        }
+
+        // Membership confirmed. CLOSE THE TOCTOU: pin the validated worktree's
+        // INODE by opening it now and holding the fd. The git/file ops in
+        // `resolve_overlay` (`discover_delta` / `build_overlay`) run later in
+        // this dispatch and would otherwise re-resolve the `canonical` path
+        // string — which a same-uid client can swap between this validation and
+        // those ops (`mv realwt hidden; ln -s attacker realwt`). With the fd
+        // held, those ops run against `pin.ops_path()` (`/proc/self/fd/<n>`),
+        // following the magic symlink to the pinned inode regardless of any
+        // later path-component rename/symlink swap. The pin is held in the view
+        // for the whole dispatch.
+        //
+        // Fail closed: if pinning is unavailable (non-Linux) or the open fails,
+        // do NOT stamp the request — the overlay is skipped and the parent
+        // index served, rather than running unpinned, swap-vulnerable ops.
+        #[cfg(unix)]
+        {
+            let Some(pin) = cqs::worktree::PinnedWorktree::pin(&canonical) else {
+                tracing::warn!(
+                    requested = %canonical.display(),
+                    "overlay-root validated but could not be pinned (fd open failed / unsupported \
+                     platform) — skipping overlay (serving parent index) for safety"
+                );
+                anyhow::bail!(
+                    "overlay-root {} could not be pinned for safe access",
+                    canonical.display()
+                )
+            };
+            tracing::debug!(
+                worktree = %canonical.display(),
+                "overlay-root validated + pinned (registered worktree per git worktree list)"
+            );
+            *self.overlay_request.borrow_mut() = Some(canonical);
+            *self.overlay_pin.borrow_mut() = Some(pin);
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            // Non-unix has no daemon (UnixListener) and no pinning. Validated
+            // but unpinnable → fail closed.
+            tracing::warn!(
+                requested = %canonical.display(),
+                "overlay-root validated but pinning is unsupported on this platform — \
+                 skipping overlay for safety"
+            );
+            anyhow::bail!(
+                "overlay-root {} could not be pinned for safe access on this platform",
+                canonical.display()
+            )
         }
     }
 
@@ -1091,6 +1223,38 @@ impl BatchView {
         )
         .entered();
 
+        // All git/file ops run against the PINNED inode, not the path string,
+        // to defeat a post-validation path-component swap (the TOCTOU). The pin
+        // was opened + held at validation (`set_validated_overlay_request`); a
+        // stamped `overlay_request` without a live pin would be a wiring bug, so
+        // skip the overlay (parent index) rather than fall back to the unpinned
+        // path. `worktree_root` (the canonical path) stays the stable LRU key;
+        // `ops_root` (the `/proc/self/fd/<n>` path) drives discover/build.
+        #[cfg(unix)]
+        let ops_root = {
+            let pin = self.overlay_pin.borrow();
+            match pin.as_ref() {
+                #[cfg(target_os = "linux")]
+                Some(p) => p.ops_path(),
+                #[cfg(not(target_os = "linux"))]
+                Some(_) => {
+                    tracing::warn!(
+                        "overlay pin present but no ops_path on this platform — skipping"
+                    );
+                    return None;
+                }
+                None => {
+                    tracing::warn!(
+                        worktree = %worktree_root.display(),
+                        "overlay requested without a live worktree pin — skipping overlay for safety"
+                    );
+                    return None;
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let ops_root = worktree_root.clone();
+
         let embedder = match self.embedder() {
             Ok(e) => e,
             Err(e) => {
@@ -1114,6 +1278,7 @@ impl BatchView {
         match get_overlay_via_lru(
             &self.overlays,
             &worktree_root,
+            &ops_root,
             &self.root,
             &parser,
             embedder,

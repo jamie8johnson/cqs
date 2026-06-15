@@ -1509,6 +1509,8 @@ impl BatchContext {
             refs: Arc::clone(&self.refs),
             overlays: Arc::clone(&self.overlays),
             overlay_request: RefCell::new(None),
+            #[cfg(unix)]
+            overlay_pin: RefCell::new(None),
             config,
             audit_state,
             model_config: self.model_config.clone(),

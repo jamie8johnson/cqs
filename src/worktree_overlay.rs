@@ -593,6 +593,53 @@ fn git_capture(dir: &Path, args: &[&str], context: &str) -> Result<Vec<u8>, Over
     Ok(output.stdout)
 }
 
+/// Authoritative set of worktree paths registered with the served project,
+/// from `git -C <served_root> worktree list --porcelain`.
+///
+/// **Security primitive (the overlay-root registration gate).** Earlier
+/// attempts to validate an `--overlay-root` by parsing the *worktree's own*
+/// `.git` link / back-pointer files were defeated at the symlink-following
+/// path layer (a `.git` symlink to a real registered worktree makes both the
+/// forward gitdir resolution and the `<gitdir>/gitdir` back-pointer follow
+/// through to the real worktree, so the masquerade passes while the daemon
+/// still enumerates the ATTACKER tree's files). The fix queries git's OWN
+/// registry, rooted at `served_root` — a path the daemon controls, not the
+/// attacker's tree. A symlink masquerade is invisible to that registry, so
+/// membership is the unforgeable gate; the caller requires
+/// `canonicalize(overlay_root)` to be a member.
+///
+/// Each `worktree <path>` line is canonicalized (so the caller compares real
+/// paths); entries that fail to canonicalize (a registered worktree whose
+/// directory was removed out from under git) are dropped. Returns
+/// [`OverlayError::Git`] when git can't be spawned or exits non-zero — the
+/// caller rejects loudly (same wire-error posture as the rest of the overlay
+/// path, which already shells `git -C` via [`discover_delta`]).
+pub fn registered_worktrees(served_root: &Path) -> Result<Vec<PathBuf>, OverlayError> {
+    let _span = tracing::info_span!("overlay_registered_worktrees").entered();
+    let raw = git_capture(
+        served_root,
+        &["worktree", "list", "--porcelain"],
+        "worktree list",
+    )?;
+    let text = String::from_utf8_lossy(&raw);
+    // Porcelain format: stanzas separated by blank lines, each beginning with
+    // `worktree <abs-path>`. We only need the path lines; everything else
+    // (HEAD, branch, bare, detached, locked, prunable) is irrelevant to the
+    // membership check.
+    let worktrees = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        // Canonicalize so the membership check compares real paths (the caller
+        // canonicalizes the requested overlay_root the same way). A registered
+        // worktree whose directory has been deleted canonicalizes to an error
+        // and is dropped — it can't be a live overlay root anyway.
+        .filter_map(|p| dunce::canonicalize(p).ok())
+        .collect();
+    Ok(worktrees)
+}
+
 /// `git -C <parent_root> rev-parse HEAD` → validated OID string.
 ///
 /// `parent_root` is the parent project root (the daemon's served root / the
@@ -1006,6 +1053,78 @@ mod tests {
             out.push(0);
         }
         out
+    }
+
+    /// Run a git subcommand in `dir`, asserting success (test helper).
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()));
+        assert!(
+            out.status.success(),
+            "git {args:?} in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `registered_worktrees` returns the served project AND its linked
+    /// worktrees (canonicalized) — the authoritative membership set the overlay
+    /// gate checks. A bare sibling dir is NOT a member.
+    #[test]
+    fn registered_worktrees_lists_main_and_linked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main = dir.path().join("main");
+        std::fs::create_dir_all(main.join("src")).unwrap();
+        std::fs::write(main.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        run_git(&main, &["init", "-q", "-b", "main"]);
+        run_git(&main, &["config", "user.email", "t@e.com"]);
+        run_git(&main, &["config", "user.name", "T"]);
+        run_git(&main, &["add", "-A"]);
+        run_git(&main, &["commit", "-q", "-m", "init"]);
+
+        let wt = dir.path().join("wt");
+        run_git(
+            &main,
+            &["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()],
+        );
+
+        let listed = registered_worktrees(&main).expect("worktree list");
+        let canon_main = dunce::canonicalize(&main).unwrap();
+        let canon_wt = dunce::canonicalize(&wt).unwrap();
+        assert!(
+            listed.contains(&canon_main),
+            "served main must be listed: {listed:?}"
+        );
+        assert!(
+            listed.contains(&canon_wt),
+            "linked worktree must be listed: {listed:?}"
+        );
+
+        // A bare sibling that is NOT a worktree is absent from the registry.
+        let bare = dir.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        let canon_bare = dunce::canonicalize(&bare).unwrap();
+        assert!(
+            !listed.contains(&canon_bare),
+            "a non-worktree dir must NOT be a registry member"
+        );
+    }
+
+    /// `registered_worktrees` errors loudly (not silently empty) when git can't
+    /// run against the path — a non-git directory has no `git worktree list`,
+    /// so the gate rejects rather than accepting on an empty set.
+    #[test]
+    fn registered_worktrees_errors_on_non_git_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let res = registered_worktrees(dir.path());
+        assert!(
+            matches!(res, Err(OverlayError::Git { .. })),
+            "non-git dir must produce a Git error, got {res:?}"
+        );
     }
 
     #[test]
