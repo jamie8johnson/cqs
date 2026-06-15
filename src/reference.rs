@@ -452,6 +452,100 @@ pub fn merge_results(
     tagged
 }
 
+/// Build a rerank candidate pool from primary + reference legs, selecting
+/// survivors by a **frame-neutral** key (each candidate's rank within its own
+/// leg) rather than by the raw `score`.
+///
+/// This is the pool feeder for the merged-set cross-encoder rerank only — the
+/// reranker rescores every survivor onto one comparable scale afterward, so the
+/// order this function emits is irrelevant; only *which* candidates survive the
+/// `pool_limit` truncation matters. The plain (no-rerank) merge stays on
+/// [`merge_results`]' raw-`score` sort, untouched.
+///
+/// Why frame-neutral selection: the primary leg arrives in the project's score
+/// frame (sigmoid `[0, 1]` once the project pool was reranked) while the
+/// reference legs carry weighted cosine. A raw-`score` truncation across those
+/// incomparable frames can drop a low-cosine / high-relevance reference or
+/// overlay hit — exactly the candidate the reranker exists to surface — before
+/// the cross-encoder ever scores it, and the bite worsens as `limit` grows past
+/// the pool cap. Selecting by within-leg rank keeps the top of *each* leg in the
+/// pool regardless of frame, so the reranker sees the full candidate set.
+///
+/// Legs are interleaved by rank (every leg's rank-0, then every leg's rank-1, …)
+/// so a leg with few hits never crowds out the others. Dedup by content hash
+/// happens during the interleave, matching [`merge_results`]' content-hash
+/// dedup, so identical content across stores occupies a single pool slot: the
+/// first candidate reached in the round-robin survives, which — because the
+/// interleave visits lower ranks first and each leg is sorted within itself — is
+/// the higher-ranked copy.
+pub fn merge_results_for_rerank(
+    primary: Vec<UnifiedResult>,
+    refs: Vec<(String, Vec<SearchResult>)>,
+    pool_limit: usize,
+) -> Vec<TaggedResult> {
+    // Build per-leg candidate queues, preserving each leg's own (already-sorted)
+    // order — that order *is* the frame-neutral rank. `VecDeque` lets the
+    // round-robin pop from the front without shifting the tail.
+    let mut legs: Vec<std::collections::VecDeque<TaggedResult>> =
+        Vec::with_capacity(1 + refs.len());
+
+    legs.push(
+        primary
+            .into_iter()
+            .map(|result| TaggedResult {
+                result,
+                source: None,
+            })
+            .collect(),
+    );
+
+    for (name, results) in refs {
+        legs.push(
+            results
+                .into_iter()
+                .map(|r| TaggedResult {
+                    result: UnifiedResult::Code(r),
+                    source: Some(name.clone()),
+                })
+                .collect(),
+        );
+    }
+
+    // Round-robin interleave by within-leg rank: take rank-0 from every leg,
+    // then rank-1 from every leg, and so on. Dedup by content hash as we go so
+    // an identical chunk from a lower-ranked leg can't displace a distinct
+    // candidate later. Truncation by `pool_limit` then keeps the top of each leg
+    // rather than letting one frame's scores dominate the cut.
+    let mut pool: Vec<TaggedResult> = Vec::new();
+    let mut seen_hashes = std::collections::HashSet::new();
+
+    'outer: while legs.iter().any(|leg| !leg.is_empty()) {
+        for leg in legs.iter_mut() {
+            let Some(candidate) = leg.pop_front() else {
+                continue;
+            };
+            let fresh = match &candidate.result {
+                UnifiedResult::Code(r) => {
+                    if r.chunk.content_hash.is_empty() {
+                        let hash = blake3::hash(r.chunk.content.as_bytes()).to_string();
+                        seen_hashes.insert(hash)
+                    } else {
+                        seen_hashes.insert(r.chunk.content_hash.clone())
+                    }
+                }
+            };
+            if fresh {
+                pool.push(candidate);
+                if pool.len() >= pool_limit {
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    pool
+}
+
 /// Default storage directory for reference indexes
 pub fn refs_dir() -> Option<std::path::PathBuf> {
     let dir = dirs::data_local_dir();
@@ -706,6 +800,81 @@ mod tests {
         // Kept the highest-scoring one (primary, 0.9)
         assert!(merged[0].source.is_none());
         assert!((merged[0].result.score() - 0.9).abs() < 0.01);
+    }
+
+    // A high-relevance reference hit whose raw cosine is low (the frame-mismatch
+    // case the merged-set rerank exists to recover) must survive into the rerank
+    // pool at `--limit >= 10`, where the pool cap (20) is at or below the project
+    // leg's over-fetch, so the cross-encoder can rescore it. The raw-
+    // score merge (`merge_results`) sorts the project leg's high cosines to the
+    // top and truncates the low-cosine target out before the reranker can see
+    // it; the frame-neutral pool (`merge_results_for_rerank`) keeps the top of
+    // each leg, so the target survives. Calibrated RED against `merge_results`,
+    // GREEN against `merge_results_for_rerank`.
+    #[test]
+    fn test_rerank_pool_keeps_low_cosine_ref_at_large_limit() {
+        // limit 10 -> rerank_pool_size = min(40, 20) = 20.
+        let pool_limit = 20;
+
+        // Project leg: 25 high-cosine hits (over-fetched well past the pool cap).
+        // All score above the reference target's raw cosine.
+        let primary: Vec<UnifiedResult> = (0..25)
+            .map(|i| {
+                UnifiedResult::Code(make_code_result(
+                    &format!("project_{i:02}"),
+                    0.95 - 0.001 * i as f32,
+                ))
+            })
+            .collect();
+
+        // Reference leg: one low-raw-cosine but high-relevance target (rank-0 in
+        // its own frame).
+        let refs = vec![(
+            "refstore".to_string(),
+            vec![make_code_result("ref_target", 0.10)],
+        )];
+
+        // Old raw-score path: the 20 highest cosines are all project hits, so the
+        // 0.10 reference target is truncated out of the pool.
+        let old_pool = merge_results(primary.clone(), refs.clone(), pool_limit);
+        assert_eq!(old_pool.len(), pool_limit);
+        assert!(
+            !old_pool.iter().any(|t| t.result.id() == "id-ref_target"),
+            "raw-score truncation drops the low-cosine reference target before rerank"
+        );
+
+        // New frame-neutral path: the reference leg's rank-0 candidate is
+        // interleaved into the pool and survives the truncation.
+        let new_pool = merge_results_for_rerank(primary, refs, pool_limit);
+        assert_eq!(new_pool.len(), pool_limit);
+        let target = new_pool
+            .iter()
+            .find(|t| t.result.id() == "id-ref_target")
+            .expect("frame-neutral pool must keep the low-cosine reference target");
+        assert_eq!(target.source.as_deref(), Some("refstore"));
+    }
+
+    // `merge_results_for_rerank` must still dedup identical content across legs:
+    // a chunk present in both the project and a reference occupies one pool slot,
+    // keeping the project (first-seen, higher within-leg rank) copy.
+    #[test]
+    fn test_rerank_pool_dedups_across_legs() {
+        let primary = vec![UnifiedResult::Code(make_code_result("shared", 0.9))];
+        let refs = vec![(
+            "refstore".to_string(),
+            vec![make_code_result("shared", 0.8)], // identical content
+        )];
+
+        let pool = merge_results_for_rerank(primary, refs, 20);
+        assert_eq!(
+            pool.len(),
+            1,
+            "identical content occupies a single pool slot"
+        );
+        assert!(
+            pool[0].source.is_none(),
+            "the project (first-seen) copy survives dedup"
+        );
     }
 
     #[test]

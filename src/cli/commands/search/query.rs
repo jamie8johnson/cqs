@@ -988,16 +988,18 @@ pub(crate) fn apply_overlay(
 
     // Frame-correct merge. When a reranker is active the project leg
     // arrives in sigmoid frame `[0, 1]` (rescored by `retrieve_project`) while
-    // the overlay leg is raw cosine — incomparable in `merge_results`' raw
-    // `score` sort. The cross-encoder scores `(query, passage)` pairs, so it
-    // ranks both legs in one frame: merge the full pool (`merge_results` to the
-    // pre-rerank pool size, not yet truncated to `limit`), rerank the merged
-    // set, then truncate to `limit`. With no reranker the merge truncates to
-    // `limit` directly — the default cosine-family path is unchanged (byte-
-    // identical), and that recall-sensitive path keeps today's score sort.
+    // the overlay leg is raw cosine — incomparable in a raw `score` sort. The
+    // cross-encoder scores `(query, passage)` pairs, so it ranks both legs in
+    // one frame: build the candidate pool by frame-neutral within-leg rank (so a
+    // low-cosine / high-relevance overlay hit can't be truncated out of the pool
+    // by the mismatched score frame before the cross-encoder sees it), rerank
+    // the merged set, then truncate to `limit`. With no reranker the merge
+    // truncates to `limit` directly — the default cosine-family path is
+    // unchanged (byte-identical), and that recall-sensitive path keeps today's
+    // score sort.
     let merged = if let Some(reranker) = prepared.reranker.as_deref() {
         let pool_limit = crate::cli::limits::rerank_pool_size(args.limit);
-        let pool = reference::merge_results(masked, leg, pool_limit);
+        let pool = reference::merge_results_for_rerank(masked, leg, pool_limit);
         rerank_tagged(reranker, args.query.as_str(), pool, args.limit)?
     } else {
         reference::merge_results(masked, leg, args.limit)
@@ -1124,11 +1126,13 @@ pub(crate) fn merge_references(
 
     if let Some(reranker) = prepared.reranker.as_deref() {
         // Frame-correct: rerank the merged (project + reference) pool so the
-        // cross-encoder ranks both legs on one scale. Merge to the pre-rerank
-        // pool size (not yet truncated to `limit`) so the reranker sees the full
-        // candidate set, then truncate to `limit` in the rerank step.
+        // cross-encoder ranks both legs on one scale. Build the candidate pool by
+        // frame-neutral within-leg rank (not by the mismatched raw score) so a
+        // low-cosine / high-relevance reference hit can't be truncated out of the
+        // pool before the cross-encoder sees it, then truncate to `limit` in the
+        // rerank step.
         let pool_limit = crate::cli::limits::rerank_pool_size(args.limit);
-        let pool = reference::merge_results(project_results, ref_results, pool_limit);
+        let pool = reference::merge_results_for_rerank(project_results, ref_results, pool_limit);
         rerank_tagged(reranker, args.query.as_str(), pool, args.limit)
     } else {
         // No reranker: today's score-sort path, unchanged. The default
@@ -1969,6 +1973,44 @@ mod tests {
             (dir, ctx, emb)
         }
 
+        /// Variant of [`ctx_with_seeded_query`] whose reference chunk is stored at
+        /// a *low-cosine* embedding (`ref_cos` against the query), so the
+        /// reference fan-out retrieves `ref_target` with a low raw score. Used to
+        /// reproduce the large-`--limit` rerank-pool truncation: a low-cosine but
+        /// high-relevance reference hit must survive the pool the cross-encoder
+        /// rescores.
+        fn ctx_with_low_cosine_reference(
+            query: &str,
+            ref_cos: f32,
+        ) -> (TempDir, CountingCtx, Embedding) {
+            let dir = TempDir::new().expect("tempdir");
+            let mut qv = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            qv[0] = 1.0;
+            let emb = Embedding::new(qv);
+
+            // A unit vector with `cos(query, ref) == ref_cos`: first component
+            // `ref_cos`, second component `sqrt(1 - ref_cos^2)`.
+            let mut rv = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            rv[0] = ref_cos;
+            rv[1] = (1.0 - ref_cos * ref_cos).max(0.0).sqrt();
+            let ref_emb = Embedding::new(rv);
+
+            let embedder =
+                Embedder::new(cqs::embedder::ModelConfig::default_model()).expect("build embedder");
+            embedder.seed_query_cache(query, emb.clone());
+
+            let reference = Arc::new(seeded_reference(dir.path(), &ref_emb));
+            let ctx = CountingCtx {
+                store: open_store(dir.path()),
+                cqs_dir: dir.path().join(".cqs"),
+                root: dir.path().to_path_buf(),
+                embedder,
+                reference,
+                project_index_touched: Cell::new(false),
+            };
+            (dir, ctx, emb)
+        }
+
         /// PIN: a `--ref`-scoped `prepare_query(ProjectSurface::Skip)` resolves
         /// the embedding + filter but never touches the project vector index or
         /// the project SPLADE index — the prepared struct's project fields are
@@ -2206,6 +2248,64 @@ mod tests {
                 top.chunk.name, "ref_target",
                 "no reranker ⇒ raw-score sort is unchanged: the cosine ~1.0 \
                  reference hit outranks the 0.55 project hit"
+            );
+        }
+
+        // merge_references at `--limit >= 10`: the rerank pool cap (20) is at or
+        // below the project leg, so a low-cosine but high-relevance reference hit
+        // gets truncated out of the pool by the mismatched raw-score sort *before*
+        // the cross-encoder runs. The frame-neutral pool keeps each leg's top, so
+        // `ref_target` (rank-0 in its own leg) survives and the reranker — which
+        // judges it most relevant — promotes it to the reranked output.
+        //
+        // Fail-before (raw-score `merge_results` pool): the 20 high-sigmoid
+        // project hits fill the pool, `ref_target` (cosine ~0.2) is dropped, and
+        // it never appears in the output. Pass-after (`merge_results_for_rerank`):
+        // `ref_target` is in the pool and the stub reranker ranks it first.
+        #[test]
+        fn merge_references_large_limit_keeps_low_cosine_ref_in_rerank_pool() {
+            // Reference chunk at cosine ~0.2 to the query — low raw score, so the
+            // raw-score pool truncation would drop it behind the project leg.
+            let (_dir, ctx, emb) = ctx_with_low_cosine_reference("large limit rerank pool", 0.2);
+            let args = QueryArgs {
+                query: "large limit rerank pool".to_string(),
+                limit: 10, // rerank_pool_size(10) = min(40, 20) = 20
+                threshold: 0.0,
+                fts_first: false,
+                ..QueryArgs::default()
+            };
+
+            // 25 project hits in sigmoid frame, all well above the reference's
+            // ~0.2 cosine — enough to overflow the 20-candidate pool by raw score.
+            let project_results: Vec<UnifiedResult> = (0..25)
+                .map(|i| project_hit(&format!("project_{i:02}"), 0.95 - 0.001 * i as f32))
+                .collect();
+
+            // The cross-encoder judges the reference hit most relevant; the
+            // project distractors get the sentinel-low default (-1.0).
+            let reranker = stub_reranker(&[("ref_target", 0.99)]);
+            let prepared = prepared_for_refs(emb, reranker);
+            let references = ctx.references().expect("references");
+
+            let tagged = merge_references(&args, &prepared, project_results, &references)
+                .expect("merge_references");
+            let names: Vec<&str> = tagged
+                .iter()
+                .map(|t| {
+                    let UnifiedResult::Code(sr) = &t.result;
+                    sr.chunk.name.as_str()
+                })
+                .collect();
+            assert!(
+                names.contains(&"ref_target"),
+                "the low-cosine reference hit must survive the rerank pool at \
+                 --limit 10 and reach the reranked output; got {names:?}"
+            );
+            assert_eq!(
+                names.first().copied(),
+                Some("ref_target"),
+                "the cross-encoder's top hit must lead the reranked output; \
+                 got {names:?}"
             );
         }
     }
@@ -2500,6 +2600,66 @@ mod tests {
                 };
                 store
                     .upsert_chunks_batch(&[(chunk, one_hot(*slot))], Some(0))
+                    .expect("seed overlay chunk");
+            }
+
+            let masked_origins: HashSet<PathBuf> = masked.iter().map(PathBuf::from).collect();
+            WorktreeOverlay {
+                store,
+                masked_origins,
+                fingerprint: [0u8; 32],
+                worktree_root: PathBuf::from("/wt"),
+                stats: OverlayStats {
+                    files_in_delta: masked.len(),
+                    chunks_indexed: seeds.len(),
+                    build_ms: 0,
+                },
+            }
+        }
+
+        /// A unit embedding whose cosine with `one_hot(0)` is exactly `cos`
+        /// (first component `cos`, second `sqrt(1 - cos^2)`). Lets an overlay
+        /// chunk be seeded at a *low* cosine to the query so the fan-out
+        /// retrieves it with a low raw score.
+        fn low_cosine_emb(cos: f32) -> Embedding {
+            let mut v = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            v[0] = cos;
+            v[1] = (1.0 - cos * cos).max(0.0).sqrt();
+            Embedding::new(v)
+        }
+
+        /// Like [`overlay_with`] but seeds each chunk with an explicit embedding
+        /// rather than `one_hot(slot)`, so a chunk can sit at an arbitrary cosine
+        /// to the query.
+        fn overlay_with_emb(seeds: &[(&str, &str, Embedding)], masked: &[&str]) -> WorktreeOverlay {
+            let mut store = Store::open_memory().expect("open_memory");
+            store
+                .init(&ModelInfo::default())
+                .expect("init overlay store");
+            store.set_dim(cqs::EMBEDDING_DIM);
+
+            for (file, name, emb) in seeds {
+                let chunk = Chunk {
+                    id: format!("{file}:{name}"),
+                    file: PathBuf::from(file),
+                    language: Language::Rust,
+                    chunk_type: ChunkType::Function,
+                    name: name.to_string(),
+                    signature: format!("fn {name}()"),
+                    content: format!("fn {name}() {{}}"),
+                    doc: None,
+                    line_start: 1,
+                    line_end: 2,
+                    byte_start: 0,
+                    content_hash: blake3::hash(name.as_bytes()).to_hex().to_string(),
+                    canonical_hash: String::new(),
+                    parent_id: None,
+                    window_idx: None,
+                    parent_type_name: None,
+                    parser_version: 0,
+                };
+                store
+                    .upsert_chunks_batch(&[(chunk, emb.clone())], Some(0))
                     .expect("seed overlay chunk");
             }
 
@@ -3095,6 +3255,64 @@ mod tests {
                 Some("shiny_distractor"),
                 "no reranker ⇒ raw-score sort is unchanged: the cosine ~1.0 \
                  overlay hit outranks the 0.55 project hit; got {got:?}"
+            );
+        }
+
+        // ── apply_overlay at `--limit >= 10`: the rerank pool cap (20) is at or
+        //    below the project leg, so a low-cosine but high-rerank-relevance
+        //    overlay hit gets truncated out of the pool by the mismatched
+        //    raw-score sort *before* the cross-encoder runs. The frame-neutral
+        //    pool keeps each leg's top, so `overlay_target` (rank-0 in its own
+        //    leg) survives and the reranker — which judges it most relevant —
+        //    promotes it to the reranked output. Mirrors the reference-leg
+        //    `merge_references_large_limit_keeps_low_cosine_ref_in_rerank_pool`
+        //    so BOTH legs of the dual-surface bug are pinned at the large-limit
+        //    shape.
+        //
+        //    Fail-before (raw-score `merge_results` pool): the 20 high-sigmoid
+        //    project hits fill the pool, `overlay_target` (cosine ~0.2) is
+        //    dropped, and it never appears in the output. Pass-after
+        //    (`merge_results_for_rerank`): it is in the pool and the stub
+        //    reranker ranks it first.
+        #[test]
+        fn overlay_large_limit_keeps_low_cosine_overlay_hit_in_rerank_pool() {
+            cqs::worktree_overlay::clear_overlay_meta();
+            // Overlay chunk at cosine ~0.2 to the query — low raw score, so the
+            // raw-score pool truncation would drop it behind the project leg.
+            let overlay = overlay_with_emb(
+                &[("src/edited.rs", "overlay_target", low_cosine_emb(0.2))],
+                &["src/edited.rs"],
+            );
+            // 25 project hits in sigmoid frame, all well above the overlay's
+            // ~0.2 cosine — enough to overflow the 20-candidate pool by raw score.
+            // Each on a distinct unmasked origin so the mask keeps them all.
+            let project: Vec<UnifiedResult> = (0..25)
+                .map(|i| {
+                    UnifiedResult::Code(project_result(
+                        &format!("src/p{i:02}.rs"),
+                        &format!("project_{i:02}"),
+                        0.95 - 0.001 * i as f32,
+                    ))
+                })
+                .collect();
+            // The cross-encoder judges the overlay hit most relevant; the project
+            // distractors get the sentinel-low default (-1.0).
+            let reranker = stub_reranker(&[("overlay_target", 0.99)]);
+            // Query at slot 0 so `low_cosine_emb(0.2)` retrieves `overlay_target`.
+            let prepared = prepared_with_reranker(one_hot(0), reranker);
+
+            let out = apply_overlay(&args_limit(10), &prepared, project, &overlay).unwrap();
+            let got = names(&out);
+            assert!(
+                got.contains(&"overlay_target".to_string()),
+                "the low-cosine overlay hit must survive the rerank pool at \
+                 --limit 10 and reach the reranked output; got {got:?}"
+            );
+            assert_eq!(
+                got.first().map(String::as_str),
+                Some("overlay_target"),
+                "the cross-encoder's top hit must lead the reranked output; \
+                 got {got:?}"
             );
         }
     }
