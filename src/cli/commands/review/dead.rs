@@ -131,12 +131,21 @@ fn known_gap_reason(entry: &DeadFunction) -> Option<&'static str> {
         .map(|rule| rule.reason)
 }
 
-/// Whether a dead entry is test-only: origin under a `tests/` path segment, or
-/// the chunk content sits inside a `#[cfg(test)]` module. The content scan is a
-/// substring check — false-positive-friendly in the safe direction (a comment
-/// mentioning `#[cfg(test)]` keeps the function classified test-only, which only
-/// moves it OUT of the actionable `dead` list).
+/// Whether a dead entry is test-only: the chunk is tagged `ChunkType::Test`, its
+/// origin is under a `tests/` path segment, or the chunk content sits inside a
+/// `#[cfg(test)]` module. The content scan is a substring check —
+/// false-positive-friendly in the safe direction (a comment mentioning
+/// `#[cfg(test)]` keeps the function classified test-only, which only moves it
+/// OUT of the actionable `dead` list).
 fn is_test_only(entry: &DeadFunction) -> bool {
+    // Chunk-type tag: the parser already classifies a `#[test]` function as
+    // `ChunkType::Test`. A bare `#[test]` fn's byte range carries only the
+    // `#[test]` attribute — the enclosing `#[cfg(test)]` lives on the `mod
+    // tests`, outside this chunk — so the content scan below cannot see it. The
+    // tag is the authoritative signal; rely on it first.
+    if entry.chunk.chunk_type == cqs::parser::ChunkType::Test {
+        return true;
+    }
     let origin = entry.chunk.file.to_string_lossy();
     // Origin-prefix: a `tests/` path segment (also `/tests/`, `\tests\`).
     if origin.starts_with("tests/") || origin.contains("/tests/") || origin.contains("\\tests\\") {
@@ -162,13 +171,13 @@ fn classify_verdict(
     overlay_candidate: &std::collections::HashMap<String, cqs::store::LowConfidenceLiveInfo>,
 ) -> (DeadVerdict, String) {
     if is_test_only(entry) {
-        // Softened to claim only what the substring scan actually knows: a
-        // `tests/` path segment or the literal `#[cfg(test)]` appearing in the
-        // chunk content (which the comment scan cannot distinguish from a real
-        // attribute — documented limitation).
+        // Claim only what the test-only check actually knows: a `ChunkType::Test`
+        // tag (a `#[test]` function), a `tests/` path segment, or the literal
+        // `#[cfg(test)]` appearing in the chunk content (which the substring scan
+        // cannot distinguish from a real attribute — documented limitation).
         return (
             DeadVerdict::TestOnly,
-            "origin under tests/ path or content contains '#[cfg(test)]'".to_string(),
+            "test chunk, origin under tests/ path, or content contains '#[cfg(test)]'".to_string(),
         );
     }
     // Pick the liveness-evidence map for this entry. A Direction-B overlay
@@ -811,6 +820,56 @@ mod tests {
         );
         let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
+    }
+
+    /// A `#[test]` function classifies `test-only` even when its content lacks
+    /// `#[cfg(test)]` and its origin is NOT under a `tests/` path. The parser
+    /// tags it `ChunkType::Test`; a bare `#[test]` fn's byte range carries only
+    /// `#[test]` (the enclosing `#[cfg(test)]` is on the `mod tests`, outside the
+    /// chunk), so the content substring scan alone misses it — the chunk-type tag
+    /// is what catches it. RED before the fix: with neither the `tests/` prefix
+    /// nor `#[cfg(test)]` in content, the old `is_test_only` returned false and
+    /// the entry mis-classified `dead`. Calibration: the SAME chunk built as
+    /// `ChunkType::Function` (via `dead_fn`) classifies `dead`, so the tag is what
+    /// flips the verdict.
+    #[test]
+    fn verdict_test_only_by_chunk_type_tag() {
+        let mut f = dead_fn(
+            "it_works",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            // Only `#[test]` is inside the chunk — no `#[cfg(test)]`, no tests/
+            // path. The content scan and origin-prefix check both miss it.
+            "#[test]\nfn it_works() { assert!(true); }",
+        );
+        f.chunk.chunk_type = cqs::parser::ChunkType::Test;
+        let (v, reason) = classify_parent(&f, &no_low_conf());
+        assert_eq!(
+            v,
+            DeadVerdict::TestOnly,
+            "a #[test] fn (ChunkType::Test) must classify test-only even without \
+             #[cfg(test)] in content or a tests/ origin"
+        );
+        assert!(
+            reason.contains("test chunk"),
+            "reason should name the test-chunk tag: {reason}"
+        );
+
+        // Calibration: the identical chunk tagged Function (the `dead_fn`
+        // default) has no other test-only signal, so it is `dead`. The tag is
+        // exactly what flips the verdict.
+        let f_fn = dead_fn(
+            "it_works",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "#[test]\nfn it_works() { assert!(true); }",
+        );
+        let (v_fn, _) = classify_parent(&f_fn, &no_low_conf());
+        assert_eq!(
+            v_fn,
+            DeadVerdict::Dead,
+            "without the ChunkType::Test tag, the same chunk would be dead"
+        );
     }
 
     #[test]
