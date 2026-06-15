@@ -2,7 +2,13 @@
 
 ## Unreleased (on main since v1.45.0)
 
-_(empty — v1.45.0 just cut; idle-loop residuals in **Open** below.)_
+**Idle loop + 3 audit rounds — 10 fixes merged, PARSER_VERSION 10→13.**
+- **Idle loop (5 issues):** #1942 (candidate_edges watch write gap), #1943 (overlay candidate recompute → low-confidence-live), #1945 (test-fn `ChunkType::Test`) + #1946 (framework-trait `KNOWN_GAP`) closing #1573, #1947 (L5X file-relative byte_start, PV→11). `cqs dead --verdict dead` → 1 genuine entry (was 9).
+- **Audit refill (R1–R3, 7 auditors):** found + fixed #1951 (HNSW DotProduct panicked on f32 unit-norm vectors → `DistDotClamped`), #1954 (dead-classifier verdicts steerable by adversarial indexed content → `ChunkType` gates + SECURITY.md note), #1955 (the L5X/L5K custom ST extractor was **dead on the production index path** → wired via its own `LanguageDef`, PV→12), #1966 (cross-project callers/impact dropped trust-ordering at the cap/first-discovery boundary → a remote `doc_reference` evicted/mislabeled a real `call`), #1967 (Dart `call_query` **never wired since #816** → call graph silently empty, PV→13). Plus #1950 (full v10→v32 migration-chain frozen-artifact guard) and #1971 (embedder proptests + cosine clamps). Clean bills: daemon cache/epoch concurrency (loom-verified), migration read/migrate paths.
+- **Security #1953 (#1956):** daemon overlay-root validation hardened against forged/symlinked worktrees + a TOCTOU swap — git-registry membership (`git worktree list`) + a dirfd inode-pin (`openat2 RESOLVE_NO_SYMLINKS`, git via `/proc/self/fd/N`). 4 attempts, each bypass caught by review. Residual same-uid check-then-recreate race + non-CLOEXEC fd tracked low-severity in #1969.
+- 6 dependabot dependency bumps.
+
+**Deferred:** #1952 (overlay/reference merge sorts incomparable score-frames — recall-adjacent, needs an eval-gated fix; bounded since `--rerank` is opt-in/net-negative). #1969 (overlay same-uid TOCTOU residual; airtight = kernel peer-cwd redesign). #1573-Tier-3a (dyn-dispatch dead false-positives, deferred-by-design).
 
 ## Current: v1.45.0 (cut 2026-06-14, crates.io published)
 
