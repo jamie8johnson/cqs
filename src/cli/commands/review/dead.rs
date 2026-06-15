@@ -106,6 +106,63 @@ fn is_python_dunder(_origin: &str, lang: &str, name: &str) -> bool {
     lang == "python" && name.starts_with("__") && name.ends_with("__")
 }
 
+/// Whether `name` is a Rust method that implements an EXTERNAL framework trait
+/// invoked by dynamic dispatch — the framework calls it through a trait object /
+/// generic bound, never by a syntactic call the static graph can see. The
+/// implemented-trait name is not in chunk metadata (only the parent Type), so
+/// this keys on a tightly-scoped EXPLICIT method-name allowlist, the direct Rust
+/// analog of [`is_python_dunder`] / [`is_served_js_asset`]. It is NOT a broad
+/// "any trait method" heuristic — only the listed names, and only for Rust, are
+/// excused; a local `fmt` or `do_thing`, or a non-Rust method sharing a name,
+/// stays in the actionable `dead` residue.
+///
+/// Allowlist members:
+/// - the serde `Visitor` family (`Deserialize` drives these via the
+///   `Deserializer` callbacks — the deserializer picks which `visit_*` to call
+///   at runtime, so no caller is ever syntactically present), plus `expecting`,
+/// - `hnsw_filter`, the `hnsw_rs::FilterT` trait method the ANN search invokes
+///   through a `&dyn FilterT` predicate.
+fn is_external_trait_method(_origin: &str, lang: &str, name: &str) -> bool {
+    /// Framework-dispatched Rust trait methods. Held as an explicit set (not a
+    /// name-shape rule) so the excuse never widens past methods known to be
+    /// invoked by a runtime/framework rather than a syntactic call. The serde
+    /// names are the full `Visitor` trait surface (serde 1.0).
+    const EXTERNAL_TRAIT_METHODS: &[&str] = &[
+        // serde `Visitor` family.
+        "expecting",
+        "visit_bool",
+        "visit_i8",
+        "visit_i16",
+        "visit_i32",
+        "visit_i64",
+        "visit_i128",
+        "visit_u8",
+        "visit_u16",
+        "visit_u32",
+        "visit_u64",
+        "visit_u128",
+        "visit_f32",
+        "visit_f64",
+        "visit_char",
+        "visit_str",
+        "visit_borrowed_str",
+        "visit_string",
+        "visit_bytes",
+        "visit_borrowed_bytes",
+        "visit_byte_buf",
+        "visit_none",
+        "visit_some",
+        "visit_unit",
+        "visit_newtype_struct",
+        "visit_seq",
+        "visit_map",
+        "visit_enum",
+        // hnsw_rs `FilterT`.
+        "hnsw_filter",
+    ];
+    lang == "rust" && EXTERNAL_TRAIT_METHODS.contains(&name)
+}
+
 /// The known-gap table. First matching row wins.
 const KNOWN_GAP_RULES: &[KnownGapRule] = &[
     KnownGapRule {
@@ -115,6 +172,10 @@ const KNOWN_GAP_RULES: &[KnownGapRule] = &[
     KnownGapRule {
         matches: is_python_dunder,
         reason: "python dunder — invoked by the runtime protocol, not a syntactic call",
+    },
+    KnownGapRule {
+        matches: is_external_trait_method,
+        reason: "external trait method — invoked by the framework via dynamic dispatch, not a syntactic call",
     },
 ];
 
@@ -1145,6 +1206,104 @@ mod tests {
         );
         let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::KnownGap);
+    }
+
+    /// A serde `Visitor` trait method (`visit_seq`) implemented for an external
+    /// trait is invoked by the deserializer via dynamic dispatch — the static
+    /// call graph sees no syntactic caller, so it must classify `known-gap`, not
+    /// `dead`. Mirrors the real false-positive at `src/hnsw/persist.rs`.
+    #[test]
+    fn verdict_known_gap_visit_seq() {
+        let f = dead_fn(
+            "visit_seq",
+            "src/hnsw/persist.rs",
+            cqs::parser::Language::Rust,
+            "fn visit_seq<A>(self, mut seq: A) -> Result<usize, A::Error> { Ok(0) }",
+        );
+        let (v, reason) = classify_parent(&f, &no_low_conf());
+        assert_eq!(
+            v,
+            DeadVerdict::KnownGap,
+            "a serde Visitor method is framework-dispatched, not syntactically called"
+        );
+        assert!(
+            reason.contains("external trait method"),
+            "reason should name the external-trait-method gap: {reason}"
+        );
+    }
+
+    /// The `hnsw_rs::FilterT::hnsw_filter` trait method is invoked by the ANN
+    /// search through a `&dyn FilterT` predicate — no syntactic caller — so it
+    /// classifies `known-gap`. Mirrors the real false-positive at
+    /// `src/hnsw/search.rs`.
+    #[test]
+    fn verdict_known_gap_hnsw_filter() {
+        let f = dead_fn(
+            "hnsw_filter",
+            "src/hnsw/search.rs",
+            cqs::parser::Language::Rust,
+            "fn hnsw_filter(&self, id: &DataId) -> bool { true }",
+        );
+        let (v, reason) = classify_parent(&f, &no_low_conf());
+        assert_eq!(
+            v,
+            DeadVerdict::KnownGap,
+            "the FilterT::hnsw_filter method is framework-dispatched, not syntactically called"
+        );
+        assert!(
+            reason.contains("external trait method"),
+            "reason should name the external-trait-method gap: {reason}"
+        );
+    }
+
+    /// Over-excusing guard: the external-trait-method gap is a Rust-scoped
+    /// EXPLICIT allowlist, NOT a name-class heuristic. A non-allowlisted Rust
+    /// method name (a local `fmt` or an arbitrary `do_thing`) stays `dead`, and
+    /// an allowlisted NAME in a non-Rust language (a Python fn named `visit_seq`)
+    /// also stays `dead` — the rule keys on BOTH `lang == rust` AND membership.
+    #[test]
+    fn verdict_external_trait_method_does_not_over_excuse() {
+        // A non-allowlisted Rust method name → still dead.
+        let local_fmt = dead_fn(
+            "fmt",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn fmt(&self) {}",
+        );
+        let (v_fmt, _) = classify_parent(&local_fmt, &no_low_conf());
+        assert_eq!(
+            v_fmt,
+            DeadVerdict::Dead,
+            "a non-allowlisted Rust method name must stay dead (not a name-class heuristic)"
+        );
+
+        let do_thing = dead_fn(
+            "do_thing",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn do_thing() {}",
+        );
+        let (v_do, _) = classify_parent(&do_thing, &no_low_conf());
+        assert_eq!(
+            v_do,
+            DeadVerdict::Dead,
+            "an arbitrary Rust function name must stay dead"
+        );
+
+        // An allowlisted NAME in a non-Rust language → still dead (the rule is
+        // Rust-scoped; a Python fn named visit_seq is not framework-dispatched).
+        let py_visit = dead_fn(
+            "visit_seq",
+            "src/visitor.py",
+            cqs::parser::Language::Python,
+            "def visit_seq(self): ...",
+        );
+        let (v_py, _) = classify_parent(&py_visit, &no_low_conf());
+        assert_eq!(
+            v_py,
+            DeadVerdict::Dead,
+            "an allowlisted name in a non-Rust language must stay dead (Rust-scoped allowlist)"
+        );
     }
 
     #[test]
