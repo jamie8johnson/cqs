@@ -75,23 +75,28 @@ impl DeadVerdict {
 /// call-graph gap where "no callers" is a known false-positive, not genuine
 /// death.
 struct KnownGapRule {
-    /// Returns true when this entry sits in the rule's known gap.
-    matches: fn(origin: &str, lang: &str, name: &str) -> bool,
+    /// Returns true when this entry sits in the rule's known gap. Takes the whole
+    /// [`DeadFunction`] so a rule can consult the chunk's structural metadata
+    /// (`chunk_type`, `parent_type_name`), not only its name/origin/language —
+    /// the external-trait-method gap needs `chunk_type` to tell a real trait-impl
+    /// method from a free function that merely shares a framework method name.
+    matches: fn(entry: &DeadFunction) -> bool,
     /// Reason surfaced as `verdict_reason` on a `known-gap` entry.
     reason: &'static str,
 }
 
-/// Whether `origin` is a served front-end asset — an `.js`/`.mjs` file under a
-/// served-assets directory whose handlers are wired from HTML (`onclick="..."`,
-/// `addEventListener`) rather than a syntactic call. SCOPED to the served path:
-/// the gap is "HTML-wired served assets", not "any .js anywhere". A build
-/// script like `scripts/build.mjs` with zero callers is genuinely dead and must
-/// NOT be excused. The prefix table is extensible so other corpora can add
-/// their served-assets roots.
-fn is_served_js_asset(origin: &str, _lang: &str, _name: &str) -> bool {
+/// Whether `entry`'s origin is a served front-end asset — an `.js`/`.mjs` file
+/// under a served-assets directory whose handlers are wired from HTML
+/// (`onclick="..."`, `addEventListener`) rather than a syntactic call. SCOPED to
+/// the served path: the gap is "HTML-wired served assets", not "any .js
+/// anywhere". A build script like `scripts/build.mjs` with zero callers is
+/// genuinely dead and must NOT be excused. The prefix table is extensible so
+/// other corpora can add their served-assets roots.
+fn is_served_js_asset(entry: &DeadFunction) -> bool {
     /// Served-assets directory prefixes. Origins are normalized to forward
     /// slashes before classification, so only `/`-form prefixes are listed.
     const SERVED_ASSET_PREFIXES: &[&str] = &["src/serve/assets/"];
+    let origin = entry.chunk.file.to_string_lossy();
     let is_js = origin.ends_with(".js") || origin.ends_with(".mjs");
     is_js
         && SERVED_ASSET_PREFIXES
@@ -99,22 +104,31 @@ fn is_served_js_asset(origin: &str, _lang: &str, _name: &str) -> bool {
             .any(|prefix| origin.starts_with(prefix))
 }
 
-/// Whether `name` is a Python runtime-invoked dunder protocol method
+/// Whether `entry` is a Python runtime-invoked dunder protocol method
 /// (`__aenter__`, `__exit__`, `__iter__`, …): invoked by the runtime
 /// (context-manager / iterator / async protocols), never by a syntactic call.
-fn is_python_dunder(_origin: &str, lang: &str, name: &str) -> bool {
+fn is_python_dunder(entry: &DeadFunction) -> bool {
+    let lang = entry.chunk.language.to_string();
+    let name = entry.chunk.name.as_str();
     lang == "python" && name.starts_with("__") && name.ends_with("__")
 }
 
-/// Whether `name` is a Rust method that implements an EXTERNAL framework trait
+/// Whether `entry` is a Rust METHOD that implements an EXTERNAL framework trait
 /// invoked by dynamic dispatch — the framework calls it through a trait object /
 /// generic bound, never by a syntactic call the static graph can see. The
 /// implemented-trait name is not in chunk metadata (only the parent Type), so
 /// this keys on a tightly-scoped EXPLICIT method-name allowlist, the direct Rust
 /// analog of [`is_python_dunder`] / [`is_served_js_asset`]. It is NOT a broad
-/// "any trait method" heuristic — only the listed names, and only for Rust, are
-/// excused; a local `fmt` or `do_thing`, or a non-Rust method sharing a name,
-/// stays in the actionable `dead` residue.
+/// "any trait method" heuristic — only the listed names, only for Rust, AND only
+/// for chunks the parser tagged `ChunkType::Method` are excused; a local `fmt`
+/// or `do_thing`, a non-Rust method sharing a name, or a FREE FUNCTION that
+/// merely shares a framework method name (a `ChunkType::Function` named
+/// `visit_seq` that lives in no `impl Trait for Type`) stays in the actionable
+/// `dead` residue. The `ChunkType::Method` gate is the robust structural signal
+/// that the name is a real trait-impl method rather than an adversarial
+/// free-function namesake. (`parent_type_name` is NOT consulted: the dead-code
+/// Phase-2 hydration path does not populate it, so it is always absent in the
+/// real sweep — `chunk_type` is the only structural signal available there.)
 ///
 /// Allowlist members:
 /// - the serde `Visitor` family (`Deserialize` drives these via the
@@ -122,7 +136,7 @@ fn is_python_dunder(_origin: &str, lang: &str, name: &str) -> bool {
 ///   at runtime, so no caller is ever syntactically present), plus `expecting`,
 /// - `hnsw_filter`, the `hnsw_rs::FilterT` trait method the ANN search invokes
 ///   through a `&dyn FilterT` predicate.
-fn is_external_trait_method(_origin: &str, lang: &str, name: &str) -> bool {
+fn is_external_trait_method(entry: &DeadFunction) -> bool {
     /// Framework-dispatched Rust trait methods. Held as an explicit set (not a
     /// name-shape rule) so the excuse never widens past methods known to be
     /// invoked by a runtime/framework rather than a syntactic call. The serde
@@ -160,7 +174,14 @@ fn is_external_trait_method(_origin: &str, lang: &str, name: &str) -> bool {
         // hnsw_rs `FilterT`.
         "hnsw_filter",
     ];
-    lang == "rust" && EXTERNAL_TRAIT_METHODS.contains(&name)
+    let lang = entry.chunk.language.to_string();
+    let name = entry.chunk.name.as_str();
+    // Robust structural gate: only a real trait-impl method (`ChunkType::Method`)
+    // is excused. A free function (`ChunkType::Function`) sharing the name is not
+    // framework-dispatched and stays `dead`.
+    entry.chunk.chunk_type == cqs::parser::ChunkType::Method
+        && lang == "rust"
+        && EXTERNAL_TRAIT_METHODS.contains(&name)
 }
 
 /// The known-gap table. First matching row wins.
@@ -182,22 +203,35 @@ const KNOWN_GAP_RULES: &[KnownGapRule] = &[
 /// Classify a dead entry against the static known-gap table. Returns the reason
 /// of the first matching rule, or `None` if no documented gap applies.
 fn known_gap_reason(entry: &DeadFunction) -> Option<&'static str> {
-    let origin = entry.chunk.file.to_string_lossy();
-    let lang = entry.chunk.language.to_string();
-    let name = entry.chunk.name.as_str();
-
     KNOWN_GAP_RULES
         .iter()
-        .find(|rule| (rule.matches)(&origin, &lang, name))
+        .find(|rule| (rule.matches)(entry))
         .map(|rule| rule.reason)
 }
 
+/// Whether `content` carries a real `#[cfg(test)]` ATTRIBUTE (not the same text
+/// appearing inside a comment or string literal). Position-anchored, not a raw
+/// substring: a Rust attribute sits at the start of a line modulo leading
+/// whitespace, so a line qualifies only when its first non-whitespace run is
+/// `#[cfg(test)]`. A comment-spoofed `// #[cfg(test)]` has `//` as the
+/// first non-whitespace and is rejected, so an attacker cannot demote a
+/// genuinely-dead function to `test-only` by planting the attribute text in a
+/// comment. (Still a heuristic — a `cfg(test)`-gated attribute split across
+/// lines, or one inside a multiline string, is out of scope; the structural
+/// `ChunkType::Test` tag is the authoritative test signal and is checked first.)
+fn contains_cfg_test_attr(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim_start().starts_with("#[cfg(test)]"))
+}
+
 /// Whether a dead entry is test-only: the chunk is tagged `ChunkType::Test`, its
-/// origin is under a `tests/` path segment, or the chunk content sits inside a
-/// `#[cfg(test)]` module. The content scan is a substring check —
-/// false-positive-friendly in the safe direction (a comment mentioning
-/// `#[cfg(test)]` keeps the function classified test-only, which only moves it
-/// OUT of the actionable `dead` list).
+/// origin is under a `tests/` path segment, or the chunk content carries a real
+/// `#[cfg(test)]` attribute at a line start. The content check is
+/// position-anchored ([`contains_cfg_test_attr`]) so a comment mentioning
+/// `#[cfg(test)]` does NOT keep the function classified test-only — an adversary
+/// cannot hide a genuinely-dead function from the actionable `dead` list by
+/// planting the attribute text in a comment.
 fn is_test_only(entry: &DeadFunction) -> bool {
     // Chunk-type tag: the parser already classifies a `#[test]` function as
     // `ChunkType::Test`. A bare `#[test]` fn's byte range carries only the
@@ -215,8 +249,9 @@ fn is_test_only(entry: &DeadFunction) -> bool {
     // Enclosing #[cfg(test)] module: the chunk content carries the attribute
     // when the chunk is the module, or the function lives directly under it.
     // The store can't answer the module-chain question without a parse, so this
-    // degrades to a content substring scan (documented limitation).
-    entry.chunk.content.contains("#[cfg(test)]")
+    // degrades to a position-anchored attribute scan (a comment-spoofed
+    // `// #[cfg(test)]` is rejected; documented limitation otherwise).
+    contains_cfg_test_attr(&entry.chunk.content)
 }
 
 /// Classify a dead entry into its verdict. Ordered, first-match-wins:
@@ -233,12 +268,13 @@ fn classify_verdict(
 ) -> (DeadVerdict, String) {
     if is_test_only(entry) {
         // Claim only what the test-only check actually knows: a `ChunkType::Test`
-        // tag (a `#[test]` function), a `tests/` path segment, or the literal
-        // `#[cfg(test)]` appearing in the chunk content (which the substring scan
-        // cannot distinguish from a real attribute — documented limitation).
+        // tag (a `#[test]` function), a `tests/` path segment, or a real
+        // `#[cfg(test)]` attribute at a line start in the chunk content (a
+        // comment-spoofed mention is rejected — position-anchored, not substring).
         return (
             DeadVerdict::TestOnly,
-            "test chunk, origin under tests/ path, or content contains '#[cfg(test)]'".to_string(),
+            "test chunk, origin under tests/ path, or a line-start '#[cfg(test)]' attribute"
+                .to_string(),
         );
     }
     // Pick the liveness-evidence map for this entry. A Direction-B overlay
@@ -859,6 +895,21 @@ mod tests {
         }
     }
 
+    /// Like [`dead_fn`] but tags the chunk `ChunkType::Method` — a real
+    /// trait-impl method. Used by the external-trait-method gap tests, whose
+    /// known-gap excuse is now structurally gated on `ChunkType::Method` (a free
+    /// function sharing a framework method name stays `dead`).
+    fn dead_method(
+        name: &str,
+        origin: &str,
+        language: cqs::parser::Language,
+        content: &str,
+    ) -> DeadFunction {
+        let mut f = dead_fn(name, origin, language, content);
+        f.chunk.chunk_type = cqs::parser::ChunkType::Method;
+        f
+    }
+
     #[test]
     fn verdict_test_only_by_origin_prefix() {
         let f = dead_fn(
@@ -881,6 +932,49 @@ mod tests {
         );
         let (v, _) = classify_parent(&f, &no_low_conf());
         assert_eq!(v, DeadVerdict::TestOnly);
+    }
+
+    /// Adversarial-content regression: an attacker can plant the literal
+    /// `#[cfg(test)]` in a COMMENT inside a genuinely-dead function to try to
+    /// demote it to `test-only` (hiding it from `--verdict dead`). The content
+    /// scan is
+    /// position-anchored ([`contains_cfg_test_attr`]) — only a real attribute at a
+    /// line start counts — so a `// #[cfg(test)]` comment is rejected and the
+    /// function classifies `dead`. Calibration: the SAME text as a real
+    /// line-start attribute (`verdict_test_only_by_cfg_test_content`) classifies
+    /// `test-only`, so line position is exactly what flips the verdict. Also
+    /// guards an indented attribute (a `#[cfg(test)]` inside a `mod` block) — a
+    /// real attribute modulo leading whitespace stays `test-only`.
+    #[test]
+    fn verdict_cfg_test_in_comment_only_stays_dead() {
+        let commented = dead_fn(
+            "looks_dead",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn looks_dead() {\n    // #[cfg(test)] this is only a comment\n}",
+        );
+        let (v, _) = classify_parent(&commented, &no_low_conf());
+        assert_eq!(
+            v,
+            DeadVerdict::Dead,
+            "a #[cfg(test)] mention only in a comment must NOT demote a dead fn to test-only"
+        );
+
+        // A real attribute, indented (e.g. inside a `mod` block), still counts —
+        // position-anchoring trims leading whitespace, only the comment marker is
+        // what disqualifies the spoof.
+        let real_indented = dead_fn(
+            "real_helper",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "mod outer {\n    #[cfg(test)]\n    mod t { fn real_helper() {} }\n}",
+        );
+        let (v_real, _) = classify_parent(&real_indented, &no_low_conf());
+        assert_eq!(
+            v_real,
+            DeadVerdict::TestOnly,
+            "a real indented #[cfg(test)] attribute must still classify test-only"
+        );
     }
 
     /// A `#[test]` function classifies `test-only` even when its content lacks
@@ -1208,13 +1302,16 @@ mod tests {
         assert_eq!(v, DeadVerdict::KnownGap);
     }
 
-    /// A serde `Visitor` trait method (`visit_seq`) implemented for an external
+    /// A serde `Visitor` trait METHOD (`visit_seq`) implemented for an external
     /// trait is invoked by the deserializer via dynamic dispatch — the static
     /// call graph sees no syntactic caller, so it must classify `known-gap`, not
-    /// `dead`. Mirrors the real false-positive at `src/hnsw/persist.rs`.
+    /// `dead`. Mirrors the real false-positive at `src/hnsw/persist.rs`. The
+    /// excuse is gated on `ChunkType::Method`, so the chunk is built as a method
+    /// (`dead_method`) — its free-function namesake stays `dead`, see
+    /// `verdict_external_trait_method_free_fn_namesake_stays_dead`.
     #[test]
     fn verdict_known_gap_visit_seq() {
-        let f = dead_fn(
+        let f = dead_method(
             "visit_seq",
             "src/hnsw/persist.rs",
             cqs::parser::Language::Rust,
@@ -1235,10 +1332,11 @@ mod tests {
     /// The `hnsw_rs::FilterT::hnsw_filter` trait method is invoked by the ANN
     /// search through a `&dyn FilterT` predicate — no syntactic caller — so it
     /// classifies `known-gap`. Mirrors the real false-positive at
-    /// `src/hnsw/search.rs`.
+    /// `src/hnsw/search.rs`. Built as a `ChunkType::Method` (the excuse is
+    /// method-gated).
     #[test]
     fn verdict_known_gap_hnsw_filter() {
-        let f = dead_fn(
+        let f = dead_method(
             "hnsw_filter",
             "src/hnsw/search.rs",
             cqs::parser::Language::Rust,
@@ -1256,11 +1354,56 @@ mod tests {
         );
     }
 
+    /// Adversarial-content regression: an attacker can name a genuinely-dead
+    /// FREE FUNCTION after a framework method (`visit_seq`) to steal the
+    /// `known-gap` excuse and
+    /// hide it from `--verdict dead`. The gap is now structurally gated on
+    /// `ChunkType::Method`, so a `ChunkType::Function` named `visit_seq` — living
+    /// in no `impl Trait for Type` — stays `dead`, while a real trait-impl method
+    /// of the same name still classifies `known-gap`. Both halves in one test so
+    /// the `chunk_type` gate is shown to be exactly what flips the verdict.
+    #[test]
+    fn verdict_external_trait_method_free_fn_namesake_stays_dead() {
+        // Free function named after a serde Visitor method, NOT in any impl.
+        let free_fn = dead_fn(
+            "visit_seq",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn visit_seq() { /* genuinely dead free function */ }",
+        );
+        let (v_free, _) = classify_parent(&free_fn, &no_low_conf());
+        assert_eq!(
+            v_free,
+            DeadVerdict::Dead,
+            "a ChunkType::Function named visit_seq is not a trait-impl method — must stay dead"
+        );
+
+        // The identical name as a real trait-impl method still earns known-gap —
+        // the ChunkType::Method tag is exactly what flips the verdict.
+        let method = dead_method(
+            "visit_seq",
+            "src/lib.rs",
+            cqs::parser::Language::Rust,
+            "fn visit_seq<A>(self, mut seq: A) -> Result<usize, A::Error> { Ok(0) }",
+        );
+        let (v_method, reason) = classify_parent(&method, &no_low_conf());
+        assert_eq!(
+            v_method,
+            DeadVerdict::KnownGap,
+            "a real trait-impl method (ChunkType::Method) named visit_seq stays known-gap"
+        );
+        assert!(
+            reason.contains("external trait method"),
+            "reason should name the external-trait-method gap: {reason}"
+        );
+    }
+
     /// Over-excusing guard: the external-trait-method gap is a Rust-scoped
     /// EXPLICIT allowlist, NOT a name-class heuristic. A non-allowlisted Rust
     /// method name (a local `fmt` or an arbitrary `do_thing`) stays `dead`, and
     /// an allowlisted NAME in a non-Rust language (a Python fn named `visit_seq`)
-    /// also stays `dead` — the rule keys on BOTH `lang == rust` AND membership.
+    /// also stays `dead` — the rule keys on `lang == rust`, `ChunkType::Method`,
+    /// AND membership.
     #[test]
     fn verdict_external_trait_method_does_not_over_excuse() {
         // A non-allowlisted Rust method name → still dead.

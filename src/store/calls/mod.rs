@@ -240,14 +240,33 @@ fn build_trait_method_names() -> Vec<&'static str> {
 }
 
 /// Build the shared SQL WHERE filter clause for test chunks.
-/// Combines name patterns, content markers, and path patterns into a single
-/// OR-joined clause string. Computed once at startup via LazyLock callers.
+/// Combines a robust parser tag (`chunk_type = 'test'`), name patterns,
+/// non-attribute content markers, and path patterns into a single OR-joined
+/// clause string. Computed once at startup via LazyLock callers.
 ///
 /// Name patterns flow from `language::REGISTRY.all_test_name_patterns()` —
 /// the same source as `is_test_chunk` in lib.rs, so adding a Kotlin/Swift
 /// convention is one line in the language module.
+///
+/// ROBUST test signal, not a content substring. The leading clause is the
+/// parser's `ChunkType::Test` tag — the authoritative structural signal a
+/// chunk is a test (a Rust `#[test]`/`#[tokio::test]` fn, a Scala/Java `@Test`
+/// method, etc.). Attribute-shaped Rust markers (`#[test]`, `#[cfg(test)]`) are
+/// DELIBERATELY excluded from the content-marker clause below: a raw
+/// `content LIKE '%#[cfg(test)]%'` matches the attribute appearing in a COMMENT
+/// or string literal, so a genuinely-dead non-test function with `// #[cfg(test)]`
+/// in its body would be pulled into the test-chunk set and its name dropped from
+/// the ENTIRE dead sweep (every verdict). `ChunkType::Test` covers the `#[test]`
+/// functions structurally; the enclosing `#[cfg(test)] mod` is a non-callable
+/// Module chunk already excluded by the caller's `chunk_type IN (callable)`
+/// guard, and a helper inside it does not carry the module attribute in its own
+/// chunk body — so dropping these two markers loses no real coverage while
+/// closing the comment-spoof. Non-attribute markers (`TEST(`, `@test`, …) for
+/// languages without a Test tag are retained.
 fn build_test_chunk_filter() -> String {
     let mut clauses: Vec<String> = Vec::new();
+    // Robust parser tag first: every parser-classified test chunk, no content scan.
+    clauses.push("chunk_type = 'test'".to_string());
     for pat in crate::language::REGISTRY.all_test_name_patterns() {
         // Patterns are SQL-LIKE with `\_` escaping a literal underscore;
         // emit ESCAPE only for those that actually use the escape so SQL
@@ -259,6 +278,13 @@ fn build_test_chunk_filter() -> String {
         }
     }
     for marker in build_test_content_markers() {
+        // Skip attribute-shaped Rust markers (`#[…]`): they match in comments and
+        // string literals (the comment-spoof against the dead sweep) and are
+        // redundant with the `chunk_type = 'test'` tag above. Genuine content
+        // markers stay.
+        if marker.starts_with("#[") {
+            continue;
+        }
         clauses.push(format!("content LIKE '%{marker}%'"));
     }
     for pat in build_test_path_patterns() {
@@ -300,3 +326,58 @@ static TEST_CHUNK_NAMES_SQL: LazyLock<String> = LazyLock::new(|| {
                )"
     )
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Adversarial-content regression: the test-chunk filter that drives the
+    /// dead-sweep exclusion set must NOT match the `#[cfg(test)]` / `#[test]`
+    /// attribute as a
+    /// raw content substring. A `content LIKE '%#[cfg(test)]%'` clause matches the
+    /// attribute appearing in a COMMENT, so a genuinely-dead non-test function
+    /// with `// #[cfg(test)]` in its body would be pulled into the test-chunk set
+    /// and its name dropped from the ENTIRE dead sweep. The robust signal is the
+    /// `chunk_type = 'test'` parser tag instead.
+    #[test]
+    fn test_chunk_filter_uses_robust_tag_not_attribute_substring() {
+        let filter = build_test_chunk_filter();
+
+        // The robust parser-tag clause is present.
+        assert!(
+            filter.contains("chunk_type = 'test'"),
+            "filter must gate on the ChunkType::Test tag: {filter}"
+        );
+
+        // No comment-spoofable Rust attribute substring clause.
+        assert!(
+            !filter.contains("'%#[cfg(test)]%'"),
+            "filter must NOT match #[cfg(test)] as a content substring (comment spoof): {filter}"
+        );
+        assert!(
+            !filter.contains("'%#[test]%'"),
+            "filter must NOT match #[test] as a content substring: {filter}"
+        );
+        // Generalised: no content clause carries a `#[` attribute marker.
+        assert!(
+            !filter.contains("'%#["),
+            "no attribute-shaped content marker should survive: {filter}"
+        );
+    }
+
+    /// Non-attribute content markers (`@Test`, `def test_`, …) for languages
+    /// without a structural Test tag are RETAINED — dropping the Rust attribute
+    /// markers must not regress test detection for those languages.
+    #[test]
+    fn test_chunk_filter_retains_non_attribute_markers() {
+        let filter = build_test_chunk_filter();
+        assert!(
+            filter.contains("content LIKE '%@Test%'"),
+            "the @Test content marker must survive: {filter}"
+        );
+        assert!(
+            filter.contains("content LIKE '%def test_%'"),
+            "the def test_ content marker must survive: {filter}"
+        );
+    }
+}

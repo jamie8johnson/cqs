@@ -2017,6 +2017,43 @@ mod tests {
         );
     }
 
+    /// Adversarial-content regression (sweep level): a genuinely-dead
+    /// `ChunkType::Function` whose body contains `#[cfg(test)]` ONLY in a COMMENT
+    /// must NOT vanish from
+    /// the dead sweep. The old test-chunk filter used `content LIKE '%#[cfg(test)]%'`,
+    /// which matched the attribute text in a comment, pulled the function into the
+    /// test-name exclusion set, and dropped it from the ENTIRE sweep (every
+    /// verdict). The filter now keys on the `chunk_type = 'test'` parser tag, so a
+    /// `ChunkType::Function` with a commented attribute is never mistaken for a
+    /// test chunk and stays in the dead candidate population.
+    #[test]
+    fn test_commented_cfg_test_fn_not_dropped_from_sweep() {
+        let (store, _dir) = setup_store();
+        let emb = crate::embedder::Embedding::new(vec![0.0; crate::EMBEDDING_DIM]);
+
+        // A non-test function (ChunkType::Function) with `#[cfg(test)]` only in a
+        // comment in its body. Genuinely dead — no caller edge seeded.
+        let commented = rust_fn_chunk(
+            "src/orphan.rs:1",
+            "src/orphan.rs",
+            "looks_dead_with_comment",
+            "fn looks_dead_with_comment() {\n    // #[cfg(test)] not a real attribute\n}",
+        );
+        store.upsert_chunk(&commented, &emb, Some(1)).unwrap();
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"looks_dead_with_comment"),
+            "a non-test fn with #[cfg(test)] only in a comment must stay in the dead \
+             sweep (not vanish via the test-name exclusion): {names:?}"
+        );
+    }
+
     /// The filter is Rust-only and serde-shaped. A function never named in any
     /// serde attribute must stay in the dead list — the filter is not a blanket
     /// content-substring drop.
