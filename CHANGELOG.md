@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.46.0] - 2026-06-15
+
+Post-v1.45.0 idle loop + a 3-round audit. **PARSER_VERSION 10 → 13 — a reindex is required** (drift-driven on the next `cqs index`, or `cqs index --force`); cqs's own (Rust) corpus is unaffected by the Dart/L5X parser changes.
+
+### Added
+
+- **L5X/L5K PLC Structured-Text extraction now runs in production (#1955, PR #1958; PARSER_VERSION → 12).** The custom ST extractor was dead on the production index path — `.l5x`/`.l5k` were parsed with the generic XML grammar because they lived under `LANG_XML`'s extensions; the custom dispatch only ran on a code path indexing never called. Wired via a dedicated grammar-less `LanguageDef` + `custom_all_parser`. The #1888 file-relative `byte_start` injectivity fix is now live.
+- **Dart call graph (#1967, PR #1970; PARSER_VERSION → 13).** `dart.calls.scm` (present since PR #816) was never wired into `LANG_DART.call_query` — Dart `callers`/`callees`/`impact`/`dead` were all silently empty. Wired it; fixed the chunk span to include function bodies (tree-sitter-dart inlines the top-level-definition rule, so signature and body are adjacent siblings); added a completeness guard asserting every `*.calls.scm` is wired into its language def.
+- **Full v10→v32 schema-migration-chain frozen-artifact guard (#1950)** and embedder property tests — `normalize_l2` bounds/idempotence, pooling batch==single (#1971).
+
+### Changed
+
+- **`cqs dead` verdicts hardened against adversarial indexed content (#1954).** `build_test_chunk_filter` keys on the `ChunkType::Test` parser tag (was a `#[cfg(test)]` content-substring a comment could spoof to hide a function from the whole sweep); the external-trait-method known-gap excuse is gated on `ChunkType::Method` (was name-only — a free function named `visit_seq` was wrongly excused). SECURITY.md documents `--verdict dead` as a confident subset under adversarial content.
+- **Cross-project `callers`/`impact` restore trust-ordering at the cap/first-discovery boundary (#1966)** — a remote `doc_reference` no longer evicts (in the capped window) or mislabels (in the impact BFS) a real `call`.
+- **`--rerank` overlay/reference merge now reranks the *merged* set (#1952)** so both legs share the cross-encoder's score frame (was: sigmoid project scores sorted against raw cosine overlay/reference scores in one comparator). The default no-rerank path is byte-for-byte unchanged.
+- CAGRA/tiered cosine score clamped to ≤ 1.0 (f32 self-dot overshoot) (#1971).
+
+### Fixed
+
+- **HNSW DotProduct metric no longer panics on f32 unit-norm vectors (#1951).** `normalize_l2` yields `a·a ≈ 1.0000005 > 1.0`, tripping anndists' `DistDot` assert — on both build (in a rayon worker → killed the whole index build) and search. A custom `DistDotClamped` (`1 - min(a·b, 1)`) replaces it. Cosine arm immune/unchanged.
+- candidate_edges persisted on the watch zero-chunk finalize path (#1942); overlay candidate recompute → `low-confidence-live` for candidate-only Direction-B additions (#1943); `#[test]` fns + framework-trait methods classify correctly in `cqs dead` (#1945/#1946, closing #1573); L5X chunk-id injectivity (#1947).
+
+### Security
+
+- **Daemon overlay-root validation hardened (#1956, closes #1953).** A forged or symlinked `.git`, and a post-validation symlink/rename swap, can no longer steer the daemon into indexing+relaying an arbitrary out-of-tree directory as trusted `user-code`: validation now requires `git worktree list` registry membership and pins the validated directory's inode via a held fd (`openat2 RESOLVE_NO_SYMLINKS`; git ops via `/proc/self/fd/N`). Found via red-team audit; four bypasses caught across review rounds. A residual same-uid check-then-recreate race + the non-CLOEXEC O_PATH fd are tracked low-severity (#1969).
+
+### Recall
+
+- v3.v2 dual-judge (218q, 2026-06-15 snapshot at ~16.8k chunks): **72.0% R@5 / 48.7% R@1 / 87.6% R@20**. vs v1.45.0 (72.0 / 47.7 / 88.5): R@5 flat, R@1 +1.0, R@20 −0.9 — corpus churn from the new code (scoring unchanged on the default path), 0 dead golds.
+
+### Dependencies
+
+- Bumped tower-http 0.6→0.7, ignore, insta, regex, tree-sitter-erlang, chrono (dependabot).
+
 ## [1.45.0] - 2026-06-14
 
 ### Added
@@ -3763,7 +3797,8 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.46.0...HEAD
+[1.46.0]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...v1.46.0
 [1.45.0]: https://github.com/jamie8johnson/cqs/compare/v1.44.0...v1.45.0
 [1.44.0]: https://github.com/jamie8johnson/cqs/compare/v1.43.0...v1.44.0
 [1.25.0]: https://github.com/jamie8johnson/cqs/compare/v1.24.0...v1.25.0
