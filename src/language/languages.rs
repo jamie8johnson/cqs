@@ -1116,6 +1116,7 @@ static LANG_DART: LanguageDef = LanguageDef {
     grammar: Some(|| tree_sitter_dart::LANGUAGE.into()),
     extensions: &["dart"],
     chunk_query: include_str!("queries/dart.chunks.scm"),
+    call_query: Some(include_str!("queries/dart.calls.scm")),
     signature_style: SignatureStyle::UntilBrace,
     doc_nodes: &["comment", "documentation_comment"],
     method_node_kinds: &[],

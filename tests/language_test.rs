@@ -7590,6 +7590,162 @@ Map<String, dynamic> parseConfig(String path) {
     );
 }
 
+/// Dart call-graph extraction: a top-level function calling another function,
+/// AND a method calling a top-level function, must both surface call edges.
+/// Two preconditions hold for this: `LANG_DART` has a wired `call_query`, and
+/// the chunk span includes the body (per-chunk call extraction is scoped to the
+/// chunk's byte range, so a signature-only span finds nothing in the body).
+#[test]
+fn test_dart_call_graph() {
+    let content = r#"
+int helper(int x) {
+  return x + 1;
+}
+
+int caller() {
+  return helper(41);
+}
+
+class Widget {
+  int build() {
+    return helper(7);
+  }
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+
+    let caller = chunks
+        .iter()
+        .find(|c| c.name == "caller")
+        .unwrap_or_else(|| panic!("no caller chunk in {:?}", chunk_names(&chunks)));
+    let caller_callees: Vec<_> = parser
+        .extract_calls_from_chunk(caller)
+        .into_iter()
+        .map(|c| c.callee_name)
+        .collect();
+    assert!(
+        caller_callees.iter().any(|n| n == "helper"),
+        "function->function: expected `helper` edge from `caller`, got {:?}",
+        caller_callees
+    );
+
+    let build = chunks
+        .iter()
+        .find(|c| c.name == "build")
+        .unwrap_or_else(|| panic!("no build method chunk in {:?}", chunk_names(&chunks)));
+    let build_callees: Vec<_> = parser
+        .extract_calls_from_chunk(build)
+        .into_iter()
+        .map(|c| c.callee_name)
+        .collect();
+    assert!(
+        build_callees.iter().any(|n| n == "helper"),
+        "method->function: expected `helper` edge from `build`, got {:?}",
+        build_callees
+    );
+}
+
+/// A Dart function (and method) chunk's `content` must include its body, not
+/// just the signature. The tree-sitter-dart grammar inlines its
+/// top-level-definition rule, so the captured `function_signature` covers only
+/// the signature; `extract_chunk` extends the span to the adjacent
+/// `function_body`.
+#[test]
+fn test_dart_chunk_includes_body() {
+    let content = r#"
+int compute(int x) {
+  final doubled = x * 2;
+  return doubled + 1;
+}
+
+class Widget {
+  String render() {
+    final label = "ok";
+    return label;
+  }
+}
+"#;
+    let file = write_temp_file(content, "dart");
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(file.path()).unwrap();
+
+    let func = chunks
+        .iter()
+        .find(|c| c.name == "compute")
+        .unwrap_or_else(|| panic!("no compute chunk in {:?}", chunk_names(&chunks)));
+    assert!(
+        func.content.contains("final doubled") && func.content.contains("return doubled + 1"),
+        "function chunk should include its body, got content:\n{}",
+        func.content
+    );
+
+    let method = chunks
+        .iter()
+        .find(|c| c.name == "render")
+        .unwrap_or_else(|| panic!("no render chunk in {:?}", chunk_names(&chunks)));
+    assert!(
+        method.content.contains("final label") && method.content.contains("return label"),
+        "method chunk should include its body, got content:\n{}",
+        method.content
+    );
+}
+
+fn chunk_names(chunks: &[cqs::parser::Chunk]) -> Vec<(&str, &ChunkType)> {
+    chunks
+        .iter()
+        .map(|c| (c.name.as_str(), &c.chunk_type))
+        .collect()
+}
+
+/// Completeness guard: every authored `*.calls.scm` query must be WIRED into
+/// its language's `LanguageDef::call_query`. Enumerates the query files, maps
+/// each basename to its `Language`, and asserts `def().call_query ==
+/// Some(<file contents>)`. An authored-but-unwired calls.scm silently yields an
+/// empty call graph for that language; this fails instead. The `>= 39` floor
+/// guards against the glob silently finding nothing (e.g. the query dir moved).
+#[test]
+fn every_calls_scm_is_wired() {
+    use std::str::FromStr;
+
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/language/queries");
+    let mut authored: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("read queries dir") {
+        let path = entry.expect("dir entry").path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(".calls.scm") => n.to_string(),
+            _ => continue,
+        };
+        let basename = name.trim_end_matches(".calls.scm").to_string();
+        let contents = std::fs::read_to_string(&path).expect("read calls.scm");
+        authored.push((basename, contents));
+    }
+
+    assert!(
+        authored.len() >= 39,
+        "expected >= 39 authored *.calls.scm files, found {} (did the query dir move?)",
+        authored.len()
+    );
+
+    let mut unwired: Vec<String> = Vec::new();
+    for (basename, contents) in &authored {
+        let lang = Language::from_str(basename)
+            .unwrap_or_else(|_| panic!("no Language for calls.scm basename `{basename}`"));
+        if !lang.is_enabled() {
+            continue; // feature-gated off in this build; nothing to assert
+        }
+        match lang.def().call_query {
+            Some(wired) if wired == contents => {}
+            _ => unwired.push(basename.clone()),
+        }
+    }
+    assert!(
+        unwired.is_empty(),
+        "authored calls.scm not wired into LanguageDef::call_query: {unwired:?}"
+    );
+}
+
 // -- Phase 2 chunk type tests ────────────────────────────────────────
 
 #[test]
