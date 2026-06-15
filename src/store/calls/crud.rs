@@ -331,7 +331,8 @@ impl Store<ReadWrite> {
         })
     }
 
-    /// Insert function calls for multiple files in a single transaction.
+    /// Insert function calls AND low-confidence candidate edges for multiple
+    /// files in a single transaction.
     ///
     /// Mirrors the `upsert_type_edges_for_files` pattern. Calling
     /// `upsert_function_calls(file, calls)` once per file would open one
@@ -339,14 +340,36 @@ impl Store<ReadWrite> {
     /// on a 2,500-file project. Batching to one transaction matches the shape
     /// used for type edges.
     ///
+    /// `function_calls` and `candidate_edges` are BOTH file-keyed call-graph
+    /// tables refreshed wholesale per file (DELETE WHERE file = ? then INSERT
+    /// the current set). They are swept together here so the parse-driven watch
+    /// finalize path matches the bulk pipeline's fused zero-chunk flush, which
+    /// writes both. Threading `candidate_entries` lets an oversize function
+    /// (zero chunks, non-empty calls) reindexed via the watch path PERSIST a
+    /// cross-file bare-arg / serde candidate instead of having it silently
+    /// cleared — the false-DEAD on the oversize-fn × candidate × watch path.
+    ///
+    /// `candidate_entries` is matched to `entries` by normalized path: a file
+    /// present in `entries` always has its candidates cleared (Phase 1 DELETE),
+    /// and re-inserted only if it appears in `candidate_entries` with a
+    /// non-empty set. A file in `entries` but absent from `candidate_entries`
+    /// (or present with an empty set) ends with zero candidate rows — the
+    /// clear-on-empty contract. Candidates for a file NOT in `entries` are
+    /// ignored: its `function_calls` are not being refreshed, so neither are
+    /// its candidates.
+    ///
     /// Inside the single transaction:
-    /// - Batched DELETE WHERE file IN (?, ?, ?) for all files in the batch
-    ///   (chunked under the SQLite parameter limit).
-    /// - Batched multi-row INSERT for all rows from all files (5 binds per row,
-    ///   chunked under the same parameter limit).
+    /// - Phase 1: batched DELETE WHERE file IN (?, ?, ?) for `function_calls`
+    ///   AND `candidate_edges`, for all files in the batch (chunked under the
+    ///   SQLite parameter limit).
+    /// - Phase 2: batched multi-row INSERT of `function_calls` rows (6 binds
+    ///   per row, chunked under the same parameter limit).
+    /// - Phase 3: batched multi-row INSERT of `candidate_edges` rows (4 binds
+    ///   per row), for the files in `entries` that carry candidates.
     pub fn upsert_function_calls_for_files(
         &self,
         entries: &[(PathBuf, Vec<crate::parser::FunctionCalls>)],
+        candidate_entries: &[(PathBuf, Vec<crate::parser::CandidateSite>)],
     ) -> Result<(), StoreError> {
         let total_files = entries.len();
         let _span =
@@ -360,6 +383,24 @@ impl Store<ReadWrite> {
             .iter()
             .map(|(file, _)| crate::normalize_path(file))
             .collect();
+
+        // Normalized-path → candidate slice, so Phase 3 re-inserts each file's
+        // candidates under the SAME key that scoped its Phase 1 clear. Only
+        // files being refreshed (present in `entries`) are eligible; a candidate
+        // entry for an unrelated file would write a row whose `function_calls`
+        // were not touched, breaking the wholesale-per-file contract.
+        let entry_files: std::collections::HashSet<&str> =
+            file_strs.iter().map(|s| s.as_str()).collect();
+        let mut candidates_by_file: std::collections::HashMap<
+            String,
+            &[crate::parser::CandidateSite],
+        > = std::collections::HashMap::new();
+        for (file, cands) in candidate_entries {
+            let fs = crate::normalize_path(file);
+            if entry_files.contains(fs.as_str()) {
+                candidates_by_file.insert(fs, cands.as_slice());
+            }
+        }
 
         self.rt.block_on(async {
             let (_guard, mut tx) = self.begin_write().await?;
@@ -379,11 +420,12 @@ impl Store<ReadWrite> {
                 }
                 q.execute(&mut *tx).await?;
 
-                // v32: clear the same files' `candidate_edges` in the same tx.
-                // This is the parse-driven `function_calls` replace path (it does
-                // not receive candidate sites), so the symmetric action is to
-                // CLEAR — a file refreshed through here must not keep stale
-                // candidate rows a prior emit pass wrote. Same DELETE-then-INSERT
+                // Clear the same files' `candidate_edges` in the same tx. Both
+                // are file-keyed call-graph tables refreshed wholesale per file;
+                // the matching INSERT happens in Phase 3 (re-inserting only the
+                // files that carry fresh candidates). A file refreshed through
+                // here with no candidates ends with zero candidate rows — the
+                // clear-on-empty contract. Same DELETE-then-INSERT
                 // wholesale-per-file contract the other call-graph delete sites
                 // (delete_by_origin, prune_missing, the fused write) honor.
                 let cand_sql =
@@ -395,8 +437,8 @@ impl Store<ReadWrite> {
                 cq.execute(&mut *tx).await?;
             }
 
-            // Phase 2: collect all rows tagged with their file string, then
-            // batched multi-row INSERT.
+            // Phase 2: collect all function_calls rows tagged with their file
+            // string, then batched multi-row INSERT.
             let mut all_rows: Vec<(&str, &str, u32, &str, u32, &str)> = Vec::new();
             for ((_file, function_calls), file_str) in entries.iter().zip(file_strs.iter()) {
                 for fc in function_calls {
@@ -434,10 +476,50 @@ impl Store<ReadWrite> {
                 }
             }
 
+            // Phase 3: re-insert candidate_edges for the refreshed files that
+            // carry candidates, keyed by the normalized file string used for the
+            // Phase 1 clear. This is the half the watch zero-chunk finalize path
+            // was missing — without it an oversize function's cross-file
+            // candidate is cleared but never re-written, a false-DEAD. Mirrors
+            // the bulk pipeline's fused-flush candidate write.
+            let mut all_cand_rows: Vec<(&str, &str, u32, &str)> = Vec::new();
+            for file_str in &file_strs {
+                if let Some(cands) = candidates_by_file.get(file_str) {
+                    for cand in cands.iter() {
+                        all_cand_rows.push((
+                            file_str.as_str(),
+                            cand.callee_name.as_str(),
+                            cand.ref_line,
+                            cand.candidate_kind.as_str(),
+                        ));
+                    }
+                }
+            }
+
+            if !all_cand_rows.is_empty() {
+                const CAND_INSERT_BATCH: usize = max_rows_per_statement(4);
+                for batch in all_cand_rows.chunks(CAND_INSERT_BATCH) {
+                    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                        "INSERT INTO candidate_edges (file, callee_name, ref_line, candidate_kind) ",
+                    );
+                    qb.push_values(
+                        batch.iter(),
+                        |mut b, (file, callee_name, ref_line, candidate_kind)| {
+                            b.push_bind(*file)
+                                .push_bind(*callee_name)
+                                .push_bind(*ref_line as i64)
+                                .push_bind(*candidate_kind);
+                        },
+                    );
+                    qb.build().execute(&mut *tx).await?;
+                }
+            }
+
             tx.commit().await?;
             tracing::info!(
                 files = total_files,
                 rows = all_rows.len(),
+                candidate_rows = all_cand_rows.len(),
                 "Batch-indexed function calls"
             );
             Ok(())

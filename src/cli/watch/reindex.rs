@@ -362,22 +362,29 @@ pub(super) fn touch_mtime_or_warn(store: &Store, rel_path: &Path, abs_path: &Pat
 /// `find_orphaned_function_calls` registry-UNION arm — permanent if stamped).
 ///
 /// `entries` carry each zero-chunk file's project-relative path and its
-/// freshly parsed call set; `root` joins the paths for the disk read.
-/// Best-effort: a stat/read failure forfeits the skip (the file re-parses next
-/// tick) but is not fatal.
+/// freshly parsed call set; `candidate_entries` carry the same files' Lane-2
+/// candidate sites (an oversize function's cross-file bare-arg / serde
+/// candidates, which have zero chunks but real candidates). `root` joins the
+/// paths for the disk read. Both are passed through to the single parse-driven
+/// writer so the watch path persists candidates the same way the bulk
+/// pipeline's fused zero-chunk flush does. Best-effort: a stat/read failure
+/// forfeits the skip (the file re-parses next tick) but is not fatal.
 fn finalize_zero_chunk_files(
     store: &Store,
     root: &Path,
     entries: &[(PathBuf, Vec<cqs::parser::FunctionCalls>)],
+    candidate_entries: &[(PathBuf, Vec<cqs::parser::CandidateSite>)],
 ) {
     if entries.is_empty() {
         return;
     }
 
-    // Replace each zero-chunk file's function_calls from its real parsed set —
-    // the single parse-driven writer. Empty sets clear, non-empty (oversize
-    // function) sets refresh. This is the decoupled call-graph half; the chunk
-    // prune below makes no call-graph decision.
+    // Replace each zero-chunk file's function_calls AND candidate_edges from its
+    // real parsed sets — the single parse-driven writer. Empty sets clear,
+    // non-empty (oversize function) sets refresh. Candidates ride the same
+    // writer so an oversize function's cross-file candidate is PERSISTED, not
+    // cleared (the false-DEAD this path used to leave). This is the decoupled
+    // call-graph half; the chunk prune below makes no call-graph decision.
     //
     // CONDITIONAL ON SUCCESS, not just ordered: a transient replace failure
     // (e.g. SQLITE_BUSY past busy_timeout under a concurrent `cqs index
@@ -391,7 +398,7 @@ fn finalize_zero_chunk_files(
     // the designed heal trigger — the next reconcile tick reclassifies it ADDED
     // and re-finalizes idempotently. The warn is kept for telemetry; we just
     // stop committing past the failure.
-    if let Err(e) = store.upsert_function_calls_for_files(entries) {
+    if let Err(e) = store.upsert_function_calls_for_files(entries, candidate_entries) {
         tracing::warn!(
             files = entries.len(),
             error = %e,
@@ -653,14 +660,18 @@ pub(crate) fn reindex_files(
         // functions, etc.). They are all in `all_function_calls` (parse-error
         // and deleted files never landed there) WITH their real parsed call set
         // (empty for emptied files, NON-empty for oversize-function files).
-        // `finalize_zero_chunk_files` replaces their function_calls from that
-        // set, prunes their stale chunks, and stamps the v29 `file_registry`
-        // fingerprint #1774 so the next reconcile tick skips them instead of
-        // re-parsing to zero chunks every 30 s. Without this early-return
-        // finalize, an all-empty batch would never reach the per-file path below.
+        // `finalize_zero_chunk_files` replaces their function_calls AND
+        // candidate_edges from those sets, prunes their stale chunks, and stamps
+        // the v29 `file_registry` fingerprint so the next reconcile tick skips
+        // them instead of re-parsing to zero chunks every 30 s. Without this
+        // early-return finalize, an all-empty batch would never reach the
+        // per-file path below. Candidates ride along so an oversize function's
+        // cross-file candidate persists rather than being cleared.
         let zero_chunk_entries: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> =
             all_function_calls.into_iter().collect();
-        finalize_zero_chunk_files(store, root, &zero_chunk_entries);
+        let zero_chunk_candidates: Vec<(PathBuf, Vec<cqs::parser::CandidateSite>)> =
+            all_candidate_edges.into_iter().collect();
+        finalize_zero_chunk_files(store, root, &zero_chunk_entries, &zero_chunk_candidates);
         return Ok((0, Vec::new()));
     }
 
@@ -945,19 +956,26 @@ pub(crate) fn reindex_files(
     // Any file that parsed to ZERO chunks is in `all_function_calls` but NOT
     // in `by_file` (the per-file upsert loop above only ran for files with at
     // least one chunk). `finalize_zero_chunk_files` handles each: it REPLACES
-    // its function_calls from the freshly parsed call set (the partial route's
-    // share of the single parse-driven writer — empty set clears an emptied
-    // file's edges; NON-empty set refreshes an oversize-function file's edges,
-    // which have zero chunks but real calls), prunes its stale chunks, and
-    // stamps the v29 `file_registry` reconcile fingerprint #1774 so the next
+    // its function_calls AND candidate_edges from the freshly parsed sets (the
+    // partial route's share of the single parse-driven writer — empty set
+    // clears an emptied file's edges; NON-empty set refreshes an
+    // oversize-function file's edges, which have zero chunks but real calls
+    // and may carry cross-file candidates), prunes its stale chunks, and
+    // stamps the v29 `file_registry` reconcile fingerprint so the next
     // reconcile tick skips it. The chunk-carrying files already wrote their
-    // function_calls in the fused per-file tx and stamped their fingerprint
-    // inline (`set_file_fingerprint`), which shadows into the registry too.
+    // function_calls + candidate_edges in the fused per-file tx and stamped
+    // their fingerprint inline (`set_file_fingerprint`), which shadows into the
+    // registry too.
     let zero_chunk_entries: Vec<(PathBuf, Vec<cqs::parser::FunctionCalls>)> = all_function_calls
         .into_iter()
         .filter(|(rel_path, _)| !by_file.contains_key(rel_path))
         .collect();
-    finalize_zero_chunk_files(store, root, &zero_chunk_entries);
+    let zero_chunk_candidates: Vec<(PathBuf, Vec<cqs::parser::CandidateSite>)> =
+        all_candidate_edges
+            .into_iter()
+            .filter(|(rel_path, _)| !by_file.contains_key(rel_path))
+            .collect();
+    finalize_zero_chunk_files(store, root, &zero_chunk_entries, &zero_chunk_candidates);
 
     // Upsert type edges from the earlier parse_file_all() results.
     // Type edges are soft data — separate from chunk+call atomicity.
@@ -1124,7 +1142,7 @@ mod tests {
         );
 
         // The emptied file's freshly parsed call set is EMPTY → replace clears.
-        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])]);
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])], &[]);
 
         // Full coherent end-state.
         assert!(
@@ -1188,6 +1206,7 @@ mod tests {
             &store,
             &root,
             &[fz_entry("big.rs", one_edge("big_fn", "helper"))],
+            &[],
         );
 
         // Chunks pruned (function exceeds the byte cap, no chunk row)...
@@ -1254,7 +1273,7 @@ mod tests {
 
         // caller.rs parses to zero chunks under watch (emptied → empty call
         // set) → finalize it.
-        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])]);
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])], &[]);
 
         // The orphan is gone, so victim is now dead-eligible.
         let (confident_after, _) = store.find_dead_code(true).unwrap();
@@ -1301,7 +1320,7 @@ mod tests {
         );
 
         // Simulate the watch zero-chunk success path for this survivor.
-        finalize_zero_chunk_files(&store, &root, &[fz_entry("ghost.rs", vec![])]);
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("ghost.rs", vec![])], &[]);
 
         // The ghost rows are GONE — not just the registry stamped.
         assert!(
@@ -1359,7 +1378,7 @@ mod tests {
         );
 
         // The file parses to zero chunks this tick → watch zero-chunk path runs.
-        finalize_zero_chunk_files(&store, &root, &[fz_entry("drift.rs", vec![])]);
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("drift.rs", vec![])], &[]);
 
         // Second reconcile pass: the prune removed the drifted rows, so the
         // origin is no longer selected — the loop is closed.
@@ -1482,7 +1501,7 @@ mod tests {
 
         // Finalize the emptied file. The calls-replace fails; with the
         // conditional fix it returns early, forfeiting prune + stamp.
-        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])]);
+        finalize_zero_chunk_files(&store, &root, &[fz_entry("caller.rs", vec![])], &[]);
 
         // PASS-AFTER assertions (fail-before would have pruned + stamped):
         assert_eq!(

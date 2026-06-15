@@ -204,7 +204,7 @@ fn seed_ctx() -> (TempDir, BatchContext) {
             ),
         ];
         store
-            .upsert_function_calls_for_files(&function_calls)
+            .upsert_function_calls_for_files(&function_calls, &[])
             .expect("upsert calls");
     }
 

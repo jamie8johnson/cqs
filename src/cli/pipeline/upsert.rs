@@ -1187,10 +1187,10 @@ mod tests {
             .unwrap();
         // Seed the prior call edge directly so we can prove it survives.
         store
-            .upsert_function_calls_for_files(&[(
-                PathBuf::from("drift.rs"),
-                one_call("drifty", "helper"),
-            )])
+            .upsert_function_calls_for_files(
+                &[(PathBuf::from("drift.rs"), one_call("drifty", "helper"))],
+                &[],
+            )
             .unwrap();
 
         // Precondition: the seeded chunk registers as parser-version drifted.
@@ -1367,10 +1367,10 @@ mod tests {
             .upsert_embedded_batch(&[(chunk("caller.rs", "seed", body), emb)], &[], &seed_fp)
             .unwrap();
         store
-            .upsert_function_calls_for_files(&[(
-                PathBuf::from("caller.rs"),
-                one_call("caller", "victim"),
-            )])
+            .upsert_function_calls_for_files(
+                &[(PathBuf::from("caller.rs"), one_call("caller", "victim"))],
+                &[],
+            )
             .unwrap();
         assert!(
             store.find_orphaned_function_calls().unwrap().is_empty(),
