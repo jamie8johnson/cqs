@@ -763,6 +763,24 @@ pub(crate) fn callers_cross_core(
     if let Some(want) = args.edge_kind {
         callers.retain(|c| c.caller.edge_kind == want);
     }
+    // Trust-ordering at the cross-project boundary. `get_callers_cross`
+    // concatenates each project's callers in store iteration order, so without
+    // this sort a capped window could be filled by an earlier project's
+    // low-trust `doc_reference` edges while a real `call` edge in a later
+    // project is truncated away. Sort lowest-trust-rank first (call < serde <
+    // macro < fn-pointer < doc-reference), then by project/file/line for a
+    // stable order — mirroring single-project `get_callers_full`'s
+    // `ORDER BY trust_rank, file, caller_line`. Applied AFTER the edge-kind
+    // filter and BEFORE the cap so `--limit` keeps the most-trusted page.
+    callers.sort_by(|a, b| {
+        a.caller
+            .edge_kind
+            .trust_rank()
+            .cmp(&b.caller.edge_kind.trust_rank())
+            .then_with(|| a.project.cmp(&b.project))
+            .then_with(|| a.caller.file.cmp(&b.caller.file))
+            .then_with(|| a.caller.line.cmp(&b.caller.line))
+    });
     let total = callers.len();
     callers.truncate(limit);
     let entries: Vec<CallerEntry> = callers
@@ -808,6 +826,20 @@ pub(crate) fn callees_cross_core(
     if let Some(want) = args.edge_kind {
         callees.retain(|c| c.edge_kind == want);
     }
+    // Trust-ordering at the cross-project boundary — mirror of
+    // `callers_cross_core`. Callees carry no `file` (the in-memory graph records
+    // callees by name + call_line), so the stable key is
+    // (trust_rank, project, name, line). BEFORE the cap so a later project's
+    // real `call` edge can't be evicted by an earlier project's
+    // `doc_reference`.
+    callees.sort_by(|a, b| {
+        a.edge_kind
+            .trust_rank()
+            .cmp(&b.edge_kind.trust_rank())
+            .then_with(|| a.project.cmp(&b.project))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.line.cmp(&b.line))
+    });
     let total = callees.len();
     callees.truncate(limit);
     let calls: Vec<CalleeEntry> = callees
@@ -1522,5 +1554,136 @@ mod tests {
             "past the cap, the hint must mention --edge-kind: {over:?}"
         );
         assert!(over.contains("doc_reference"));
+    }
+
+    // ----- Cross-project cap trust-ordering -----
+
+    /// Build a `NamedStore` carrying one `(caller -> callee)` edge of a given
+    /// provenance kind, written through the lib-public `upsert_function_calls`
+    /// path so the edge surfaces with the right `edge_kind` cross-project. The
+    /// tempdir is leaked (`keep`) so the backing `index.db` survives the test.
+    fn cross_named_store(
+        project: &str,
+        caller: &str,
+        callee: &str,
+        kind: cqs::parser::CallEdgeKind,
+    ) -> cqs::cross_project::NamedStore {
+        use cqs::parser::{CallSite, FunctionCalls};
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = cqs::Store::open(&db_path).unwrap();
+            store.init(&cqs::store::ModelInfo::default()).unwrap();
+            store
+                .upsert_function_calls(
+                    std::path::Path::new("src/lib.rs"),
+                    &[FunctionCalls {
+                        name: caller.to_string(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: callee.to_string(),
+                            line_number: 2,
+                            kind,
+                        }],
+                    }],
+                )
+                .unwrap();
+        }
+        let ro = cqs::Store::open_readonly(&db_path).unwrap();
+        let _keep = dir.keep();
+        cqs::cross_project::NamedStore::new(project.to_string(), ro, db_path)
+    }
+
+    /// Cross-project cap keeps the most-trusted caller (callers).
+    ///
+    /// Two projects each contribute a caller of `target`: the EARLIER-listed
+    /// project via a low-trust `doc_reference`, the LATER-listed project via a
+    /// real `call`. With `--limit 1` the single surfaced caller must be the
+    /// `call`, never the `doc_reference`. Before the trust-sort,
+    /// `get_callers_cross` concatenated in store order and `truncate(1)` kept the
+    /// earlier project's `doc_reference`, evicting the real `call`.
+    #[test]
+    fn callers_cross_cap_surfaces_call_over_doc_reference() {
+        use cqs::parser::CallEdgeKind;
+        // Order matters: the doc_reference project is listed FIRST so the
+        // pre-fix concatenation would surface it first.
+        let earlier = cross_named_store(
+            "doc_proj",
+            "doc_caller",
+            "target",
+            CallEdgeKind::DocReference,
+        );
+        let later = cross_named_store("call_proj", "real_caller", "target", CallEdgeKind::Call);
+        let mut ctx = cqs::cross_project::CrossProjectContext::new(vec![earlier, later]);
+
+        let output = callers_cross_core(
+            &mut ctx,
+            &CallersArgs {
+                name: "target".to_string(),
+                limit: 1,
+                edge_kind: None,
+            },
+        )
+        .unwrap();
+
+        // Both callers exist pre-cap; the cap keeps the most-trusted one.
+        assert_eq!(output.total, 2, "both projects contribute a caller");
+        assert_eq!(output.count, 1, "--limit 1 keeps one");
+        assert_eq!(
+            output.callers[0].name, "real_caller",
+            "the capped window must keep the real `call`, not the `doc_reference`"
+        );
+        // A `call` edge renders edge_kind omitted (empty string).
+        assert!(
+            output.callers[0].edge_kind.is_empty(),
+            "surfaced caller is a `call` edge (edge_kind omitted), got {:?}",
+            output.callers[0].edge_kind
+        );
+    }
+
+    /// Cross-project cap keeps the most-trusted callee (callees), mirror of the
+    /// callers case. The SAME caller name reaches an earlier-listed
+    /// `doc_reference` callee and a later-listed real `call` callee; the cap
+    /// must keep the `call`.
+    #[test]
+    fn callees_cross_cap_surfaces_call_over_doc_reference() {
+        use cqs::parser::CallEdgeKind;
+        // Same caller name in both projects, reaching DIFFERENT callees: an
+        // earlier-listed doc_reference and a later-listed real call.
+        let earlier = cross_named_store(
+            "doc_proj",
+            "shared_caller",
+            "doc_callee",
+            CallEdgeKind::DocReference,
+        );
+        let later = cross_named_store(
+            "call_proj",
+            "shared_caller",
+            "call_callee",
+            CallEdgeKind::Call,
+        );
+        let mut ctx = cqs::cross_project::CrossProjectContext::new(vec![earlier, later]);
+
+        let output = callees_cross_core(
+            &mut ctx,
+            &CalleesArgs {
+                name: "shared_caller".to_string(),
+                limit: 1,
+                edge_kind: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(output.total, 2, "both projects contribute a callee");
+        assert_eq!(output.count, 1, "--limit 1 keeps one");
+        assert_eq!(
+            output.calls[0].name, "call_callee",
+            "the capped window must keep the real `call`, not the `doc_reference`"
+        );
+        assert!(
+            output.calls[0].edge_kind.is_empty(),
+            "surfaced callee is a `call` edge (edge_kind omitted), got {:?}",
+            output.calls[0].edge_kind
+        );
     }
 }

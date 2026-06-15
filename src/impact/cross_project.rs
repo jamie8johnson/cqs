@@ -59,11 +59,15 @@ pub fn analyze_impact_cross(
     // BFS: reverse traversal across all projects.
     //
     // `visited` records depth + project per name. `edge_provenance` captures the
-    // metadata of the edge that FIRST discovered each caller — its file, caller
-    // line, and `edge_kind` — threaded through the in-memory `CallGraph`.
-    // The discovering edge is a stable choice: BFS visits each name once, and the
-    // file/line/kind describe that caller's own definition, independent of which
-    // callee surfaced it.
+    // metadata of the edge that FIRST discovers each caller — its file, caller
+    // line, and `edge_kind` — threaded through the in-memory `CallGraph`. BFS
+    // visits each name once and records only the first edge. file/line describe
+    // the caller's own DEFINITION, so they are the same whichever edge surfaces
+    // it; `edge_kind`, however, is a property of the EDGE, not the caller, and
+    // differs per edge. To make first-discovered = most-trusted, each frontier's
+    // caller stream is sorted by `edge_kind.trust_rank()` before this step (see
+    // below), so a real `call` is never shadowed by a `doc_reference` that merely
+    // came from an earlier-listed project.
     let mut visited: HashMap<String, (usize, String)> = HashMap::new(); // name -> (depth, project)
     let mut edge_provenance: HashMap<String, crate::store::CallerInfo> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
@@ -76,7 +80,27 @@ pub fn analyze_impact_cross(
             continue;
         }
 
-        let callers = ctx.get_callers_cross(&current)?;
+        let mut callers = ctx.get_callers_cross(&current)?;
+        // Trust-order the frontier before the first-discovery step.
+        // `get_callers_cross` concatenates each project's callers in store
+        // iteration order, so the same caller name can arrive via BOTH a real
+        // `call` edge (in a later-listed project) and a low-trust
+        // `doc_reference` (in an earlier-listed project). BFS records the FIRST
+        // edge that discovers a name and ignores the rest, so without this sort
+        // the recorded `edge_kind` flips with project order — a `doc_reference`
+        // wins purely by being listed first. Sorting lowest-trust-rank first
+        // (call < serde < macro < fn-pointer < doc-reference) makes the
+        // first-discovered edge the most-trusted one, matching single-project
+        // `build_caller_info`, which draws from trust-ordered SQL.
+        callers.sort_by(|a, b| {
+            a.caller
+                .edge_kind
+                .trust_rank()
+                .cmp(&b.caller.edge_kind.trust_rank())
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.caller.file.cmp(&b.caller.file))
+                .then_with(|| a.caller.line.cmp(&b.caller.line))
+        });
         for caller in callers {
             if !visited.contains_key(&caller.caller.name) {
                 // Detect cross-boundary hop
@@ -427,6 +451,64 @@ mod tests {
         assert_eq!(c.edge_kind, CallEdgeKind::FnPointer);
         assert_eq!(c.file, std::path::PathBuf::from("src/a.rs"));
         assert_eq!(c.line, 42);
+    }
+
+    /// Cross-project impact first-discovery records the most-trusted edge kind.
+    ///
+    /// The SAME caller name reaches `target` via a real `call` in one project
+    /// and a `doc_reference` in another. BFS records only the edge that FIRST
+    /// discovers the caller, so before the per-frontier trust-sort the recorded
+    /// `edge_kind` flipped with project iteration order — a `doc_reference`
+    /// listed first mislabelled a real `call`. After the fix the discovering
+    /// edge is the most-trusted one regardless of order: the caller's
+    /// `edge_kind` is `call` in BOTH project orderings.
+    #[test]
+    fn cross_project_impact_first_discovery_keeps_most_trusted_kind() {
+        use crate::parser::CallEdgeKind;
+
+        // Helper: build the 2-project context and return the recorded edge_kind
+        // for `same_caller`, given the order the projects are listed in.
+        fn recorded_kind(doc_first: bool) -> CallEdgeKind {
+            let doc_proj = make_named_store_typed(
+                "doc_proj",
+                "same_caller",
+                "target",
+                CallEdgeKind::DocReference,
+                "src/doc.rs",
+                10,
+            );
+            let call_proj = make_named_store_typed(
+                "call_proj",
+                "same_caller",
+                "target",
+                CallEdgeKind::Call,
+                "src/call.rs",
+                20,
+            );
+            let stores = if doc_first {
+                vec![doc_proj, call_proj]
+            } else {
+                vec![call_proj, doc_proj]
+            };
+            let mut ctx = CrossProjectContext::new(stores);
+            let result = analyze_impact_cross(&mut ctx, "target", 3, false, false).unwrap();
+            assert_eq!(result.callers.len(), 1, "one distinct caller name");
+            assert_eq!(result.callers[0].name, "same_caller");
+            result.callers[0].edge_kind
+        }
+
+        // doc_reference listed FIRST — the order that pre-fix mislabelled it.
+        assert_eq!(
+            recorded_kind(true),
+            CallEdgeKind::Call,
+            "doc_reference-first ordering must still record the real `call`"
+        );
+        // call listed first — the order that happened to be correct pre-fix.
+        assert_eq!(
+            recorded_kind(false),
+            CallEdgeKind::Call,
+            "call-first ordering records the real `call`"
+        );
     }
 
     // ===== Cross-project trace tests =====
