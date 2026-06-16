@@ -26,14 +26,20 @@
 //! block-let with a `#[cfg(target_os = "linux")]` value arm and no type
 //! annotation. It does NOT catch the other sibling-break shapes — most notably
 //! an ungated `fn`/`const`/`static` reachable only from a single-target cfg arm,
-//! which becomes `dead_code` on the sibling and fails `-D warnings` there.
+//! which becomes `dead_code` on the sibling.
 //!
-//! The whole family — every shape, with real type info — is closed by the
-//! `release.yml` cross-target lint: `cargo clippy --release --target <T>
-//! -- -D warnings` runs on all three native runners. Fire it via
-//! `workflow_dispatch` on the release branch **before tagging** to validate.
-//! This source scan is the cheap PR-time early warning for the one shape it
-//! knows; the dry-run is the authoritative family-level gate.
+//! The **hard-error** members of the family — the E0277 binding above and any
+//! other compile error specific to a sibling target — are caught by the
+//! `release.yml` cross-build: `cargo build --release --target <T>` on all three
+//! native runners. Fire it via `workflow_dispatch` on the release branch
+//! **before tagging** to validate; a hard error there is exactly the "release
+//! skips a binary" risk (v1.46.0). The **warning-only** member (dead-code on a
+//! sibling) is NOT yet enforced cross-target — a `-D warnings` gate was tried
+//! and reverted because Windows carries a large pre-existing dead_code backlog
+//! (daemon-client code, live only via the unix socket path, awaiting the
+//! named-pipe transport); enforcing it needs that swept first. Tracked
+//! separately. So this source scan stays the cheap PR-time tripwire for the one
+//! (hard-error) shape it knows, and the cross-build is the hard-error gate.
 //!
 //! ## The exemplar (the bug this family is named for)
 //!
