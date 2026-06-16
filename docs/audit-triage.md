@@ -4,6 +4,20 @@ Audit date: 2026-06-15
 Source: `docs/audit-findings.md` (22 raw findings → 19 triaged rows after dedup/cluster).
 Prior cycle: `docs/audit-triage-v1.42.0.md` (P1+P2 COMPLETE; this cycle deduped against it — no new finding re-states a closed v1.42/v1.40 item).
 
+## Disposition outcome — CLOSED 2026-06-15
+
+All auto-fix rows landed; all issue rows filed. The per-tier tables below are the original synthesis (statuses there read "open"); this section is the source of truth for what shipped.
+
+- **Verified fixes landed:** DOC-1/2/3 → #1989 · PERF-1/2/3 → #1993 (PERF-2 also disabled redundant SPLADE tokenizer padding to keep `encode_batch` parse-identical) · RM-3, OB-1, API-2, TC-HAP-2, TC-HAP-3 → #1995.
+- **Daemon panic cluster (RM-1 + RM-2):** B-stopgap (dead `catch_unwind` removed) → #1986 · regression-fence guard (zero panic-tokens on the request path) → #1988 · the deeper real-isolation decision + RM-2 in_flight RAII → issue #1987. Severity re-scoped to LOW after a 4-auditor attack (live PoC: 18 crafted requests survived; `entry_point` is already RwLock-protected; no request-reachable panic).
+- **Issue-routed findings:** CQ-1 (test-only parse-path divergence) → #1990 · EH-1 (fingerprint ZERO32 sentinel) → #1991 · PB-1 (platform_cfg_sweep gap) → #1992.
+- **Residuals filed:** TC-ADV-1 (parse_l5x_all zero test coverage; auto-fix spec failed verify) → #1996 · SPLADE batch-vs-serial parity-test tolerance (surfaced landing PERF-2; pre-existing GPU nondeterminism) → #1994.
+- **Non-finding:** TC-HAP-1 — the adversarial verify caught its premise as FALSE (`apply_dead_overlay` Direction A *is* tested via `dead_overlay_worktree_*`); dropped, not fixed.
+- **Trivial-defer:** EXT-1 — drop the "extensible" docstring claim on `cqs dead`'s compile-time allowlists; a rider on the next `dead.rs` touch (not worth a standalone PR/issue).
+- **Already-tracked:** API-1 → #1459 · PB-2 → #1512.
+
+Workflow note: this cycle ran via the new `.claude/workflows/audit.js` (discovery → synthesize → disposition) + a 4-auditor refinement attack on the panic decision; triage review + landing stayed in the main loop.
+
 Tier-refinement notes (overrides vs the auditors' deterministic proposed_tier):
 - **DOC-V1.46.1-1 / DOC-V1.46.1-2 promoted P3→P2.** Both are docs lies about live agent-facing config knobs (`CQS_CACHE_MAX_BYTES`, `CQS_CONVERT_WEBHELP_BYTES` — nonexistent vars an agent would set and get a silent no-op). The docs-lying-is-P1 rule treats a doc that promises behavior the code doesn't deliver as a correctness bug; at medium impact that lands P2. The fix is still mechanical (delete/replace a README row) → auto-fix.
 - **CQ-V1.46.1-1 promoted P4→P3.** medium/medium is not "hard"; and it is the structural root behind OB-V1.46.1-1 and TC-ADV-V1.46.1-1 (same `parse_file_relationships*` test-only path) — the v1.46.0-class structural fault behind #1958/#1955. Fix is an architecture call (collapse vs delegate vs factor) → issue, not auto-fix.
