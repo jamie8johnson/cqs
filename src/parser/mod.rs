@@ -1448,4 +1448,202 @@ impl Holder {
             );
         }
     }
+
+    /// Guard 1 — registry invariant for the grammar-less dispatch split.
+    ///
+    /// The production index path `parse_file_all_inner` (this file, the
+    /// grammar-less dispatch around line 533) honors only `custom_all_parser`
+    /// before falling back to the markdown default. The test-only relationships
+    /// path `parse_file_relationships_with_candidates`
+    /// (`src/parser/calls.rs`, grammar-less dispatch around line 1307) honors
+    /// `custom_call_parser` FIRST, then `custom_all_parser`, then markdown.
+    ///
+    /// So a grammar-less language that sets `custom_call_parser` but not
+    /// `custom_all_parser` would be honored by the test path and silently
+    /// routed to the markdown default by production. No language does this
+    /// today, so this test is green; it goes red the moment one is registered,
+    /// turning that latent silent-routing fault into a build failure.
+    #[test]
+    fn custom_call_parser_languages_are_honored_by_production() {
+        for def in crate::language::REGISTRY.all() {
+            if def.grammar.is_none()
+                && def.custom_call_parser.is_some()
+                && def.custom_all_parser.is_none()
+            {
+                panic!(
+                    "language `{}` sets custom_call_parser but not custom_all_parser; \
+                     the production grammar-less dispatch in parse_file_all_inner \
+                     (src/parser/mod.rs, around the `grammar.is_none()` branch) has no \
+                     custom_call_parser branch and will silently route it to the markdown \
+                     default. Wire custom_call_parser into the production dispatch (plus a \
+                     chunk source, since custom_call_parser is calls-only) before \
+                     registering this language.",
+                    def.name
+                );
+            }
+        }
+    }
+
+    /// Guard 2 — parity over the shared `(calls, type_refs, candidates)`
+    /// projection of the two file-level relationship-extraction paths.
+    ///
+    /// The production index entry `parse_file_all_inner(path, true)` returns a
+    /// 5-tuple `(chunks, calls, types, chunk_calls, candidates)`; the test-only
+    /// entry `parse_file_relationships_with_candidates(path)` returns a 3-tuple
+    /// `(calls, types, candidates)`. The two bodies run independently but are
+    /// meant to agree on the three shared elements: same serde-candidate
+    /// pre-pass, same per-chunk call/serde-callback/macro/fn-pointer passes,
+    /// same type extraction with self-filter, same injection retain/extend.
+    ///
+    /// This freezes that agreement. A future one-sided edit to either body —
+    /// e.g. a new serde/macro pass added to one path only — diverges the
+    /// projection and fails here, even though each path stays internally
+    /// consistent and its own unit tests stay green.
+    #[test]
+    fn relationship_paths_agree_on_shared_projection() {
+        let parser = Parser::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("fixture.rs");
+
+        // A Rust fixture exercising every currently-uniform pass: ordinary
+        // calls + type refs, field-level serde callbacks, a container-level
+        // serde attribute (candidate pre-pass), local fns passed by value
+        // (fn-pointer edges), a bare unknown fn-pointer arg (cross-file
+        // candidate), and macro token-tree content.
+        let source = r#"
+use std::time::Duration;
+
+fn default_weight() -> f32 { 1.0 }
+fn ser_custom() {}
+fn touch_state() {}
+fn touch_idle_clock() {}
+
+#[derive(serde::Deserialize)]
+#[serde(default = "container_default")]
+struct Config {
+    #[serde(default = "default_weight")]
+    weight: f32,
+    #[serde(serialize_with = "ser_custom")]
+    name: String,
+    #[serde(with = "humantime_serde")]
+    timeout: Duration,
+}
+
+fn helper(cfg: &Config) -> u32 {
+    cfg.weight as u32
+}
+
+fn build() {
+    let state = make_state();
+    from_fn_with_state(state, touch_state, touch_idle_clock);
+    register(unresolved_handler);
+    println!("{}", helper(&Config::default()));
+    let v = vec![compute(), compute()];
+    let _ = v;
+}
+"#;
+        std::fs::write(&path, source).unwrap();
+
+        // Production path (private, reachable in-crate): drop chunks +
+        // chunk_calls, keep the shared projection.
+        let (_chunks, prod_calls, prod_types, _chunk_calls, prod_cands) =
+            parser.parse_file_all_inner(&path, true).unwrap();
+
+        // Test-only path: 3-tuple is already the shared projection.
+        let (test_calls, test_types, test_cands) = parser
+            .parse_file_relationships_with_candidates(&path)
+            .unwrap();
+
+        // --- Normalize each projection to a sorted Vec of stable-key tuples.
+        // Ordering can differ between the two walks, so compare as sets.
+        fn norm_calls(calls: &[FunctionCalls]) -> Vec<(String, u32, String, u32, &'static str)> {
+            let mut out: Vec<(String, u32, String, u32, &'static str)> = calls
+                .iter()
+                .flat_map(|fc| {
+                    fc.calls.iter().map(move |c| {
+                        (
+                            fc.name.clone(),
+                            fc.line_start,
+                            c.callee_name.clone(),
+                            c.line_number,
+                            c.kind.as_str(),
+                        )
+                    })
+                })
+                .collect();
+            out.sort();
+            out
+        }
+        fn norm_types(
+            types: &[ChunkTypeRefs],
+        ) -> Vec<(String, u32, String, u32, Option<&'static str>)> {
+            let mut out: Vec<(String, u32, String, u32, Option<&'static str>)> = types
+                .iter()
+                .flat_map(|tr| {
+                    tr.type_refs.iter().map(move |t| {
+                        (
+                            tr.name.clone(),
+                            tr.line_start,
+                            t.type_name.clone(),
+                            t.line_number,
+                            t.kind.map(|k| k.as_str()),
+                        )
+                    })
+                })
+                .collect();
+            out.sort();
+            out
+        }
+        fn norm_cands(cands: &[CandidateSite]) -> Vec<(String, u32, String)> {
+            let mut out: Vec<(String, u32, String)> = cands
+                .iter()
+                .map(|c| (c.callee_name.clone(), c.ref_line, c.candidate_kind.clone()))
+                .collect();
+            out.sort();
+            out
+        }
+
+        let prod_calls_n = norm_calls(&prod_calls);
+        let test_calls_n = norm_calls(&test_calls);
+        assert_eq!(
+            prod_calls_n, test_calls_n,
+            "calls diverge between production parse_file_all_inner and test \
+             parse_file_relationships_with_candidates\nprod: {prod_calls_n:#?}\ntest: {test_calls_n:#?}"
+        );
+
+        let prod_types_n = norm_types(&prod_types);
+        let test_types_n = norm_types(&test_types);
+        assert_eq!(
+            prod_types_n, test_types_n,
+            "type_refs diverge between the two relationship paths\nprod: {prod_types_n:#?}\ntest: {test_types_n:#?}"
+        );
+
+        let prod_cands_n = norm_cands(&prod_cands);
+        let test_cands_n = norm_cands(&test_cands);
+        assert_eq!(
+            prod_cands_n, test_cands_n,
+            "candidates diverge between the two relationship paths\nprod: {prod_cands_n:#?}\ntest: {test_cands_n:#?}"
+        );
+
+        // The fixture must actually exercise the passes, otherwise the parity
+        // assertion is vacuously satisfied by two empty projections. Require a
+        // non-trivial extraction so a future fixture edit that silences every
+        // pass can't quietly turn this guard into a no-op.
+        assert!(
+            !prod_calls_n.is_empty(),
+            "fixture extracted no calls; the parity check would be vacuous"
+        );
+        assert!(
+            prod_calls_n
+                .iter()
+                .any(|(_, _, callee, _, _)| callee == "default_weight"),
+            "serde-callback pass did not fire on the fixture; got: {prod_calls_n:#?}"
+        );
+        assert!(
+            prod_calls_n
+                .iter()
+                .any(|(_, _, callee, _, _)| callee == "touch_idle_clock"),
+            "fn-pointer-arg pass did not fire on the fixture; got: {prod_calls_n:#?}"
+        );
+    }
 }
