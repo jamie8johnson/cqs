@@ -251,8 +251,9 @@ fn build(
 /// it does not appear even with a generous ef and k. We use large ef and large
 /// k deliberately so that near-duplicate "crowding" in a dense real-embedding
 /// corpus cannot masquerade as a miss: with self-distance 0 and ef≫k, the only
-/// way the node fails to surface is if the entry-point race orphaned it from the
-/// graph. This is exactly the condition the repro's reachability assert guards.
+/// way the node fails to surface is if the parallel-build graph topology
+/// (nondeterministic layer heights + insertion order — not a data race)
+/// orphaned it from the graph. This is exactly the condition the repro guards.
 fn count_self_unreachable(hnsw: &Hnsw<f32, DistCosine>, vectors: &[Vec<f32>]) -> usize {
     let n = vectors.len();
     // Generous, count-aware budgets so crowding can't cause a false miss.

@@ -927,8 +927,9 @@ pub(crate) fn make_test_embedding(seed: u32) -> Embedding {
 /// to absorb the rare degenerate concurrent-build graph. `parallel_insert_data`
 /// under CPU contention yields a self-unreachable node on ~1-2% of builds
 /// (measured 52/3000 under 16-core load vs 0/3000 sequential — an hnsw_rs
-/// concurrent-build characteristic, filed upstream as hnswlib-rs#32, not a cqs
-/// bug); at 8 retries a transient miss is ~2.5e-14 while a systematic recall
+/// concurrent-build graph-topology characteristic, NOT a data race
+/// (`entry_point` is RwLock-protected); discussed upstream in hnswlib-rs#32,
+/// not a cqs bug); at 8 retries a transient miss is ~2.5e-14 while a systematic recall
 /// bug (miss on every build) still fails deterministically.
 ///
 /// The `build` closure returns the searchable index, so save/load roundtrips
