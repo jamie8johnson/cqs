@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bare-list L5X/L5K ST routines now extract call/type edges (was dormant).** A real Rockwell ST *routine* export is a bare statement list (the routine IS the scope; only Add-On-Instruction exports carry a `FUNCTION_BLOCK` wrapper). The tree-sitter ST grammar only emits `call_expression` / `var_decl_item` nodes inside a program unit, so a bare body parsed to a single ERROR node and yielded zero relationships — the COMMON plain-routine shape produced no caller/impact/dead edges. The L5X/L5K relationship path now wrap-normalizes a bare body in a synthetic `PROGRAM` unit before the parse (already-wrapped program units are detected by a leading-token check and passed through untouched), then lifts the wrapper line offset back off each extracted coordinate so reported lines map to the original body. **PARSER_VERSION bumped 13 → 14; a reindex is required** for the new L5X/L5K edges to appear (existing indexes hold stale-empty bare-list edges).
+
 ## [1.46.1] - 2026-06-15
 
 Patch release. Fixes the macOS (`aarch64-apple-darwin`) release build, which failed for v1.46.0 — Linux and Windows built fine, but the all-three-targets gate meant no GitHub Release binaries were published for v1.46.0. No functional or library changes; **no reindex needed** (PARSER_VERSION and schema are identical to 1.46.0). crates.io 1.46.0 is superseded (it does not compile on macOS).

@@ -13,7 +13,7 @@ use regex::Regex;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
-    capture_name_to_chunk_type, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
+    capture_name_to_chunk_type, CallSite, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
     ParserError, TypeRef,
 };
 use super::ParseAllResult;
@@ -61,6 +61,81 @@ fn find_nearest_before<'a>(re: &Regex, source: &'a str, byte_offset: usize) -> O
     best.and_then(|m| re.captures(&source[m.start()..]))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str())
+}
+
+/// The synthetic program-unit prefix used to wrap a bare statement list so the
+/// tree-sitter ST grammar emits typed `call_expression` / `var_decl_item`
+/// nodes. The grammar only produces those node kinds when statements sit inside
+/// a program unit (FUNCTION_BLOCK / PROGRAM / FUNCTION); a real Rockwell ST
+/// routine export is a bare statement list (the routine IS the scope), which
+/// otherwise parses to a single ERROR node and yields zero call/type edges.
+/// A single leading line keeps the offset math a constant.
+const ST_WRAP_PREFIX: &str = "PROGRAM _cqs_wrap\n";
+/// The suffix that closes the synthetic wrapper. It is appended after a newline
+/// so a body without a trailing newline still closes cleanly.
+const ST_WRAP_SUFFIX: &str = "\nEND_PROGRAM";
+
+/// A body normalized for ST relationship extraction, plus the wrapper line
+/// offset so extracted line coordinates can be lifted back to the original
+/// body.
+///
+/// Only a LINE offset is carried: the ST relationship extractors
+/// (`CallSite` / `TypeRef`) report line numbers, not byte offsets, so the
+/// prepended prefix only ever perturbs lines. The chunk's `byte_start` is set
+/// upstream in `parse_st_regions` from the UNWRAPPED region source and is never
+/// touched by this normalization, so no byte lift is needed anywhere.
+struct WrappedSt {
+    /// The source to feed tree-sitter (wrapped iff the body was bare).
+    source: String,
+    /// Lines the wrapper prepended (0 if already a program unit, else 1).
+    line_offset: u32,
+}
+
+/// True iff `body` already opens with a program-unit keyword (`PROGRAM`,
+/// `FUNCTION_BLOCK`, `FUNCTION`) as a leading TOKEN — i.e. the keyword is
+/// followed by whitespace or end-of-input, not embedded in a longer identifier
+/// like `FUNCTIONAL_X`. Case-insensitive. Such a body is already a program
+/// unit and must NOT be wrapped (double-wrapping would nest `_cqs_wrap` around
+/// a real unit and shift coordinates twice).
+///
+/// `FUNCTION_BLOCK` is checked before `FUNCTION` because the latter is a prefix
+/// of the former; either way both are real program units, so only the
+/// token-boundary check (not which keyword) governs the wrap decision.
+fn is_program_unit(body: &str) -> bool {
+    let trimmed = body.trim_start();
+    for kw in ["FUNCTION_BLOCK", "FUNCTION", "PROGRAM"] {
+        if trimmed.len() >= kw.len() && trimmed[..kw.len()].eq_ignore_ascii_case(kw) {
+            // Leading token only: the keyword must be followed by whitespace or
+            // be the entire (trimmed) body, never butted against more
+            // identifier characters (`FUNCTIONAL_X`, `PROGRAMMER`).
+            match trimmed[kw.len()..].chars().next() {
+                None => return true,
+                Some(c) if c.is_whitespace() => return true,
+                Some(_) => {}
+            }
+        }
+    }
+    false
+}
+
+/// Normalize an ST routine body for relationship extraction: wrap a bare
+/// statement list in a synthetic `PROGRAM _cqs_wrap ... END_PROGRAM` so the
+/// grammar emits typed call/type nodes, or pass an already-wrapped program unit
+/// through untouched (zero offset). The returned `line_offset` is subtracted
+/// from every extracted line coordinate at the lift site so reported lines map
+/// back to the ORIGINAL body, not the wrapped copy.
+fn wrap_bare_st(body: &str) -> WrappedSt {
+    if is_program_unit(body) {
+        WrappedSt {
+            source: body.to_string(),
+            line_offset: 0,
+        }
+    } else {
+        WrappedSt {
+            source: format!("{ST_WRAP_PREFIX}{body}{ST_WRAP_SUFFIX}"),
+            line_offset: 1,
+        }
+    }
 }
 
 /// Parse ST regions into chunks using the tree-sitter ST grammar.
@@ -593,7 +668,11 @@ pub fn parse_l5x_all(
     for chunk in &chunks {
         // Reuse the per-chunk extractors so file-level relationships match the
         // `chunk_calls`/candidate path the grammar-less indexing route runs.
-        let calls = parser.extract_calls_from_chunk(chunk);
+        // A bare-list routine body (no enclosing program unit) parses to an
+        // ERROR node and yields zero call/type nodes, so the body is
+        // wrap-normalized for the relationship parse and the wrapper line/byte
+        // offsets are lifted back off the extracted coordinates.
+        let calls = extract_chunk_calls(chunk, parser);
         if !calls.is_empty() {
             all_calls.push(FunctionCalls {
                 name: chunk.name.clone(),
@@ -622,9 +701,44 @@ pub fn parse_l5x_all(
     Ok((chunks, all_calls, all_types))
 }
 
+/// Extract function calls from a single ST chunk, wrap-normalizing a bare
+/// statement-list body so the grammar emits `call_expression` nodes, then
+/// lifting the wrapper line offset back off each call's reported line.
+///
+/// A real Rockwell ST routine export IS a bare statement list (the routine is
+/// the scope; only Add-On-Instruction exports carry the FUNCTION_BLOCK
+/// wrapper), so without normalization the COMMON shape produces no call edges.
+/// `extract_calls_from_chunk` reads `chunk.content`, so the wrapped body is
+/// handed to it through a content-only clone and the resulting
+/// `CallSite.line_number`s (1-indexed within the wrapped body) are shifted back
+/// by the prepended wrapper line via saturating_sub.
+fn extract_chunk_calls(chunk: &Chunk, parser: &Parser) -> Vec<CallSite> {
+    let wrapped = wrap_bare_st(&chunk.content);
+    if wrapped.line_offset == 0 {
+        // Already a program unit — no offset to lift, parse content as-is.
+        return parser.extract_calls_from_chunk(chunk);
+    }
+    let mut wrapped_chunk = chunk.clone();
+    wrapped_chunk.content = wrapped.source;
+    let mut calls = parser.extract_calls_from_chunk(&wrapped_chunk);
+    for call in &mut calls {
+        // Lift the synthetic wrapper line back off. saturating_sub defends
+        // against a stray match landing on the synthetic first line (the
+        // call_expression query only matches inside the body, so this should
+        // never underflow, but a 0 is preferable to a panic / wrap).
+        call.line_number = call.line_number.saturating_sub(wrapped.line_offset);
+    }
+    calls
+}
+
 /// Extract type references from a single ST chunk's content via a standalone
 /// tree-sitter parse, dropping the chunk's own name (a self-reference is not a
 /// dependency edge — same filter `parse_aspx_all` applies).
+///
+/// A bare statement-list body is wrap-normalized before the parse (see
+/// [`wrap_bare_st`]) so `var_decl_item` type nodes are emitted, and each
+/// extracted `TypeRef.line_number` (1-indexed within the wrapped body) has the
+/// wrapper line offset lifted back off so it maps to the ORIGINAL body line.
 fn extract_chunk_type_refs(chunk: &Chunk, parser: &Parser) -> Vec<TypeRef> {
     let st_lang = Language::StructuredText;
     let grammar = match st_lang.try_grammar() {
@@ -639,14 +753,22 @@ fn extract_chunk_type_refs(chunk: &Chunk, parser: &Parser) -> Vec<TypeRef> {
         tracing::warn!("Failed to set ST grammar for type-ref extraction");
         return Vec::new();
     }
-    let tree = match ts_parser.parse(&chunk.content, None) {
+    let wrapped = wrap_bare_st(&chunk.content);
+    let tree = match ts_parser.parse(&wrapped.source, None) {
         Some(t) => t,
         None => {
             tracing::warn!("ST type-ref parse returned no tree");
             return Vec::new();
         }
     };
-    let mut refs = parser.extract_types(&chunk.content, &tree, st_lang, 0, chunk.content.len());
+    let mut refs = parser.extract_types(&wrapped.source, &tree, st_lang, 0, wrapped.source.len());
+    // Lift the synthetic wrapper line back off each ref so reported lines map
+    // to the original body. saturating_sub guards a stray wrapper-line match.
+    if wrapped.line_offset != 0 {
+        for r in &mut refs {
+            r.line_number = r.line_number.saturating_sub(wrapped.line_offset);
+        }
+    }
     refs.retain(|t| t.type_name != chunk.name);
     refs
 }
@@ -1299,14 +1421,16 @@ END_PROGRAM
     // The production parse_file_all path emits a third and fourth value
     // (calls, types) alongside chunks; the chunk-only production tests above
     // discard them. These exercise the call-graph + type-ref surface
-    // (`parse_l5x_all` -> `extract_calls_from_chunk` / `extract_chunk_type_refs`)
+    // (`parse_l5x_all` -> `extract_chunk_calls` / `extract_chunk_type_refs`)
     // that powers callers/impact/dead for PLC code.
     //
     // The ST grammar only yields `call_expression` / typed-`var_decl_item`
     // nodes when statements sit inside a program unit (FUNCTION_BLOCK /
-    // PROGRAM / FUNCTION), so these routine bodies carry the wrapper an
-    // Add-On-Instruction export does. A bare statement list parses to an
-    // ERROR node and yields no relationships — covered by the malformed test.
+    // PROGRAM / FUNCTION). An Add-On-Instruction export carries that wrapper
+    // already; a plain routine export is a bare statement list, which the
+    // relationship path wrap-normalizes in a synthetic program unit before the
+    // parse (see `wrap_bare_st`) and lifts the wrapper offset back off the
+    // extracted coordinates. Both shapes are covered below.
 
     /// An L5X ST routine whose body is a FUNCTION_BLOCK with calls and typed
     /// declarations: `parse_l5x_all` must surface those calls and type refs,
@@ -1549,6 +1673,276 @@ END_PROGRAM
         assert!(
             type_names.contains(&"BOOL"),
             "the recoverable type `BOOL` must survive error recovery; got {type_names:?}"
+        );
+    }
+
+    /// THE BUG FIX. A bare statement-list ST routine (no enclosing program
+    /// unit — the COMMON Rockwell plain-routine export shape) must extract
+    /// call + type edges after wrap-normalization. Before the fix the bare body
+    /// parsed to a single ERROR node and yielded zero relationships.
+    ///
+    /// Asserts the specific callee + type names AND that reported coordinates
+    /// map back to the ORIGINAL body (the wrapper line is lifted off): the call
+    /// sits on chunk-content line 2 (`VAR` block is line 1), not line 3 (its
+    /// position inside the synthetic wrapper).
+    #[test]
+    fn test_l5x_parse_all_bare_list_extracts_calls_and_types() {
+        // A bare routine body: a VAR block giving a typed declaration, then a
+        // bare FB-instance invocation and an expression-context call. No
+        // FUNCTION_BLOCK / PROGRAM / FUNCTION wrapper — this is what a plain ST
+        // routine export looks like.
+        let source = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\n",
+            "<Routine Name=\"BareRoutine\" Type=\"ST\"><STContent>\n",
+            "<Line Number=\"0\"><![CDATA[VAR t : TON; lvl : REAL; END_VAR]]></Line>\n",
+            "<Line Number=\"1\"><![CDATA[t(IN := startButton, PT := T#5s);]]></Line>\n",
+            "<Line Number=\"2\"><![CDATA[lvl := ReadLevel(sensor);]]></Line>\n",
+            "</STContent></Routine>\n",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>",
+        );
+        let parser = Parser::new().unwrap();
+        let (chunks, calls, types) = parse_l5x_all(source, Path::new("bare.l5x"), &parser).unwrap();
+
+        assert_eq!(chunks.len(), 1, "expected one ST routine chunk");
+        assert_eq!(chunks[0].name, "BareRoutine");
+        // The chunk content is the ORIGINAL bare body — wrap normalization is
+        // applied only to the relationship parse, never to indexed content.
+        assert!(
+            !chunks[0].content.contains("_cqs_wrap"),
+            "indexed chunk content must NOT carry the synthetic wrapper: {:?}",
+            chunks[0].content
+        );
+
+        // Calls: the dormant ones now surface, grouped under the chunk name.
+        assert_eq!(
+            calls.len(),
+            1,
+            "calls grouped under one chunk, got {calls:?}"
+        );
+        assert_eq!(calls[0].name, "BareRoutine");
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            callees.contains(&"t"),
+            "bare FB-instance call `t(...)` must surface after wrap; got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"ReadLevel"),
+            "bare expression call `ReadLevel(...)` must surface after wrap; got {callees:?}"
+        );
+        // The synthetic wrapper program name must NEVER leak into extracted
+        // edges (it is not a call_expression / var_decl_item target).
+        assert!(
+            !callees.contains(&"_cqs_wrap"),
+            "the synthetic wrapper name must not leak as a call edge; got {callees:?}"
+        );
+        // Coordinate lift: `t(...)` is on chunk-content line 2 in the ORIGINAL
+        // body (line 1 is the VAR block). If the wrapper line were not lifted
+        // off, it would report line 3 (its position in the wrapped copy).
+        let t_call = calls[0]
+            .calls
+            .iter()
+            .find(|c| c.callee_name == "t")
+            .expect("the `t` call must exist");
+        assert_eq!(
+            t_call.line_number, 2,
+            "call line must map back to the original body (line 2), not the \
+             wrapped position (line 3): wrapper offset not lifted"
+        );
+        // Edge provenance stays syntactic.
+        for cs in &calls[0].calls {
+            assert_eq!(
+                cs.kind,
+                crate::parser::types::CallEdgeKind::Call,
+                "wrap-normalized ST routine calls are syntactic, not heuristic: {cs:?}"
+            );
+        }
+
+        // Types: the typed declaration now surfaces too.
+        assert_eq!(
+            types.len(),
+            1,
+            "types grouped under one chunk, got {types:?}"
+        );
+        assert_eq!(types[0].name, "BareRoutine");
+        let type_names: Vec<&str> = types[0]
+            .type_refs
+            .iter()
+            .map(|t| t.type_name.as_str())
+            .collect();
+        assert!(
+            type_names.contains(&"TON"),
+            "derived type TON must surface after wrap; got {type_names:?}"
+        );
+        assert!(
+            type_names.contains(&"REAL"),
+            "basic type REAL must surface after wrap; got {type_names:?}"
+        );
+        assert!(
+            !type_names.contains(&"_cqs_wrap"),
+            "the synthetic wrapper name must not leak as a type ref; got {type_names:?}"
+        );
+        // Coordinate lift on the type ref too: the VAR block is on body line 1.
+        let ton = types[0]
+            .type_refs
+            .iter()
+            .find(|t| t.type_name == "TON")
+            .expect("the TON type ref must exist");
+        assert_eq!(
+            ton.line_number, 1,
+            "type-ref line must map back to the original body (line 1), not the \
+             wrapped position (line 2): wrapper offset not lifted"
+        );
+    }
+
+    /// L5K bare-list parity: a legacy ASCII routine whose ST_CONTENT body is a
+    /// bare statement list (no FUNCTION_BLOCK wrapper) must also extract calls
+    /// after wrap-normalization, since L5K routes through the same shared
+    /// relationship path as L5X.
+    #[test]
+    fn test_l5k_parse_all_bare_list_extracts_calls() {
+        let source = concat!(
+            "\nPROGRAM MainProgram\n",
+            "  ROUTINE BareRoutine\n",
+            "    Type := ST\n",
+            "    ST_CONTENT := [\n",
+            "      myTimer(IN := startButton, PT := T#5s);\n",
+            "      lvl := ReadLevel(sensor);\n",
+            "    ];\n",
+            "  END_ROUTINE\n",
+            "END_PROGRAM\n",
+        );
+        let parser = Parser::new().unwrap();
+        let (chunks, calls, _types) =
+            parse_l5x_all(source, Path::new("bare.l5k"), &parser).unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "BareRoutine");
+        assert_eq!(
+            calls.len(),
+            1,
+            "L5K bare list must now extract calls (was dormant); got {calls:?}"
+        );
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            callees.contains(&"myTimer"),
+            "L5K bare call `myTimer` must surface after wrap; got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"ReadLevel"),
+            "L5K bare call `ReadLevel` must surface after wrap; got {callees:?}"
+        );
+    }
+
+    /// The in-repo `SAMPLE_L5X` constant is itself a bare statement list. It was
+    /// historically only exercised for region/chunk extraction, never for
+    /// relationships, and produced ZERO calls. After the fix it must extract the
+    /// `myTimer` call with a correctly-lifted line.
+    #[test]
+    fn test_l5x_sample_const_bare_list_now_extracts_call() {
+        let parser = Parser::new().unwrap();
+        let (chunks, calls, _types) =
+            parse_l5x_all(SAMPLE_L5X, Path::new("sample.l5x"), &parser).unwrap();
+
+        assert_eq!(chunks.len(), 1, "SAMPLE_L5X has one ST routine");
+        assert_eq!(chunks[0].name, "MainRoutine");
+
+        assert_eq!(
+            calls.len(),
+            1,
+            "SAMPLE_L5X bare list must now extract calls (was dormant); got {calls:?}"
+        );
+        assert_eq!(calls[0].name, "MainRoutine");
+        let my_timer = calls[0]
+            .calls
+            .iter()
+            .find(|c| c.callee_name == "myTimer")
+            .expect("the `myTimer` call must now surface from the bare SAMPLE_L5X body");
+        // Chunk content: line 1 `// Main routine`, line 2 `myTimer(...)`. After
+        // lifting the wrapper line, the call reports body line 2.
+        assert_eq!(
+            my_timer.line_number, 2,
+            "myTimer must report original body line 2, not the wrapped line 3"
+        );
+    }
+
+    /// REGRESSION: an already-wrapped FUNCTION_BLOCK body must NOT be
+    /// double-wrapped. `is_program_unit` recognizes the leading keyword as a
+    /// token (not a substring), so a real program unit is parsed as-is with a
+    /// zero wrapper offset, and extraction still works. This guards the four
+    /// existing FUNCTION_BLOCK relationship tests against an accidental
+    /// double-wrap that would shift every coordinate by one.
+    #[test]
+    fn test_l5x_already_wrapped_fb_not_double_wrapped() {
+        // Detection: real program units are NOT wrapped.
+        assert!(is_program_unit(
+            "FUNCTION_BLOCK PumpFB\nVAR x : INT; END_VAR"
+        ));
+        assert!(is_program_unit("  PROGRAM Main\n  x := 1;"));
+        assert!(is_program_unit("FUNCTION Foo : INT\nFoo := 1;"));
+        assert!(is_program_unit("function_block lower\n")); // case-insensitive
+                                                            // Token-boundary: an identifier that merely starts with the keyword
+                                                            // text is NOT a program unit and MUST be wrapped.
+        assert!(!is_program_unit("FUNCTIONAL_X(a);"));
+        assert!(!is_program_unit("PROGRAMMER := 1;"));
+        assert!(!is_program_unit("myTimer(IN := x);"));
+        assert!(!is_program_unit("x := 1;"));
+
+        // Offsets: a program unit gets zero offset (parse as-is); a bare body
+        // gets the one-line offset and is bracketed by the synthetic unit.
+        let wrapped_fb = wrap_bare_st("FUNCTION_BLOCK F\nx := 1;\nEND_FUNCTION_BLOCK");
+        assert_eq!(
+            wrapped_fb.line_offset, 0,
+            "program unit must not be wrapped"
+        );
+        assert!(!wrapped_fb.source.contains("_cqs_wrap"));
+
+        let wrapped_bare = wrap_bare_st("x := 1;");
+        assert_eq!(wrapped_bare.line_offset, 1, "bare body must be wrapped");
+        assert_eq!(
+            wrapped_bare.source, "PROGRAM _cqs_wrap\nx := 1;\nEND_PROGRAM",
+            "bare body must be bracketed by the synthetic program unit"
+        );
+
+        // End-to-end: the FB-wrapped fixture still extracts the same call with
+        // a stable line (no double-wrap shift). `t(...)` is on FB body line 3
+        // (FB header line 1, VAR line 2), reported unchanged because the
+        // program unit is parsed with zero wrapper offset.
+        let source = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\n",
+            "<Routine Name=\"PumpFB\" Type=\"ST\"><STContent>\n",
+            "<Line Number=\"0\"><![CDATA[FUNCTION_BLOCK PumpFB]]></Line>\n",
+            "<Line Number=\"1\"><![CDATA[VAR t : TON; END_VAR]]></Line>\n",
+            "<Line Number=\"2\"><![CDATA[t(IN := startButton, PT := T#5s);]]></Line>\n",
+            "<Line Number=\"3\"><![CDATA[END_FUNCTION_BLOCK]]></Line>\n",
+            "</STContent></Routine>\n",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>",
+        );
+        let parser = Parser::new().unwrap();
+        let (_chunks, calls, types) =
+            parse_l5x_all(source, Path::new("pump.l5x"), &parser).unwrap();
+        let t_call = calls[0]
+            .calls
+            .iter()
+            .find(|c| c.callee_name == "t")
+            .expect("FB call `t` must extract");
+        assert_eq!(
+            t_call.line_number, 3,
+            "FB body call line must be unshifted (no double-wrap); got {}",
+            t_call.line_number
+        );
+        assert!(
+            types[0].type_refs.iter().any(|t| t.type_name == "TON"),
+            "FB typed declaration TON must still extract"
         );
     }
 

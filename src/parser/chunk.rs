@@ -54,7 +54,17 @@ use super::Parser;
 /// file re-parsed under v13 produces call edges and body-inclusive chunk
 /// content + line_end + content_hash + id that it did not under v12, so a
 /// refresh is required even when the file's bytes are unchanged.
-pub const PARSER_VERSION: u32 = 13;
+/// 14: L5X/L5K bare statement-list ST routines now extract call/type edges. A
+/// real Rockwell ST routine export is a bare statement list (the routine is the
+/// scope; only Add-On-Instruction exports carry a FUNCTION_BLOCK wrapper),
+/// which the ST grammar parses to a single ERROR node — yielding zero
+/// call_expression / var_decl_item nodes. The L5X/L5K relationship path now
+/// wrap-normalizes a bare body in a synthetic program unit before the parse and
+/// lifts the wrapper offset back off extracted coordinates. A byte-identical
+/// bare-list L5X/L5K file re-parsed under v14 produces call + type edges it did
+/// not under v13, so a refresh is required even when the file's bytes are
+/// unchanged.
+pub const PARSER_VERSION: u32 = 14;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
