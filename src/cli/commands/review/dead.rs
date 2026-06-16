@@ -90,8 +90,9 @@ struct KnownGapRule {
 /// (`onclick="..."`, `addEventListener`) rather than a syntactic call. SCOPED to
 /// the served path: the gap is "HTML-wired served assets", not "any .js
 /// anywhere". A build script like `scripts/build.mjs` with zero callers is
-/// genuinely dead and must NOT be excused. The prefix table is extensible so
-/// other corpora can add their served-assets roots.
+/// genuinely dead and must NOT be excused. The prefix table is a fixed
+/// compile-time `const` allowlist (not runtime-configurable); a new
+/// served-assets root is added by editing `SERVED_ASSET_PREFIXES`.
 fn is_served_js_asset(entry: &DeadFunction) -> bool {
     /// Served-assets directory prefixes. Origins are normalized to forward
     /// slashes before classification, so only `/`-form prefixes are listed.
