@@ -571,6 +571,20 @@ impl CallGraph {
             .cloned()
             .unwrap_or_else(CallEdgeMeta::default_call)
     }
+
+    /// `edge_meta` for callers that already hold the interned [`Arc<str>`]
+    /// adjacency-list entries (the cross-project caller/callee render loops).
+    ///
+    /// Builds the lookup key with two [`Arc::clone`]s (refcount bumps) instead
+    /// of the `&str` path's two `Arc::from` calls (each a fresh heap allocation
+    /// of the string + control block), so the per-edge render loop pays no
+    /// string allocation per lookup.
+    pub fn edge_meta_arc(&self, caller: &Arc<str>, callee: &Arc<str>) -> CallEdgeMeta {
+        self.edges
+            .get(&(Arc::clone(caller), Arc::clone(callee)))
+            .cloned()
+            .unwrap_or_else(CallEdgeMeta::default_call)
+    }
 }
 
 /// Chunk identity for diff comparison
