@@ -110,8 +110,10 @@ mod tests {
         // Why no recall assertion: the graph is built via
         // `parallel_insert_data` (rayon) and hnsw_rs seeds its layer
         // generator from OS entropy (`StdRng::from_os_rng`). Under CPU
-        // saturation the concurrent entry-point race in `check_entry_point`
-        // produces a degenerate topology on ~1-2% of builds where even the
+        // saturation the nondeterministic parallel-build graph topology
+        // (insertion order + OS-seeded layer heights; `check_entry_point` is
+        // RwLock-protected, so this is NOT a data race) produces a degenerate
+        // topology on ~1-2% of builds where even the
         // exact self-match vector (cosine distance 0 to "a") is unreachable.
         // Measured: parallel insert = 52/3000 self-misses under 16-core load;
         // sequential insert = 0/3000. This is an hnsw_rs concurrent-build

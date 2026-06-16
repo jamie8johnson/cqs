@@ -63,7 +63,7 @@ Post-v1.45.0 idle loop + a 3-round audit. **PARSER_VERSION 10 → 13 — a reind
 
 ### Changed
 
-- **HNSW build applies `modify_level_scale(0.5)` (#1939).** hnsw_rs's default level scale (`1/ln(M)`) over-populates the upper layers under parallel insert, leaving a fraction of points self-unreachable (orphaned) by construction; a 0.5 factor cut that orphaning ~26–100× (M=32: 0 orphaned / 40 builds) with recall flat-to-slightly-up. Single-sourced as `LEVEL_SCALE_FACTOR` in `HnswGraph::new`. No schema/PARSER_VERSION change, but a reindex is required to rebuild the graph. (Root cause — an entry-point write race during parallel insert — confirmed by the hnswlib-rs maintainer: jean-pierreBoth/hnswlib-rs#32.) Caveat: the underlying hnsw_rs call prints a scale line to stdout, so JSON consumers should parse the last object.
+- **HNSW build applies `modify_level_scale(0.5)` (#1939).** hnsw_rs's default level scale (`1/ln(M)`) over-populates the upper layers under parallel insert, leaving a fraction of points self-unreachable (orphaned) by construction; a 0.5 factor cut that orphaning ~26–100× (M=32: 0 orphaned / 40 builds) with recall flat-to-slightly-up. Single-sourced as `LEVEL_SCALE_FACTOR` in `HnswGraph::new`. No schema/PARSER_VERSION change, but a reindex is required to rebuild the graph. (Root cause: parallel-build graph-topology nondeterminism (layer heights + insertion order) — **NOT an entry-point write race**; `entry_point` is RwLock-protected in 0.3.4. An earlier note here mis-described it as a write race; the maintainer and a contributor corrected that in jean-pierreBoth/hnswlib-rs#32. `modify_level_scale` and a higher M are the levers.) Caveat: the underlying hnsw_rs call prints a scale line to stdout, so JSON consumers should parse the last object.
 - **Centralized the `index.db` freshness key across all three readers (#1917).** A shared `FileIdentity` (`dev`, `inode`, `size`, `mtime`) + `DataVersionProbe` in `src/store/helpers/file_identity.rs` replaces three independently-assembled staleness keys, closing an incomplete-sweep class where a hardening applied to one reader could miss its peers.
 
 ### Fixed
@@ -412,7 +412,8 @@ Post-v1.45.0 idle loop + a 3-round audit. **PARSER_VERSION 10 → 13 — a reind
   `hnsw::safety::tests::test_loaded_index_lifecycle` (flaky under full-suite
   parallelism, passed in isolation): `HnswIndex::build_with_dim` inserts via
   `parallel_insert_data` (rayon) over hnsw_rs's OS-entropy-seeded layer RNG, and
-  under CPU saturation the concurrent entry-point race produces a degenerate
+  under CPU saturation the nondeterministic parallel-build graph topology
+  (insertion order + layer heights; not a data race) produces a degenerate
   graph on ~1-2% of builds where even the cosine-distance-0 self-match vector is
   unreachable (measured 52/3000 parallel inserts vs 0/3000 sequential under
   16-core load; search on a fixed index is deterministic at 0/100k). This is an
