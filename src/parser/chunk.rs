@@ -1274,6 +1274,103 @@ CREATE TABLE IF NOT EXISTS late (
         }
 
         #[test]
+        fn dart_body_comment_does_not_change_canonical_hash() {
+            // Exercises the Dart body-inclusive path: the tree-sitter-dart
+            // grammar inlines the top-level-definition rule, so a Dart function's
+            // `function_signature` (the captured chunk node) and its
+            // `function_body` are ADJACENT SIBLINGS. `extract_chunk` extends the
+            // chunk span over the body and passes the body as the `extra` arg to
+            // `canonical_hash_spanning`, so a comment living INSIDE the body must
+            // be stripped from the canonical hash. Parsing through `Parser`
+            // (rather than calling the helper directly) is what feeds the real
+            // body node into that `extra` argument.
+            let a = canon_of(
+                "int square(int x) {\n  return x * x;\n}\n",
+                "dart",
+                "square",
+            );
+            // `//` line comment inside the body.
+            let b = canon_of(
+                "int square(int x) {\n  // square the argument\n  return x * x;\n}\n",
+                "dart",
+                "square",
+            );
+            assert_eq!(
+                a, b,
+                "a //-comment-only edit inside a Dart fn body must not change canonical_hash"
+            );
+            // `/* */` block comment inside the body.
+            let c = canon_of(
+                "int square(int x) {\n  /* square the argument */\n  return x * x;\n}\n",
+                "dart",
+                "square",
+            );
+            assert_eq!(
+                a, c,
+                "a /* */-comment-only edit inside a Dart fn body must not change canonical_hash"
+            );
+        }
+
+        #[test]
+        fn dart_method_body_comment_does_not_change_canonical_hash() {
+            // The method case routes through `dart_function_body`'s
+            // `method_signature` branch: the body node is a sibling of the
+            // signature's parent. A comment inside a Dart class method body must
+            // still be stripped from the canonical hash.
+            let a = canon_of(
+                "class Calc {\n  int add(int a, int b) {\n    return a + b;\n  }\n}\n",
+                "dart",
+                "add",
+            );
+            let b = canon_of(
+                "class Calc {\n  int add(int a, int b) {\n    // sum the two args\n    return a + b;\n  }\n}\n",
+                "dart",
+                "add",
+            );
+            assert_eq!(
+                a, b,
+                "a //-comment-only edit inside a Dart method body must not change canonical_hash"
+            );
+        }
+
+        #[test]
+        fn dart_body_code_change_does_change_canonical_hash() {
+            // The dual of the comment tests: a REAL change inside the
+            // body-spanned region (which lives under the `extra` body node, not
+            // the captured signature node) MUST change canonical_hash. This pins
+            // that the body-inclusive path is hashing body content, not just the
+            // signature.
+            let fn_a = canon_of(
+                "int square(int x) {\n  return x * x;\n}\n",
+                "dart",
+                "square",
+            );
+            let fn_b = canon_of(
+                "int square(int x) {\n  return x + x;\n}\n",
+                "dart",
+                "square",
+            );
+            assert_ne!(
+                fn_a, fn_b,
+                "a real Dart fn body change MUST change canonical_hash"
+            );
+            let m_a = canon_of(
+                "class Calc {\n  int add(int a, int b) {\n    return a + b;\n  }\n}\n",
+                "dart",
+                "add",
+            );
+            let m_b = canon_of(
+                "class Calc {\n  int add(int a, int b) {\n    return a - b;\n  }\n}\n",
+                "dart",
+                "add",
+            );
+            assert_ne!(
+                m_a, m_b,
+                "a real Dart method body change MUST change canonical_hash"
+            );
+        }
+
+        #[test]
         fn comment_strip_does_not_fuse_adjacent_tokens() {
             // `a/* */b` must canonicalize differently from `ab`: the removed
             // comment is replaced with a space so the two identifiers stay

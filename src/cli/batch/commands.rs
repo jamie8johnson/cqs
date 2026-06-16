@@ -660,8 +660,8 @@ mod tests {
         let off = BatchInput::try_parse_from(["search", "hello", "--no-overlay"]).unwrap();
         match off.cmd {
             BatchCmd::Search { ref args, .. } => {
-                assert!(args.no_overlay, "--no-overlay sets the flag");
-                assert!(!args.overlay);
+                assert!(args.overlay.no_overlay, "--no-overlay sets the flag");
+                assert!(!args.overlay.overlay);
             }
             _ => panic!("Expected Search command"),
         }

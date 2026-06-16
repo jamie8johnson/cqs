@@ -84,9 +84,9 @@ fn prepare_overlay_request(ctx: &BatchView, args: &SearchArgs) -> Result<()> {
     // `--overlay-root` validation.
     super::prepare_overlay_request_fields(
         ctx,
-        args.overlay,
-        args.no_overlay,
-        args.overlay_root.as_deref(),
+        args.overlay.overlay,
+        args.overlay.no_overlay,
+        args.overlay.overlay_root.as_deref(),
     )
 }
 
@@ -160,8 +160,8 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
 /// `--overlay` / `CQS_WORKTREE_OVERLAY=1` opt-in, else off.
 fn daemon_overlay_active(args: &SearchArgs) -> bool {
     crate::cli::commands::search::query::resolve_overlay_active(
-        args.overlay,
-        args.no_overlay,
+        args.overlay.overlay,
+        args.overlay.no_overlay,
         false,
     )
 }

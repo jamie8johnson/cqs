@@ -808,7 +808,43 @@ pub fn discover_delta(worktree_root: &Path, parent_root: &Path) -> Result<Delta,
     )?;
     let mut records = parse_name_status_z(&tracked_raw);
 
-    // Untracked files (lane-new code, gitignore-respecting).
+    // Size cap, enforced incrementally so an oversized delta bails BEFORE the
+    // filesystem-heavy parse-set scan (`is_parse_candidate` stats every file).
+    // The cap is measured on the authoritative quantity — the deduped mask set
+    // — so the early bail rejects exactly what the final backstop would.
+    let cap = overlay_max_files();
+    let mut delta = Delta {
+        parent_head_oid: oid,
+        ..Default::default()
+    };
+
+    // Helper: fold one record's touched origins into the mask set.
+    fn mask_record(masked: &mut HashSet<PathBuf>, rec: &DeltaRecord) {
+        // For renames/copies the `old` path is masked too (the rename case
+        // from the program doc). `R` masks old; `C` leaves old present in
+        // parent (untouched).
+        if let Some(old) = &rec.old {
+            if rec.status == DeltaStatus::Renamed {
+                masked.insert(PathBuf::from(old));
+            }
+        }
+        masked.insert(PathBuf::from(&rec.new));
+    }
+
+    // Mask the tracked records, then check the cap before spending a git
+    // invocation on the untracked list.
+    for rec in &records {
+        mask_record(&mut delta.masked_origins, rec);
+    }
+    let count = delta.masked_origins.len();
+    if count > cap {
+        tracing::warn!(count, cap, "overlay delta exceeds cap — skipping");
+        return Err(OverlayError::DeltaTooLarge { count, cap });
+    }
+
+    // Untracked files (lane-new code, gitignore-respecting). Fold each into the
+    // mask set as it arrives and bail the moment the cap is crossed, so a giant
+    // untracked tree never builds the full set or the parse set.
     let untracked_raw = git_capture(
         worktree_root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -816,32 +852,24 @@ pub fn discover_delta(worktree_root: &Path, parent_root: &Path) -> Result<Delta,
     )?;
     for field in untracked_raw.split(|&b| b == 0).filter(|f| !f.is_empty()) {
         let path = normalize_str(&String::from_utf8_lossy(field));
-        records.push(DeltaRecord {
+        let rec = DeltaRecord {
             status: DeltaStatus::Untracked,
             old: None,
             new: path,
-        });
+        };
+        mask_record(&mut delta.masked_origins, &rec);
+        records.push(rec);
+        let count = delta.masked_origins.len();
+        if count > cap {
+            tracing::warn!(count, cap, "overlay delta exceeds cap — skipping");
+            return Err(OverlayError::DeltaTooLarge { count, cap });
+        }
     }
 
-    let mut delta = Delta {
-        parent_head_oid: oid,
-        ..Default::default()
-    };
-
+    // Under the cap: build the parse set (the subset of masked origins worth
+    // indexing). `D` masks only (no content). `R`/`C` index the new path.
+    // Everything else (`M`/`A`/`T`/untracked) indexes its path.
     for rec in &records {
-        // Mask set: every touched origin. For renames/copies the `old` path
-        // is masked too (the rename case from the program doc).
-        if let Some(old) = &rec.old {
-            // `R` masks old; `C` leaves old present in parent (untouched).
-            if rec.status == DeltaStatus::Renamed {
-                delta.masked_origins.insert(PathBuf::from(old));
-            }
-        }
-        delta.masked_origins.insert(PathBuf::from(&rec.new));
-
-        // Parse set: which masked origins actually get indexed. `D` masks
-        // only (no content). `R`/`C` index the new path. Everything else
-        // (`M`/`A`/`T`/untracked) indexes its path.
         let parse_candidate = match rec.status {
             DeltaStatus::Deleted => None,
             _ => Some(&rec.new),
@@ -860,7 +888,8 @@ pub fn discover_delta(worktree_root: &Path, parent_root: &Path) -> Result<Delta,
 
     delta.records = records;
 
-    let cap = overlay_max_files();
+    // Backstop: the incremental checks above already guarantee this, but keep
+    // the authoritative final check so the invariant is enforced at one point.
     let count = delta.masked_origins.len();
     if count > cap {
         tracing::warn!(count, cap, "overlay delta exceeds cap — skipping");
