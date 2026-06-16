@@ -47,6 +47,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::store::{ReadWrite, Store};
 
@@ -943,7 +945,12 @@ fn is_parse_candidate(worktree_root: &Path, rel: &str) -> bool {
 ///   ‖ notes_revision ‖ "\0"
 ///   ‖ for each record, sorted by (new, old):
 ///       status_letter ‖ "\0" ‖ old ‖ "\0" ‖ new ‖ "\0"
-///       ‖ blake3(worktree file bytes)   // 32 zero bytes for D / unreadable
+///       ‖ blake3(worktree file bytes)
+///         // 32 zero bytes for a genuine deletion / a non-dereferenced
+///         // symlink (both deterministic, intentional sentinels); a UNIQUE
+///         // non-zero, non-repeating sentinel for a TRANSIENT read error,
+///         // so a file unreadable at both build and re-validation never
+///         // self-matches into a stale cache hit.
 ///       ‖ "\0"
 /// )
 /// ```
@@ -989,12 +996,19 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta, notes_revision: &[u8; 32
         hasher.update(b"\0");
         hasher.update(rec.new.as_bytes());
         hasher.update(b"\0");
-        // Content hash of the worktree file, or 32 zero bytes for deletions
-        // / unreadable files. The deletion's *presence* in the preimage
-        // (status letter + path) still distinguishes it from an absent
-        // record; the zero content-hash is the documented sentinel.
+        // Content hash of the worktree file. A genuine deletion folds the
+        // ZERO32 deletion sentinel; the deletion's *presence* in the preimage
+        // (status letter + path) still distinguishes it from an absent record.
+        // A symlink intentionally maps to ZERO32 too (not dereferenced — see
+        // `content_digest`). A TRANSIENT read error gets a UNIQUE sentinel
+        // (`transient_error_sentinel`) so it can never collide with the
+        // deletion sentinel NOR self-match across two recomputes — the latter
+        // is what forces a cache MISS instead of serving a content-blind hash
+        // as if it were proven-unchanged.
         match rec.status {
-            DeltaStatus::Deleted => hasher.update(&ZERO32),
+            DeltaStatus::Deleted => {
+                hasher.update(&ZERO32);
+            }
             _ => {
                 let abs = worktree_root.join(&rec.new);
                 // Stream the file through blake3 rather than slurping it into
@@ -1005,8 +1019,31 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta, notes_revision: &[u8; 32
                 // as `blake3::hash(&bytes)` would, so the fingerprint value is
                 // unchanged for in-bounds files.
                 match content_digest(&abs) {
-                    Ok(digest) => hasher.update(&digest),
-                    Err(_) => hasher.update(&ZERO32),
+                    Ok(digest) => {
+                        hasher.update(&digest);
+                    }
+                    // A symlink is the one *intentional* error: it is excluded
+                    // from the parse set and must contribute a stable,
+                    // non-dereferencing digest. `content_digest` flags it with
+                    // `InvalidInput`; keep its documented ZERO32 contract.
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                        hasher.update(&ZERO32);
+                    }
+                    // Any other error is a transient/unintentional I/O failure
+                    // (ENOENT race, EACCES flip, EIO, partial write). Folding
+                    // ZERO32 here would (a) make a modified-but-unreadable file
+                    // alias a clean deletion, and (b) let an unreadable-at-both
+                    // file self-match into a stale hit. Fold a unique sentinel
+                    // instead so the fingerprint cannot prove the file
+                    // unchanged → the cache-compare diverges → forced rebuild.
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %abs.display(),
+                            "overlay fingerprint: transient read error — folding a unique sentinel to force a cache miss (recompute), not the deletion sentinel"
+                        );
+                        hasher.update(&transient_error_sentinel());
+                    }
                 }
             }
         };
@@ -1025,10 +1062,12 @@ pub fn fingerprint(worktree_root: &Path, delta: &Delta, notes_revision: &[u8; 32
 /// `symlink_metadata` and excludes symlinks from the parse set, so a symlink
 /// never contributes searchable content; the fingerprint must agree. We probe
 /// with `symlink_metadata` (which does not follow links) before `File::open`
-/// (which does) and return an error for symlinks so the caller's `Err(_)`
-/// branch maps them to the ZERO32 sentinel — the same stable, non-dereferencing
-/// digest already used for deletions and unreadable files. This keeps the
-/// fingerprint deterministic and independent of the symlink target's contents.
+/// (which does) and return an `InvalidInput` error for symlinks. The caller
+/// keys off the error *kind*: `InvalidInput` is the intentional symlink case
+/// and maps to the stable ZERO32 sentinel (deterministic, target-independent);
+/// any OTHER error kind is a transient I/O failure and the caller folds a
+/// unique non-repeating sentinel instead (see `fingerprint`), so a transient
+/// failure can never alias a deletion nor self-match into a stale cache hit.
 fn content_digest(path: &Path) -> std::io::Result<[u8; 32]> {
     if std::fs::symlink_metadata(path)?.is_symlink() {
         return Err(std::io::Error::new(
@@ -1040,6 +1079,48 @@ fn content_digest(path: &Path) -> std::io::Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file)?;
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// A 32-byte sentinel for a record whose worktree content was *transiently*
+/// unreadable (an I/O error that is neither a deletion nor an intentional
+/// symlink). It is folded into the content slot in place of the real digest.
+///
+/// The sentinel must satisfy two non-collision properties the deletion ZERO32
+/// cannot:
+/// 1. It is never all-zero, so a modified-but-unreadable file never aliases a
+///    clean deletion of the same path.
+/// 2. It is **unique per call** (never repeats), so two recomputes of the same
+///    fingerprint over a file that is unreadable at *both* build and
+///    re-validation produce different digests. The cache-compare then diverges
+///    and forces a rebuild rather than serving a content-blind hash as if it
+///    were proven-unchanged. A merely-distinct-but-deterministic sentinel would
+///    still self-match in the unreadable-at-both case — uniqueness is what makes
+///    the cache treat it as "always stale".
+///
+/// Uniqueness source: a process-lifetime monotonic counter (distinguishes two
+/// calls within the same clock tick / same process — the daemon LRU re-validates
+/// in the same process that built) XOR-domain-separated with the wall-clock
+/// nanos (distinguishes across process restarts). The leading byte is forced
+/// non-zero as a belt-and-braces guard against an all-zero coincidence.
+fn transient_error_sentinel() -> [u8; 32] {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // Tag-prefix + two distinct entropy sources so the value can never be
+    // ZERO32 and never repeats within the process.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"cqs-overlay-transient-read-error\0");
+    hasher.update(&seq.to_le_bytes());
+    hasher.update(&nanos.to_le_bytes());
+    let mut out = *hasher.finalize().as_bytes();
+    // Belt-and-braces: guarantee non-zero leading byte so this can never be
+    // mistaken for the ZERO32 deletion/symlink sentinel even on a 1-in-2^256
+    // hash coincidence.
+    out[0] |= 0x01;
+    out
 }
 
 /// Git status letter for a record, for the fingerprint preimage.
@@ -1357,6 +1438,106 @@ mod tests {
             fp_before, fp_after,
             "content change must move the fingerprint"
         );
+    }
+
+    #[test]
+    fn transient_error_sentinel_is_unique_and_nonzero() {
+        // The transient-error sentinel must never be all-zero (so it can't
+        // alias the deletion ZERO32) and must never repeat (so an
+        // unreadable-at-both file forces a cache miss instead of self-matching).
+        const ZERO32: [u8; 32] = [0u8; 32];
+        let s1 = transient_error_sentinel();
+        let s2 = transient_error_sentinel();
+        assert_ne!(s1, ZERO32, "sentinel must not be the deletion sentinel");
+        assert_ne!(s2, ZERO32, "sentinel must not be the deletion sentinel");
+        assert_ne!(s1, s2, "sentinel must be unique per call (forces a miss)");
+    }
+
+    #[test]
+    fn fingerprint_transient_read_error_forces_cache_miss() {
+        // A Modified record whose worktree file is unreadable (here: absent, so
+        // `symlink_metadata` errors with NotFound — a transient I/O error, NOT
+        // the intentional symlink InvalidInput) must fold the UNIQUE transient
+        // sentinel. Two recomputes of the same delta therefore differ, so the
+        // re-validation cache-compare diverges and forces a rebuild rather than
+        // serving a content-blind hash as if the file were proven-unchanged.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        // Note: no file written at "missing.rs" → content_digest errors NotFound.
+        let rec = DeltaRecord {
+            status: DeltaStatus::Modified,
+            old: None,
+            new: "missing.rs".into(),
+        };
+        let fp1 = fingerprint(root, &delta_with(vec![rec.clone()]), &TEST_NOTES_REV);
+        let fp2 = fingerprint(root, &delta_with(vec![rec]), &TEST_NOTES_REV);
+        assert_ne!(
+            fp1, fp2,
+            "an unreadable modified file must produce a different fingerprint on \
+             each recompute so the cache treats it as always-stale (forced miss)"
+        );
+    }
+
+    #[test]
+    fn fingerprint_transient_error_distinct_from_deletion() {
+        // The core bug: a modified-but-unreadable file must NOT hash to
+        // the same content slot as a clean deletion of the same path. Because
+        // the transient sentinel is unique per call, the Modified-unreadable
+        // fingerprint differs from BOTH the deletion fingerprint and itself —
+        // the sentinel-collision with deletion can never occur.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let modified = DeltaRecord {
+            status: DeltaStatus::Modified,
+            old: None,
+            new: "missing.rs".into(),
+        };
+        let deleted = DeltaRecord {
+            status: DeltaStatus::Deleted,
+            old: None,
+            new: "missing.rs".into(),
+        };
+        let fp_mod = fingerprint(root, &delta_with(vec![modified]), &TEST_NOTES_REV);
+        let fp_del = fingerprint(root, &delta_with(vec![deleted]), &TEST_NOTES_REV);
+        assert_ne!(
+            fp_mod, fp_del,
+            "an unreadable modification must not alias a clean deletion"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fingerprint_unreadable_perms_forces_cache_miss() {
+        // Realistic transient case: a file that exists but is unreadable
+        // (permissions stripped → EACCES on File::open). EACCES is not
+        // InvalidInput, so it takes the transient-sentinel arm and forces a
+        // cache miss on recompute, just like the absent-file case above.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let path = root.join("locked.rs");
+        std::fs::write(&path, b"fn secret() {}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let rec = DeltaRecord {
+            status: DeltaStatus::Modified,
+            old: None,
+            new: "locked.rs".into(),
+        };
+        let fp1 = fingerprint(root, &delta_with(vec![rec.clone()]), &TEST_NOTES_REV);
+        let fp2 = fingerprint(root, &delta_with(vec![rec]), &TEST_NOTES_REV);
+        // Probe whether the read actually failed BEFORE restoring perms: if the
+        // suite runs as root, EACCES is bypassed and the file reads fine (a
+        // deterministic digest), so we only assert the miss when the read truly
+        // failed.
+        let read_failed = content_digest(&path).is_err();
+        // Restore perms so TempDir cleanup can remove the file.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if read_failed {
+            assert_ne!(
+                fp1, fp2,
+                "an unreadable (perms) modified file must force a cache miss"
+            );
+        }
     }
 
     #[cfg(unix)]
