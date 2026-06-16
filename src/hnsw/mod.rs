@@ -26,6 +26,7 @@ mod build;
 mod persist;
 mod safety;
 mod search;
+mod stdout_gag;
 
 pub use persist::{
     verify_hnsw_checksums, verify_hnsw_current, SaveOutcome, StoreStamp, HNSW_ALL_EXTENSIONS,
@@ -357,7 +358,15 @@ impl<'a> HnswGraph<'a> {
                     ef_construction,
                     DistCosine,
                 );
-                h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                {
+                    // hnsw_rs's `modify_level_scale` unconditionally println!s a
+                    // diagnostic line to stdout; suppress it tightly so it can't
+                    // corrupt a `--json` stdout contract (e.g. `cqs gc --json`).
+                    // The guard drops at the end of this block, restoring stdout
+                    // even if the call panics. See `stdout_gag`.
+                    let _gag = stdout_gag::StdoutGag::new();
+                    h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                }
                 HnswGraph::Cosine(h)
             }
             DistanceMetric::DotProduct => {
@@ -368,7 +377,15 @@ impl<'a> HnswGraph<'a> {
                     ef_construction,
                     DistDotClamped,
                 );
-                h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                {
+                    // hnsw_rs's `modify_level_scale` unconditionally println!s a
+                    // diagnostic line to stdout; suppress it tightly so it can't
+                    // corrupt a `--json` stdout contract (e.g. `cqs gc --json`).
+                    // The guard drops at the end of this block, restoring stdout
+                    // even if the call panics. See `stdout_gag`.
+                    let _gag = stdout_gag::StdoutGag::new();
+                    h.modify_level_scale(LEVEL_SCALE_FACTOR);
+                }
                 HnswGraph::Dot(h)
             }
         }
