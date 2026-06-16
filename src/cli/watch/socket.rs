@@ -254,7 +254,16 @@ pub(super) fn handle_socket_client(
         return;
     }
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // No panic firewall around dispatch. The release profile sets `panic =
+    // "abort"` (Cargo.toml), so a `catch_unwind` here would catch nothing in
+    // the shipped binary — a panic in dispatch aborts the daemon and systemd
+    // restarts it (cold caches). An earlier `catch_unwind` logged "daemon
+    // continues", which only ever held in dev/test (unwind) builds; it was
+    // removed so the code stops claiming a guarantee release does not provide.
+    // Real per-request panic isolation that holds in release would require
+    // `panic = "unwind"` (a deliberate binary-size/perf tradeoff that also
+    // needs the in-flight slot counter made RAII) — deferred, not done here.
+    let result: Result<serde_json::Value, String> = {
         // Pass pre-split tokens straight to `dispatch_via_view` instead of
         // joining them back into a shell string for `dispatch_line` to
         // immediately re-split via `shell_words::split`. The round-trip is
@@ -270,9 +279,7 @@ pub(super) fn handle_socket_client(
         // task) overlap on wall-clock. Refresh — the only daemon-
         // dispatchable command that mutates BatchContext interior — is
         // re-locked briefly inside `dispatch_via_view` via the view's
-        // `outer_lock` back-channel. Poisoned mutex → recover the inner
-        // ctx (the catch_unwind around this closure handles dispatch
-        // panics; an unrelated poisoning could still slip in).
+        // `outer_lock` back-channel.
         let view = crate::cli::batch::checkout_view_from_arc(batch_ctx);
         crate::cli::batch::dispatch_via_view(&view, command, &args, &mut output);
         // Parse the dispatch bytes into a JSON `Value` and embed it as a real
@@ -303,30 +310,16 @@ pub(super) fn handle_socket_client(
                     })
             }
         }
-    }));
+    };
 
     let (status, delivered) = match result {
-        Ok(Ok(output_value)) => {
+        Ok(output_value) => {
             let delivered = write_daemon_ok(&mut stream, output_value);
             ("ok", delivered)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             let delivered = write_daemon_error_tracked(&mut stream, &e);
             ("client_error", delivered)
-        }
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&'static str>().copied())
-                .unwrap_or("<non-string panic payload>");
-            let delivered =
-                write_daemon_error_tracked(&mut stream, "internal error (panic in dispatch)");
-            tracing::error!(
-                panic_msg = %msg,
-                "Daemon query panicked — daemon continues"
-            );
-            ("panic", delivered)
         }
     };
 
