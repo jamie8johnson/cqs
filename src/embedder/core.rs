@@ -1003,12 +1003,14 @@ impl Embedder {
         }
 
         // Tokenize (lazy init tokenizer).
-        // `encode_batch` requires `Vec<EncodeInput>` (owned), so `texts.to_vec()` is
-        // unavoidable — the tokenizer API does not accept `&[impl AsRef<str>]`.
+        // `encode_batch` takes `Vec<E>` where `E: Into<EncodeInput<'s>>`, and
+        // `&str` satisfies that bound (`InputSequence: From<&'s str>`), so we
+        // borrow each string rather than deep-cloning the whole batch.
         let encodings = {
             let _tokenize = tracing::debug_span!("tokenize").entered();
+            let inputs: Vec<&str> = texts.iter().map(String::as_str).collect();
             self.tokenizer()?
-                .encode_batch(texts.to_vec(), true)
+                .encode_batch(inputs, true)
                 .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?
         };
 

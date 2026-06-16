@@ -333,6 +333,9 @@ impl CrossProjectContext {
         self.ensure_all_graphs()?;
 
         let mut all_callers = Vec::new();
+        // Intern the loop-invariant callee once (not once per edge) so the
+        // per-edge lookup below pays only Arc refcount bumps, no string alloc.
+        let callee_key: std::sync::Arc<str> = std::sync::Arc::from(callee_name);
         for (idx, ns) in self.stores.iter().enumerate() {
             let graph = &self.graphs[&idx];
             if let Some(callers) = graph.reverse.get(callee_name) {
@@ -342,7 +345,7 @@ impl CrossProjectContext {
                     // recorded at graph load — threaded through the in-memory
                     // CallGraph so cross-project callers carry the same
                     // edge_kind/file/line the single-project SQL path does.
-                    let meta = graph.edge_meta(caller_name, callee_name);
+                    let meta = graph.edge_meta_arc(caller_arc, &callee_key);
                     tracing::debug!(
                         project = %ns.name,
                         caller = caller_name,
@@ -383,6 +386,9 @@ impl CrossProjectContext {
         self.ensure_all_graphs()?;
 
         let mut all_callees = Vec::new();
+        // Intern the loop-invariant caller once (not once per edge) so the
+        // per-edge lookup below pays only Arc refcount bumps, no string alloc.
+        let caller_key: std::sync::Arc<str> = std::sync::Arc::from(caller_name);
         for (idx, ns) in self.stores.iter().enumerate() {
             let graph = &self.graphs[&idx];
             if let Some(callees) = graph.forward.get(caller_name) {
@@ -391,7 +397,7 @@ impl CrossProjectContext {
                     // Edge provenance + call-site line from the in-memory graph;
                     // `line` is the call_line (where the call occurs), matching
                     // the single-project `get_callees_full` semantics.
-                    let meta = graph.edge_meta(caller_name, callee_name);
+                    let meta = graph.edge_meta_arc(&caller_key, callee_arc);
                     tracing::debug!(
                         project = %ns.name,
                         caller = caller_name,

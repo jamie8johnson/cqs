@@ -453,8 +453,17 @@ impl SpladeEncoder {
         let session = create_session(&onnx_path, provider)
             .map_err(|e| SpladeError::InferenceFailed(format!("ORT session: {e}")))?;
 
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        let mut tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?;
+        // Disable tokenizer-level padding. `encode_batch` would otherwise apply
+        // this model's `BatchLongest` strategy and pad every input up to the
+        // batch's longest sequence, changing the input_ids/mask layout fed to
+        // ORT versus the single-input `encode` path (which, batching one item,
+        // never pads). The encode loops here do their own constant `max_seq_len`
+        // padding downstream, so tokenizer padding is both redundant and
+        // behavior-altering — without this, batched and serial encodes of the
+        // same text produce different sparse vectors.
+        tokenizer.with_padding(None);
 
         let tokenizer_vocab = tokenizer.get_vocab_size(true);
 
@@ -564,10 +573,13 @@ impl SpladeEncoder {
         }
         // Rare path — only after `clear_session` has dropped the tokenizer.
         let _span = tracing::info_span!("splade_tokenizer_reload").entered();
-        let loaded = std::sync::Arc::new(
-            tokenizers::Tokenizer::from_file(&self.tokenizer_path)
-                .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?,
-        );
+        let mut reloaded = tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+            .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?;
+        // Match `new`: disable tokenizer-level padding so `encode_batch` returns
+        // natural-length encodings (the downstream loops pad to a constant
+        // `max_seq_len` themselves). Keeps batched and serial encodes identical.
+        reloaded.with_padding(None);
+        let loaded = std::sync::Arc::new(reloaded);
         let mut guard = self.tokenizer.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(existing) = guard.as_ref() {
             return Ok(std::sync::Arc::clone(existing));
@@ -796,16 +808,17 @@ impl SpladeEncoder {
         }
         let non_empty_texts: Vec<&str> = non_empty_indices.iter().map(|&i| truncated[i]).collect();
 
-        // Step 2: tokenize each non-empty input.
+        // Step 2: tokenize all non-empty inputs in one batch — the tokenizer
+        // parallelizes the batch internally (rayon), so this beats a serial
+        // per-input encode loop. The tokenizer has padding disabled at load
+        // (see `new`/the reload path), so each encoding keeps its natural
+        // length — identical to what the single-input `encode` path produces,
+        // and the constant `max_seq_len` padding below stays the only padding.
+        // Map the single batch-level Result to SpladeError once.
         let tokenizer = self.tokenizer()?;
-        let encodings: Vec<_> = non_empty_texts
-            .iter()
-            .map(|t| {
-                tokenizer
-                    .encode(*t, true)
-                    .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))
-            })
-            .collect::<Result<_, _>>()?;
+        let encodings = tokenizer
+            .encode_batch(non_empty_texts, true)
+            .map_err(|e| SpladeError::TokenizationFailed(e.to_string()))?;
 
         let batch_size = encodings.len();
 
