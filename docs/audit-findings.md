@@ -1,684 +1,211 @@
-# Audit Findings (v1.42.0)
-
-Fresh audit of cqs at main, post-v1.42.0 (command-core campaign closed, MSRV 1.96, schema v28). Both batches (16 categories; batch 2 ran after batch-1 triage by user decision). Nested leads (lead + 3 read-only sub-scope agents + lead-side verification before append): Code Quality, Test Coverage (adversarial) in batch 1; Performance, Data Safety, Test Coverage (happy path) in batch 2.
-
-Audit date: 2026-06-10
-Main HEAD: 7284e31e
-
----
-
-## Scaling & Hardcoded Limits
-
-#### DAEMON_LIMIT_CAP rationale comment contradicts the CLI's actual clamp — parity is accidental, not designed
-- **Difficulty:** easy
-- **Location:** src/cli/batch/handlers/search.rs:9-11
-- **Description:** The doc comment on `DAEMON_LIMIT_CAP: usize = 100` says "The wire surface is agent-facing and must bound an over-eager `--limit`; the CLI has no such clamp." The CLI does have exactly such a clamp: `cli.limit = cli.limit.clamp(1, 100)` at src/cli/dispatch.rs:207 (plus the same literal in src/cli/mod.rs test pins). The two surfaces agree at 100 only by coincidence of literals — the daemon reads `DAEMON_LIMIT_CAP`, the CLI a bare `100` — and the comment actively tells a future editor the daemon cap is the lone bound, inviting a one-sided retune that silently breaks CLI==daemon parity (the command-core campaign's core invariant). Related to already-triaged SHL-V1.40-2 (clamp literal duplication) but distinct: this is the rationale text being false, not just the literal being repeated.
-- **Suggested fix:** Make both surfaces read one named constant (e.g. `cli::limits::SEARCH_LIMIT_CAP`) and rewrite the comment to state the parity requirement; alternatively, minimally, correct the comment to reference dispatch.rs:207.
-
-## Observability
-
-#### Corrupt global-cache embedding silently dropped in resolve_reuse — no warn, asymmetric with store-cache path
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline/reuse.rs:127
-- **Description:** In `resolve_reuse`, global-cache hits are validated with `if let Ok(emb) = Embedding::try_new(emb_vec)` — a non-finite (NaN/Inf) cached vector is silently discarded with no log, and the chunk silently falls through to re-embedding. The sibling store-cache path (`get_embeddings_by_canonical_hashes`, src/store/chunks/embeddings.rs:136-146) emits `tracing::warn!` with the hash and an actionable hint ("run 'cqs index --force' to rebuild") for the exact same failure. A corrupted `embeddings_cache.db` would silently degrade every warm rebuild to full GPU re-embedding with zero diagnostic trail — the `global_hits` count in the caller's tracing line just looks low.
-- **Suggested fix:** Mirror the store-path warn: on `Embedding::try_new` Err, `tracing::warn!(hash = %hash, error = %e, "Non-finite cached embedding in global cache, skipping — run 'cqs cache prune' / re-cache")`. Consider a counter (`dropped = n`) on the existing "Global cache hits" debug line so bulk corruption is visible in one event.
-
-#### CLI→daemon transport fallback is debug-only — a wedged daemon means a silent 30s hang with no visible log
-- **Difficulty:** easy
-- **Location:** src/cli/dispatch.rs:300, 352, 356, 372, 399, 410
-- **Description:** Every transport-level failure in `try_daemon_query` (connect failed, write failed, flush failed, read failed/timed out, JSON parse failed, missing `status`) logs at `tracing::debug!` and falls back to inline CLI execution. The default `EnvFilter` is `cqs=info,warn` (src/main.rs:26), so none of these events are visible without `-v`/`RUST_LOG`. The worst case: socket file exists but the daemon is wedged → the client blocks for the full `CQS_DAEMON_TIMEOUT_MS` (30s default) on read, then silently re-runs the query inline (~2s+ model load). The user experiences a ~32s search with zero indication why, and "diagnose a failed daemon query from logs alone" fails at default verbosity. Note the asymmetry within the same function: the response-size-cap fallback (line 384) gets both an `eprintln!` and a `warn!` precisely because "agents tuning latency won't see tracing" — the wedged-daemon case deserves the same treatment. Socket-absent (line 290-292) is correctly silent — that's the normal no-daemon case.
-- **Suggested fix:** Once the socket exists and a connection is attempted, failures are anomalous: promote the connect/write/read/parse fallback events from `debug!` to `warn!` (they are one-shot per invocation, not noisy), or at minimum the read-timeout path, with a hint ("daemon unresponsive — falling back to CLI; check `systemctl --user status cqs-watch`").
-
-#### Daemon-served searches drop staleness warnings — the recommended default path never tells the user results are stale
-- **Difficulty:** medium
-- **Location:** src/cli/batch/handlers/search.rs:67-70, 129 (drop site); src/cli/commands/search/query.rs:589-600 (CLI-only warn)
-- **Description:** `warn_stale_results` (stderr warning + stale-origin annotation) only runs on the in-process CLI render path. `dispatch_search` documents the intentional drop ("the batch JSON doesn't surface ... staleness warnings", `let _ = (..., args.no_stale_check)`), so when the daemon serves a query — the recommended default setup (`cqs watch --serve`, CLI auto-connects) — no staleness signal reaches the client at all. This predates the slim-envelope work but the contract has since tightened: dispatch.rs:442-444 states the CLI surface "must not depend on whether a daemon happened to serve the query", and #1733 translates the daemon envelope to the CLI shape — yet the same `cqs "query"` warns about stale results daemon-down and stays silent daemon-up. Compounding it: WSL inotify unreliability means the watch daemon is exactly the deployment where the index goes stale (notes/MEMORY both record this), i.e. the staleness warning is dead on the path that needs it most. A user cannot diagnose a stale index from query output alone when the daemon is serving.
-- **Suggested fix:** Plumb stale origins through the daemon wire: run the (cheap, mtime-based) `check_origins_stale` in `dispatch_search`, attach `stale_origins` to the envelope `_meta` (the `EnvelopeMeta` mechanism from json_envelope.rs already carries `worktree_stale` this way), and have the CLI client print the existing stderr warning when `_meta.stale_origins` is non-empty. Honor `args.no_stale_check` instead of discarding it.
-
-## Documentation
-
-#### README install section says "Requires Rust 1.95+" — MSRV is 1.96
-- **Difficulty:** easy
-- **Location:** README.md:27
-- **Description:** `Cargo.toml:8` sets `rust-version = "1.96"` (bumped in #1731) and CONTRIBUTING.md:7 already says 1.96+. README still tells installers 1.95+, so a user on 1.95 gets a confusing `cargo install` failure instead of a clear requirement.
-- **Suggested fix:** Change to "Requires Rust 1.96+".
-
-#### README cuvs-fork install note describes a [patch.crates-io] fork clone that no longer happens
-- **Difficulty:** easy
-- **Location:** README.md:33
-- **Description:** The install note claims `cargo install cqs` "clones a patched `cuvs` fork from github.com/jamie8johnson/cuvs-patched even for CPU builds, because it is wired in via `[patch.crates-io]`" and will be dropped when rapidsai/cuvs#2019 merges. The fork was retired in #1679 (v1.42.0): `Cargo.toml:132` depends on official crates.io `cuvs = "=26.6"` and there is no `[patch.crates-io]` section. This is a P1-grade lying doc — it makes a false supply-chain claim (third-party repo cloned during install) that a security-conscious adopter would evaluate and that no longer reflects the build.
-- **Suggested fix:** Delete the note, or replace with the current fact: official `cuvs =26.6` from crates.io, pinned to match conda libcuvs (only relevant with `--features cuda-index`).
-
-#### README env table: CQS_CAGRA_THRESHOLD default listed as 50000, actual default is 5000
-- **Difficulty:** easy
-- **Location:** README.md:784
-- **Description:** The environment-variable table says `CQS_CAGRA_THRESHOLD` defaults to `50000`. The code sets `CAGRA_THRESHOLD_DEFAULT: u64 = 5000` (src/cagra.rs:1627; doc comment at src/cagra.rs:1599 and src/config.rs:535 both say 5000). An operator relying on the table would believe CAGRA never activates on a mid-size corpus (e.g. cqs's own ~14k chunks) when it actually does — a 10x error in a behavior-selecting knob.
-- **Suggested fix:** Change the default cell to `5000`.
-
-#### README HNSW tuning table presents mid-tier values as fixed "current parameters" — defaults are corpus-tiered
-- **Difficulty:** easy
-- **Location:** README.md:696-710
-- **Description:** The "HNSW Index Tuning" table states M=24, ef_construction=200 as the current parameters, with only ef_search described as adaptive. `hnsw_tier_defaults` (src/hnsw/mod.rs:85-93) tiers all three by corpus size: <5k → (16, 100, 50), 5k-100k → (24, 200, 100), ≥100k → (32, 400, 200). A small-project user reading the table expects M=24/ef_construction=200 and gets 16/100; the closing advice ("Large repos may benefit from tuning ef_search higher (200+)") is also stale since ≥100k corpora already default to 200.
-- **Suggested fix:** Replace the fixed-value table with the three-tier table from src/hnsw/mod.rs:49-53 and note the `CQS_HNSW_M` / `CQS_HNSW_EF_CONSTRUCTION` / `CQS_HNSW_EF_SEARCH` env overrides win verbatim.
-
-#### CONTRIBUTING JSON envelope section documents the pre-V2Bare wire shape as universal
-- **Difficulty:** medium
-- **Location:** CONTRIBUTING.md:63-93 (also src/cli/json_envelope.rs:155)
-- **Description:** The "JSON Output Envelope" section claims (a) "Every JSON-emitting command (CLI `--json`, batch line, daemon socket response) wraps its payload in a uniform envelope" with success shape `{ "data": <payload>, "error": null, "version": 1 }`, and (b) "Today only `internal`, `invalid_input`, and `parse_error` are emitted by production handlers; `not_found` and `io_error` are reserved for future use and currently collapse into `internal`". Both are stale post-SNR/V2Bare:
-  (a) The CLI direct default is `V2Bare` — bare payload, no envelope (src/output_format.rs:26-45); the batch/daemon line is the slim `{"data": ...}` shape that explicitly drops `error: null` and `version` (src/cli/batch/mod.rs `write_json_line`, "Slim shape: drop `error: null` and `version`"). Only `CQS_OUTPUT_FORMAT=v1` restores the documented shape.
-  (b) `not_found` is emitted by production handlers (src/cli/commands/infra/reference.rs:552 and :636), and `io_error` is emitted by `redact_error`'s IO downcast on the daemon batch dispatch path (src/cli/json_envelope.rs:649, called from src/cli/batch/context.rs and session.rs). The same stale "reserved" claim is duplicated in the doc comment at src/cli/json_envelope.rs:155.
-  This is the section a contributor follows when adding `--json` to a new command, so it actively teaches the wrong wire contract.
-- **Suggested fix:** Rewrite the section around the current contract: V2Bare bare payload on CLI direct success (envelope opt-in via `CQS_OUTPUT_FORMAT=v1`), slim `{"data": ...}` / `{"error": {...}}` on batch/daemon lines, `_meta` only when non-empty; update the emitted-codes sentence (all five codes live, `not_found` and `io_error` included) and fix the json_envelope.rs:155 doc comment in the same pass.
-
-#### CONTRIBUTING Architecture Overview missing ~14 files; commands/eval listing describes a moved file
-- **Difficulty:** medium
-- **Location:** CONTRIBUTING.md:221-432
-- **Description:** Verified against `src/` at HEAD 7284e31e, the tree omits: top-level `src/eval/` (mod.rs + schema.rs — the shared eval wire-format types), `src/ort_helpers.rs`, `src/serde_helpers.rs`; under `cli/`: `json_envelope.rs` (referenced by name elsewhere in the same doc but absent from the tree) and `limits.rs`; `cli/commands/dispatch_shims.rs`; `cli/pipeline/reuse.rs` (the #1701 shared embedding-reuse resolver); `store/backup.rs` and `store/summary_queue.rs`; `search/mmr.rs`; `search/scoring/knob.rs`; `llm/local.rs`, `llm/redirect.rs`, `llm/validation.rs` (validation.rs is load-bearing in SECURITY.md's summary-validation mitigation). The `commands/eval/` entry (line 238) still lists `schema.rs (EvalReport, EvalEntry)` which moved to `src/eval/schema.rs`, and misses the actual `runner.rs` and `baseline.rs`. CLAUDE.md explicitly requires this section to be updated when adding/moving source files.
-- **Suggested fix:** Sync the tree with the listed files; move the schema.rs description to a new top-level `eval/` entry and add `runner.rs`/`baseline.rs` under `commands/eval/`.
-
-#### SECURITY.md dependency-advisory table out of sync with .cargo/audit.toml
-- **Difficulty:** easy
-- **Location:** SECURITY.md:300-307
-- **Description:** The "Dependency Auditing" table lists two advisories (bincode RUSTSEC-2025-0141, paste RUSTSEC-2024-0436). `.cargo/audit.toml` ignores three — RUSTSEC-2025-0119 (number_prefix via hf-hub → indicatif 0.17) is accepted in CI but undocumented in the security doc that claims to enumerate "Known advisories and mitigations". The bincode rationale also disagrees: SECURITY.md says "Mitigated: checksums validate data before deserialization" while audit.toml's comment says it's transitive via hnsw_rs 0.3.4 and cannot be upgraded — a reader auditing the dependency posture gets two different stories.
-- **Suggested fix:** Add the RUSTSEC-2025-0119 row and reconcile the bincode rationale (both facts can be true: transitive pin + checksum-before-deserialize mitigation; state both).
-## Error Handling
-
-#### load_audit_state treats permission-denied like file-missing — audit mode silently off with zero log
-- **Difficulty:** easy
-- **Location:** src/audit.rs:92-95
-- **Description:** The `read_to_string` error arm is `Err(_) => return AuditMode::default()` with no tracing at all. `NotFound` is the normal case, but an EACCES / EIO on `.cqs/audit-mode.json` silently disables audit mode — the operator believes notes are excluded while they aren't. Every other failure path in this function (size cap, JSON parse, expires_at parse) logs; this one doesn't even emit `debug!`. The project has precedent treating exactly this NotFound-vs-EACCES conflation as a bug (doctor.rs:922 comment).
-- **Suggested fix:** Match on `e.kind()`: return default silently for `NotFound`, `tracing::warn!` for everything else before returning default.
-
-#### CQS_SLOT env does not bypass the daemon — queries silently run against the daemon's slot
-- **Difficulty:** easy
-- **Location:** src/cli/dispatch.rs:213-221 (gate), src/slot/mod.rs:769 (env honored in resolution)
-- **Description:** The daemon-forward gate is `cli.slot.is_none() && CQS_NO_DAEMON != 1`. `CQS_SLOT` is documented as equivalent to `--slot` ("--slot / CQS_SLOT on every major command") and `resolve_slot_name` honors it, but a user running `CQS_SLOT=experiment cqs "query"` with a daemon up gets results from the daemon's startup slot with no warning. The analogous mismatch for `--model` gets an explicit `tracing::warn!` (dispatch.rs:336-342); the slot case gets neither bypass nor warn — silent wrong-slot results.
-- **Suggested fix:** Extend the gate to `cli.slot.is_none() && std::env::var_os("CQS_SLOT").is_none()` (matching the `--slot` rationale in the comment), or at minimum warn like the `--model` path does.
-
-#### Batch dispatch swallows response-write failures via `let _ =` — contradicts the daemon side's tracked-write pattern
-- **Difficulty:** easy
-- **Location:** src/cli/batch/context.rs:684, 740, 757, 768, 775, 786, 797
-- **Description:** Every `write_json_line` / `write_envelope_error` in `dispatch_line` / `dispatch_parsed_tokens` is `let _ =` with no log. For the daemon path `out` is an in-memory Vec (infallible), but for the stdin batch surface `out` is stdout — an EPIPE or full-disk redirect means the agent's query gets no response line and the session logs nothing (and `error_count` isn't bumped). The daemon socket side explicitly built `write_daemon_error_tracked` "instead of silently swallowing write errors with `let _ = ...`" (socket.rs:361-364), so the project already treats this as an anti-pattern; the batch surface predates that fix.
-- **Suggested fix:** Wrap the writes in a small helper that does `if let Err(e) = ... { tracing::warn!(...) }`, mirroring `write_daemon_error_tracked`.
-
-#### `chunk_count().ok()` blanks the slot-list chunks column with no warn — adjacent metadata read got the warn ladder
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/slot.rs:253
-- **Description:** In `collect_slot_entry`, the model-name read was deliberately upgraded to warn on failure ("so a corrupt-but-openable slot surfaces in journald instead of showing a blank model column identical to a fresh slot", lines 254-268), but the chunk-count read two lines above is still `store.chunk_count().ok()` — the same corrupt-but-openable slot shows a blank chunks column indistinguishable from an empty slot, silently.
-- **Suggested fix:** Apply the same match-and-warn shape used for `try_stored_model_name` to `chunk_count()`.
-
-
-## Robustness
-
-#### RB-V1.42-1: Recursive parse-tree walks can stack-overflow on deeply nested sources
-- **Difficulty:** medium
-- **Location:** src/parser/chunk.rs:126 (`collect_comment_ranges`), src/parser/chunk.rs:756 (`find_type_identifier_recursive`)
-- **Description:** `collect_comment_ranges` (new in the v28 canonical_hash path, runs on every chunk during indexing) and `find_type_identifier_recursive` (Go param types) recurse once per tree-depth level. Tree depth is unbounded by anything except `CQS_MAX_FILE_SIZE` (default 1 MiB), which permits parse trees hundreds of thousands of nodes deep (e.g., a file of nested parens/arrays, or pathological minified output). Stack overflow aborts the process (SIGSEGV, not a catchable panic), and indexing typically runs on rayon worker threads with 2 MiB stacks — roughly 10-20k frames. The neighboring `walk_for_containers` (injection.rs:159) already uses the iterative cursor-loop pattern, so the precedent exists in the same module. A crash here takes down `cqs index` and the watch daemon mid-reindex on a single adversarial/pathological file.
-- **Suggested fix:** Convert both to iterative traversal with an explicit `Vec<Node>` work stack (or a `TreeCursor` goto_first_child/goto_next_sibling loop like `walk_for_containers`). Alternatively, add a depth cap (~10k) that degrades to `canonical_hash_fallback` / `None` with a `tracing::warn!`.
-
-#### RB-V1.42-2: `extract_return_sql` indexes the original string with an offset from `to_uppercase()` — misaligned slice can panic on non-ASCII SQL
-- **Difficulty:** easy
-- **Location:** src/language/languages.rs:6743-6745
-- **Description:** `let upper = signature.to_uppercase(); if let Some(ret_pos) = upper.find("RETURNS") { let after = &signature[ret_pos + 7..]; ... }`. Unicode `to_uppercase()` is not byte-length-preserving (U+FB01 "ﬁ" 3 bytes → "FI" 2 bytes; U+0149 2 bytes → "ʼN" 3 bytes), so `ret_pos` found in `upper` can be misaligned relative to `signature`. A non-ASCII character before RETURNS in a SQL signature (quoted identifier, ligature in a name) shifts the offset; `&signature[ret_pos + 7..]` then slices at a wrong position — at worst mid-codepoint, which panics during indexing. The codebase already documents this exact hazard ("to_uppercase() can change byte lengths for non-ASCII like ß→SS", chunk.rs:297) and the two sibling case-mapped `find` sites (languages.rs:3958, languages.rs:5804) correctly use `to_ascii_lowercase()`, which is length-preserving.
-- **Suggested fix:** Use `signature.to_ascii_uppercase()` (length-preserving, and SQL keywords are ASCII), matching the sibling sites. Optionally add a unit test with a ligature identifier before RETURNS.
-
-#### RB-V1.42-3: `extract_signature` UntilAs loop bound excludes a trailing "AS" — the end-of-string guard is unreachable
-- **Difficulty:** easy
-- **Location:** src/parser/chunk.rs:302-306
-- **Description:** The scan loop is `for i in 0..bytes.len().saturating_sub(2)`, so `i` maxes at `len - 3` and `i + 2 >= bytes.len()` in the `right_ok` check can never be true — that guard is dead code, and it proves the intent was to match an "AS" that ends the content. A SQL chunk whose content ends exactly with `... AS` (no body after, e.g. truncated or malformed input) keeps the full text as its signature instead of truncating before AS. No panic — pure edge-case correctness — but the dead guard will mislead future readers into thinking the boundary case is handled.
-- **Suggested fix:** Change the loop bound to `0..bytes.len().saturating_sub(1)` so `i + 1` stays in bounds and `i + 2 >= bytes.len()` becomes reachable for the trailing-AS case; add a test with content ending in " AS".
-
-#### RB-V1.42-4: injection.rs u32-cast safety comment cites "MAX_FILE_SIZE (50MB)" — constant doesn't exist and the real cap is env-overridable
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:221
-- **Description:** The justification for `row as u32` casts reads "Safe: row count fits u32 because MAX_FILE_SIZE (50MB) limits files...". There is no such constant: the actual cap is `DEFAULT_MAX_FILE_SIZE = 1_048_576` (1 MiB, lib.rs:737), and `CQS_MAX_FILE_SIZE` can raise it without bound (only 0 is rejected). The cast is fine at the default, but the documented invariant is wrong on both the value and the "limit" claim — an operator raising the cap past 4 GiB voids the safety argument silently. Per the project's docs-lying-is-P1 stance applied to invariant comments, the comment should state the real invariant.
-- **Suggested fix:** Reword the comment to cite `CQS_MAX_FILE_SIZE` (default 1 MiB) and note the cast assumes < u32::MAX lines, or replace the casts with `u32::try_from(...).unwrap_or(u32::MAX)` so the invariant doesn't depend on the env knob.
-
-## API Design
-
-#### API-V1.42-1: Daemon arg translation remaps `-n` to `--limit` globally — breaks `cqs blame foo -n 3` whenever a daemon is running
-- **Difficulty:** easy
-- **Location:** src/daemon_translate.rs:51 (GLOBAL_WITH_VALUE), src/cli/args.rs:337 (BlameArgs.commits)
-- **Description:** `translate_cli_args_to_batch` treats `-n` as a global alias for `--limit` and rewrites it for every subcommand. But `blame` spells `-n` as `--commits` (the doc comment on BlameArgs even discusses avoiding the `--depth` collision — the `-n` remap collision was missed), and blame is `batch = "daemon"`. Verified live against the running daemon: `cqs blame normalize_path -n 3` returns `{"error":{"code":"parse_error","message":"error: unexpected argument '--limit' found..."}}` while `CQS_NO_DAEMON=1 cqs blame normalize_path -n 3` works. Same invocation, success or failure depends on whether a daemon happens to be up — exactly the surface-dependence class #1733 just fixed for envelope shape. (Post-#1733 source classifies the slim error and exits non-zero, which makes the failure loud rather than fixing it.) blame is the only command whose `-n` isn't `--limit` (drift's `-n` long-name is `--limit`; SearchArgs/LimitArg use `-n` for limit), so the blast radius is one command — but the failure is the worst kind: flag works in one mode, hard-errors in the other.
-- **Suggested fix:** Either rename blame's short flag (drop `-n`, keep `--commits`) so the global remap is actually global, or make the `-n` remap per-command (skip the rewrite when the subcommand is `blame`). Add a daemon-forward test for `blame -n`.
-
-#### API-V1.42-2: Core Args types reuse clap struct names, forcing two contradictory alias conventions at import sites
-- **Difficulty:** easy
-- **Location:** src/cli/commands/graph/callers.rs:34 (core CallersArgs) vs src/cli/args.rs:377 (clap CallersArgs); src/cli/commands/graph/mod.rs:12-24; src/cli/batch/handlers/graph.rs:23
-- **Description:** The graph cores define `CallersArgs`/`DepsArgs`/`ImpactArgs`/`TestMapArgs`/`TraceArgs` with the exact names of the clap arg structs in `cli::args`. Every consumer must alias to disambiguate, and two conventions have already emerged: graph/mod.rs re-exports `CallersArgs as CallersCoreArgs` / `TestMapArgs as TestMapCoreArgs` (Core infix), while batch/handlers/graph.rs imports `CalleesArgs as CoreCalleesArgs` (Core prefix) on the same line that uses `CallersCoreArgs`. Same family, two spellings, chosen per import site. Greppability suffers: searching `CallersCoreArgs` finds the daemon adapter but not the definition; the definition's name collides with the clap type in every search.
-- **Suggested fix:** Name the structs `*CoreArgs` at the definition site (no aliasing anywhere), or rename the clap structs `*CliArgs`. No external users — pick one and sweep.
-
-#### API-V1.42-3: `callers` and `callees` happy paths use different topologies; module doc's type-discrimination claim only holds for callers
-- **Difficulty:** medium
-- **Location:** src/cli/commands/graph/callers.rs:12-13 (doc), :74-79 (CallersCoreOutput), :85-90 (CalleesCoreOutput)
-- **Description:** `cqs callers X --json` returns a bare array of `{name, file, line_start}` (no count, no echo of the queried name); `cqs callees X --json` returns `{name, calls: [{name, line_start}], count}`. The module doc says agents "detect the dispatch decision by type (`isinstance(parsed, list)` ⇒ function path, `dict` ⇒ fallback)" — true for callers, false for callees, where both the happy path and the kind fallback are objects (an agent must instead probe for the `kind` or `calls` key). Sibling commands answering the mirror-image question shouldn't need two different parsing strategies; the shapes are historical, and the no-external-users rule means the asymmetry is now pure carrying cost.
-- **Suggested fix:** Normalize both to the object shape (`{name, callers/calls, count}` — callers also gains the missing count), update the module doc's discrimination guidance to key-probing, and adjust the parity/integration tests in the same PR.
-
-#### API-V1.42-4: `--cross-project` flips the callees topology from object to flat array
-- **Difficulty:** easy
-- **Location:** src/cli/batch/handlers/graph.rs:154-161; src/store/calls/cross_project.rs:44-51
-- **Description:** Single-project callees returns `{name, calls, count}`; `cqs callees X --cross-project` serializes `Vec<CrossProjectCallee>` directly — a flat array of `{project, name, line_start}`. Same command, one flag, different topology AND different entry schema (`file` missing, `project` added, no count). Callers happens to stay an array in both modes, so the inconsistency is callees-specific. An agent that learned the callees shape breaks the moment it adds the flag.
-- **Suggested fix:** Wrap the cross-project branch in the same `{name, calls, count}` object (entries gaining `project`), or at minimum document the divergence on the flag's help text. Fold into the API-V1.42-3 normalization if both land.
-
-#### API-V1.42-5: Wire-default coverage is inconsistent across core Args — graph cores reject the minimal payloads io/search cores accept
-- **Difficulty:** easy
-- **Location:** src/cli/commands/graph/callers.rs:33-39 (no defaults) vs src/cli/commands/io/context.rs:34, src/cli/commands/search/query.rs:41-45 (struct-level `#[serde(default)]`)
-- **Description:** The campaign's Args structs are the future MCP param surface ("Args (surface-agnostic, MCP-ready)"), but defaulting policy varies by module: io cores (context/diff/blame/drift) and search cores (query/gather) carry struct-level `#[serde(default)]` with a Default impl mirroring clap defaults, so `{"query": "x"}` works; graph cores require every field — `{"name": "x"}` fails deserialization on missing `limit` for callers/callees/deps/impact, and test_map/trace default only `max_nodes` while requiring `limit`/`max_depth`. A wire caller must learn per-command which knobs are omittable, and the answer is module-lineage, not design.
-- **Suggested fix:** Apply struct-level `#[serde(default)]` + a Default mirroring clap defaults to the five graph core Args, matching the io/search convention. One test per struct pinning the minimal payload.
-
-#### API-V1.42-6: `--expand` alias means a bool on `search` and a value-taking depth on `gather`
-- **Difficulty:** easy
-- **Location:** src/cli/args.rs:189 (SearchArgs.expand_parent, `visible_alias = "expand"`) vs src/cli/args.rs:234 (GatherArgs.depth, `visible_alias = "expand"`)
-- **Description:** On `search`, `--expand` is a boolean alias for `--expand-parent` (small-to-big retrieval). On `gather`, `--expand` is an alias for `-d/--depth` and requires an integer. Same visible alias, unrelated semantics and different arity on two adjacent commands: `cqs search q --expand` works, `cqs gather q --expand` errors with a missing-value complaint, and `cqs gather q --expand 2` does something entirely different from what the search muscle memory suggests. Both aliases are advertised in `--help`.
-- **Suggested fix:** Drop the `--expand` alias from gather (it already has `-d`/`--depth` and the cross-command depth convention) so `--expand` consistently means parent expansion; or drop both aliases.
-
-#### API-V1.42-7: drift's `--limit` is the only one that accepts 0 and defaults to unlimited — contradicts the LimitArg contract
-- **Difficulty:** easy
-- **Location:** src/cli/args.rs:581-583 (DriftArgs.limit) vs src/cli/args.rs:83-89 (LimitArg)
-- **Description:** `LimitArg`'s doc states "Rejects `--limit 0` at parse time — limit=0 is meaningless everywhere" and gives every flattened command `-n/--limit` default 5 via `parse_nonzero_usize`. DriftArgs hand-rolls `-n/--limit` as `Option<usize>` with no value_parser and no default: `cqs drift ref -n 0` parses fine, and omitting the flag means unlimited rather than 5. One command out of ~16 quietly deviates from the shared contract on the same flag spelling.
-- **Suggested fix:** If unlimited-by-default is intentional for drift, keep `Option<usize>` but add `value_parser = parse_nonzero_usize` and a doc comment saying drift deliberately deviates; otherwise flatten `LimitArg` like the rest.
-
-#### API-V1.42-8: Args-layer contract drift inside the command-core pattern — borrowed non-Deserialize Args, missing Args, and an adapter-only field riding in core Args
-- **Difficulty:** medium
-- **Location:** src/cli/commands/infra/audit_mode.rs:38 (AuditModeArgs<'a>); src/cli/commands/infra/slot.rs:178,529 + reference.rs:66 + cache_cmd.rs:117-222 (no Args); src/cli/commands/index/stale.rs:76-82 (StaleArgs.count_only)
-- **Description:** The documented pattern is one `*_core` with typed Deserialize `*Args` / Serialize `*Output` per command. Three deviations in shipped campaign code: (1) `AuditModeArgs<'a>` holds `&'a AuditModeState` / `&'a str` and derives nothing — it can't be deserialized from a wire payload, so audit-mode is the one command whose Args can't be MCP params as-is. (2) `slot_list_core` / `slot_active_core` / `ref_list_core` / `cache_stats_core`..`cache_compact_core` take no Args at all, while sibling no-input cores (`GcArgs {}`, `AffectedArgs {}`, `SuggestArgs {}`, `HealthArgs {}`) carry empty structs bound as `_args` — two conventions for "this command has no parameters". (3) `StaleArgs.count_only` is documented as "The core ignores this — honored by the adapter", i.e. a render-control flag living in the core's input type; everywhere else adapter-only knobs (cross_project, output format) deliberately stay out of core Args. None of these breaks today, but the pattern is the NEW-COMMAND RULE template — the next command copies whichever file it opens first.
-- **Suggested fix:** Pick one convention for parameterless cores (empty structs, since they're free and keep the macro-ability), give AuditModeArgs owned fields + Deserialize, and move `count_only` to the adapter signature (or document the exception in CONTRIBUTING's pattern description).
-
-#### API-V1.42-9: Daemon graph-dispatch doc comments describe wire fields that don't exist (`line`, `function`)
-- **Difficulty:** easy
-- **Location:** src/cli/batch/handlers/graph.rs:93 (dispatch_callers), :131-137 (dispatch_callees), :37-53 (dispatch_deps)
-- **Description:** `dispatch_callers`' doc promises "a JSON array of caller objects, each with `name`, `file`, and `line` fields" — the wire field is `line_start` (CallerEntry, serde rename on CallerInfo). `dispatch_callees`' doc promises an object with "`function`: the name of the queried function" and `calls` entries with "`name` and `line` fields" — actual keys are `name` (top-level) and `line_start`. These are the doc comments an agent/maintainer reads to learn the daemon wire shape, on the exact surface the command-core campaign just unified; per the project's docs-lying-is-P1 rule they're correctness bugs. (The boilerplate style suggests generated docs that predate the core unification and weren't refreshed when the handlers became thin adapters.)
-- **Suggested fix:** Rewrite the three doc comments to point at the core output types (`CallersCoreOutput` etc.) as the schema source instead of enumerating fields by hand — the enumerations are what drifted.
-
-## Test Coverage (adversarial) (nested: 3 sub-agents, lead-verified)
-
-#### `cqs notes add --mentions` can write notes.toml past the 10 MiB cap, bricking every subsequent notes operation — untested, and the doc overpromises
-- **Difficulty:** medium
-- **Location:** src/cli/commands/io/notes.rs:306-311, src/note.rs:307-320
-- **Description:** `cmd_notes_add` validates only `text` (≤2000 bytes); mentions are filtered for empty strings but never capped in count or byte length. `rewrite_notes_file` checks `max_notes_file_size()` against the *existing* file's metadata before the mutation, then writes the serialized output unconditionally — so a single `--mentions <multi-MB comma list>` add can produce a >10 MiB file, after which both `parse_notes` and `rewrite_notes_file` refuse with "file too large" and notes are bricked until manual edit. The doc comment at note.rs:30-33 claims the rewrite path "enforce[s] the same cap so a truncated/corrupt rewrite can't exceed it" — the code does not enforce it on output. No test sets `CQS_NOTES_MAX_FILE_SIZE`; the only huge-mentions test (`test_parse_notes_str_huge_mentions_array`, note.rs:927) is parse-side and never goes through the add/write path.
-- **Suggested fix:** Cap mentions count/bytes in `cmd_notes_add`, and check the serialized output length in `rewrite_notes_file` before the tmp-file write (making the doc claim true). Add a CLI integration test with a shrunk `CQS_NOTES_MAX_FILE_SIZE` asserting the add is rejected and the file stays usable.
-
-#### Whitespace-only and duplicate note text — `cmd_notes_add` guard and first-match `update`/`remove` semantics unpinned
-- **Difficulty:** easy
-- **Location:** src/cli/commands/io/notes.rs:298 (empty guard), 470-479 (update `.find()`), 560-572 (remove `.position()`), 334-337 (add appends with no dedup)
-- **Description:** (a) `cqs notes add "   "` passes the `text.is_empty()` guard (no trim); the stored note's `text.trim()` is `""`, so any later update/remove invoked with any whitespace-only string matches it via `e.text.trim() == text_trimmed` — a cross-note wildcard. (b) Adding the same text twice is allowed, and update/remove silently mutate only the first match — expected behavior (first-match? error on ambiguity?) is completely unpinned. Notes carry sentiment that biases search ranking, so a stale duplicate surviving a "remove" is a ranking-integrity issue. Tests cover only `""` rejection (`test_notes_add_rejects_empty_text`, tests/cli_notes_test.rs:424); no whitespace-only, duplicate, or 2000-byte-boundary test exists.
-- **Suggested fix:** Trim before the empty check in `cmd_notes_add`; decide and pin duplicate semantics (reject duplicate adds, or error on ambiguous update/remove). Add boundary tests for the 2000-byte limit.
-
-#### `cmd_batch` stdin line-cap rejection path (`CQS_BATCH_MAX_LINE_LEN`) has zero tests
-- **Difficulty:** easy
-- **Location:** src/cli/batch/session.rs:155-173
-- **Description:** A stdin line exceeding `batch_max_line_len()` must emit an `invalid_input` JSON envelope naming `CQS_BATCH_MAX_LINE_LEN`, bump `error_count`, and continue the loop. The daemon socket's analogous cap IS pinned (`daemon_rejects_oversize_request_boundary` in adversarial_socket_tests.rs), but batch stdin is a parallel, separately-coded surface (the documented daemon-path-duplication trap). Grep for `CQS_BATCH_MAX_LINE_LEN` in tests/ → zero hits; the sole `cqs batch` spawn test (tests/cli_envelope_test.rs:342) sends one happy-path `stats\n`. The in-loop tokenize-failure recovery (session.rs:188) is also untested — the unbalanced-quote test at src/cli/batch/mod.rs:1074 bypasses the stdin loop.
-- **Suggested fix:** Extend the existing spawn pattern: small env cap + oversized line + valid follow-up line; assert envelope error code, then successful processing of the next line.
-
-#### `read_stdin` (review --stdin, impact --diff, ci --stdin) — oversize-cap rejection and invalid-UTF-8 stdin untested
-- **Difficulty:** medium
-- **Location:** src/cli/commands/mod.rs:566-580; callers in graph/impact_diff.rs:22, review/affected.rs:93, review/ci.rs:90, review/diff_review.rs:116
-- **Description:** (a) stdin exceeding `CQS_MAX_DIFF_BYTES` must bail with the "exceeds N MiB limit" message — no test sets that env var anywhere; (b) non-UTF-8 stdin (e.g. `git diff` of a binary file piped in) makes `read_to_string` fail with an unverified error shape; (c) the `take(max+1)` then `> max` boundary is untested. Contrast: the sibling `run_git_diff` ref-injection validation in the same file has four dedicated tests (mod.rs:1119-1161); its stdin twin has none.
-- **Suggested fix:** Spawn `cqs review --stdin` with `CQS_MAX_DIFF_BYTES=1024` and 2 KB stdin (assert bail message), and with binary stdin (assert clean error, no panic).
-
-#### `parse_nonzero_usize` — the clap gatekeeper for ~10 numeric flags — has no unit tests while its f32 siblings are exhaustively pinned
-- **Difficulty:** easy
-- **Location:** src/cli/definitions.rs:94-100; wired as value_parser across src/cli/args.rs and definitions.rs:157,262
-- **Description:** The test mod in the same file (definitions.rs:1106-1166) covers `parse_finite_f32` and `parse_unit_f32` exhaustively (NaN, Infinity, garbage, bounds) but skips `parse_nonzero_usize` entirely: `"0"` rejection, negative, u64-overflow strings, leading `+`, whitespace are all unpinned. Same-block coverage asymmetry.
-- **Suggested fix:** Mirror the f32 test pattern: accept "1"/"100", reject "0"/"-1"/"18446744073709551616"/""/garbage.
-
-#### NaN/Inf embedding passes the zero-vector filter into HNSW build — likely panic inside hnsw_rs, no test, no production filter
-- **Difficulty:** easy
-- **Location:** src/hnsw/build.rs:204-226 (`build_batched_with_dim_and_metric`)
-- **Description:** The insert loop validates dimension and skips zero-vectors via `!embedding.as_vec().iter().any(|x| *x != 0.0)` — but `NaN != 0.0` is true, so NaN/Inf vectors pass the filter and reach `hnsw.parallel_insert_data`. The search-side guard comment (src/hnsw/search.rs:75-87) documents that anndists asserts `dist >= ε` and a NaN distance panics; the same distance code runs during graph construction, so one poisoned vector can panic the entire index build inside a rayon worker. The path is real: `Embedding::new` is unchecked, `normalize_l2` and the store round-trip both pass NaN through (pinned by their own tests). Only the query-side NaN case is tested (build.rs:613-621); no insert-side NaN/Inf test exists in src/hnsw/.
-- **Suggested fix:** Extend the skip condition to `!x.is_finite() || all zero` (warn + skip, same as zero-vectors), and add a build test inserting a NaN vector asserting the build succeeds and excludes it.
-
-#### `EmbeddingCache::read_batch` panics on a truncated blob — bytemuck cast precedes the length check; query_cache fixed this exact bug, embedding_cache didn't
-- **Difficulty:** easy
-- **Location:** src/cache/embedding_cache.rs:261 (in `read_batch`)
-- **Description:** A cache row whose blob is not a multiple of 4 bytes (disk truncation) panics at `bytemuck::cast_slice::<u8, f32>(&blob)` (`OutputSliceWouldHaveSlop`) *before* the `embedding.len() != expected_dim` check at line 263. The comment at 254-257 claims "the length check below catches truncation" — wrong for non-multiple-of-4 truncation. `QueryCache::get` has the explicit `bytes.len() % size_of::<f32>() != 0` pre-check with delete-and-miss, pinned by `test_query_cache_get_deletes_malformed_blob` (query_cache.rs:374). All embedding_cache adversarial tests write via `write_batch` (always well-formed) or corrupt the whole DB file; `test_zero_length_embedding` is 0 bytes (0 % 4 == 0, cast succeeds). No test inserts a non-multiple-of-4 blob via raw SQL.
-- **Suggested fix:** Port the query_cache `% 4` pre-check (skip + warn, matching the dim-mismatch branch) and its raw-SQL malformed-blob test.
-
-#### CAGRA accepts non-finite queries and zero/NaN build vectors that the HNSW path guards — backend asymmetry untested
-- **Difficulty:** hard (GPU-gated behavior) / easy (CPU-side `prepare_index_data` contract pin)
-- **Location:** src/cagra.rs:424 (`CagraIndex::search` — no finite-query guard, contrast src/hnsw/search.rs:81), src/hnsw/mod.rs:583-602 (`prepare_index_data` — dims only, no zero/NaN filter) feeding cagra build
-- **Description:** (a) HNSW rejects non-finite queries up front (tested); CAGRA validates only empty/k=0/dim and relies on the post-hoc `!dist.is_finite()` filter at cagra.rs:619 — whether cuVS returns NaN distances (filtered, fine), an error, or finite garbage with valid-looking indices (silently wrong results) is unverified, and CAGRA is the default backend at ≥5000 chunks. (b) The HNSW batched build skips zero-vectors because "they produce NaN cosine distances" (build.rs:211); `prepare_index_data` passes zero/NaN vectors straight to `cuvs::cagra::Index::build` — same corpus yields a filtered HNSW index but an unfiltered CAGRA graph, so backend results can silently differ. None of the 30+ cagra tests use a non-finite or zero vector.
-- **Suggested fix:** Add the same up-front finite-query guard to `CagraIndex::search`; filter (or reject) zero/non-finite vectors in `prepare_index_data` with a CPU-only unit test pinning the contract; optionally a GPU-gated test for the cuVS behavior.
-
-#### HNSW zero-vector skip / id_map attribution — documented past desync bug class, no regression test
-- **Difficulty:** easy
-- **Location:** src/hnsw/build.rs:200-222
-- **Description:** The comment at build.rs:200-201 documents the failure mode the current code avoids ("zero-vector skips would desync base_idx+i from id_map positions") — i.e. results attributed to the wrong chunk_id after a skip. Nothing pins it: no test builds with an interleaved zero-vector batch `[valid_A, zero_vec, valid_B]` and asserts `valid_B`'s exact-embedding search returns id B with `index.len() == 2`. The `tracing::warn!("Skipping zero-vector embedding")` line has zero coverage.
-- **Suggested fix:** Add exactly that interleaved-batch regression test.
-
-#### HNSW search with k > index size (non-empty index) unpinned — the CAGRA analog exists
-- **Difficulty:** easy
-- **Location:** src/hnsw/search.rs:105-117 (`search_impl` ef computation)
-- **Description:** The ef clamp does `.max(k*2).min(index_size)`, but the code's own comment notes hnsw_rs internally bumps `ef = ef.max(knbn)` — re-exceeding `index_size` when k > n. Expected behavior (exactly n results, no panic, no duplicate/phantom ids) is unverified. CAGRA pins precisely this boundary (`test_search_k_greater_than_len_drops_phantoms`, cagra.rs:1956); HNSW has only the empty-index short-circuit. All non-empty HNSW search tests use k ≤ n.
-- **Suggested fix:** Mirror the CAGRA test: 3-vector index, k=100, assert 3 unique valid ids.
-
-#### `Store::open` on a garbage-bytes or truncated index.db has no test
-- **Difficulty:** easy
-- **Location:** src/store/mod.rs:906 (`open_with_config_impl`)
-- **Description:** Nothing opens a `Store` on non-DB bytes (`fs::write(".cqs/index.db", b"not a sqlite database")`), a header-truncated file, or a valid-header DB cut to half size. Expected behavior — clean `StoreError` (SQLITE_NOTADB via sqlx), never a panic, actionable CLI message — is unverified. The only structural defense, `PRAGMA quick_check`, is opt-in (`CQS_INTEGRITY_CHECK=1`, mod.rs:1067-1086) and skipped on read-only opens, so corruption surfaces lazily at first query — that lazy-failure path is also untested. The analogous test exists for the cache (`test_corrupt_db_recovery`, embedding_cache.rs:1298); the only test writing a fake index.db (tests/cli_surface_test.rs:225) uses it as an existence marker and never opens it.
-- **Suggested fix:** Add store_test.rs cases: garbage bytes and truncated DB → assert `Store::open` errs cleanly; plus one CLI spawn asserting the user-facing message suggests `cqs index --force`.
-
-#### Non-integer `schema_version` → `StoreError::Corruption` arm is dead-untested
-- **Difficulty:** easy
-- **Location:** src/store/migrations.rs:230-236 (`check_and_migrate_schema`)
-- **Description:** A DB whose metadata row is `('schema_version', 'abc')` (or `''`, or `'28.5'`) hits `s.parse::<i32>()` → `StoreError::Corruption`. Whether that propagates cleanly through `open_with_config_impl` and what the CLI prints is unverified. Every migration test inserts a numeric version (grep for `schema_version', '` finds only digits); the future-version (`SchemaNewerThanCqs`) and old-version paths are tested, the corrupt-string arm is not.
-- **Suggested fix:** One test inserting `'abc'` and asserting the Corruption error surfaces (not a panic, not a silent v0 treatment).
-
-#### No SQLITE_BUSY / concurrent-writer test anywhere — busy_timeout behavior entirely unpinned
-- **Difficulty:** medium
-- **Location:** src/store/helpers/sql.rs:14 (`busy_timeout_from_env`, zero tests in file); src/store/mod.rs ~940 (`busy_timeout(30_000)`)
-- **Description:** Unpinned: (a) a second connection holding a long write transaction while a `Store<ReadWrite>` attempts `upsert_chunks` — does it block then surface "database is locked" actionably? (b) `CQS_BUSY_TIMEOUT_MS=0` / `=garbage` env fallback parse; (c) the production scenario — daemon mid-write while a CLI process opens read-only (WAL should make this safe; nothing pins it). `tests/stress_test.rs:45` is reader-only concurrency on a shared handle; grep for "database is locked"/SQLITE_BUSY across tests/ → zero assertions. The only two-writer test in the repo is for the slot pointer file (slot/mod.rs:1291), not the store.
-- **Suggested fix:** In-process two-connection test: hold `BEGIN IMMEDIATE` on one rusqlite connection with a tiny `CQS_BUSY_TIMEOUT_MS`, assert the store write errs with a recognizable locked error; unit-test the env fallback.
-
-#### `parser_stage` TOCTOU — file deleted between enumeration and parse: `parse_errors` arm and mtime=0 sentinel untested
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline/parsing.rs:127-138 (error arm), 161-176 (post-parse mtime fetch defaulting to 0)
-- **Description:** Passing a `files` list containing a since-deleted path into `parser_stage` should warn + increment `parse_errors` and continue the rayon batch (`parse_file_all_with_chunk_calls` returns Err(NotFound) from its fs::metadata call) — unverified. Secondary: a file deleted after a successful parse but before the mtime fetch silently stores `mtime = 0`, a permanently-stale sentinel never asserted anywhere. The `#[cfg(test)]` block in parsing.rs has exactly one happy-path test; `parse_errors` is never asserted nonzero in any test.
-- **Suggested fix:** Unit test: three real files + one nonexistent path → assert chunks from the three, `parse_errors == 1`, no panic.
-
-#### Read-only `.cqs/` directory — no permission-denied test for index creation or opening
-- **Difficulty:** medium
-- **Location:** src/cli/commands/index/build.rs:135-190 (dir creation; `set_permissions` failure swallowed at debug level), src/store/mod.rs (`create_if_missing(true)`)
-- **Description:** `chmod 0o500` on the project root (`.cqs/` can't be created) or on an existing `.cqs/` (index.db/WAL/SHM can't be written), then `cqs index`: error quality (permission problem with a path vs raw sqlx string) and whether a partially-created `.cqs/slots/` skeleton is left behind are unverified. WAL sidecar creation in a dir that became read-only after index.db was created is a distinct sub-case (DB opens, first write fails). Zero uses of PermissionsExt/set_readonly in tests/; no `cmd_index` failure test is permission-caused.
-- **Suggested fix:** `#[cfg(unix)]` integration test (skip as root): read-only tempdir → assert actionable error mentioning the path, no leftover partial `.cqs/` skeleton.
-## Code Quality (nested: 3 sub-agents, lead-verified)
-
-#### Config `ef_search` knob is silently ignored on every direct-CLI search path
-- **Difficulty:** medium
-- **Location:** src/cli/store.rs:397-402
-- **Description:** Two functions share the name `build_vector_index`: the batch/daemon one (src/cli/batch/mod.rs:204) takes and passes `config.ef_search` (context.rs:1111, view.rs:336), while the CLI one is a thin wrapper hardcoding `ef_search: None` into `build_vector_index_with_config`. All direct-CLI consumers (search_ctx.rs:146, query.rs:951/955, gather.rs:268, eval/runner.rs:114) use the wrapper, so the documented `.cqs/config.toml` `ef_search` knob (config.rs:465, clamped at :777) takes effect only via batch/daemon and no-ops under `CQS_NO_DAEMON=1` / direct invocation. Only the env override works everywhere. `build_base_vector_index` (store.rs:472) has no ef_search parameter at all. This is the `build_batched()` wrapper-masks-wiring shape, live today.
-- **Suggested fix:** `build_vector_index_with_config` already loads project config for `[index.policy]`; default `ef_search` from that config when the argument is None, thread it into `build_base_vector_index`, and add a CLI/daemon parity test.
-
-#### `gather_cross_index` is a production-dead wrapper that also skews test coverage
-- **Difficulty:** easy
-- **Location:** src/gather.rs:561
-- **Description:** Zero production callers — only tests/gather_test.rs:293-438 plus the lib.rs:205 re-export. Production (cli/commands/search/gather.rs:100) calls `gather_cross_index_with_index` directly. The wrapper hardcodes `project_index: None`, so the integration tests exercise only the brute-force bridge-search path while production runs the indexed path.
-- **Suggested fix:** Delete the wrapper and re-export; point tests at `gather_cross_index_with_index(..., None)` and add one test passing a real index.
-
-#### CAGRA in-memory constructors are test-only API masquerading as production surface
-- **Difficulty:** easy
-- **Location:** src/cagra.rs:801, src/cagra.rs:370-376
-- **Description:** `build_from_store` has zero callers anywhere (production `try_open` at cagra.rs:1720 calls `build_from_store_with_metric` directly, doing its own env-metric resolution with HNSW-sidecar fallback the wrapper lacks). `build` / `build_with_metric` are called only from `mod tests` (:1783-:2484). Dead-code analysis keeps reporting them as live API.
-- **Suggested fix:** Delete `build_from_store`; demote `build`/`build_with_metric` to `#[cfg(test)]` or fold `build` into `build_with_metric`.
-
-#### `CagraIndex::save` is a ~75-line test-only twin of `save_with_store` that hardcodes `splade_generation: 0`
-- **Difficulty:** easy
-- **Location:** src/cagra.rs:1013-1086 (vs save_with_store at :1091-1169)
-- **Description:** Every `.save(` call site is in `mod tests` (:2026-:2486); the sole production caller (:1731) uses `save_with_store`. The two duplicate the full persist-enabled check / mutex-poison guard / atomic-replace / meta-write-cleanup body; the only difference is `splade_generation: 0` vs a store read. Any future production caller of `save` would silently disable the SPLADE coarse staleness check — the hardcoded-default wrapper shape — and the duplicated body is a divergence hazard for persistence fixes.
-- **Suggested fix:** `fn save_inner(&self, path, generation)`; `save` (test-only or deleted) and `save_with_store` both delegate.
-
-#### `CommandContext.project_cqs_dir` / `slot_name` — written, never read, staleness masked by `#[allow(dead_code)]`
-- **Difficulty:** easy
-- **Location:** src/cli/store.rs:162-168
-- **Description:** Both fields carry `#[allow(dead_code)] // wired into doctor + handlers progressively`. Grep finds only the constructor writes (:189-190, :213-214) — zero reads in src/. The doc comments promise handlers will use them for the embeddings cache, active_slot pointer, and tracing/envelope fields; none do.
-- **Suggested fix:** Wire them (e.g. include `slot_name` in command tracing spans / JSON envelopes as documented) or delete per the no-deferred-debt policy.
-
-#### `ScoutOptions` knobs are unreachable from any surface
-- **Difficulty:** easy
-- **Location:** src/scout.rs:101, src/scout.rs:135
-- **Description:** `scout_with_options`'s only callers are `scout()` passing `ScoutOptions::default()` (scout.rs:131) and the lib.rs:241 re-export; `task` also hardcodes the default (task.rs:150). No CLI flag, batch command, or daemon path can set `search_limit`/`search_threshold`/`min_gap_ratio` — the knobs exist but nothing reaches them, violating "the knob works as specified".
-- **Suggested fix:** Expose the knobs as `cqs scout` flags (agent-facing tools bias toward configurability) or collapse `scout_with_options` into `scout`.
-
-#### Fused-tx phantom-chunk pruning is a verbatim inline copy of `delete_phantom_chunks`
-- **Difficulty:** medium
-- **Location:** src/store/chunks/crud.rs:1059-1144 (vs :1165+)
-- **Description:** The fused-tx block inside `upsert_chunks_batch` mirrors `delete_phantom_chunks` line-for-line — same `_live_ids` temp table, same batched `INSERT OR IGNORE` loop, byte-identical FTS/chunks DELETE SQL. The comment at :1060 admits the mirror. The module already has the right pattern for exactly this (`write_function_calls_in_tx`, used at :1152).
-- **Suggested fix:** Extract `delete_phantom_chunks_in_tx(tx, origin, live_ids)`; both the fused path and the standalone function call it.
-
-#### Three prune functions repeat the batched-delete block and have already diverged — `prune_gitignored` never cleans `function_calls`
-- **Difficulty:** medium
-- **Location:** src/store/chunks/staleness.rs:266, :389, :532
-- **Description:** `prune_missing`, `prune_all`, and `prune_gitignored` each repeat the ~25-line FTS+chunks batched delete plus the identical orphan `sparse_vectors` sweep (3× same SQL). They diverge on `function_calls`: `prune_missing` deletes per-batch by file (:344, with a comment explaining the ghost-caller bug without it), `prune_all` does a global sweep (:455), and `prune_gitignored` deletes function_calls not at all — a gitignore-driven prune leaves orphan call-graph rows (the exact symptom the prune_missing comment warns about) until the next `prune_all`.
-- **Suggested fix:** Extract a shared `delete_origins_in_tx` covering FTS + chunks + function_calls + sparse sweep; the function_calls divergence gets resolved explicitly. The `prune_gitignored` gap may deserve its own correctness issue.
-
-#### Ref-path query preparation duplicated across `cmd_query_project`/CLI-ref-path vs `query_core` — wider than the deferred multi-store fan-out
-- **Difficulty:** hard
-- **Location:** src/cli/commands/search/query.rs:918-1174 (and :676-896) vs :239-527
-- **Description:** The command-core deferred ledger covers only the multi-store retrieval fan-out, but the duplicated span includes classification, NameOnly-FTS-first, telemetry, centroid reclassification + alpha floor, lang/type filter parsing, SPLADE alpha resolution (full comment block copied), `SearchFilter` construction, base-index selection, and pattern filtering — none multi-store-specific. Drift is already visible: `query_core` collapsed its hybrid condition to `audit_mode.is_active() || splade_arg.is_some()` while `cmd_query_project` still carries the older nested form with two byte-identical 8-line `search_hybrid` calls (:988 and :1000).
-- **Suggested fix:** Extract a shared `prepare_query` prelude + shared post-retrieval step, leaving only the fan-out adapter-local. The `cmd_query_project` double-`search_hybrid` collapse alone is an easy first slice.
-
-#### Env-knob parsing re-implemented across six sites while `limits::parse_env_*` exists — including a private copy in `cli/limits.rs` and divergent silent-swallow semantics
-- **Difficulty:** easy
-- **Location:** src/hnsw/persist.rs:15-77; src/cli/limits.rs:251-285; src/onboard.rs:38-53; src/note.rs:37-53; src/diff.rs:80-87; src/task.rs:38-54
-- **Description:** `src/limits.rs` exports `parse_env_f32/usize/usize_clamped/u64` (:284-:430) and bin-crate code already uses them, yet `cli/limits.rs` keeps a private copy of two of them, hnsw/persist.rs inlines three verbatim ~20-line OnceLock parse-warn-default blocks, and onboard/note/diff hand-roll the same parse chain with *silent* garbage-swallow (no warn — divergent from the limits helpers' warn contract). Caching policy also diverges (gather.rs:157 OnceLock vs task.rs deliberate per-call re-read for `systemctl set-environment`). Bonus doc drift: task.rs:32 claims `CQS_GATHER_DEPTH` is "shared default with `cqs gather`" but task.rs is its only reader in the tree.
-- **Suggested fix:** Route all sites through `cqs::limits::parse_env_*` (uniform warn-on-invalid), delete the cli/limits.rs private pair, pick one caching policy, and fix or implement the `CQS_GATHER_DEPTH` claim.
-
-#### Cross-project branches escaped the command-core extraction on both surfaces — no parity pin
-- **Difficulty:** medium
-- **Location:** src/cli/batch/handlers/graph.rs:107-114 (+ :154-161, :203-223, :265-284, :331-343) vs src/cli/commands/graph/callers.rs:198-232 (+ callees/impact/test_map/trace siblings)
-- **Description:** For each of callers/callees/impact/test-map/trace, the `cross_project` retrieval+truncate logic (`CrossProjectContext::from_config` → `get_*_cross` → clamp+truncate) is written twice — once in the daemon dispatcher, once in `cmd_*` — outside the parity-tested cores. The campaign's deferred ledger has no cross-project entry, so this is an unrecorded gap, and unlike the cores there is no parity test pinning CLI==daemon for these branches.
-- **Suggested fix:** Per command, extract a `*_cross_core` (or fold `cross_project` into the existing core args with the context passed in) and add parity tests matching the single-project pattern.
-
-#### The v27 `needs_embedding` search-visibility gate lives only in a production-dead method; the live RRF FTS leg is unfiltered
-- **Difficulty:** easy
-- **Location:** src/store/search.rs:120-150 vs src/search/query.rs:358-364
-- **Description:** `Store::search_fts` JOINs chunks and filters `needs_embedding = 0`, with a comment saying this keeps unembedded chunks "out of the RRF mix" — but its only callers are tests/store_test.rs and tests/stress_test.rs. The actual RRF mix (`finalize_results`, shared by `search_filtered` and `search_by_candidate_ids`) inlines its own `SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1` with no join and no gate, so partially-indexed chunks can surface through the keyword leg during a `--llm-summaries` reindex — the exact state the schema contract (store/helpers/mod.rs:142-149, "search-time ... paths filter WHERE needs_embedding = 0") claims is prevented. `search_by_name` (:216) has the gate; the live RRF leg does not.
-- **Suggested fix:** Route `finalize_results`' FTS leg through `search_fts` (or a shared query helper carrying the gate) so the contract lives in one place.
-
-#### `serve/data.rs` writes raw SQL against the store schema through `pub(crate)` pool access
-- **Difficulty:** medium
-- **Location:** src/serve/data.rs:224-1124
-- **Description:** Five builders (`build_graph`, `build_chunk_detail`, `build_hierarchy`, `build_cluster`, `build_stats`) do `store.rt.block_on` + `sqlx::query(...).fetch_all(&store.pool)` with hand-built SQL, dynamic `AssertSqlSafe` strings, and their own LIKE-escaping. `Store.pool`/`Store.rt` are `pub(crate)` (store/mod.rs:297, :305) specifically to leak the connection to a sibling surface module — the only production module outside store/ and cache/ that does this. Schema knowledge (column names, join shapes, v27 visibility rules) now lives in two modules; migrations must remember to update serve.
-- **Suggested fix:** Move the query bodies into store/ (e.g. `store/serve_queries.rs`) returning typed rows; serve keeps only wire-shaping; pool/rt drop back toward module-private.
-
-#### `store` ↔ `search` bidirectional coupling — Store's search API is implemented in the `search` module on Store's private fields
-- **Difficulty:** hard
-- **Location:** src/search/query.rs:67; src/store/search.rs:8
-- **Description:** `store/search.rs` holds FTS/name methods and imports `crate::search::scoring::knob`; `search/query.rs` opens `impl<Mode> Store<Mode>` using `self.pool`/`self.rt`/`self.dim` and extends Store with 1000+ lines of methods. The boundary is nominal — neither module changes safely without the other. The unfiltered-RRF-leg finding above is a direct symptom: two homes for "FTS query against chunks" meant the v27 gate landed in the dead one.
-- **Suggested fix:** Pick one owner: either all SQL-touching methods live in store/ and search/ owns only pure scoring/fusion, or Store becomes a connection holder and search/ owns queries. Invert the `knob` import accordingly.
-
-#### Library `llm` modules print user-facing hints to stderr directly
-- **Difficulty:** easy
-- **Location:** src/llm/summary.rs:101; src/llm/doc_comments.rs:281; src/llm/batch.rs:638
-- **Description:** `eprintln!("note: LLM batch reached cap CQS_LLM_MAX_BATCH_SIZE=...")` is copy-pasted between summary.rs and doc_comments.rs, plus a bare `eprintln!()` spacer in `batch.rs::resume`. These are lib-crate functions; under a daemon-driven reindex or journald the hint lands in a stream the client never sees, and the surface-state `quiet: bool` threading into `BatchPhase2` is the same inversion.
-- **Suggested fix:** Return a `truncated_at: Option<usize>`-style field on the pass result and let the CLI/daemon adapters render the hint; drop the spacer behind the progress-bar abstraction.
-
-#### Crate root accretes utilities that have dedicated homes
-- **Difficulty:** easy
-- **Location:** src/lib.rs:410-645
-- **Description:** `lib.rs` holds `env_falsy` (:410), `unix_secs_i64` (:439), `normalize_path`/`normalize_slashes`/`strip_windows_verbatim_prefix` (:582-:602), `temp_suffix` (:621), `panic_message` (:632), and the serde serializer `serialize_path_normalized` (:645) — while `src/serde_helpers.rs` exists for serde helpers and `src/fs.rs` for filesystem code. The crate root is the path of least resistance, so the grab-bag grows by default.
-- **Suggested fix:** Relocate the serde serializer to serde_helpers.rs and the path helpers to fs.rs (re-export from root if attribute-path churn matters); freeze lib.rs to module decls + crate-level types/constants.
-
-
-## Security
-
-#### SEC-V1.42-1: Kind-fallback `definitions[]` relays full chunk content with no `injection_flags` / `trust_level` — SECURITY.md promises both on "every chunk-returning JSON output"
-- **Difficulty:** medium
-- **Location:** src/cli/commands/graph/mod.rs:206-240 (`chunk_to_definition_value`), :247-253 (`chunks_to_definitions`); emitted by every CLI graph kind-fallback (callers/callees/deps/impact/test-map/trace) and the daemon dispatch path (src/cli/batch/handlers/graph.rs)
-- **Description:** `chunk_to_definition_value` builds a `definitions[]` entry carrying the chunk's raw `content` (up to 2048 bytes) plus `signature` — both prompt-injection relay surfaces (comments/strings/doc blocks survive verbatim). The entry has NO `injection_flags` array and NO `trust_level` field. SECURITY.md is explicit: line 65 — "**every** chunk-returning JSON output carries `trust_level` whenever it is non-default ... and `injection_flags` whenever a heuristic fired" — and line 67 — "**every** chunk-returning JSON output carries an `injection_flags` field". The kind-fallback path is exactly a chunk-returning JSON surface (it's the agent-facing response when `cqs callers Result` etc. routes a type/const name), and it's the highest-amplification one (SEC-V1.40-4 flagged that hot names like `Result`/`Error`/`new` fan out to many definitions). The heuristic plumbing exists and is cheap (`cqs::llm::validation::detect_all_injection_patterns(&c.content)` returns the flag vec; `c.trust_level` is already on `ChunkSummary`), but this shared transform never calls it. Net effect: a poisoned doc comment in a vendored/reference dependency relayed through `cqs callers SomeType` reaches the agent with none of the trust signals the security doc tells operators to rely on — a docs-promising-undelivered-defense gap (the project's docs-lying-is-P1 rule applied to a SECURITY.md guarantee). Distinct from the already-triaged SEC-V1.40-4 (content size cap, fixed) — this is the missing trust-signal annotation, not the byte cap.
-- **Suggested fix:** In `chunk_to_definition_value`, compute `detect_all_injection_patterns(&c.content)` and insert a populated `injection_flags` array when non-empty (skip-when-default, matching the search-path convention), and insert `trust_level` when `c.trust_level` is non-default (`vendored-code`/`reference-code`). One shared transform fixes all six commands × both surfaces. Add a test pinning that a chunk whose content starts with "Ignore prior instructions" surfaces `injection_flags: ["leading-directive"]` through `cqs callers <type>`.
-
-#### SEC-V1.42-2: `cqs serve` chunk-detail / graph / hierarchy responses relay `content_preview`, `signature`, `doc` to the browser with no `trust_level` / `injection_flags`
-- **Difficulty:** medium
-- **Location:** src/serve/data.rs:92-114 (`ChunkDetail` struct — no trust fields), :508-645 (`build_chunk_detail` selects `signature, doc, content`); sibling builders `build_graph`/`build_hierarchy` emit `Node`s with name/file but no trust annotation
-- **Description:** The `cqs serve` HTTP surface returns chunk `content_preview`, `signature`, and `doc` — all prompt-injection relay surfaces — in its `ChunkDetail` JSON, with no `trust_level` or `injection_flags`. The `ChunkDetail` struct (data.rs:92) has no trust fields at all, and the SELECT at :510 pulls `signature, doc, content` straight from the row. SECURITY.md's "every chunk-returning JSON output carries `trust_level` ... and `injection_flags`" guarantee (lines 65/67) does not carve out the serve surface, yet serve is the surface where the consumer is most likely a remote browser or a downstream agent scraping the web UI, i.e. the one where the operator most needs the vendored/reference trust signal. The `vendored-code` / `reference-code` distinction (SECURITY.md line 59, schema v24) is computable from the same `chunks` row serve already reads but is dropped on the floor. (Whether serve's consumer is "an agent" vs "a human in a browser" is the live question — if serve is deemed human-only the doc should say so; right now the doc claims universal coverage and serve silently doesn't deliver it.)
-- **Suggested fix:** Add `trust_level: String` (skip-when-`user-code`) and `injection_flags: Vec<&str>` (skip-when-empty) to `ChunkDetail`, populate from the chunk row's `trust_level` column + `detect_all_injection_patterns(content)`, OR amend SECURITY.md to scope the universal-coverage claim to the CLI/daemon JSON surface and explicitly note serve is a human-facing surface exempt from machine-readable trust signals. Either closes the doc/code mismatch.
-
-#### SEC-V1.42-3: Cleartext-http API-key guard has a redundant/contradictory localhost carve-out across two layers — `LlmConfig::resolve` hard-errors all `http://` while `LocalProvider::new` still runs a non-local-host check that can never be reached
-- **Difficulty:** easy
-- **Location:** src/llm/mod.rs:357-372 (resolve-layer hard error on any `http://` without `CQS_LLM_ALLOW_INSECURE=1`); src/llm/local.rs:146-171 (`LocalProvider::new` non-local-host auth-drop, SEC-V1.33-10)
-- **Description:** Two layers guard the "API key shipped over cleartext http" leak, and they disagree on policy. `LlmConfig::resolve` (mod.rs:357) returns `Err` for **any** `http://` base — including `http://localhost` — unless `CQS_LLM_ALLOW_INSECURE=1` is set. Every provider build (Anthropic and local) goes through `resolve` first, so by the time `LocalProvider::new` runs the base is guaranteed to be either `https://` or `http://` with the insecure opt-in already acknowledged. The `LocalProvider::new` block at local.rs:157 then re-checks `http://` + non-local host and drops the auth header — but a non-local `http://` host already failed `resolve` (no `ALLOW_INSECURE`) or was explicitly acknowledged (with `ALLOW_INSECURE=1`, where silently dropping the header now contradicts the user's explicit opt-in). The local.rs guard is therefore dead for the leak it names and, in the `ALLOW_INSECURE=1` path, actively surprising: the operator opted into cleartext and the header is dropped anyway, so a local provider that needs auth (some vLLM deployments) silently 401s with no indication why. Not a leak — both layers are conservative — but the two-policy split means a future edit to one layer can't reason about the key's exposure without reading the other (the exact two-homes hazard batch 1 flagged structurally for serve SQL).
-- **Suggested fix:** Make the carve-out live in one place. Either (a) `resolve` allows `http://localhost` / RFC1918 without `ALLOW_INSECURE` (matching the local-provider intent) and `LocalProvider::new` keeps the header for those hosts, or (b) delete the local.rs:157 non-local re-check entirely since `resolve` already gates every reachable `http://` base, and document that `CQS_LLM_ALLOW_INSECURE=1` means "I accept cleartext auth, send the header". Pick one trust model and collapse to it.
-## Platform Behavior
-
-#### PB-V1.42-1: v23 reconcile fingerprint columns are stamped only by the watch-path reindex — CLI `cqs index` leaves them NULL on insert and stale on content-changing upsert
-- **Difficulty:** medium
-- **Location:** src/cli/pipeline/upsert.rs:174-178 (CLI upserts, no fingerprint stamp); src/store/chunks/async_helpers.rs:329 + :412-429 (INSERT/ON CONFLICT omit `source_size`/`source_content_hash`); src/cli/watch/reindex.rs:717 (sole production `set_file_fingerprint` caller); src/store/chunks/staleness.rs:84-106 (`matches` mtime-only fallback)
-- **Description:** The BLAKE3 size+hash tiebreak (`FileFingerprint`, FingerprintPolicy::MtimeOrHash) was built explicitly for coarse-mtime filesystems — the doc names "WSL DrvFS / NTFS / HFS+ / SMB ≥1 s mtime resolution" — but only the watch daemon's `reindex_files` ever writes `source_size`/`source_content_hash`. The full/incremental CLI pipeline (`cqs index`, including `--force`, the documented recovery command for WSL inotify staleness) passes only `source_mtime` into `batch_insert_chunks`, whose INSERT column list omits the two fingerprint columns entirely. Consequences: (a) freshly CLI-indexed rows have `{mtime, NULL, NULL}`, so `matches()` takes the mtime-only fallback (staleness.rs:92-94) — the exact same-mtime-tick collision the tiebreak exists to catch goes undetected on DrvFS until that file happens to flow through a watch reindex; (b) when a CLI reindex updates *changed* content, ON CONFLICT refreshes `source_mtime` but preserves the old `source_size`/`source_content_hash` describing the previous file version — the next daemon reconcile sees mtime match but size mismatch, runs the hash tiebreak against the stale stored hash, classifies the already-current file divergent, and requeues a spurious reindex wave (re-parse + SQLite churn + HNSW dirty/rebuild) after every manual `cqs index` run under a live daemon — i.e. after every branch switch in the documented WSL workflow; (c) the struct doc at staleness.rs:15-16 ("NULL until first re-embed populates them") implies any re-embed populates them, which is false for the CLI path. Verified: `grep set_file_fingerprint` finds no production caller outside watch/reindex.rs; the INSERT at async_helpers.rs:329 has no fingerprint columns.
-- **Suggested fix:** Stamp the fingerprint in the shared upsert path: the pipeline already has the file mtime and reads the bytes for parsing, so compute size+blake3 there and either extend `batch_insert_chunks` with the two columns (set them in ON CONFLICT too, fixing the stale-preserve) or call `set_file_fingerprint` per file after the upsert, mirroring reindex.rs:717. At minimum, null the two columns in the ON CONFLICT clause when `content_hash` changes so a stale hash can never trigger the spurious-divergence wave; then correct the staleness.rs doc.
-
-#### PB-V1.42-2: `linux_fs_resolution` magic-number table omits 9P (`V9FS_MAGIC`) — manually mounted DrvFS shares get fine-grained mtime treatment
-- **Difficulty:** easy
-- **Location:** src/config.rs:270-289 (`linux_fs_resolution`); consumer src/cli/watch/events.rs:105-127 (mtime-equality skip)
-- **Description:** `coarse_fs_resolution` recognizes WSL DrvFS by path shape (`is_wsl_drvfs_path`: configured automount root, `/mnt/<letter>/`, `//wsl$`/`//wsl.localhost` UNC), then falls back to statfs magic numbers for everything else. The magic table covers NFS/MSDOS/VFAT/SMB/CIFS/HFS+ but not 9P (`V9FS_MAGIC = 0x01021997`), which is what every WSL2 DrvFS mount actually reports to statfs. The shape check masks this for standard automount paths, but a drive mounted manually outside the automount root — `sudo mount -t drvfs D: /data` (the documented WSL recipe for USB/secondary drives), or a bind-mount of a `/mnt/c` subtree — fails the shape check, hits the statfs fallback, and gets `Duration::ZERO`. The watch loop's mtime-equality skip then treats nanosecond-equal mtimes as unambiguous, so two saves within the same (≥1 s) DrvFS mtime tick silently drop the second save from the index — the precise bug class the function's own doc (config.rs:213-217) says it exists to close, on the filesystem family it was written for. Related to but distinct from PB-V1.40-2/6 (shape-validation divergence): this is the statfs layer missing the FS type entirely, and fixing it makes the shape check belt-and-suspenders rather than the only line of defense.
-- **Suggested fix:** Add `const V9FS_MAGIC: i64 = 0x01021997;` to the coarse list in `linux_fs_resolution` (one line plus a comment naming WSL2 DrvFS). Optionally add FUSE (`0x65735546`) for sshfs/rclone mounts in the same pass.
+# Audit Findings — v1.46.1
+
+Audit date: 2026-06-15
+Source: 16-category discovery fan-out, 22 raw findings → 19 triaged rows after dedup/cluster.
+Triage: `docs/audit-triage.md`. Prior cycle archived at `docs/audit-triage-v1.42.0.md` (P1+P2 complete; deduped against — no new finding re-states a closed v1.42/v1.40 item).
 
 ## Resource Management
 
-#### RM-V1.42-1: CAGRA interrupted-save tmp files are never swept — HNSW and SPLADE both clean theirs on load, CAGRA accumulates orphans forever
-- **Difficulty:** easy
-- **Location:** src/cagra.rs:1186 (`CagraIndex::load`, missing sweep); tmp creation at src/cagra.rs:1426 (`save_blob_atomic_with_rollback`) and src/cagra.rs:1556 (`write_meta_atomic`)
-- **Description:** CAGRA's atomic save stages the cuVS blob to `.<file>.<hex16>.tmp` (and the meta sidecar to its own `.<file>.<hex16>.tmp`) before atomic-replace. Every in-process failure path removes the tmp, but a hard kill (SIGKILL on `systemctl stop` timeout, OOM-kill, power loss) during step 2 — cuVS serializing the index, the longest window in the save — leaves the tmp behind. The suffix is `crate::temp_suffix()` (random 16-hex), so a later save never overwrites an orphan; each interrupted save adds a new one. The blob is the largest artifact in the slot dir (tens to hundreds of MB at CAGRA-scale corpora, which by definition is ≥5000 chunks), and the watch daemon rebuilds it on every threshold rebuild, so a crash-looping or OOM-killed daemon accumulates multi-hundred-MB orphans in `.cqs/slots/<name>/` with nothing that ever deletes them. Both sibling persistence layers handle exactly this: `HnswIndex::load_with_dim` sweeps `.{basename}.*.tmp` dirs on every load (src/hnsw/persist.rs:837-850, "Cleaning up interrupted HNSW save"), and SPLADE's loader sweeps `.splade.index.bin.*.tmp` (src/splade/index.rs:910-941 — itself a prior audit RM-4 fix). `cagra.rs` has no `read_dir` outside tests; neither `load` nor `try_open` nor `cqs gc` sweeps the pattern. The doc comment at cagra.rs:1399 says the sequence "mirrors src/hnsw/persist.rs and the SPLADE pattern" — it mirrors the save half but not the load-side cleanup half.
-- **Suggested fix:** Port the SPLADE/HNSW sweep into `CagraIndex::load` (or `try_open`, before the load attempt): `read_dir` the parent, remove files matching `.{file_name}.`-prefix + `.tmp`-suffix for both the blob and the meta sidecar names, log at info. One test: drop a fake orphan tmp next to a saved index, load, assert it's gone (mirror `test_save_*` at cagra.rs:2095 which already glob-checks tmp absence after clean saves).
+#### Daemon dispatch catch_unwind is dead under `panic = "abort"` — one bad request aborts the warmed daemon
+
+- Difficulty: medium · Impact: high
+- Location: src/cli/watch/socket.rs:257-330 (catch_unwind) × Cargo.toml:355 (`[profile.release] panic = "abort"`)
+- Description: `handle_socket_client` wraps dispatch in `std::panic::catch_unwind` with an `Err(payload)` arm that writes "internal error (panic in dispatch)" and logs "Daemon query panicked — daemon continues" — the daemon's stated panic-survival contract. But the shipped artifact is the release profile, which sets `panic = "abort"` (confirmed Cargo.toml:355). Under abort there is no unwinding: the panic hook runs and the process terminates *before* `catch_unwind` can intercept. In the systemd `cqs-watch` daemon (release binary), the catch_unwind is dead code: any panic on the dispatch path (an `.expect()`/`unwrap()`/slice-index/overflow on an edge-case or adversarial request) aborts the whole daemon, dropping ~500MB of warmed ONNX sessions plus HNSW/SPLADE/call-graph caches. systemd restarts cold; the next query pays full model-init + index-rebuild latency. A client that can reliably trip a dispatch panic has a remote restart/DoS primitive. Any test for this behavior silently asserts nothing under release.
+- Suggested fix:
+  - Decide the panic policy: (a) set `panic = "unwind"` for the binary so the existing catch_unwind isolates dispatch panics (accept the LTO/size cost, or scope abort to non-daemon builds), OR (b) keep abort and DELETE the catch_unwind + Err arm + the misleading "daemon continues" log, replacing with an honest "a dispatch panic aborts the daemon; systemd restarts it" note plus a defensive sweep of the dispatch path's panic sources.
+  - Add a daemon integration test that sends a request known to panic a handler and asserts either the panic envelope (option a) or that the panic sources are removed (option b).
+  - This is a judgment call (panic-policy tradeoff vs. defensive sweep) — route to an issue, not an auto-fix.
+
+#### Daemon `in_flight` slot decremented post-call, not via RAII — leaks a connection slot on panic outside the inner catch_unwind
+
+- Difficulty: easy · Impact: medium
+- Location: src/cli/watch/daemon.rs:246-247
+- Description: The accept loop bumps `in_flight` (fetch_add) then spawns a thread whose body is `handle_socket_client(stream, &ctx_clone); let prev = in_flight_clone.fetch_sub(1, …)`. The decrement only runs if `handle_socket_client` returns. The inner `catch_unwind` in socket.rs:257 covers only the dispatch closure — the region before it (set_read/write_timeout, BufReader `read_line` over attacker-controlled bytes, `serde_json::from_str`, the arg-validation walk, the early `write_daemon_error_tracked` calls) and the write helpers called *after* the catch_unwind are all outside it. A panic there unwinds past the `fetch_sub`, leaking the slot permanently — the spawned thread has no Drop-based release. Accumulated leaks raise `in_flight` toward `max_clients`, after which the accept loop rejects every new connection ("daemon busy"), bricking the daemon with no clients connected. Moot under the current `panic = "abort"` (process aborts), but live the moment the panic policy changes to unwind (the natural fix for the catch_unwind finding) and already live in any debug/test/unwind build.
+- Suggested fix:
+  - Replace the post-call `fetch_sub` with an RAII guard struct holding `Arc<AtomicUsize>` that does `fetch_sub(1, AcqRel)` in `Drop`, constructed right after the `fetch_add` and moved into the closure. Decrement then runs on normal return, early return, and unwind alike. Subsumes the manual decrement on the spawn-failure path.
+  - Add a test that panics inside `handle_socket_client` (unwind build) and asserts `in_flight` returns to its prior value.
+
+#### Overlay delta builds full records/masked_origins/parse_set BEFORE the size cap rejects — cap is post-hoc
+
+- Difficulty: easy · Impact: low
+- Location: src/worktree_overlay.rs:809-868 (discover_delta)
+- Description: `discover_delta` parses the entire `git diff --name-status` output into `records`, appends every untracked file, builds `masked_origins` (HashSet) and `parse_set` (Vec), and ONLY THEN checks `overlay_max_files()` (line ~863). The cap is documented as a DoS rail ("overlay delta exceeds cap — skipping") but is enforced after all three collections are already fully materialized. A worktree with a huge number of changed/untracked files — the exact case the cap names — still pays the full O(N) allocation before being rejected; the rail doesn't bound peak memory of the function it guards. Runs on every overlay cache miss in a worktree checkout. Low impact because git output bounds it in practice.
+- Suggested fix:
+  - Check delta size against `overlay_max_files()` as records accumulate (after tracked records, and again while folding untracked entries), bailing with DeltaTooLarge before continuing to build masked_origins/parse_set. Keep the final check as a backstop.
+
+## Test Coverage (happy path)
+
+#### apply_dead_overlay Direction A (parent-dead → live resurrection) is untested at every layer
+
+- Difficulty: medium · Impact: high
+- Location: src/store/calls/dead_code.rs:1022-1031 (Direction A); overlay_has_real_caller at :934; only test src/cli/worktree_overlay_build.rs:517
+- Description: `apply_dead_overlay` drives the worktree-overlay dead-code merge for `cqs dead`, `cqs ci`, and `cqs review`. It has two directions: B (parent-live → dead, well-tested) and A (parent-dead → live: `confident/possibly_pub.retain(|d| !overlay_has_real_caller(...))` drops a previously-dead function the worktree now really-calls). The ONLY test exercising apply_dead_overlay seeds a previously-LIVE function whose caller is removed — purely Direction B. Zero coverage of the resurrection path: no test where a parent-dead function gains a real worktree caller and is dropped from the dead set; zero coverage of `overlay_has_real_caller` / the retain predicate / the `participated=true` flag flip. This path is freshly churned (#1942/#1943/#1957). A regression in `overlay_has_real_caller` or the retain predicate would falsely keep a now-live function flagged dead — a high-visibility false positive in the exact surface agents query — and a green suite would not catch it because every fixture is born without an overlay-added caller.
+- Suggested fix:
+  - Add an inline test (mirroring the existing Direction-B one) that seeds a genuinely-dead parent function (zero callers), builds a worktree overlay whose delta adds a real call edge to it, runs dead_overlay with `Some(&overlay)`, and asserts (a) the function is absent from `output.dead` and (b) `participated == true`.
+  - Add a second case asserting `overlay_has_real_caller` returns false for a `doc_reference`/`macro_heuristic` edge so a non-real overlay edge does NOT resurrect.
+
+#### distinct_callees_from_origins (masked-origin candidate enumeration) has no direct test for multi-origin / dedup behavior
+
+- Difficulty: easy · Impact: medium
+- Location: src/store/calls/query.rs:684 (distinct_callees_from_origins); sole production caller src/store/calls/dead_code.rs:1042
+- Description: `distinct_callees_from_origins(&masked)` feeds the entire Direction-B candidate set for the dead-overlay merge — it enumerates the distinct callee names the masked (delta-origin) files used to call, parent-side. Zero references in tests/ (grep-confirmed); reached only transitively through the single Direction-B inline test, which seeds exactly one masked origin and one candidate. Its DISTINCT-ness and multi-origin union behavior (two masked files with overlapping callee sets must dedup; empty masked list must yield empty) are never asserted. A bug here (dropping DISTINCT, or wrong path normalization at dead_code.rs:1040) would silently shrink or duplicate the Direction-B candidate set, missing or doubling dead-code flips under overlay.
+- Suggested fix:
+  - Add a focused unit: seed call edges from two origin files with overlapping and distinct callees, call `distinct_callees_from_origins` with both, assert the returned set is the deduped union; add an empty-origins case (empty result) and a path-normalization case (non-normalized separator still matches).
+
+#### Dart body-inclusive canonical_hash (the extra-node comment-stripping path) is untested
+
+- Difficulty: medium · Impact: low
+- Location: src/parser/chunk.rs:178-192 (canonical_hash_spanning, the Option<extra> branch :190-192); production call :412; tests at :1152 and tests/language_test.rs:7656
+- Description: canonical_hash's non-comment-stripping invariant is well covered, but every existing test calls it with `extra = None`. The `extra` (body) node parameter, added in #1970 for Dart body-inclusive chunking, collects comment ranges from a SECOND node so a comment-only edit inside a Dart method body does not change the chunk's canonical_hash (the chunk id / embedding-cache key — the injectivity surface that produced #1947). No test passes a non-None extra; `test_dart_chunk_includes_body` only asserts body text is included, never canonical_hash stability across a body-internal comment change. The merge/sort/splice of comment ranges spanning two disjoint nodes — the only thing the extra branch adds — has zero assertion. A regression (base offset from the wrong node, ranges not merged) would change Dart chunk ids on comment-only edits, defeating cache reuse, with no failing test.
+- Suggested fix:
+  - Add a Dart case to canonical_hash_tests asserting that inserting a `//` or `/* */` comment inside a Dart method/function *body* leaves canonical_hash unchanged, and a real body code change *does* change it — parsing through Parser so the real body node feeds the `extra` argument.
+
+## Test Coverage (adversarial)
+
+#### L5X/L5K call-graph + type-ref extraction (parse_l5x_all) has zero test coverage, including over malformed/error-recovered ST
+
+- Difficulty: easy · Impact: low
+- Location: src/parser/l5x.rs:590-613 (parse_l5x_all), :628-652 (extract_chunk_type_refs); tests :1242 and :1277 discard `_calls`/`_types`
+- Description: The production path `parse_l5x_all` derives `all_calls` and `all_types` for the call/type graph. Both production-path tests bind the relationship outputs as `_calls`/`_types` and never assert on them. The chunk-extraction side is well covered adversarially (unclosed CDATA, unterminated ROUTINE, CRLF, overflow saturation), but the call/type-ref derivation over ST content — particularly ST that tree-sitter error-recovers on, where `extract_types`/`extract_calls_from_chunk` walk a partial tree — is entirely unexercised. The code degrades gracefully (warn + empty Vec) but there is no guard that malformed ST yields no panic and no garbage edges, nor that valid ST with a routine-call produces the expected edge.
+- Suggested fix:
+  - Add a happy-path test: `parse_l5x_all` on an L5X with ST containing a function-block/routine invocation, assert non-empty `all_calls`/`all_types` with the expected edge.
+  - Add an adversarial test: feed syntactically-broken ST and assert `parse_l5x_all` returns Ok with no panic and no malformed entries (exercises the error-recovery branches).
+
+## Performance
+
+#### embed_batch deep-clones every chunk string per batch (texts.to_vec()) — comment wrongly claims it's unavoidable
+
+- Difficulty: easy · Impact: medium
+- Location: src/embedder/core.rs:1006-1011
+- Description: `embed_batch(&self, texts: &[String])` calls `self.tokenizer()?.encode_batch(texts.to_vec(), true)`. The inline comment asserts `texts.to_vec()` is "unavoidable — the tokenizer API does not accept &[impl AsRef<str>]". False: tokenizers 0.23 `encode_batch<E: Into<EncodeInput<'s>>>` accepts `Vec<E>` and `&'s str: Into<EncodeInput<'s>>`. So `texts.to_vec()` clones every String *body* (chunk content, often KB each) into a fresh Vec on every batch, purely to feed the tokenizer. This is the embed/index hot path: ~16k chunks at batch_size 64 ≈ 260 batches, each deep-copying up to 64 content strings dropped immediately after `encode_batch` consumes them. The sibling `token_counts_batch` does `texts.to_vec()` on `&[&str]` (cheap pointers, fine); only the `&[String]` site deep-clones. Distinct from the closed PERF-V1.42-5 (which fixed the per-chunk tokenizer-vocab clone in split_into_windows).
+- Suggested fix:
+  - Replace `texts.to_vec()` with `texts.iter().map(String::as_str).collect::<Vec<&str>>()`. Fix or delete the inaccurate "unavoidable" comment.
+  - Optionally switch to `encode_batch_fast` since cqs reads only ids/mask, not char offsets.
+
+#### SPLADE encode_batch tokenizes serially in a map() loop, forgoing the tokenizer's built-in rayon parallel batch
+
+- Difficulty: easy · Impact: medium
+- Location: src/splade/mod.rs:799-808
+- Description: `SpladeEncoder::encode_batch` tokenizes one input at a time: `non_empty_texts.iter().map(|t| tokenizer.encode(*t, true)).collect()`. The HF `Tokenizer` exposes `encode_batch`, which tokenizes the whole batch in parallel via rayon. The serial per-item loop runs single-threaded tokenization for the entire SPLADE batch on every reindex batch. On the production index-build path (index/build.rs:873, watch/reindex.rs:165). Downstream reads only ids/attention_mask, so `encode_batch` is a drop-in — no char-offset or per-item-error dependency blocks it.
+- Suggested fix:
+  - Replace the serial map with `tokenizer.encode_batch(non_empty_texts, true)` (or `encode_batch_fast`). Map the single batch-level Result to SpladeError once.
+
+#### CallGraph::edge_meta allocates two Arc<str> per lookup in cross-project caller/callee rendering loops
+
+- Difficulty: easy · Impact: low
+- Location: src/store/helpers/types.rs:568-573 (called from src/store/calls/cross_project.rs:345,394)
+- Description: `edge_meta(&self, caller: &str, callee: &str)` does `self.edges.get(&(Arc::from(caller), Arc::from(callee)))` — building two fresh heap `Arc<str>` solely to form the tuple HashMap key, then dropping them. Called once per caller (cross_project.rs:345) and per callee (:394), i.e. per rendered edge. Result sets are bounded by direct callers/callees of one symbol, so impact is low, but it's a gratuitous double allocation on every edge during cross-project caller/callee/impact rendering.
+- Suggested fix:
+  - Make the lookup borrow-key friendly (a `&(&str, &str)` Borrow shim), nest the HashMap, or intern caller/callee once at the call site and pass the Arcs in.
+
+## Documentation
+
+#### README documents fictional CQS_CACHE_MAX_BYTES env var with inverted behavior; real knob is CQS_CACHE_MAX_SIZE
+
+- Difficulty: easy · Impact: medium
+- Location: README.md:938 vs src/cache/embedding_cache.rs:169, :421-488
+- Description: README:938 documents `CQS_CACHE_MAX_BYTES` as "(unset) | Soft cap; emits tracing::warn! … Does NOT auto-prune". That env var does not exist in src/ (grep: zero hits). The actual embeddings-cache size knob is `CQS_CACHE_MAX_SIZE` (default 1 GB, read at embedding_cache.rs:169) and it DOES auto-evict (`evict_if_needed` / "Evict oldest entries if cache exceeds max size", loop at :483-488). The README entry is triple-wrong: nonexistent name, wrong default (unset vs 1 GB), inverted behavior (warn-only/no-prune vs eviction). The real knob is also documented correctly at README:778, so an agent setting CQS_CACHE_MAX_BYTES to bound growth gets a silent no-op. Docs-lying-is-P1 class for an agent-facing config surface.
+- Suggested fix:
+  - Delete the README:938 `CQS_CACHE_MAX_BYTES` row. The real cap is already at README:778. If a warn-only soft-cap was intended but never built, file it separately rather than documenting it as live.
+
+#### README documents nonexistent CQS_CONVERT_WEBHELP_BYTES override; merged-output cap is a hardcoded 50 MB const
+
+- Difficulty: easy · Impact: medium
+- Location: README.md:803 vs src/convert/webhelp.rs:118, :168
+- Description: README:803 documents `CQS_CONVERT_WEBHELP_BYTES` (default 52428800 / 50 MiB) as the configurable merged-output cap with truncate-with-warn. The env var does not exist (grep: zero hits). The cap is the hardcoded const `MAX_WEBHELP_BYTES = 50 * 1024 * 1024` (webhelp.rs:118), enforced at :168. The truncate-with-warn behavior is real but NOT configurable via the documented var; webhelp.rs honors `CQS_CONVERT_MAX_PAGES` and `CQS_CONVERT_PAGE_BYTES`, not this one. An agent trying to lift the cap gets a silent no-op.
+- Suggested fix:
+  - Replace the README:803 row with a note that the merged-output cap is a fixed 50 MB (src/convert/webhelp.rs:118) and point to the real knobs `CQS_CONVERT_MAX_PAGES` / `CQS_CONVERT_PAGE_BYTES`. (If configurability is later desired, wire MAX_WEBHELP_BYTES through crate::limits and restore the doc.)
+
+#### README documents wrong default for CQS_BUSY_TIMEOUT_MS (5000); actual fallback is 30000
+
+- Difficulty: easy · Impact: low
+- Location: README.md (CQS_BUSY_TIMEOUT_MS row) vs src/store/mod.rs:1075,:1352 and src/store/helpers/sql.rs:15
+- Description: README documents `CQS_BUSY_TIMEOUT_MS | 5000 | SQLite busy timeout`. The actual fallback when unset is 30000 ms. All production paths call `busy_timeout_from_env(30_000)`; the only non-30000 literals are tests (1234, 500, 0). The source-of-truth comment at store/mod.rs:54 says "30s"; cache/mod.rs:170 documents 30 s embedding / 15 s query defaults. No code path uses 5000 for this var. An operator reasoning about lock contention from the README under-estimates the default wait window 6×.
+- Suggested fix:
+  - Change the README default from `5000` to `30000` (30 s). Optionally note the cache pools use context-specific defaults (30 s embedding / 15 s query) per cache/mod.rs:170.
+
+## Observability
+
+#### InvalidData (non-UTF8) silent-skip in parse_file_relationships_with_candidates diverges from the two sibling parse paths that warn
+
+- Difficulty: easy · Impact: low
+- Location: src/parser/calls.rs:1284-1285
+- Description: The Lane-2 candidate-edges relationship path (#1934), on a non-UTF8 read (`ErrorKind::InvalidData`), silently returns empty relationships with NO log. Both other InvalidData sites in the parser warn for exactly this case: src/parser/mod.rs:242 and :505 (`tracing::warn!(path = …, "Skipping non-UTF8 file")`). A sweep straggler — N-1 of N sites carry the warn. Currently LOW impact because this family has only test callers today (production routes through `parse_file_all_with_chunk_calls` → the mod.rs:505 site that warns), but these are public production-grade parser APIs; the silent branch ships the moment any production code adopts them. Shares its root file with the test-only-parse-path finding below.
+- Suggested fix:
+  - Add `tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");` to the InvalidData arm at calls.rs:1284 before the return, mirroring mod.rs:242/:505 verbatim.
+  - Optionally add a completeness guard asserting all three InvalidData arms emit the warn.
+
+## Code Quality
+
+#### Test-only parallel call/type-extraction path diverges from the production index path
+
+- Difficulty: medium · Impact: medium
+- Location: src/parser/calls.rs:1258-1569 (parse_file_relationships_with_candidates) vs production src/parser/mod.rs:478-568 (parse_file_all_inner)
+- Description: `parse_file_calls` → `parse_file_relationships` → `parse_file_relationships_with_candidates` (~310 lines re-implementing call + type + candidate extraction) is reached ONLY from tests (`cqs callers parse_file_calls` returns total=10, all `#[test]` fns; the production-looking crud.rs:2122 caller is inside a `#[test]`). The live index path is `parse_file_all_with_chunk_calls` → `parse_file_all_inner`, a SEPARATE copy of the same logic. This is the structural fault behind #1958/#1955 (the L5X ST extractor passed its tests through one entry while production used another). Two concrete divergences remain: (1) grammar-less dispatch order differs — the test path consults `custom_call_parser` THEN `custom_all_parser` THEN markdown (calls.rs:1306-1318), while production consults ONLY `custom_all_parser` THEN markdown (mod.rs:533-545), so a future language setting `custom_call_parser` (field exists, currently None everywhere) would be honored in tests but silently ignored in production; (2) the chunk-calls comment at mod.rs:529 says "uses per-chunk extract_calls_from_chunk" but the code calls extract_calls_and_candidates_from_chunk. A green suite over the test-only copy gives false confidence the production copy matches.
+- Suggested fix:
+  - Collapse to one extraction path: have the test-only `parse_file_relationships*` family delegate to `parse_file_all_inner` (call `parse_file_all_with_chunk_calls` and project to (calls,types)), or delete the parallel path and point its tests at the production entry.
+  - At minimum, factor the grammar-less dispatch (`if grammar.is_none()` block) into one shared helper so the two sites cannot drift, and add a guard test asserting a language with `custom_call_parser=Some` is honored on the production index path.
+  - Architecture call (collapse-vs-delegate-vs-factor) — route to an issue.
+
+## API Design
+
+#### Two parallel `*Args` layers (clap wire vs core) with no exhaustiveness guard; `include_types`/`type_impact` is the live symptom
+
+- Difficulty: medium · Impact: medium · existing issue: 1459
+- Location: core src/cli/commands/graph/impact.rs:42 (`ImpactArgs.include_types`) vs wire src/cli/args.rs:341 (`type_impact`); systemic pattern in src/cli/batch/handlers/search.rs:115-154, src/cli/commands/search/query.rs:255-294, etc.
+- Description: Two merged findings, same root (issue #1459). (Symptom) The same boolean has three names: CLI flag `--type-impact`, wire field `type_impact`, core field `include_types`. The core struct is `#[derive(Deserialize)] #[serde(default)]` and documented as the MCP-ready surface but lacks `deny_unknown_fields`, so a consumer deserializing the core `ImpactArgs` and sending `{"type_impact":true}` (the natural wire name) silently gets `include_types:false` — type-impact analysis quietly skipped. Every other core field in this family mirrors its CLI flag; `include_types` is the lone exception, and it affects a documented deserialization contract. (Root) Every command-core command maintains TWO Args structs plus ≥2 hand-written field-by-field copy functions (CLI adapter + daemon `dispatch_*` adapter). For `search` there are four core-`QueryArgs` constructors each enumerating ~24 fields. No compiler-enforced exhaustiveness: adding a field to the WIRE struct and forgetting to thread it into `daemon_query_args` compiles cleanly and silently drops the knob on the daemon path. The "Daemon-Path is a Parallel Surface" / "Wiring Verification" lessons document this exact drift class. Parity tests catch only fields a test exercises.
+- Suggested fix:
+  - Rename core `ImpactArgs.include_types` → `type_impact` (or add `#[serde(rename = "type_impact")]`) and add `#[serde(deny_unknown_fields)]` to the core Args so a name mismatch errors instead of silently defaulting.
+  - Reduce systemic duplication: a single shared `From<&args::SearchArgs> for QueryArgs` (or `core_args()` method) so there is ONE field enumeration; `..Default::default()` only for genuinely surface-specific fields; extend parity tests with a field-driving round-trip or a sweep guard on the field-set correspondence.
+  - Tracked under #1459 — file the rename+deny_unknown_fields slice if a new sub-issue is wanted; otherwise carry on #1459.
+
+#### SearchArgs duplicates the three overlay fields inline instead of flattening the shared OverlayArgs struct
+
+- Difficulty: easy · Impact: low
+- Location: src/cli/args.rs:257-284 (SearchArgs inline overlay/no_overlay/overlay_root) vs shared OverlayArgs at args.rs:103-129
+- Description: `OverlayArgs` was introduced as "the shared subset for the seed-overlaid graph-adjacent commands" and is flattened by GatherArgs/ImpactArgs/ScoutArgs/DeadArgs/CallersArgs. SearchArgs instead hand-declares the identical three fields plus near-duplicate doc comments. The copies have already begun to drift — the SearchArgs copy carries an extra `skipped-no-daemon` paragraph OverlayArgs lacks. The clap `#[arg]` attributes are otherwise identical, so the flatten is a drop-in.
+- Suggested fix:
+  - Replace the three inline fields with `#[command(flatten)] pub overlay: OverlayArgs`; update accesses (`args.overlay` → `args.overlay.overlay`, etc.) at the call sites (daemon_overlay_active in batch/handlers/search.rs:161-167, prepare_overlay_request).
+  - Fold the search-specific `skipped-no-daemon` note into the shared OverlayArgs doc so all flatteners describe the no-daemon degradation uniformly.
+
+## Error Handling
+
+#### Overlay fingerprint collapses transient read errors to the deletion sentinel (ZERO32), risking a stale-overlay cache hit
+
+- Difficulty: medium · Impact: low
+- Location: src/worktree_overlay.rs:978-981 (fingerprint), content_digest at :1003-1014
+- Description: `fingerprint()` is the overlay LRU cache's identity key. For a non-Deleted DeltaRecord it streams the worktree file through blake3, but on failure does `Err(_) => hasher.update(&ZERO32)` — the SAME 32-zero sentinel a `Deleted` record contributes. `content_digest` returns Err for ANY of: a symlink, ENOENT (replaced mid-read), a permission flap, a transient I/O error — all distinct from "deleted", all collapsing to the same preimage. If a Modified file is momentarily unreadable during a fingerprint recompute (an editor's atomic rename-replace racing the digest read), it hashes as ZERO32 instead of its real content; if a previously-cached overlay shares that ZERO32 contribution for the same record set, the LRU returns a stale overlay built from different content — incorrect results served as a cache hit, with no warning (the Err arm is silent, unlike the rest of the module). The doc comment describes only the deletion sentinel; the error case riding the same value is undocumented and unlogged.
+- Suggested fix:
+  - On `Err(e)` log a warn and feed a DISTINCT sentinel (a domain-separated tag byte before ZERO32, or blake3 of the error-kind discriminant) so an unreadable-modified file can never share a fingerprint with a clean cached overlay.
+  - Alternatively, propagate the error out of `fingerprint()` (return Result) so the caller treats a fingerprint failure as "force rebuild, never trust cache".
+
+## Platform Behavior
+
+#### platform_cfg_sweep_test guards only the unsized-binding shape, not the dead-code-on-a-sibling-target shape that also broke v1.46.0
+
+- Difficulty: medium · Impact: medium
+- Location: tests/platform_cfg_sweep_test.rs (whole file); exemplars src/store/mod.rs:411 (SLOW_MMAP_FSTYPES), src/cli/commands/serve.rs:122 (url_safe_for_cmd)
+- Description: The v1.46.1 release build (e2c67c10) fixed THREE cross-target breakages: (1) the E0277 unsized-`Path` binding in `BatchView::resolve_overlay`, and (2)+(3) two `dead_code`-on-a-sibling-target warnings (`url_safe_for_cmd` dead on macOS; the `SLOW_MMAP_FSTYPES`/`fstype_for_path`/`path_starts_with` cluster dead on a Windows release build). Both classes fire only on the tagged cross-build under `-D warnings`, never on Linux PR CI (ci.yml is ubuntu-only). The new `platform_cfg_sweep_test.rs` only forward-scans shape (1) (`no_unannotated_linux_only_unix_let_block`). Shape (2)/(3) — an item whose ONLY callers live inside a single-OS `cfg` block but the item itself is ungated, so it's dead on every other target — has NO guard. The same incomplete-sweep class the test was created to defend remains structurally invisible at PR time for its other two members.
+- Suggested fix:
+  - Add a second forward scan (or clippy config) flagging ungated `fn`/`const`/`static` items reachable only from single-target `cfg` arms; OR, pragmatically, run `cargo clippy --target x86_64-pc-windows-msvc` and `--target aarch64-apple-darwin` with `-D warnings` on a scratch/check basis in CI (the project already documents `cargo check --target <sibling>` as the verification method).
+  - Test-infra/CI design call (lint-scan vs cross-target check job) — route to an issue.
+
+#### is_wsl_drvfs_path cfg!(windows) UNC branch is effectively dead — forward-slash literals vs backslash Windows paths
+
+- Difficulty: easy · Impact: low · existing issue: 1512
+- Location: src/config.rs:136-140 (is_wsl_drvfs_path)
+- Description: The UNC arm is `if (is_wsl() || cfg!(windows)) && (s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/"))`. The `cfg!(windows)` disjunct was added to fire on native Windows (PB-V1.40-6 / #1779), but the match uses forward slashes. On native Windows `path.to_str()` returns backslash-separated paths — a WSL UNC share is `\\wsl.localhost\Ubuntu\…`, never `//wsl.localhost/…` — so the test can only succeed when paths use `/` (a Linux/WSL view), where `is_wsl()` already covers it. The `cfg!(windows)` disjunct contributes nothing: dead on the one platform it was added for. Consequence: a native-Windows user editing on a `\\wsl.localhost\` share gets `is_wsl_drvfs_path == false`, so `coarse_fs_resolution` falls through to the `not(any(linux,macos))` arm returning `Duration::ZERO` instead of 2 s — the watch loop's mtime-equality skip can silently drop a rapid re-save. Niche (native-Windows watch over a WSL UNC share); the broader Windows ZERO-return is already on #1512 (PL-V1.38-9). Distinct from the closed PB-V1.40-6 (which guarded the arm for non-WSL Linux hosts).
+- Suggested fix:
+  - Normalize separators before the UNC check: `let norm = s.replace('\\', "/");` then match against `//wsl.localhost/` / `//wsl$/`; or add explicit backslash variants under the `cfg!(windows)` disjunct.
+  - Fold into the #1512 Windows-native FS-detection work (PL-V1.38-9).
 
 ## Extensibility
 
-#### EXT-V1.42-1: Daemon arg translator hand-mirrors the clap global-flag surface — already drifted; any unknown top-level flag before a subcommand breaks daemon-up only
-- **Difficulty:** medium
-- **Location:** src/daemon_translate.rs:47-52 (GLOBAL_FLAGS / GLOBAL_WITH_VALUE), src/daemon_translate.rs:114-122 (notes-list fixup); contrast src/cli/telemetry.rs:283-310
-- **Description:** `translate_cli_args_to_batch` strips/remaps exactly five hand-listed flags (`--json`, `-q/--quiet`, `--model`, `-n/--limit`). The top-level `Cli` struct has ~25 args, and any of the others placed before a daemon-forwardable subcommand survives stripping, becomes the "subcommand" token, and the daemon returns a parse_error envelope — while the same invocation works under `CQS_NO_DAEMON=1`. Verified live at HEAD: `cqs -v callers normalize_path` and `cqs --rrf callers normalize_path` both yield `{"error":{"code":"parse_error","message":"error: unexpected argument ... found"}}` daemon-up and correct results daemon-down. So the mirror has already drifted (`-v/--verbose` was never added), and every future global/top-level flag must be remembered here by hand — no compile-time or test link to the clap definitions. The same file also carries a name-matched per-command fixup (`cmd == "notes"` strips a `list` token) because `Commands::Notes` (subcommand enum) and `BatchCmd::Notes` (flattened list-args) diverge in shape — a second hand-maintained seam that grows per command. The codebase already has the right pattern: `cli/telemetry.rs::describe_command` derives value-flags and known subcommands from `Cli::command()` at runtime "so new commands are recognized automatically without maintaining a list". Sibling instance already triaged as API-V1.42-1 (the `-n` remap colliding with blame's `--commits`); this finding is the structural cause — fix them together.
-- **Suggested fix:** Have the caller (cli/dispatch.rs, which can see clap) compute the strip/remap sets from `Cli::command()` the way `describe_command` does and pass them into `translate_cli_args_to_batch` (the helper stays pure and testable); or, minimally, add the missing flags and a unit test that iterates `Cli::command().get_arguments()` asserting every top-level arg is classified (strip, remap, or forward) so a new flag fails the test instead of failing daemon-up at runtime.
+#### cqs dead known-gap allowlists are compile-time consts despite self-describing as extensible
 
-#### EXT-V1.42-2: No exhaustiveness push linking `batch = "daemon"` Commands variants to the BatchCmd enum — a forgotten variant fails only at runtime, only daemon-up
-- **Difficulty:** easy
-- **Location:** src/cli/definitions.rs:337+ (`#[cqs_cmd(batch = "daemon")]` markers), src/cli/batch/commands.rs:46 (BatchCmd), tests/daemon_forward_test.rs
-- **Description:** Marking a `Commands` variant `batch = "daemon"` makes `try_daemon_query` forward it, but the daemon routes via a second, independently-maintained clap enum (`BatchCmd`). Nothing — no macro, no test — verifies that every daemon-marked variant has a matching `BatchCmd` subcommand. The failure mode for a forgotten variant is the campaign's worst class: works under `CQS_NO_DAEMON=1` and in all CLI tests, returns a parse_error envelope whenever a daemon happens to be running. The derive's own doc comment in dispatch.rs:283-286 celebrates that `batch_support()`'s exhaustive match means "adding a new CLI command forces an explicit daemon-forwarding decision at compile time" — but the decision's *implementation* half (the BatchCmd variant + handler) has no such force. daemon_forward_test.rs pins individual commands by hand, so the next command's author has to know to add one.
-- **Suggested fix:** Add one test that iterates `Commands` variants (via clap `CommandFactory` + `batch_support()` on constructed/parsed variants, or a small `variant_names_with_daemon_support()` helper emitted by the existing derive) and asserts `BatchInput::command().find_subcommand(name).is_some()` for each daemon-marked name. ~15 lines, turns the runtime surface-divergence into a test failure.
-
-#### EXT-V1.42-3: CONTRIBUTING "Adding a New CLI Command" checklist documents a nonexistent derive-attribute surface and omits two mandatory edit sites
-- **Difficulty:** easy
-- **Location:** CONTRIBUTING.md:448 (step 4); cqs-macros/src/lib.rs:19,60,242-291 (actual attribute grammar)
-- **Description:** The checklist — the NEW-COMMAND RULE's canonical template — tells the contributor to use `#[cqs(handler = "cmd_foo")]` and `#[cqs(batch_support = "yes")]`. The derive registers the attribute as `cqs_cmd` (not `cqs`), accepts only `name`/`group`/`batch` keys (`group = "a"|"b"`, `batch = "cli"|"daemon"|"runtime"`), and has no `handler` knob at all — handlers bind by naming convention: a `cmd_<variant_snake>_dispatch` shim must be hand-written in src/cli/commands/dispatch_shims.rs (a required edit site the checklist never mentions; the derive's shim-existence check makes omitting it a compile error with a confusing "cannot find function" unless you know the convention). The checklist also omits the daemon-path wiring for `batch = "daemon"` commands: the `BatchCmd` variant in src/cli/batch/commands.rs, the `dispatch_*` adapter in src/cli/batch/handlers/, and the CLI==daemon parity test the campaign made standard (handlers/dispatch_tests.rs). Following the doc as written produces a compile error on step 4's syntax, then a CLI-only command that silently bypasses the daemon. Distinct from DOC-V1.42-5/6 (envelope section, architecture tree) — this is the extension recipe itself.
-- **Suggested fix:** Rewrite step 4 with the real attribute grammar and the shim convention (point at dispatch_shims.rs), and add a step: "if `batch = "daemon"`: add the BatchCmd variant + handler adapter + parity test". Cross-link the EXT-V1.42-2 exhaustiveness test once it exists.
-
-#### EXT-V1.42-4: Migration how-to describes the removed `run_migration()` match ladder; no test pins MIGRATIONS-table contiguity to CURRENT_SCHEMA_VERSION
-- **Difficulty:** easy
-- **Location:** src/store/migrations.rs:10 (recipe), :380-398 (MIGRATIONS table), :402-411 (lookup), :324 (version walk)
-- **Description:** The module-doc extension recipe says step 3 is "Add the case to `run_migration()`: `(N, M) => migrate_vN_to_vM(pool).await`" — that hand-coded match was replaced by the `MIGRATIONS` const table (whose own comment notes it exists so "adding a step is one row append rather than editing a hand-coded `match` ladder"); `run_migration` now just searches the table. A contributor following the doc looks for match arms that don't exist. Worse, the failure mode for forgetting the table row is runtime-only: bumping `CURRENT_SCHEMA_VERSION` and writing `migrate_v28_to_v29` without the row compiles clean and passes every existing test — the version walk at :324 hits `run_migration(28, 29)` → `StoreError::MigrationNotSupported` only when a real user's v28 index upgrades. No test asserts the table covers `(v, v+1)` for `v in 10..CURRENT_SCHEMA_VERSION` (the only version pin is `assert_eq!(CURRENT_SCHEMA_VERSION, 28)` at :1089).
-- **Suggested fix:** Fix the recipe text (step 3 → "append a `(N, M, |c| Box::pin(...))` row to `MIGRATIONS`"), and add a contiguity test: for each `v` in `10..CURRENT_SCHEMA_VERSION`, assert `MIGRATIONS.iter().any(|(f, t, _)| (*f, *t) == (v, v + 1))`. Forgetting the row then fails `cargo test` instead of a user's upgrade.
-
-## Algorithm Correctness
-
-#### AC-V1.42-1: `map_hunks_to_functions` skips count==0 hunks — pure-deletion changes are invisible to diff impact analysis
-- **Difficulty:** easy
-- **Location:** src/impact/diff.rs:77-79 (skip + comment), src/diff_parse.rs:20-23 (new-side-only hunk semantics)
-- **Description:** `DiffHunk` tracks only the new-file side (`+start,count`). A deletion-only hunk (`@@ -10,5 +9,0 @@`) therefore arrives with `count == 0`, and `map_hunks_to_functions` skips it with a comment calling it an "insertion point with no changed lines" — backwards: a zero-count new-side hunk is a *deletion*. `run_git_diff` uses default context (-U3) so deletions normally carry context lines and survive, but `cqs review --stdin`, `cqs impact --diff`, and `ci --stdin` accept arbitrary diffs, and `-U0` is the natural choice for token-budget-conscious agents. Under `-U0`, any change that only deletes lines inside a function maps to zero changed functions — `analyze_diff_impact` reports no callers, no affected tests, and `review` risk-scores the diff as touching nothing.
-- **Suggested fix:** For `count == 0` hunks, test point overlap of the deletion seam against chunk ranges (e.g. treat the hunk as `[start.max(1), start+1]` — the new-file line before/after the removed span still sits inside the containing function) instead of skipping; fix the comment to say "deletion-only hunk". Add a `-U0` deletion test through `map_hunks_to_functions`.
-
-#### AC-V1.42-2: Staleness checks use `current > stored` — the exact predicate the reconcile module documents and pins as the silent-skip bug family
-- **Difficulty:** easy
-- **Location:** src/store/chunks/staleness.rs:742 (`list_stale_files`), src/store/chunks/staleness.rs:948-951 (`check_origins_stale`); contrast src/cli/watch/reconcile.rs:832-838
-- **Description:** Both staleness reporting paths flag a file only when `current_mtime > stored_mtime`. The watch reconciler was deliberately built on `!=` via `FingerprintPolicy::MtimeOrHash`, with a regression test whose doc comment states the rule: "A strict `disk > stored` predicate would skip this file silently. Reconcile uses `disk != stored` so any divergence — forward or backward in time — queues a reindex" (`run_daemon_reconcile_queues_older_disk_mtime`). Files restored with preserved older timestamps (rsync -t, tar extraction, robocopy from Windows onto /mnt/c, backup restores, NTP step-back) diverge from the index with a backward mtime: reconcile correctly queues them, but `cqs stats` / `cqs index --stale` (`list_stale_files`) report them fresh and the per-query staleness warning (`check_origins_stale` → `warn_stale_results`) stays silent — the user is told results are fresh while the index serves content that no longer exists on disk. Note this also feeds the OB-V1.42-3 fix: if `stale_origins` gets plumbed into the daemon envelope, it inherits whichever predicate is here.
-- **Suggested fix:** Change both comparisons to `current != stored`. To avoid new false-positives on mtime-only flips with identical content, optionally route through `FileFingerprint::matches(…, MtimeOrHash)` like reconcile does (the fingerprint columns already exist per origin via `fingerprints_for_origins`). Add the rewound-mtime case to the staleness tests, mirroring the reconcile pin.
-
-#### AC-V1.42-3: `find_test_matches` keeps the empty-string predecessor sentinel that AC-V1.40-3 fixed in `bfs_shortest_path`, and is the only BFS without a node cap
-- **Difficulty:** medium
-- **Location:** src/impact/test_map.rs:40-57 (BFS loop, sentinel at :42), :67-78 (chain walk); contrast src/cli/commands/graph/trace.rs:535-577 and src/impact/bfs.rs:74, :136, :187, :263, :363
-- **Description:** Two divergences from the fixed siblings. (a) Sentinel: the BFS root is inserted with predecessor `String::new()`, and the chain-reconstruction walk treats an empty predecessor (and an empty `current`) as a dead end. A caller whose chunk name trims to `""` (tree-sitter error recovery; the same anonymous-caller class that motivated AC-V1.40-3, which was fixed by switching `bfs_shortest_path` to `Option<String>` predecessors) collides with the sentinel: any test whose path runs through it gets a silently truncated `chain` in `cqs test-map --json` output. (b) Cap: every other traversal in the impact module (`reverse_bfs`, `forward_bfs_multi`, `reverse_bfs_multi_attributed`, `test_reachability`) and the fixed `bfs_shortest_path` enforce `bfs_max_nodes()` / `max_nodes` against hub-function blowup; `find_test_matches` walks unbounded, with a `to_string()` per visited node, so `cqs test-map <hub>` materializes the whole transitive caller set.
-- **Suggested fix:** Switch `ancestors` to `HashMap<String, (usize, Option<String>)>` (None = target root) and break the chain walk on `None` instead of `is_empty()`; add the `bfs_max_nodes()` check in the expansion loop with the same partial-results `warn!` the siblings emit.
-
-#### AC-V1.42-4: Python signature extraction truncates at the first `:` — annotated defs lose their parameter list and return type
-- **Difficulty:** medium
-- **Location:** src/parser/chunk.rs:293 (`UntilColon` arm), src/language/languages.rs:5411 (Python = UntilColon), src/language/languages.rs:5393-5404 (`extract_return_python`)
-- **Description:** `SignatureStyle::UntilColon` resolves as `content.find(':')` — the first colon anywhere in the chunk. For `def f(x: int, y: str = "a") -> bool:` the first colon is the *annotation* colon, so the stored signature is `def f(x` — the rest of the parameter list, defaults, and the `-> bool` return annotation are all dropped. Any type-annotated Python function (i.e. most modern Python, including cqs's own evals/ harness) is affected; dict/lambda defaults containing `:` truncate the same way. Compounding: `extract_return_python` runs `signature.rfind("->")` to build the "Returns <type>" NL enrichment — the arrow never survives the truncation, so return-type NL is silently dead for exactly the functions that declare return types. The lone test (`test_python_signature_stops_at_colon`, chunk.rs:930) uses unannotated params, so the bug is invisible to the suite. Signature feeds embeddings, search display, and NL extraction, so this is a retrieval-quality bug, not just cosmetic.
-- **Suggested fix:** In the UntilColon arm, scan for the first `:` at bracket depth 0 (track `()[]{}` nesting; skip string literals if cheap). Add annotated-def tests pinning both the full signature and the `Returns bool` NL. Note: changing extracted signatures for byte-identical sources requires a `PARSER_VERSION` bump (chunk.rs:16-22) so the UPSERT refreshes stale rows.
-## Performance (nested: 3 sub-agents, lead-verified)
-
-#### PERF-V1.42-1: Daemon rebuilds the vector index from disk on every search-class query — BatchView fallback never writes back
-- **Difficulty:** medium
-- **Location:** src/cli/batch/view.rs:325-338 (vector_index fallback), :340-347 (base_vector_index), :493-525 (notes/file_set); src/cli/batch/context.rs:208 (`#[allow(dead_code)]` on the only populating impl)
-- **Description:** All production dispatch goes through `BatchView`. The view snapshots `BatchContext.hnsw`/`base_hnsw`/`file_set`/`notes_cache` at checkout, but the only code that populates those caches is `BatchContext::vector_index()` etc. inside the impl documented as "unreachable from non-test production code" — so the snapshot is `None` on every checkout, and the view fallback explicitly "stays local to this view" (no write-back). Result: every daemon search-class request rebuilds the vector index from disk. Verified live in the cqs-watch journal (2026-06-11): consecutive `daemon_query{command="search"}` spans each show `batch_view_vector_index_init` → `cagra_load` at 358-386ms busy, total `latency_ms=457/479` — vs the documented 3-19ms daemon budget. The SPLADE index got the correct shared-cell write-back treatment (`splade_index_cell`, view.rs:271, written back at :459-462); vector index, base index, file_set, and notes did not. Collateral: `dispatch_stale`/`dispatch_health` (src/cli/batch/handlers/analysis.rs:68, :99) re-enumerate the whole repo tree per request while the comment at analysis.rs:66 claims "the daemon keeps it cached". Distinct from RM-V1.40-6/7 (cross-project reference stores) — this is the primary single-project index on the recommended default path.
-- **Suggested fix:** Mirror the `splade_index_cell` pattern: hold hnsw/base_hnsw/file_set/notes as `Arc<Mutex<Option<Arc<…>>>>` cells shared between BatchContext and BatchView; the view fallback writes back after building; `invalidate_mutable_caches` clears the cells (it already handles the splade cell via try_lock).
-
-#### PERF-V1.42-2: Hybrid-fused search fetches ~450 embedding BLOBs per query that are provably never read
-- **Difficulty:** easy
-- **Location:** src/store/chunks/async_helpers.rs:85-108 (unconditional `embedding` column fetch); src/search/query.rs:695-708 (fused_map covers all candidate ids), :866, :932-939 (fused branch never touches embedding_bytes)
-- **Description:** `search_hybrid` builds `candidate_ids` and `fused_map` from the same `fused` vec, so every candidate has a fused score by construction; it passes `Some(&fused_map)` into `search_by_candidate_ids_with_notes`, whose `fetch_candidates_by_ids_async` unconditionally SELECTs the `embedding` column and materializes a `Vec<u8>` per row. In the scoring loop the fused branch uses `apply_scoring_pipeline(fused, ...)` — the `else` branch that decodes `embedding_bytes` (query.rs:941-947) is unreachable on this call path. This is the default search path (query_core enables SPLADE fusion whenever the router classifies), and candidate_count is floor-500 (CAGRA-capped ~441 at 14k chunks): ~450 × 3,072 bytes (768-dim f32) ≈ 1.4 MB of SQLite BLOB read + decode + heap allocation per query, fully discarded. Doubles at 1024+-dim models.
-- **Suggested fix:** Add an embedding-free variant of `fetch_candidates_by_ids_async` (or a `with_embeddings: bool` flag) and use it when `fused_scores` is `Some` (coverage is total by construction from `search_hybrid`).
-
-#### PERF-V1.42-3: Dense-index path discards HNSW/CAGRA scores, then re-fetches the same embeddings to recompute the identical cosine
-- **Difficulty:** medium
-- **Location:** src/search/query.rs:785-794 (ids kept, scores dropped, `fused_scores: None`), :941-947 (recompute); src/hnsw/search.rs:125-128 (index already returns score = cosine)
-- **Description:** `search_filtered_with_index` keeps only ids from `index_results` and passes `fused_scores: None`, so the downstream scoring loop fetches every candidate's embedding BLOB and recomputes cosine via `embedding_slice` + `score_candidate` — but the index already returned exactly that value (hnsw/search.rs documents `score = 1.0 - n.distance`, exact for DistCosine on full vectors). Same ~1.4 MB BLOB fetch plus ~450 × 768-element dot products per query, duplicating the index's work. The plumbing to skip it already exists — the `fused_scores` mechanism the SPLADE path uses. Affected paths: explicit `--rrf`/`--rerank` queries, `search_reference` (every per-ref search in multi-index merge), and the SPLADE-unavailable fallback. Shares the hydration-helper fix surface with PERF-V1.42-2 but needs a semantic decision: CAGRA's score scale must be confirmed equivalent before trusting index scores (HNSW's is documented).
-- **Suggested fix:** Build a `HashMap<String, f32>` from `index_results` and pass it as `fused_scores`; verify CAGRA score-scale parity and ranking parity with the existing CLI==daemon parity tests.
-
-#### PERF-V1.42-4: Incremental `cqs index` fully parses every file before the staleness filter, with a per-file N+1 mtime query
-- **Difficulty:** medium
-- **Location:** src/cli/pipeline/parsing.rs:62-156 (unconditional parse), :177-209 (post-parse staleness filter), :192 → src/store/chunks/crud.rs:179-200 (`needs_reindex`: per-file stat + per-file SELECT)
-- **Description:** `parser_stage` runs `parser.parse_file_all_with_chunk_calls` (file read + tree-sitter parse + two query-cursor passes + per-chunk canonical_hash + call/type extraction) on every enumerated file, and only afterwards filters the resulting chunks via `store.needs_reindex(&abs_path)` — a check needing only path + mtime, issued as one `SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1` per file. A no-op incremental index of a 2k-file corpus performs ~2,000 full parses whose chunks are immediately discarded, plus ~2,000 SQL round-trips. Cost is O(corpus) per incremental index instead of O(changed files). The watch path already avoids this (reconcile pre-filters via the batched `fingerprints_for_origins`, reconcile.rs:99) — but manual `cqs index` after branch switches is the documented WSL workflow, so it pays full price every time.
-- **Suggested fix:** Hoist the staleness check ahead of the rayon parse: filter each file batch through one batched `fingerprints_for_origins` (or equivalent mtime query) and parse only survivors; the post-parse relationship pruning by `file_mtimes` collapses to a no-op.
-
-#### PERF-V1.42-5: `split_into_windows` deep-clones the entire tokenizer once per chunk
-- **Difficulty:** easy
-- **Location:** src/embedder/core.rs:601-607; called per-chunk from src/cli/pipeline/windowing.rs:54 (`apply_windowing`) and the watch reindex path
-- **Description:** `let mut tokenizer_no_trunc = (*tokenizer_arc).clone();` clones the full HF `Tokenizer` — vocab map (262k entries for EmbeddingGemma), merges, normalizer — on every call, and `apply_windowing` calls it once per chunk, unconditionally, before the short-text early-return. A full reindex performs ~14k tokenizer deep-clones (~100k at ceiling), all to disable a truncation field that never changes after model load. The clone exists for a good reason (preset tokenizers ship `truncation: {max_length: 512}` which would silently cap windowing) but the result is immutable and cacheable.
-- **Suggested fix:** Cache the truncation-disabled tokenizer in a `OnceLock<Arc<Tokenizer>>` on `Embedder`. Secondary win: skip the encode when `text.len() <= max_tokens` (token count ≤ byte count for these tokenizers, so a short-by-bytes chunk can never need windowing).
-
-#### PERF-V1.42-6: `store_stage` defeats its own row batching with per-file transactions, then a second per-file transaction pass for phantom pruning
-- **Difficulty:** medium
-- **Location:** src/cli/pipeline/upsert.rs:172-179 (per-file upsert loop), :247-261 (per-file prune loop); src/store/chunks/crud.rs:993-995 (each call = own `begin_write()` + `snapshot_content_hashes` SELECT)
-- **Description:** Each `EmbeddedBatch` (~64 chunks) is split by file and written via one `store.upsert_chunks_and_calls(pairs, mtime, ..)` per file — each its own write transaction with its own content-hash snapshot SELECT. At ~7 chunks/file that's ~2,000 transactions per full reindex where `batch_insert_chunks` is built for ~1,488 rows/statement. Then `delete_phantom_chunks` opens another per-file transaction (temp-table create + insert loop + 2 DELETEs) for every file touched — another ~2,000. The function-calls write in the same function already fixed exactly this class (comment at upsert.rs:182-186: "a per-file `upsert_function_calls` would open one transaction per file (~2,500 BEGIN/COMMIT round-trips)") — chunks and phantom prune didn't get the treatment. The only reason for per-file granularity is the single `source_mtime: Option<i64>` parameter. ~30k transactions + 15k snapshot SELECTs of pure overhead at the 100k-chunk/15k-file ceiling. (Distinct from CQ-V1.42-7/8, which cover the code duplication, and from PERF-V1.40-6, the clone churn.) Keep the watch path's per-file fused tx — that's a deliberate crash-atomicity contract; this is the bulk pipeline only.
-- **Suggested fix:** Extend `batch_insert_chunks` to take per-chunk (or per-file map) mtimes so a whole `EmbeddedBatch` writes in one transaction; batch the post-loop phantom prune into one transaction iterating files (the temp-table pattern already supports it).
-
-#### PERF-V1.42-7: `cqs task` computes the full test-reachability forward BFS twice per invocation
-- **Difficulty:** easy
-- **Location:** src/task.rs:144 → src/scout.rs:266-267 → src/impact/hints.rs:104 (first run); src/task.rs:194 → src/impact/hints.rs:217 (second run)
-- **Description:** `task_core` loads graph and test chunks once, then (1) `scout_core` → `compute_hints_batch` runs `test_reachability(graph, test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH)`, and (2) `compute_risk_and_tests` runs `test_reachability` again with byte-identical inputs (same graph, same test_chunks, same depth constant). `test_reachability` BFSes once per first-hop-callee equivalence class — with ~2.2k test chunks and mostly-unique classes, each run is on the order of 10⁵-10⁶ node visits over a ~49k-edge graph, all duplicated within one command.
-- **Suggested fix:** Compute the reachability map once in `task_core` and thread it through (an `Option<&HashMap<...>>` precomputed parameter on `compute_hints_batch`/`compute_risk_and_tests`, or memoize on the Store next to `call_graph_cache` keyed by depth).
-
-#### PERF-V1.42-8: `test_reachability` allocates 2-3 `String`s per BFS node visit — sibling BFS functions in the same file already use `Arc<str>` interning
-- **Difficulty:** easy
-- **Location:** src/impact/bfs.rs:354-356 (seeds), :375-378 (per-visit `to_string()` × 2), :385-386 (per-name `clone()` in count merge)
-- **Description:** The per-class BFS keys `visited: HashMap<String, usize>` and `queue: VecDeque<(String, usize)>`, doing `callee.to_string()` twice per visit plus `name.clone()` per visited node in the count merge. The graph's node names are already interned `Arc<str>` (get_call_graph), and `reverse_bfs` in the same file documents the exact rationale for `Arc::clone`-per-visit instead (bfs.rs:43-48: "an `Arc::clone` (RC bump only) per visit rather than a `caller.to_string()` heap allocation"). At 10⁵-10⁶ visits per run — and this runs on every `scout`, `task`, `health`, `review`, `suggest` — that's millions of small heap allocations per command.
-- **Suggested fix:** Key `visited`/`queue`/`counts` by `Arc<str>` cloned from `graph.forward` keys (via `get_key_value`), matching `reverse_bfs`/`forward_bfs_multi`; callers index by `&str` via `Borrow`.
-
-#### PERF-V1.42-9: `build_cluster` streams the entire `function_calls` table per request, aggregating degree counts Rust-side
-- **Difficulty:** medium
-- **Location:** src/serve/data.rs:1011-1026
-- **Description:** `SELECT caller_name, callee_name FROM function_calls LIMIT ?` (cap `CQS_SERVE_GRAPH_MAX_EDGES`) pulls all ~49k edge rows per `/api/embed/2d` request — ~98k `String` allocations — then filters Rust-side against the projected-name set to compute per-node degree counts. The SEC-3 comment above it shows the LIMIT was added as a DoS cap, but the Rust-side aggregation remained. `build_graph` in the same file (data.rs:259-265) already solved this shape with a `GROUP BY callee_name` subselect pushed into SQL. Grows linearly with the edge table up to the cap at the 100k-chunk ceiling.
-- **Suggested fix:** Replace the raw edge pull with SQL aggregations (`GROUP BY caller_name` / `GROUP BY callee_name`, filtered against the projected names via chunked IN-lists like build_graph's edge fetch) so only per-name counts cross the wire.
-
-#### PERF-V1.42-10: `build_chunk_detail` tests-that-cover query is an unindexed full-table content LIKE scan per request
-- **Difficulty:** easy
-- **Location:** src/serve/data.rs:619-629
-- **Description:** `WHERE chunk_type = 'test' AND content LIKE '%name%' ESCAPE '\'` — there is no index on `chunks.chunk_type` (schema indexes origin/source_type/content_hash/name/language/parent only) and a leading-wildcard LIKE can't use one anyway, so every dashboard sidebar click scans all ~17k chunk rows and runs LIKE over the ~4k test chunks' content (~2.6 MB live, ~15-18 MB at the 100k ceiling). The `LIMIT 20` doesn't bound the scan when matches are sparse.
-- **Suggested fix:** Query the existing `chunks_fts` FTS5 table (content MATCH + join back on id with the chunk_type filter), or minimally add an index on `chunk_type` so the scan is bounded to test rows.
-
-#### PERF-V1.42-11: Daemon success response is written unbuffered — one write() syscall per JSON fragment
-- **Difficulty:** easy
-- **Location:** src/cli/watch/socket.rs:298 (`writeln!(stream, "{}", resp)`; same shape in `write_daemon_error` at :340)
-- **Description:** `UnixStream` is unbuffered and `Write::write_fmt`'s adapter issues `write_all` per formatted fragment; `serde_json::Value`'s `Display` emits the document as many small fragments (keys, strings, delimiters). A multi-KB search response becomes hundreds of write syscalls per request — material against the 3-19ms budget, worse on WSL where syscalls are slow. Distinct from the tracked RM-V1.40-9/PERF-V1.40-5 cluster (allocation count / double serialization): this is syscall fragmentation at the socket write. The planned `dispatch_value` refactor is the natural place to fix both — fold this in rather than fixing independently, since any fix trades back toward a single buffer allocation.
-- **Suggested fix:** `serde_json::to_writer` into a reused `Vec<u8>` + `\n` + one `write_all` (or wrap the response write in `BufWriter`), landed with the `dispatch_value` refactor.
-
-
-## Test Coverage (happy path) (nested: 3 sub-agents, lead-verified)
-
-#### TC-HAP-V1.42-1: The scout pipeline is untested at every layer — lib core, CLI core, hint computation, and binary surface
-- **Difficulty:** medium
-- **Location:** src/scout.rs:124 (`scout`), :135 (`scout_with_options`), :181 (`scout_core`); src/cli/commands/search/scout.rs:52 (CLI `scout_core`); src/impact/hints.rs:96 (`compute_hints_batch`)
-- **Description:** No test executes any layer of the scout chain. Greps: `scout(`/`scout_core`/`scout_with_options` in tests/ → 0 call sites (tests/task_test.rs:86 hand-builds `ScoutResult` struct literals; tests/related_impact_test.rs:7 and tests/batch_handlers_test.rs:14 explicitly document scout as skipped "requires a real &Embedder"); the in-file `#[cfg(test)]` block (scout.rs:465+) tests only helpers (`classify_role`, `compute_modify_threshold`, `note_mention_matches_file`), never the pipeline. `compute_hints_batch` — whose only caller is `scout_core` (scout.rs:267) — has zero test hits while its siblings `compute_risk_batch`/`compute_hints`/`compute_hints_with_graph` are tested in the same file (hints.rs:414+). At the binary level, gather/onboard/plan/task all have slow-tests spawn tests but `grep -rn '"scout"' tests/*.rs` finds only chat-completer string lists and a field name inside plan output; the lone incidental execution (`cqs plan` test, tests/cli_train_review_test.rs:138) asserts `data["scout"].is_object() || is_array()` — shape only. Scout fans out to 5 production surfaces (plan.rs:389, task.rs:144, cli scout cmd+batch handler, dispatch_shims.rs:898) and is one of the three CLAUDE.md-mandated per-session commands. (Distinct from CQ-V1.42-6, which is about the unreachable `ScoutOptions` knobs.)
-- **Suggested fix:** Lib: in-file `scout_core` test using the gather_test.rs pattern — `ScoutResources` takes a pre-built `query_embedding`, so `mock_embedding` + a seeded store with call edges works without an embedder; assert specific `ChunkRole` assignments and `file_groups` membership. In-file `compute_hints_batch` test mirroring the `compute_risk_batch` fixtures. Binary: slow-tests `cqs scout "..." --json` spawn copying the `test_plan_json_returns_template_and_checklist` pattern.
-
-#### TC-HAP-V1.42-2: `search_hybrid` — the primary production search path — is referenced by exactly one test, inside an `#[ignore]`d eval
-- **Difficulty:** medium
-- **Location:** src/search/query.rs:493
-- **Description:** `grep -rn "search_hybrid(" src/ tests/` → 8 hits: the definition, 5 production call sites (src/cli/commands/search/query.rs:478/988/1000 — the main `cqs <query>` route — plus batch handler search.rs:320 and eval runner.rs:357), one comment, and tests/pipeline_eval.rs:827 — which sits inside `test_fixture_eval_296q`, marked `#[ignore] // Slow - needs embedding` (line 291). The well-tested `search_filtered` family (35 test hits) is a separate path: the shared test fixture (tests/common/mod.rs:350) calls `search_filtered`, never `search_hybrid`. SPLADE fusion, the candidate floor, parent dedup, and the backend k-cap dispatch live only in `search_hybrid` — and the one real recent bug in this area (#1584, broken HNSW-fallback k-cap contract) was in exactly this function. The default-suite coverage of the function every search ultimately routes through is zero.
-- **Suggested fix:** Non-ignored integration test calling `store.search_hybrid(&mock_embedding, &filter, ..., Some(&mock_index), None)` — a mock `VectorIndex` already exists for `test_search_filtered_with_index_uses_index` (tests/search_test.rs:178) — asserting result names, limit truncation, and index-guided vs brute-force agreement.
-
-#### TC-HAP-V1.42-3: Flagship `cqs "<query>"` has zero binary-spawn coverage in any output format; the only default-format search payload test is shape-only
-- **Difficulty:** medium
-- **Location:** no tests/ file (gap); tests/cli_chat_format_test.rs:129-141 (shape-only sibling)
-- **Description:** No integration test spawns the binary with a positional search query — verified by scanning every `args([...])` first-token across tests/*.rs (only known subcommands appear; `args(["search"` → 0 hits; index_search_test.rs is in-process per its own header). The single binary-level execution of the search path is the chat REPL test (cli_chat_format_test.rs:80), a different surface (`format_envelope_to_string`, not `cmd_search`'s `emit_json`) — and its payload assertions are `parsed.is_array() || parsed.is_object()` plus envelope-key absence; it never asserts that `add_numbers` (the function its own fixture indexes at :44) appears in the results, so a search regression returning an empty array passes. The most-run command in every agent session has its end-to-end default output pinned by nothing. Feasibility precedent: the chat test already runs real `cqs init` + `cqs index` in CI, so the embedder cost is accepted.
-- **Suggested fix:** (1) Add a content assertion to the existing chat test ([0].name or .results[*].name contains "add_numbers"); (2) spawn `cqs --json "add numbers"` (no env pins) in the same fixture, asserting a bare top-level array with the seeded name and no `data`/`version` keys.
-
-#### TC-HAP-V1.42-4: `task` pipeline — end-to-end tests are both `#[ignore]`d and vacuous, and the `--tokens` budgeted branch is never executed by any test
-- **Difficulty:** medium
-- **Location:** tests/task_test.rs:285-327; src/cli/commands/train/task.rs:609-641 (`task_json_core` budget branch, `task_to_budgeted_json`, `waterfall_pack`)
-- **Description:** (a) The only tests executing the task pipeline (`test_task_end_to_end`, `test_task_with_resources_end_to_end`) are `#[ignore] // Requires embedder model download`, and their assertions are satisfiable by any outcome: `assert!(total_files > 0 || code.is_empty(), "Should find files or gracefully return empty results")` and `let _ = task_result.summary.total_files;`. The non-ignored tests hand-build `TaskResult`/`ScoutResult` structs (serialization-only). The scout→gather→impact→placement composition is never executed by a running test. (b) `grep -rn "waterfall_pack\|task_to_budgeted_json" src/ tests/` → production sites only (task.rs:399/616/625/630), zero test hits; `grep -rn '"--tokens"' tests/*.rs` → gather, review, ci — task never. The one binary task test (cli_train_review_test.rs:160) omits `--tokens`, so only the trivial `serde_json::to_value` branch runs; the waterfall packing path (`total_used`, `budget`, per-section truncation) has no assertion anywhere.
-- **Suggested fix:** Route `task_with_resources` through an embedding seam like `ScoutResources` (or the shared real-embedder fixture) and assert a specific modify target from a constructed corpus; add a `["task", "...", "--json", "--tokens", "200"]` binary case asserting `budget == 200` and numeric `total_used`.
-
-#### TC-HAP-V1.42-5: Gather direction filtering (`Callers`/`Callees`) is tested only by `is_ok()`
-- **Difficulty:** easy
-- **Location:** tests/gather_test.rs:185, :231 (function: src/gather.rs:487)
-- **Description:** `test_gather_callers_only` and `test_gather_callees_only` each construct a deliberate `caller → target → callee` graph, set `direction: GatherDirection::Callers`/`Callees` — then assert only `result.is_ok()`. No assertion that the Callers direction expanded upward and excluded the callee (or the mirror). A direction inversion or a no-op filter passes both tests; the carefully-built fixture is wasted. Assertion-quality gap on an otherwise-covered entry point (distinct from CQ-V1.42-2, which is about which gather wrapper the tests call).
-- **Suggested fix:** In both existing tests, collect `result.chunks` names at depth ≥ 1 and assert `caller` present / `callee` absent for Callers (mirrored for Callees).
-
-#### TC-HAP-V1.42-6: No test deterministically drives `review_core`/`ci_core`/`affected_core` through a populated diff — the existing tests accept the empty branch
-- **Difficulty:** medium
-- **Location:** tests/cli_review_test.rs:245-275; tests/cli_train_review_test.rs:240-266; src/cli/commands/review/affected.rs:54
-- **Description:** Two instances of the same anti-pattern, lead-verified by reading the assertions. (a) The review token-budget test's populated branch is optional: `if data.get("changed_functions")...is_some_and(|a| !a.is_empty()) { assert token_count/token_budget } else { eprintln!("...empty-review branch fired...") }` — if hunk-to-function mapping breaks entirely, the test prints a note and passes. (b) The affected test seeds a real change to `validate()`, then asserts only types, with the comment "Either populated branch ... or empty_affected_json branch — both must publish": `changed_functions.is_array()`, `summary.is_object()`, `changed_count.is_number()`, `overall_risk.is_string()` — a regression where `map_hunks_to_functions` matches nothing forever still passes, and this shape-only test is `affected_core`'s ONLY coverage (single production call site, affected.rs:99). The core-level tests that exist (`review_core_empty_diff_converged_shape`, `ci_core_empty_diff_shape`, src/cli/batch/handlers/analysis.rs:352/:381) are empty-diff-only; populated-path value coverage lives solely at the lib layer (tests/ci_test.rs calls `cqs::ci::run_ci_analysis`, not `ci_core`).
-- **Suggested fix:** Build a mapping-guaranteed diff fixture (line-exact hunks, the way ci_test.rs does), then make the populated-branch assertions unconditional: `changed_functions` contains `"validate"`, `overall_risk != "none"`, `token_budget == 100`.
-
-#### TC-HAP-V1.42-7: Command-core parity tests are parity-by-construction — dispatch calls the same core it is compared against, and no parity test pins a single output value
-- **Difficulty:** easy
-- **Location:** src/cli/batch/handlers/graph.rs:862-1080 (parity tests) vs :120-122 (dispatch_callers body); same construction in handlers/analysis.rs:258-345, handlers/info.rs:473-497, :621-700
-- **Description:** `dispatch_callers` is literally `callers_core(&ctx.store(), &core_args)` + `serde_json::to_value` (verified at graph.rs:120-122), and `parity_callers_daemon_matches_core` asserts `dispatch_callers(view, wire) == to_value(callers_core(store, core_args))` — the same function on the same store twice. The only thing these tests can catch is a wire→core arg-mapping bug; if a fixture change made both sides return empty, equality stays vacuously green with no signal. Docstrings overstate the guarantee ("the parity contract for the cored stale command", info.rs:470). Mitigations exist and limit severity: dispatch_tests.rs value-pins daemon envelopes for the graph-ish handlers (verified: `names.contains(&"foo")` at dispatch_tests.rs:271), and the CLI side is covered by graph_test.rs/cli_surface_test.rs — but the parity suite itself, the campaign's core invariant artifact, asserts no values, and the one place CLI and daemon genuinely diverge (cross-project branches) is exactly what it skips (CQ-V1.42-11).
-- **Suggested fix:** One fixture-grounded value assert per parity test (e.g. the core-side value contains `"caller_fn"` before comparing), so a both-sides-empty regression fails; fix the overstating docstrings in the same pass.
-
-#### TC-HAP-V1.42-8: `cache_compact_core` has zero test coverage; `cache_stats_core` per-model branch never executed
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/cache_cmd.rs:222 (`cache_compact_core`), :117-130 (`cache_stats_core` per_model branch)
-- **Description:** `grep -rn "cache_compact_core\|cache_stats_core" src/ tests/` → only definitions and the two CLI adapter call sites (:289, :370); no test calls either core. The in-file `cache_compact_output_field_names` test (cache_cmd.rs:472-480) hand-builds `CacheCompactOutput { size_before_bytes: 4096, ... }` — pure serde shape, so the size_before/size_after/reclaimed computation is unverified, and `cqs cache compact` is never run by any test (tests/slots_and_cache_integration.rs:299 tests lib `cache.compact()` idempotence only). For stats, the lib-layer `stats_per_model()` IS value-tested (slots_and_cache_integration.rs:116 asserts a populated row), but no test reaches `cache_stats_core(.., per_model=true)` — the core wiring and its `per_model` output rows are pinned only as a hand-built empty vec.
-- **Suggested fix:** Unit tests on a temp `EmbeddingCache`: call `cache_compact_core` and assert `reclaimed_bytes == size_before_bytes - size_after_bytes`; insert entries under two model_ids and assert `cache_stats_core(.., true)` returns 2 per_model rows with correct counts.
-
-#### TC-HAP-V1.42-9: `telemetry_core` populated path and `all: true` flag have zero assertions
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/telemetry_cmd.rs:395
-- **Description:** `grep -rn "telemetry_core" src/ tests/` → definition, adapter call site (:437), and one test: `telemetry_core_empty_dir_is_zero_events` (:760-762), which asserts only `out.events == 0` on an empty dir. The file's other tests (`test_category_assignment`, `test_parse_entries`) exercise helpers, and a `write_test_telemetry` helper already exists — but aggregation through the core (events > 0, by-category rollup) and the `all: true` flag are never asserted. Telemetry numbers feed real decisions (MEMORY records using command counts as feature signal), so a silently-zero aggregation is a plausible, currently-undetectable regression.
-- **Suggested fix:** `write_test_telemetry` N entries + `telemetry_core(dir, &TelemetryArgs { all: true })`, assert `events == N` and one category count.
-
-#### TC-HAP-V1.42-10: The every-session agent command set has no happy-path binary-spawn test — impact, test-map, deps, callers/callees (normal path), trace (same-project), context, read, where, related, health, stats
-- **Difficulty:** medium
-- **Location:** no tests/ file for most; tests/cli_surface_test.rs:91/:102/:113/:271 (failure-path-only spawns); tests/cli_trace_cross_project_test.rs (v1-pinned `--cross-project` only)
-- **Description:** Lead-verified by `grep -rn 'args(\[' tests/*.rs` filtered per command: `impact`, `test-map`, `deps`, `context`, `read`, `where`, `health` → zero binary spawns in any format; `related` spawned only as a sad path (`related nonexistent_fn_xyz_12345`, cli_surface_test.rs:271); `stats` spawned only as the no-init failure (:91); `callers`/`callees` spawned only as no-index failures (:102/:113) and the const-fallback shape (:145) — the normal `{callers: [...]}` happy path is never spawned; `trace` is spawned only with `--cross-project` under v1 pins. These include the three commands CLAUDE.md mandates every session (`impact`, `test-map`, `scout` — scout filed as TC-HAP-V1.42-1) and most are SQL-only, i.e. cheap to spawn with the existing seeded-store pattern (cli_surface_test.rs:130 already pairs an in-process store with a binary spawn). Lib-level tests exist for the underlying functions; the clap→core→emit_json→stdout path for each is what has no pin.
-- **Suggested fix:** Extend cli_surface_test's seeded-store pattern: one default-format `--json` spawn per command asserting a seeded name/count appears (caller name for callers/impact, test name for test-map, path for trace/deps, chunk/file counts for stats/health).
-
-#### TC-HAP-V1.42-11: v1-envelope pin monoculture — 34 test files route through `cqs_v1()`, so the shipped default output shape is tested for only ~5 command payloads
-- **Difficulty:** medium
-- **Location:** tests/common/mod.rs:53 (`cqs_v1` pins CQS_OUTPUT_FORMAT=v1); 34 consumer files (`grep -rln cqs_v1 tests/*.rs` → 34)
-- **Description:** The shared spawn helper pins the legacy v1 envelope, and ~15 additional explicit `CQS_OUTPUT_FORMAT` sets in tests/ are all `v1`. The default-format (V2Bare bare-payload) coverage that #1703 landed is exactly five payloads: `cache stats` (cli_envelope_test.rs:386), `dead` (cli_dead_test.rs:122/:164), chat-REPL search (cli_chat_format_test.rs:72), `notes list` via mock daemon (daemon_forward_test.rs:925), and the callers const-fallback (cli_surface_test.rs:120-145). Every other binary-tested command — gather (cli_gather_test.rs:100 asserts `parsed["version"]==1`), explain, onboard, blame, drift, diff, similar, neighbors, notes add/remove, review/ci/plan/task/affected, slot, ref, gc, status, eval, telemetry, index, doctor, hook — has its happy path pinned only under the opt-in legacy format. A per-command regression in bare-payload emission (exactly the daemon `{"data":...}` leak class #1733 fixed) is invisible to the suite for ~25 commands. Complements TC-HAP-V1.42-10 (commands with no spawn at all); this one covers commands that have spawns but only v1-pinned.
-- **Suggested fix:** Add a `cqs_bare()` helper next to `cqs_v1()` and one bare-shape happy-path test per command family, starting with the every-session set (gather, explain, onboard, similar, status, notes add+list); converting an existing test per family is enough — full duplication not required.
-## Data Safety (nested: 3 sub-agents, lead-verified)
-
-#### DS-V1.42-1: Embedding-reuse lookups have no `needs_embedding` gate — zero-vec sentinels get laundered into permanent "real" embeddings
-- **Difficulty:** easy
-- **Location:** src/store/chunks/embeddings.rs:34, :111-113, :188 (the three by-hash SELECTs); writer at src/store/chunks/crud.rs:292-342 + async_helpers.rs:384-394; consumer at src/cli/pipeline/reuse.rs:161
-- **Description:** `upsert_chunks_unembedded_batch` (the `--llm-summaries` skip-first-pass path) writes a zero-vec sentinel into `embedding` with `needs_embedding=1`, and `batch_insert_chunks` stamps `canonical_hash`/`content_hash` on those rows. The crud.rs:287-291 doc claims "Search ignores chunks at needs_embedding=1 so the partial state never leaks" — but none of the three by-hash embedding lookups filters `needs_embedding = 0`, while the sibling `EmbeddingBatchIterator` was explicitly hardened with exactly that gate (async_helpers.rs:575, "zero-vec sentinels land in CAGRA's flat buffer"). The production reuse resolver `resolve_reuse` (shared by the bulk pipeline and the watch path, #1701) calls `get_embeddings_by_canonical_hashes`; a zero vector is finite, so the `Embedding::try_new` guard passes it. Sequence: interrupted `--llm-summaries` run leaves a sentinel at canonical_hash H → any later index of a chunk with key H (comment-only edit, or duplicate content) gets a reuse "hit" on the zero vector → it is upserted as a real embedding with `needs_embedding=0` → enrichment never revisits it (flag clear) and HNSW/CAGRA/search all serve the zero vector. Permanent silent retrieval corruption for that chunk; same gap in `get_chunk_ids_and_embeddings_by_hashes` feeds the watch delta path (cli/watch/events.rs:387) directly into HNSW `insert_batch`.
-- **Suggested fix:** Add `AND needs_embedding = 0` to all three by-hash SELECTs (mirroring the EmbeddingBatchIterator gate) + one regression test: sentinel row present, reuse lookup must miss.
-
-#### DS-V1.42-2: HNSW dirty-flag self-heal trusts a self-referential checksum manifest — crash between chunk commit and HNSW save silently serves the stale index
-- **Difficulty:** medium
-- **Location:** src/hnsw/mod.rs:712-719 (enriched try_open self-heal); src/cli/store.rs:500-517 (base analog); contract at src/cli/commands/index/build.rs:482-487; verifier at src/hnsw/persist.rs:229
-- **Description:** The dirty flag's documented contract: set before chunk writes so that "if we crash between SQLite commit and HNSW save, the dirty flag tells the next load to fall back to brute-force search until a full rebuild." But the loader's self-heal clears the flag whenever `verify_hnsw_checksums` passes — and that verifier only checks the sidecar files against their *own* manifest, written by the same save that wrote the files. A complete generation-N-1 set always passes. So the exact crash the flag exists for (kill anywhere in the minutes-long window between first chunk commit and `hnsw.save`, on `cqs index` or a watch batch — events sets the flag the same way) is "healed": flag cleared, stale sidecar served, promised brute-force fallback never happens. Under watch the staleness persists indefinitely — the killed run's chunks never re-enter HNSW via file events (their files don't change again) and reconcile sees disk==SQLite. `HnswMeta` carries only `{magic, version, metric}` — no generation/chunk_count — making HNSW the only backend whose staleness check is self-referential (CAGRA validates chunk_count+splade_generation against the live store, cagra.rs:1182-1185; SPLADE validates its generation header). The test at src/cli/store.rs:656-674 pins the wrong behavior — it conflates "died after save, before flag clear" (self-heal correct) with "died after chunk commit, before save" (self-heal wrong).
-- **Suggested fix:** Stamp a store generation (or at minimum chunk_count) into `HnswMeta` at save; on the dirty path self-heal only when the stamp matches the live DB, else return None (brute-force) as designed. Shares the generation-stamp mechanism with DS-V1.42-5.
-
-#### DS-V1.42-3: HNSW loader deletes a live save's staging directory before taking the shared lock — save then reports success while destroying the on-disk index
-- **Difficulty:** easy
-- **Location:** src/hnsw/persist.rs:837-850 (pre-lock temp cleanup in `load_with_dim`) vs :414 (saver creates the staging dir under the exclusive lock, same name pattern); :684 (promote loop silently skips missing temp files); :816-821 (success path deletes `.bak`s)
-- **Description:** `load_with_dim` cleans up `.{basename}.*.tmp` dirs "before anything else" — explicitly before acquiring the shared `.hnsw.lock` at :898-917 — while a concurrent `save()` (watch rebuild thread, or `cqs index` in another process) holds the exclusive lock and is actively writing into exactly such a dir (temp-write phase spans seconds on a large index). The loader cannot distinguish a live staging dir from a stale one and `remove_dir_all`s it. The saver's promote loop then renames the previous good files to `.bak`, finds every temp file missing, **silently skips all five** (`if temp_path.exists()`), returns `Ok`, and the success path deletes the `.bak`s — the previous good index is destroyed, the save logs "HNSW index saved", and downstream the dirty flag gets cleared. The function's own lock-protocol comment (:856-869) states existence checks must happen only under the lock; this cleanup violates it one screen earlier.
-- **Suggested fix:** (a) Move the stale-temp cleanup inside the shared-lock critical section (once the shared lock is held no exclusive saver is mid-flight, so surviving `.tmp` dirs are genuinely stale); (b) make the promote loop treat a missing graph/data/ids temp file as a hard error into the rollback path instead of a silent skip.
-
-#### DS-V1.42-4: HNSW stale-`.bak` guard locks out all future saves after post-success debris, and the guard itself runs outside the exclusive lock
-- **Difficulty:** medium
-- **Location:** src/hnsw/persist.rs:366-394 (guard, pre-lock — lock acquired at :400-406), :818-821 (best-effort `.bak` cleanup after promote), src/cli/watch/mod.rs:1891-1937 (shutdown detaches the rebuild thread after 30s; the thread observes no shutdown flag)
-- **Description:** Three defects in one `.bak` lifecycle. (1) **Debris lockout:** the success path deletes `.bak`s only after all promotes; a kill between the last `atomic_replace` and the cleanup loop leaves a *healthy new index* plus orphan `.bak`s. Every subsequent `save()` — every `cqs index` run (propagated as hard error via build.rs:1448) and every watch incremental save — refuses with "stale .bak files... manual recovery required". The message's second suggestion ("rename to current files") would silently revert the newer index to gen N-1, which also passes checksums. Combined with DS-V1.42-2, the failed run's dirty flag then self-heals onto the stale data. (2) **Realistic trigger:** daemon shutdown joins the rebuild thread for 30s then detaches ("rebuild thread keeps running until the process exits"), so process exit kills it at an arbitrary point inside `save()` — including between backup-rename and promote, leaving `.bak`s + missing finals, wedging persistence until an operator intervenes. (3) **TOCTOU:** the guard scans before acquiring the exclusive lock, so a concurrent saver's transient `.bak`s (legitimate, deleted on its success) trip a spurious "manual recovery required"; conversely a peer that fails *after* our pre-lock scan leaves real breadcrumbs that our backup loop then overwrites. Same lockout class, lower stakes: splade/index.rs:463-481 and cagra.rs:1428-1436.
-- **Suggested fix:** Acquire the exclusive lock first, then run the guard; when `.bak`s exist but the live set is complete and checksum-valid (and, once DS-V1.42-2 lands, generation-matched), treat them as post-success debris — delete and proceed. Keep the hard refusal only when the live set is absent/invalid. Give the rebuild thread a shutdown `AtomicBool` checked before entering `save()`.
-
-#### DS-V1.42-5: Background HNSW rebuild saves sidecars outside `index.lock` — lost update against a concurrent `cqs index`, dirty flag cleared over the gap
-- **Difficulty:** medium
-- **Location:** src/cli/watch/rebuild.rs:260-357 (`spawn_hnsw_rebuild` — no lock) → src/cli/commands/index/build.rs:1448, :1486 (`hnsw.save` inside `build_hnsw_index_owned`/`build_hnsw_base_index`, executed on the rebuild thread); CLI holds the lock for its whole run at build.rs:331; drain saves again under the lock at rebuild.rs:458
-- **Description:** The rebuild thread opens a read-only store (WAL snapshot at T0), builds, and saves both sidecars with no `index.lock`; the per-file `.hnsw.lock` only serializes individual save calls, not their ordering against DB state. Documented-routine interleaving (WSL inotify misses bulk git ops, so manual `cqs index` while the daemon runs is the prescribed workflow): CLI acquires `index.lock`, upserts chunks in place (same inode — the identity check only fires on `--force` rename-over), rebuilds and saves fresh sidecars, clears dirty, releases; the rebuild thread then finishes and overwrites them with its T0 snapshot. The drain tick (correctly under `index.lock`) replays only the watch-observed delta — the CLI's chunks never entered `pending.delta` — saves, swaps, and clears `hnsw_dirty`. Every chunk the CLI indexed is now missing from on-disk and in-memory dense indexes with the dirty flag clear; reconcile won't requeue (disk matches SQLite). Silent dense-recall loss until the next threshold rebuild. Root cause shared with DS-V1.42-2: HNSW sidecars carry no generation stamp, so a stale save is undetectable.
-- **Suggested fix:** Stamp sidecars with a store generation (the DS-V1.42-2 mechanism) and have the rebuild thread/drain discard a build whose snapshot generation no longer matches the store before saving/swapping; or take `try_acquire_index_lock` around the rebuild thread's save and re-verify a change counter in the drain.
-
-#### DS-V1.42-6: `BatchView::ensure_splade_index` publishes a stale-snapshot SPLADE index into the shared cell after invalidation already ran
-- **Difficulty:** medium
-- **Location:** src/cli/batch/view.rs:397-463 (check cell → long build from snapshot store → unconditional publish); cell shared via Arc at src/cli/batch/context.rs:1420; invalidation at context.rs:570-625
-- **Description:** `ensure_splade_index` checks the shared cell (`None`), reads `splade_generation` from the **view's snapshot** store, runs `load_or_build` (tens of seconds on large corpora), then re-locks and writes the result into the shared `splade_index_cell` unconditionally. If the watch loop commits a reindex and `invalidate_mutable_caches` runs (clearing the cell, swapping the store, consuming the identity/data_version discriminators) while the build is in flight, the finished gen-N index is published *after* the invalidation. Every later checkout sees `Some`, `ensure_splade_index` early-returns, and no path revalidates generation on the in-memory cell (only the on-disk `splade.index.bin` is generation-checked) — the stale sparse index is served until the next reindex fires invalidation again; on a quiet repo, indefinitely.
-- **Suggested fix:** Store `(generation, Arc<SpladeIndex>)` in the cell and compare against the current store's `splade_generation` on read (cheap metadata query), rebuilding on mismatch; or capture an invalidation-epoch (`AtomicU64` bumped in `invalidate_mutable_caches`) before the build and publish only if unchanged.
-
-#### DS-V1.42-7: Deferred cache invalidation is permanently lost — both staleness discriminators are consumed before the deferral, so the promised retry observes no change
-- **Difficulty:** easy
-- **Location:** src/cli/batch/context.rs:619-624 (deferral resets only the rate-limit), :529 (`probe.last = v` consumed in `data_version_changed`), :468 (`index_id.set(Some(current_id))` unconditional)
-- **Description:** When a handler holds a borrow/lock on a cache slot during invalidation — the code's own comment cites the live case (handlers/search.rs holds `borrow_splade_index` across `search_hybrid`) — `invalidate_mutable_caches` defers that slot and sets `last_staleness_check` to None so "the next accessor retries the invalidation". But the caller already advanced the data_version probe baseline inside `data_version_changed()` and unconditionally updates `index_id` after the check, so the retry runs `check_index_staleness`, finds `identity_changed == false` and `data_version_changed == false`, and never re-invokes the invalidation. A deferred `splade_index` slot keeps pre-reindex contents until the *next* DB change (combined with DS-V1.42-6: indefinitely on a quiet repo). `refs` self-heals via per-entry `is_stale()`; the splade cell has no such check. The manual `refresh` path (`invalidate()`, :629-657) has the same lost-deferral while reporting success.
-- **Suggested fix:** Have `invalidate_mutable_caches` return `all_clear`; on false set a sticky `pending_invalidation: Cell<bool>` that `check_index_staleness` honors regardless of the discriminators, clearing it only when every slot actually cleared.
-
-#### DS-V1.42-8: `doc_writer::atomic_write` falls back to a non-atomic in-place truncate-write of the user's source file on ANY rename failure, and never fsyncs despite its power-loss comment
-- **Difficulty:** easy
-- **Location:** src/doc_writer/rewriter.rs:646-702 (fallback arm); production callers :359 (rewrites user source files, `--improve-docs` apply) and :619 (patch files); power-loss promise at :614-618
-- **Description:** Two defects in the one helper that touches **user source code** — the only non-rebuildable data cqs writes. (1) The fallback arm matches every rename error, not just cross-device (contrast src/fs.rs:49 `is_cross_device`); since the temp file is created in `path.parent()`, genuine EXDEV is impossible here, so every execution of the arm is some other failure (Windows editor/AV file lock being the realistic one) — and the fallback is `fs::write(path, data)`: open-with-truncate. Kill between truncate and write completion leaves the user's source file truncated; the only copy of the original is a `.cqs-doc-<pid>-<rand>.bak` whose name lives in a `tracing::warn!` that a SIGKILL never wrote. (2) The call-site comment promises atomicity against "power loss", but the implementation has no `sync_all` on the temp and no parent-dir fsync — the rename can be durable while the data is not, yielding exactly the truncated `.patch`/source the comment warns about (`git apply` on a truncated diff = silent partial source changes). The crate's own `crate::fs::atomic_replace` does all of this correctly.
-- **Suggested fix:** Replace the body with `crate::fs::atomic_replace` (fsync + EXDEV-only fallback staged in the same dir) and propagate non-EXDEV rename errors.
-
-#### DS-V1.42-9: `checkpoint_legacy_index` opens via URL parsing — special-character project paths silently skip the WAL drain the slot migration depends on
-- **Difficulty:** easy
-- **Location:** src/slot/mod.rs:1053 (URL-string open) vs src/store/mod.rs:936-939 (the open path this codebase standardized on, with the comment explaining why); warn-only failure handling at slot/mod.rs:925-932
-- **Description:** The legacy→slots migration drains the WAL before moving `index.db` specifically because cross-device moves (`EXDEV` copy+remove fallback) are non-atomic across the main/WAL pair. But the checkpoint connection is built with `SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))` — the exact URL-parsing trap the store's own open avoids via `.filename()` ("spaces, #, ?, %, unicode"). On such a path (common on Windows-origin trees) the open fails or targets a wrong path, the failure is warn-only, and the migration proceeds **without draining the WAL** — a crash mid-cross-device-move can then silently lose committed-but-uncheckpointed transactions in the new slot. Narrow preconditions, but the fix removes the class.
-- **Suggested fix:** `SqliteConnectOptions::new().filename(legacy_index)` like every other open site; add `busy_timeout` while there.
-
-#### DS-V1.42-10: Migration backup/restore has no cross-process write exclusion — torn snapshot under a live old-binary daemon, and restore discards its commits
-- **Difficulty:** medium
-- **Location:** src/store/backup.rs:110-178 (`backup_before_migrate`: checkpoint then plain `fs::copy`, no lock/read-tx held across the copy); src/store/migrations.rs:130-174 (failure-path restore)
-- **Description:** `backup_before_migrate` runs `PRAGMA wal_checkpoint(FULL)` then snapshots via `copy_triplet` without holding any SQLite transaction or cross-process lock across the copy. In-process races and concurrent migrations are handled (version re-check inside `run_migration_tx`), but a **different process** with the DB open — the documented deployment runs `cqs watch --serve` as a long-lived daemon — keeps committing between checkpoint and copy, and its autocheckpoint (`wal_autocheckpoint=1000`) can rewrite main-file pages mid-`fs::copy`, producing a torn backup. On migration failure (realistic: SQLITE_BUSY from that same daemon) `restore_from_backup` overwrites the live DB with the snapshot: a torn snapshot is restored verbatim, and even a clean one silently discards every daemon commit since the backup, while the daemon's open pool keeps writing to the now-unlinked inode — the cross-process version of the "silent two-state divergence" the in-process pool-closure protocol (migrations.rs:131-149) was built to prevent. Bounded blast radius (index rebuildable via `cqs index --force`), but the failure is silent.
-- **Suggested fix:** Snapshot with `VACUUM INTO` (transactionally consistent under concurrent writers, no sidecars) instead of `fs::copy`; or hold `BEGIN IMMEDIATE` across checkpoint+copy so other writers block on their busy_timeout.
-
-#### DS-V1.42-11: `slot create --model` killed between dir creation and `slot.toml` write loses the model pin — and the retry's error message steers toward indexing with the wrong model
-- **Difficulty:** easy
-- **Location:** src/cli/commands/infra/slot.rs:313 (`fs::create_dir_all`) → :325 (`write_slot_model`); refusal with guidance at :304-312
-- **Description:** Model validation work sits between directory creation and the `slot.toml` write; a kill in that window leaves `slots/<name>/` existing with no model pin. Re-running `cqs slot create <name> --model X` bails at the `dir.exists()` guard: "Either run `cqs index --slot <name>` or `cqs slot remove <name>` first" — following the first suggestion silently indexes with the default model instead of the requested one. The slots lock (:301) covers concurrency but not the kill window.
-- **Suggested fix:** Write `slot.toml` before (or atomically with) directory creation, or treat a slot dir containing neither `index.db` nor `slot.toml` as re-creatable instead of refusing.
-
-#### DS-V1.42-12: `cqs convert --overwrite` writes output via bare `fs::write` — kill mid-write leaves a truncated doc that indexing ingests as valid content
-- **Difficulty:** easy
-- **Location:** src/convert/mod.rs:523-526
-- **Description:** The overwrite branch is a plain `std::fs::write` (truncate + write). A kill mid-write leaves a truncated converted document with no reader-side detection — the next `cqs index` ingests it as valid content. The sibling non-overwrite branch already does atomic `create_new`. Derived, re-runnable data, so low severity, but it is the only remaining unprotected content write.
-- **Suggested fix:** Stage to a temp file + `crate::fs::atomic_replace`, matching the rest of the codebase.
-
+- Difficulty: easy · Impact: low
+- Location: src/cli/commands/review/dead.rs:98 (SERVED_ASSET_PREFIXES), :144-176 (EXTERNAL_TRAIT_METHODS), :110-113 (is_python_dunder)
+- Description: The `cqs dead` known-gap classifier hardcodes framework-dispatch conventions as `const` slices/predicates with no config seam, yet the doc comment at :93-94 claims "The prefix table is extensible so other corpora can add their served-assets roots" — but it is a `const`, so "extensible" requires recompiling. No config field for any of these (grep of config.rs: nothing). For a non-cqs corpus this means false `dead` verdicts (assets under `public/`/`static/`/`assets/`; framework dispatch through traits not in the list — Drop/Default/Iterator/axum/clap-derived) with no extension path. The serde Visitor list is also incomplete even as a fixed set. The single-user stance caps practical impact (these are tuned for cqs's own corpus), but the asymmetry is real: embedder/reranker selection IS config/env-driven, while these allowlists are the lone classification surface with a hardcoded-only story that contradicts its own docstring.
+- Suggested fix:
+  - Either (a) wire a `[dead]` config section (`served_asset_prefixes`, `external_trait_methods`, `python_dunder`) merged with built-in defaults, matching the embedder/reranker precedence pattern; OR (b) drop the "extensible" language from the docstring (:93-94) so the doc stops promising behavior the const doesn't deliver.
+  - If keeping it hardcoded, at minimum complete the serde Visitor surface in EXTERNAL_TRAIT_METHODS for cqs's own correctness.

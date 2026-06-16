@@ -9,6 +9,27 @@ argument-hint: "[batch-number|all]"
 
 Run the 16-category code audit.
 
+## Implementation — the `audit` workflow (preferred)
+
+The discovery + synthesis + disposition phases now run as one reusable workflow, `.claude/workflows/audit.js`:
+
+```
+Workflow({ name: 'audit', args: { churn: '<recently-changed areas to scrutinize>' } })
+```
+
+- **Discovery** — all 16 categories in ONE parallel stage (auditors return structured findings; no team, no 2-batch split — the concurrency cap schedules them).
+- **Synthesize** — one agent dedups/clusters, triages P1–P4 (refining the deterministic difficulty×impact first-pass), assigns each row a disposition `route`, and WRITES `docs/audit-findings.md` + `docs/audit-triage.md`.
+- **Disposition** — per row: `auto-fix` → generate a fix-spec + adversarially verify it against source; `issue` → draft a title+body; `tracked`/`inline`/`drop` → skip. Gen/verify/draft agents are **read-only** (`Explore`) so prepare-mode can't mutate the tree. `args.implement=true` additionally runs worktree-isolated implementers on verified fixes.
+
+**The orchestrator (main loop) keeps the gated acts** — deliberately NOT in the workflow because they're irreversible / outward-facing / serialized to protected `main`:
+- Review the triage — the cornerstone P1-vs-P2 + accept/reject/route-override call.
+- `/land` the verified fixes (serialized, CI-gated).
+- `gh issue create` the drafts, after dedup against open issues.
+
+Route by **fix-nature, not tier**: a high-impact finding whose fix is a judgment call (architecture/API/perf-tradeoff) is `issue`, never `auto-fix`.
+
+The team-based process below is the legacy reference — kept for the category scopes and the fix-prompt-review detail the workflow embodies. Teams are currently unavailable, so use the workflow.
+
 ## Arguments
 
 - `$ARGUMENTS` — batch number (1-2) or `all` for full audit
