@@ -37,7 +37,9 @@ use std::process::Command;
 
 /// Env flag the parent sets so the re-exec'd child knows to actually run the
 /// workload (rather than re-spawn another child, which would recurse).
-const CHILD_FLAG: &str = "CQS_HNSW_STDOUT_LEAK_CHILD";
+/// `CQS_TEST_` prefix per the test-only env-var convention enforced by
+/// `tests/env_var_docs.rs` (such vars are exempt from README documentation).
+const CHILD_FLAG: &str = "CQS_TEST_HNSW_STDOUT_LEAK_CHILD";
 
 /// CHILD WORKLOAD (only meaningful when re-exec'd by the parent below).
 ///
