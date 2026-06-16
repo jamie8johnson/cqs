@@ -1978,4 +1978,423 @@ END_PROGRAM
             "XML def must not claim .l5k after the wireup"
         );
     }
+
+    // =======================================================================
+    // Property-based tests: the bare-ST wrap-normalize coordinate round-trip
+    // and the program-unit detection predicate.
+    //
+    // The hand-written relationship tests above pin a CALL on one fixed line
+    // (line 2) in one small fixed body. They cannot express the input space
+    // where a wrap-offset off-by-one or position-dependent bug actually
+    // lives: a call on body line 0, on the last line, in a tall body, behind
+    // blank lines, or a first token that merely LOOKS like a program-unit
+    // keyword. These properties generate that space directly.
+    // =======================================================================
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Build a minimal but valid L5X file from a list of ST body lines.
+        /// Each line becomes a `<Line Number="i">` CDATA entry, so body line
+        /// index `i` (0-based) maps to chunk-content row `i`. The routine has
+        /// no enclosing program unit, so the relationship path wrap-normalizes
+        /// it — this is the COMMON real-export shape.
+        fn build_bare_l5x(body_lines: &[String]) -> String {
+            let mut s = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <RSLogix5000Content><Controller Name=\"C\"><Programs>\
+                 <Program Name=\"P\"><Routines>\n\
+                 <Routine Name=\"PropRoutine\" Type=\"ST\"><STContent>\n",
+            );
+            for (i, line) in body_lines.iter().enumerate() {
+                s.push_str(&format!("<Line Number=\"{i}\"><![CDATA[{line}]]></Line>\n"));
+            }
+            s.push_str(
+                "</STContent></Routine>\n\
+                 </Routines></Program></Programs></Controller></RSLogix5000Content>",
+            );
+            s
+        }
+
+        /// A non-call filler statement that can never be mistaken for the
+        /// probe call (`probe_N(...)`) and never opens a program unit. Plain
+        /// assignments parse cleanly inside the synthetic wrapper.
+        fn filler(i: usize) -> String {
+            format!("noise_{i} := {i};")
+        }
+
+        /// The probe call whose line we track. `probe(...)` with no callee
+        /// collision against the filler.
+        fn probe_call() -> String {
+            "probe(IN := startButton);".to_string()
+        }
+
+        fn find_probe_line(source: &str) -> Option<u32> {
+            let parser = Parser::new().ok()?;
+            let (_chunks, calls, _types) =
+                parse_l5x_all(source, Path::new("prop.l5x"), &parser).ok()?;
+            for fc in &calls {
+                for cs in &fc.calls {
+                    if cs.callee_name == "probe" {
+                        return Some(cs.line_number);
+                    }
+                }
+            }
+            None
+        }
+
+        proptest! {
+            // INVARIANT 1 (coordinate round-trip, the load-bearing one):
+            //   for a bare body with the probe call on 0-based body line N,
+            //   the extracted edge's reported line == N + 1 (1-indexed within
+            //   the original body) — the one-line wrapper offset is subtracted
+            //   EXACTLY once, with no off-by-one, regardless of where the call
+            //   sits (line 0, last line, tall bodies, blank-line padding).
+            //
+            // Generator coverage: 0..=40 total body lines, probe at any index,
+            // 0..=5 leading blank lines, filler statements before/after. The
+            // example suite only ever placed the probe at index 1 (line 2).
+            #[test]
+            fn prop_bare_call_line_round_trips(
+                lead_blanks in 0usize..=5,
+                before in 0usize..=20,
+                after in 0usize..=20,
+            ) {
+                let mut body: Vec<String> = Vec::new();
+                for _ in 0..lead_blanks {
+                    body.push(String::new());
+                }
+                for i in 0..before {
+                    body.push(filler(i));
+                }
+                let probe_idx = body.len(); // 0-based row of the probe call
+                body.push(probe_call());
+                for i in 0..after {
+                    body.push(filler(100 + i));
+                }
+
+                let source = build_bare_l5x(&body);
+                let got = find_probe_line(&source);
+                prop_assert_eq!(
+                    got,
+                    Some(probe_idx as u32 + 1),
+                    "bare call on 0-based body line {} must report 1-indexed \
+                     line {}; wrapper offset must be subtracted exactly once \
+                     (body had {} lines, {} lead blanks)",
+                    probe_idx,
+                    probe_idx + 1,
+                    body.len(),
+                    lead_blanks
+                );
+            }
+
+            // INVARIANT 1b (two-path equivalence / metamorphic):
+            //   the SAME logical call, reached two ways — (a) bare body through
+            //   the synthetic wrap, (b) the body manually enclosed in a real
+            //   FUNCTION_BLOCK ... END_FUNCTION_BLOCK (a program unit, NOT
+            //   wrapped) — must agree on where the call is. The FB version
+            //   carries its own header line at the top, so its reported line
+            //   is exactly one MORE than the bare version's. The two paths
+            //   must differ by exactly that header line and nothing else (no
+            //   extra phantom shift from the synthetic wrapper).
+            #[test]
+            fn prop_bare_vs_fb_wrapped_agree(
+                before in 0usize..=15,
+                after in 0usize..=15,
+            ) {
+                let mut inner: Vec<String> = Vec::new();
+                for i in 0..before {
+                    inner.push(filler(i));
+                }
+                inner.push(probe_call());
+                for i in 0..after {
+                    inner.push(filler(100 + i));
+                }
+
+                // (a) bare body
+                let bare_src = build_bare_l5x(&inner);
+                let bare_line = find_probe_line(&bare_src);
+
+                // (b) the same statements enclosed in a real FUNCTION_BLOCK.
+                // Header occupies body line 0, so every inner statement is
+                // shifted down by one relative to the bare body.
+                let mut fb: Vec<String> = Vec::new();
+                fb.push("FUNCTION_BLOCK PropFB".to_string());
+                fb.extend(inner.iter().cloned());
+                fb.push("END_FUNCTION_BLOCK".to_string());
+                let fb_src = build_bare_l5x(&fb);
+                let fb_line = find_probe_line(&fb_src);
+
+                prop_assert!(bare_line.is_some(), "bare path must find the probe call");
+                prop_assert!(fb_line.is_some(), "FB path must find the probe call");
+                prop_assert_eq!(
+                    fb_line.unwrap(),
+                    bare_line.unwrap() + 1,
+                    "FB-wrapped call line ({:?}) must be exactly one more than \
+                     the bare-wrapped call line ({:?}) — the FB header line — \
+                     not two off (a phantom synthetic-wrapper shift)",
+                    fb_line,
+                    bare_line
+                );
+            }
+
+            // INVARIANT 4 (no wrapper leak):
+            //   `_cqs_wrap`, `PROGRAM`, and `END_PROGRAM` synthetic tokens must
+            //   NEVER appear in any extracted call edge, type ref, or chunk
+            //   name/content, for ANY body. Generated bodies mix calls, typed
+            //   declarations, and near-keyword identifiers.
+            #[test]
+            fn prop_no_wrapper_leak(
+                n_calls in 0usize..=6,
+                n_types in 0usize..=6,
+            ) {
+                let mut body: Vec<String> = Vec::new();
+                for i in 0..n_calls {
+                    body.push(format!("call_{i}(IN := x);"));
+                }
+                for i in 0..n_types {
+                    body.push(format!("VAR v_{i} : TON; END_VAR"));
+                }
+                if body.is_empty() {
+                    body.push("x := 1;".to_string());
+                }
+                let source = build_bare_l5x(&body);
+                let parser = Parser::new().unwrap();
+                let (chunks, calls, types) =
+                    parse_l5x_all(&source, Path::new("prop.l5x"), &parser).unwrap();
+
+                for c in &chunks {
+                    prop_assert!(
+                        !c.name.contains("_cqs_wrap"),
+                        "chunk name leaked wrapper: {:?}",
+                        c.name
+                    );
+                    prop_assert!(
+                        !c.content.contains("_cqs_wrap"),
+                        "chunk content leaked wrapper: {:?}",
+                        c.content
+                    );
+                }
+                for fc in &calls {
+                    for cs in &fc.calls {
+                        prop_assert!(
+                            !cs.callee_name.contains("_cqs_wrap")
+                                && cs.callee_name != "PROGRAM"
+                                && cs.callee_name != "END_PROGRAM",
+                            "call edge leaked synthetic token: {:?}",
+                            cs.callee_name
+                        );
+                    }
+                }
+                for tr in &types {
+                    for t in &tr.type_refs {
+                        prop_assert!(
+                            !t.type_name.contains("_cqs_wrap")
+                                && t.type_name != "PROGRAM"
+                                && t.type_name != "END_PROGRAM",
+                            "type ref leaked synthetic token: {:?}",
+                            t.type_name
+                        );
+                    }
+                }
+            }
+
+            // INVARIANT 5 (saturating-sub safety / no panic, no bogus coord):
+            //   no body — including blank-only, whitespace-only, comment-only,
+            //   and near-keyword-prefixed — produces a panic, and every
+            //   reported line is >= 1 (a real line, never the underflowed 0
+            //   that a stray wrapper-line match would yield).
+            #[test]
+            fn prop_no_panic_lines_ge_one(
+                body in proptest::collection::vec(
+                    prop_oneof![
+                        Just(String::new()),
+                        Just("   ".to_string()),
+                        Just("// comment".to_string()),
+                        Just("x := 1;".to_string()),
+                        Just("foo(a := 1);".to_string()),
+                        Just("VAR y : INT; END_VAR".to_string()),
+                        // near-keyword first tokens (must be wrapped, not
+                        // mistaken for a program unit)
+                        Just("FUNCTIONAL_X(a);".to_string()),
+                        Just("PROGRAMMER := 1;".to_string()),
+                        Just("Function(x);".to_string()),
+                    ],
+                    0..=25,
+                ),
+            ) {
+                let source = build_bare_l5x(&body);
+                let parser = Parser::new().unwrap();
+                // Must not panic.
+                let (_chunks, calls, types) =
+                    parse_l5x_all(&source, Path::new("prop.l5x"), &parser).unwrap();
+                for fc in &calls {
+                    for cs in &fc.calls {
+                        prop_assert!(
+                            cs.line_number >= 1,
+                            "call line underflowed to {} (bogus wrapper-line \
+                             attribution): {:?}",
+                            cs.line_number,
+                            cs.callee_name
+                        );
+                    }
+                }
+                for tr in &types {
+                    for t in &tr.type_refs {
+                        prop_assert!(
+                            t.line_number >= 1,
+                            "type-ref line underflowed to {} (bogus \
+                             wrapper-line attribution): {:?}",
+                            t.line_number,
+                            t.type_name
+                        );
+                    }
+                }
+            }
+
+            // INVARIANT 2 (is_program_unit correctness — the wrap decision):
+            //   a body whose FIRST token is a genuine program-unit keyword
+            //   (PROGRAM / FUNCTION / FUNCTION_BLOCK), in any case, with any
+            //   leading whitespace, followed by whitespace or end-of-input,
+            //   MUST be detected as a program unit (offset 0, not wrapped).
+            #[test]
+            fn prop_is_program_unit_true_for_real_units(
+                kw_idx in 0usize..3,
+                upper_mask in 0u32..(1 << 8),
+                lead_ws in proptest::collection::vec(
+                    prop_oneof![Just(' '), Just('\t')],
+                    0..=4,
+                ),
+                trailing in prop_oneof![
+                    Just(""),       // EOI right after the keyword
+                    Just(" Main"),  // space + a name
+                    Just("\tFoo"),  // tab + a name
+                    Just("\nx:=1;"),// newline + body
+                ],
+            ) {
+                let kw = ["PROGRAM", "FUNCTION", "FUNCTION_BLOCK"][kw_idx];
+                // Randomize case per-letter (only the first 8 letters need a
+                // bit; longer keywords keep their canonical case for the tail,
+                // which is fine — eq_ignore_ascii_case covers it).
+                let cased: String = kw
+                    .chars()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        if i < 8 && (upper_mask >> i) & 1 == 1 {
+                            c.to_ascii_lowercase()
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                let lead: String = lead_ws.into_iter().collect();
+                let body = format!("{lead}{cased}{trailing}");
+                prop_assert!(
+                    is_program_unit(&body),
+                    "real program unit must be detected (not wrapped): {:?}",
+                    body
+                );
+                prop_assert_eq!(
+                    wrap_bare_st(&body).line_offset,
+                    0,
+                    "real program unit must have zero wrap offset: {:?}",
+                    body
+                );
+            }
+
+            // INVARIANT 2b (is_program_unit correctness — the near-miss side):
+            //   a body whose first token only LOOKS like a keyword but is a
+            //   longer identifier (`FUNCTIONAL_X`, `PROGRAMMER`, `FUNCTIONery`)
+            //   or a real call (`Function(...)`) MUST NOT be detected as a
+            //   program unit — it must be wrapped (offset 1) so extraction is
+            //   not silently dormant. The dangerous case: a real bare routine
+            //   whose first identifier happens to share a keyword prefix gets
+            //   wrongly skipped → zero extraction.
+            #[test]
+            fn prop_is_program_unit_false_for_near_keywords(
+                kw_idx in 0usize..3,
+                // a suffix of identifier chars glued directly to the keyword
+                suffix in "[A-Za-z0-9_]{1,6}",
+            ) {
+                let kw = ["PROGRAM", "FUNCTION", "FUNCTION_BLOCK"][kw_idx];
+                // Glue an identifier char run directly onto the keyword: the
+                // result is a single longer identifier, NOT a program-unit
+                // token. (`(` is excluded from the suffix charset, so this is
+                // never `Function(` — that near-miss is covered explicitly
+                // below.)
+                let body = format!("{kw}{suffix} := 1;");
+                prop_assert!(
+                    !is_program_unit(&body),
+                    "keyword-prefixed identifier must NOT be a program unit \
+                     (would skip wrapping → dormant extraction): {:?}",
+                    body
+                );
+                prop_assert_eq!(
+                    wrap_bare_st(&body).line_offset,
+                    1,
+                    "keyword-prefixed identifier must be wrapped (offset 1): {:?}",
+                    body
+                );
+            }
+
+            // INVARIANT 2c (end-to-end dormancy guard — the predicate decision
+            // must hold THROUGH extraction):
+            //   a real bare routine whose FIRST line is a call whose NAME
+            //   shares a program-unit keyword prefix (`Functionable(...)`,
+            //   `Programmed(...)`) must still surface that call at body line 1.
+            //   If `is_program_unit` over-matched the prefix, the body would be
+            //   parsed as a (broken) program unit with offset 0 and the call
+            //   would go dormant (zero edges) — the exact regression the wrap
+            //   was added to kill. This walks the full parse, not just the
+            //   predicate, so a predicate-vs-extraction divergence is caught.
+            #[test]
+            fn prop_near_keyword_first_line_call_still_extracted(
+                kw_idx in 0usize..3,
+                tail in "[a-z]{1,5}",
+            ) {
+                let kw = ["PROGRAM", "FUNCTION", "FUNCTIONBLOCK"][kw_idx];
+                // A call whose name is the keyword glued to lowercase tail —
+                // a valid ST identifier that is NOT a program-unit token.
+                let name = format!("{kw}{tail}");
+                let body = vec![format!("{name}(IN := x);")];
+                let source = build_bare_l5x(&body);
+                let parser = Parser::new().unwrap();
+                let (_chunks, calls, _types) =
+                    parse_l5x_all(&source, Path::new("prop.l5x"), &parser).unwrap();
+                let found = calls
+                    .iter()
+                    .flat_map(|fc| fc.calls.iter())
+                    .find(|cs| cs.callee_name == name);
+                prop_assert!(
+                    found.is_some(),
+                    "near-keyword-named call on body line 0 went dormant \
+                     (predicate over-matched the keyword prefix → no wrap → \
+                     zero edges): {:?}; got {:?}",
+                    name,
+                    calls
+                );
+                prop_assert_eq!(
+                    found.unwrap().line_number,
+                    1,
+                    "near-keyword call must report 1-indexed body line 1: {:?}",
+                    name
+                );
+            }
+        }
+
+        /// Explicit near-miss boundary cases for `is_program_unit` that the
+        /// glued-suffix generator excludes (the `(` boundary): a call whose
+        /// name starts with a keyword. `Function(x)` / `PROGRAM(x)` are calls,
+        /// not program units, but `(` is whitespace-adjacent-ish — pin that the
+        /// predicate treats `(` as NON-whitespace (so it is NOT a unit and gets
+        /// wrapped). This is a hand-pin because it is a single boundary value,
+        /// not a space.
+        #[test]
+        fn prop_seed_keyword_call_is_not_a_unit() {
+            assert!(!is_program_unit("PROGRAM(x);"));
+            assert!(!is_program_unit("FUNCTION(x);"));
+            assert!(!is_program_unit("FUNCTION_BLOCK(x);"));
+            assert_eq!(wrap_bare_st("PROGRAM(x);").line_offset, 1);
+        }
+    }
 }
