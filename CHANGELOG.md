@@ -5,12 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.47.0] - 2026-06-16
+
+Idle-loop residual cycle since v1.46.1 (PRs #2002–#2010): an overnight-nightly fix, two parser fixes, and CI cross-build hardening. **PARSER_VERSION 13 → 14 — a reindex is required** for the new bare-list L5X/L5K call/type edges (#2005); cqs's own (Rust) corpus is unaffected (drift-driven on the next `cqs index`, or `cqs index --force`).
 
 ### Fixed
 
+- **Worktree overlay no longer serves a stale fingerprint on a transient read error (#1991).** `worktree_overlay`'s `fingerprint()` collapsed *any* read failure (an ENOENT race, EACCES, EIO) to the same `ZERO32` digest it uses for a genuine deletion, so a transient failure could be cached as a real "deleted" state and serve a stale overlay. It now keys on `error.kind()`: the intentional symlink contract keeps `ZERO32`, but any other failure yields a unique-per-call sentinel (a process counter + wall-clock nanos) plus a `warn!`, so the LRU compare always treats it as stale and forces a rebuild — closing the full stale-hit window. Genuine-deletion behaviour is unchanged.
 - **hnsw_rs stdout leak no longer corrupts `--json` output.** hnsw_rs 0.3.4's `modify_level_scale` unconditionally `println!`s a `"Current scale value : ..."` diagnostic line to the process stdout. cqs calls it on both metric arms at HNSW construction (before any point is inserted), so every index build emitted that line. For commands that write machine-readable JSON to stdout — notably `cqs gc --json`, which rebuilds the HNSW after pruning and then writes its JSON summary — the stray line corrupted the JSON. The two `modify_level_scale` calls are now wrapped in a tightly-scoped, best-effort, cross-platform RAII stdout suppressor (`src/hnsw/stdout_gag.rs`: a libc fd-1 redirect to the null device on both unix and Windows, restored on drop including on panic; a no-op fallback on other platforms keeps the build functional). cqs's own logging goes to stderr, so the stdout-only gag never eats logs. A new PR-CI lib test asserts an HNSW build leaves stdout empty.
 - **Bare-list L5X/L5K ST routines now extract call/type edges (was dormant).** A real Rockwell ST *routine* export is a bare statement list (the routine IS the scope; only Add-On-Instruction exports carry a `FUNCTION_BLOCK` wrapper). The tree-sitter ST grammar only emits `call_expression` / `var_decl_item` nodes inside a program unit, so a bare body parsed to a single ERROR node and yielded zero relationships — the COMMON plain-routine shape produced no caller/impact/dead edges. The L5X/L5K relationship path now wrap-normalizes a bare body in a synthetic `PROGRAM` unit before the parse (already-wrapped program units are detected by a leading-token check and passed through untouched), then lifts the wrapper line offset back off each extracted coordinate so reported lines map to the original body. **PARSER_VERSION bumped 13 → 14; a reindex is required** for the new L5X/L5K edges to appear (existing indexes hold stale-empty bare-list edges).
+
+### Recall
+
+- v3.v2 dual-judge (218q, 2026-06-16 snapshot at 16,925 chunks, fully enriched): **72.0% R@5 / 47.2% R@1 / 87.2% R@20**, **0 dead golds**. vs v1.46.0 (72.0 / 48.7 / 87.6): **R@5 dead flat** (both splits exact-match), R@1 −1.5 and R@20 −0.4 are n=109 corpus churn from the PV14 reindex (splits disagree in direction). The SPLADE batch-encode parallelization is recall-neutral — R@5 holds flat once summary enrichment is current (the gate's initial 71.1 was a stale-enrichment artifact of the `--force` reindex, not a scoring change).
 
 ## [1.46.1] - 2026-06-15
 
@@ -3816,7 +3823,7 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v1.46.1...HEAD
+[1.47.0]: https://github.com/jamie8johnson/cqs/compare/v1.46.1...v1.47.0
 [1.46.1]: https://github.com/jamie8johnson/cqs/compare/v1.46.0...v1.46.1
 [1.46.0]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...v1.46.0
 [1.45.0]: https://github.com/jamie8johnson/cqs/compare/v1.44.0...v1.45.0
