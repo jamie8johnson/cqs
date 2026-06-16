@@ -1554,3 +1554,184 @@ fn attributed_callers_tied_doc_label_is_deterministic() {
         );
     }
 }
+
+// ===== distinct_callees_from_origins (masked-origin candidate enumeration) =====
+//
+// `distinct_callees_from_origins` enumerates the real-caller callees reachable
+// from a set of origin files — the worktree-overlay dead-merge candidate list.
+// It had no direct test for its multi-origin dedup, its empty-origins
+// short-circuit, or the normalized-path match contract it relies on (the
+// production caller, `apply_dead_overlay`, passes `crate::normalize_path`'d
+// origins against rows `upsert_function_calls` also stored normalized).
+
+/// Two origin files with overlapping + distinct real-caller callees: the result
+/// is the deduped union. A `doc_reference` edge from one of the origins is
+/// excluded (the method is restricted to real-caller kinds), pinning the
+/// real-caller contract the merged dead verdict depends on.
+#[test]
+fn distinct_callees_from_origins_dedups_union_across_files() {
+    use cqs::parser::FunctionCalls;
+    let store = TestStore::new();
+
+    // origin_a.rs: caller_a calls `shared` and `only_a`, plus a doc-reference to
+    // `doc_only` (which must NOT surface — it is not a real-caller edge).
+    store
+        .upsert_function_calls(
+            std::path::Path::new("origin_a.rs"),
+            &[FunctionCalls {
+                name: "caller_a".to_string(),
+                line_start: 1,
+                calls: vec![
+                    CallSite {
+                        callee_name: "shared".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "only_a".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "doc_only".to_string(),
+                        line_number: 4,
+                        kind: CallEdgeKind::DocReference,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+    // origin_b.rs: caller_b calls `shared` (overlap) and `only_b` (distinct).
+    store
+        .upsert_function_calls(
+            std::path::Path::new("origin_b.rs"),
+            &[FunctionCalls {
+                name: "caller_b".to_string(),
+                line_start: 1,
+                calls: vec![
+                    CallSite {
+                        callee_name: "shared".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    },
+                    CallSite {
+                        callee_name: "only_b".to_string(),
+                        line_number: 3,
+                        kind: CallEdgeKind::Call,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+    // A third file NOT in `origins` must contribute nothing.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("unrelated.rs"),
+            &[FunctionCalls {
+                name: "caller_c".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "never_in_result".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let mut got = store
+        .distinct_callees_from_origins(&["origin_a.rs".to_string(), "origin_b.rs".to_string()])
+        .unwrap();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "only_a".to_string(),
+            "only_b".to_string(),
+            "shared".to_string()
+        ],
+        "deduped union of the two origins' real-caller callees; `shared` appears \
+         once across both files, the doc_reference and the unrelated file are excluded"
+    );
+}
+
+/// Empty origins short-circuit: returns an empty vec, never touching the DB.
+#[test]
+fn distinct_callees_from_origins_empty_origins_is_empty() {
+    use cqs::parser::FunctionCalls;
+    let store = TestStore::new();
+    // A populated table proves the empty result comes from the short-circuit,
+    // not from an empty store.
+    store
+        .upsert_function_calls(
+            std::path::Path::new("origin.rs"),
+            &[FunctionCalls {
+                name: "caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "present".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    let got = store.distinct_callees_from_origins(&[]).unwrap();
+    assert!(
+        got.is_empty(),
+        "empty origins ⇒ empty result (no delta), got {got:?}"
+    );
+}
+
+/// Path-normalization contract: `upsert_function_calls` stores the `file` column
+/// normalized (backslashes → forward slashes via `crate::normalize_path`). The
+/// production caller (`apply_dead_overlay`) normalizes the masked origins the
+/// same way before querying, so a Windows-flavored origin still matches the
+/// stored row. The raw, non-normalized form does NOT match — proving the
+/// caller-side normalization is load-bearing, not incidental.
+#[test]
+fn distinct_callees_from_origins_matches_normalized_origin() {
+    use cqs::parser::FunctionCalls;
+    let store = TestStore::new();
+    // Upsert under a backslash path; the stored `file` is normalized to
+    // `src/win.rs`.
+    let win_path = std::path::Path::new("src\\win.rs");
+    store
+        .upsert_function_calls(
+            win_path,
+            &[FunctionCalls {
+                name: "win_caller".to_string(),
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: "win_callee".to_string(),
+                    line_number: 2,
+                    kind: CallEdgeKind::Call,
+                }],
+            }],
+        )
+        .unwrap();
+
+    // Querying with the normalized origin (what the production caller passes)
+    // matches.
+    let normalized = cqs::normalize_path(win_path);
+    assert_eq!(normalized, "src/win.rs", "normalize_path forward-slashes");
+    let got = store.distinct_callees_from_origins(&[normalized]).unwrap();
+    assert_eq!(
+        got,
+        vec!["win_callee".to_string()],
+        "a normalized origin matches the normalized stored `file` row"
+    );
+
+    // The raw backslash form does NOT match — the row was stored normalized, so
+    // the caller MUST normalize. This is exactly why apply_dead_overlay calls
+    // normalize_path on the masked origins.
+    let raw = store
+        .distinct_callees_from_origins(&["src\\win.rs".to_string()])
+        .unwrap();
+    assert!(
+        raw.is_empty(),
+        "the non-normalized origin must NOT match the normalized stored row \
+         (caller-side normalization is required), got {raw:?}"
+    );
+}

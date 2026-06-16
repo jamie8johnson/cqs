@@ -94,12 +94,12 @@ pub(crate) struct LimitArg {
     pub limit: usize,
 }
 
-/// The worktree-overlay tri-state flags, flattened into the commands whose SEED
-/// retrieval the overlay shadows (Part A): `scout`, `gather`, `task`. The
-/// `search` command carries the same three flags inline ([`SearchArgs`]); this
-/// is the shared subset for the seed-overlaid graph-adjacent commands. Each
-/// resolves activation through the same `resolve_overlay_active` precedence the
-/// search surface uses, so no two surfaces can diverge.
+/// The worktree-overlay tri-state flags, flattened into every command whose
+/// retrieval the overlay shadows: `search` (whole-result overlay) and the
+/// seed-overlaid graph-adjacent commands `scout`, `gather`, `task` (Part A).
+/// Each resolves activation through the same `resolve_overlay_active`
+/// precedence, so no two surfaces can diverge — `search` now flattens this
+/// shared struct rather than duplicating the three fields inline.
 #[derive(Args, Debug, Clone, Default)]
 pub(crate) struct OverlayArgs {
     /// Overlay the worktree's uncommitted/committed delta on top of the parent
@@ -254,34 +254,11 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub no_rank_signals: bool,
 
-    /// Overlay the worktree's uncommitted/committed delta on top of the parent
-    /// index so results reflect this checkout's edits, not main's. Default-on
-    /// when run from a worktree; off in the main checkout. Tri-state env
-    /// `CQS_WORKTREE_OVERLAY`: `1` forces on, `0` forces off, unset = default.
-    /// `--overlay` forces on; `--no-overlay` forces off (opt-out wins). Phase 1
-    /// builds overlays on the daemon path only — a CLI-direct search (no daemon)
-    /// serves the parent index with a `_meta.worktree_overlay =
-    /// "skipped-no-daemon"` marker. Requires `--json` to forward to the daemon.
-    #[arg(long, conflicts_with = "no_overlay")]
-    pub overlay: bool,
-
-    /// Opt out of the worktree search overlay even when run from a worktree
-    /// (where it is default-on). The explicit-off counterpart of
-    /// `--overlay`; equivalent to `CQS_WORKTREE_OVERLAY=0`. Opt-out wins over
-    /// every opt-in signal.
-    #[arg(long, conflicts_with = "overlay")]
-    pub no_overlay: bool,
-
-    /// Wire-only: the absolute worktree root to build the overlay for. Hidden
-    /// from `--help` — it is computed by the CLI (`cqs::worktree::overlay_root`)
-    /// and appended to the daemon-forwarded args, never set by a human. The
-    /// daemon's cwd is the parent project and the wire request carries no cwd,
-    /// so the client must say which worktree. The daemon VALIDATES it
-    /// (canonicalize + `resolve_main_project_dir == served root`) before reading
-    /// any of its files — an unvalidated value would be an arbitrary-directory
-    /// read primitive over the socket.
-    #[arg(long, hide = true)]
-    pub overlay_root: Option<std::path::PathBuf>,
+    /// Shared worktree-overlay tri-state (`--overlay` / `--no-overlay` /
+    /// hidden `--overlay-root`) via [`OverlayArgs`] flatten — the same struct
+    /// the seed-overlaid graph commands carry, so the surfaces can't diverge.
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 impl SearchArgs {

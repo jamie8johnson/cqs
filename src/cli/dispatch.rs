@@ -1705,8 +1705,13 @@ mod tests {
             prop_assert_eq!(sa.no_stale_check, cli.no_stale_check, "no_stale_check: argv={:?}", argv);
             prop_assert_eq!(sa.no_demote, cli.no_demote, "no_demote: argv={:?}", argv);
             prop_assert_eq!(sa.no_rank_signals, cli.no_rank_signals, "no_rank_signals: argv={:?}", argv);
-            prop_assert_eq!(sa.overlay, cli.overlay, "overlay: argv={:?}", argv);
-            prop_assert_eq!(sa.no_overlay, cli.no_overlay, "no_overlay: argv={:?}", argv);
+            prop_assert_eq!(sa.overlay.overlay, cli.overlay, "overlay: argv={:?}", argv);
+            prop_assert_eq!(
+                sa.overlay.no_overlay,
+                cli.no_overlay,
+                "no_overlay: argv={:?}",
+                argv
+            );
         }
     }
 }

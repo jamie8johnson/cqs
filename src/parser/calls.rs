@@ -1282,6 +1282,7 @@ impl Parser {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");
                 return Ok((vec![], vec![], vec![]));
             }
             Err(e) => return Err(e.into()),
