@@ -502,4 +502,129 @@ mod tests {
         let bytes = String::from_utf8(w.buf).expect("utf-8 frame");
         assert_eq!(bytes, "{\"message\":\"boom\",\"status\":\"error\"}\n");
     }
+
+    /// The files that make up the daemon request path: the socket entry point
+    /// plus the routing glue and every per-command handler a wire request can
+    /// reach. `dispatch_tests.rs` is intentionally absent — it is declared
+    /// `#[cfg(test)] mod dispatch_tests;`, so the whole file is test code and
+    /// is excluded wholesale rather than scanned.
+    const DAEMON_REQUEST_PATH_FILES: &[&str] = &[
+        "src/cli/watch/socket.rs",
+        "src/cli/batch/view.rs",
+        "src/cli/batch/handlers/mod.rs",
+        "src/cli/batch/handlers/analysis.rs",
+        "src/cli/batch/handlers/graph.rs",
+        "src/cli/batch/handlers/info.rs",
+        "src/cli/batch/handlers/misc.rs",
+        "src/cli/batch/handlers/search.rs",
+    ];
+
+    /// Source substrings that introduce a bare panic source — a request that
+    /// reaches one of these in production code aborts the worker thread (the
+    /// release profile is `panic = "abort"`, so there is no per-connection
+    /// unwind to contain it). `.unwrap_or_else(` / `.unwrap_or(` are recovery,
+    /// not panics, and do not match (`.unwrap()` requires the empty parens).
+    const PANIC_TOKENS: &[&str] = &[".unwrap()", ".expect(", "panic!", "unreachable!", "todo!"];
+
+    /// Known-safe production `.expect(...)`s in `view.rs`, allowlisted by their
+    /// message text (NOT line number, so the entry tracks the invariant through
+    /// edits instead of rotting on every line shift). Each is a same-lock local
+    /// invariant the compiler cannot see:
+    ///
+    /// - "peek hit above": the LRU `peek(name)` returned `Some` earlier in the
+    ///   same held lock guard, so the following `get(name)` cannot miss.
+    /// - "embedder OnceLock populated by set() above": `set()` ran on this exact
+    ///   `OnceLock` on the line above, so `get()` must return `Some`.
+    ///
+    /// Keyed on text so a NEW `.expect(` anywhere in the path still trips the
+    /// guard, and so a change to either message stops matching and forces this
+    /// allowlist back under review.
+    const VIEW_EXPECT_ALLOWLIST: &[&str] = &[
+        ".expect(\"peek hit above\")",
+        ".expect(\"embedder OnceLock populated by set() above\")",
+    ];
+
+    /// Strip the lines belonging to `#[cfg(test)]`-attributed items, returning
+    /// only production lines as `(1-based line number, text)`.
+    ///
+    /// Brace-aware on purpose: the request path has no single uniform test
+    /// shape. `socket.rs` and each handler end in one trailing `#[cfg(test)]
+    /// mod tests`, but `view.rs` scatters inline `#[cfg(test)]` helpers (a
+    /// `thread_local!`, a fn, a struct, a `Drop` impl, an inline `if`) through
+    /// production code. A "first `#[cfg(test)]` splits prod from test"
+    /// heuristic would miss-classify every line after view.rs's first inline
+    /// helper. So instead: when a line is exactly `#[cfg(test)]`, skip forward
+    /// to the first `{` and on to its matching `}`, dropping that whole item.
+    fn production_lines(src: &str) -> Vec<(usize, &str)> {
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            if lines[i].trim() == "#[cfg(test)]" {
+                // Advance to the attributed item's first brace, then to the
+                // brace that closes it. Anything in between is test code.
+                let mut depth: i32 = 0;
+                let mut opened = false;
+                let mut j = i + 1;
+                while j < lines.len() {
+                    for ch in lines[j].chars() {
+                        match ch {
+                            '{' => {
+                                depth += 1;
+                                opened = true;
+                            }
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    j += 1;
+                    if opened && depth == 0 {
+                        break;
+                    }
+                }
+                i = j;
+                continue;
+            }
+            out.push((i + 1, lines[i]));
+            i += 1;
+        }
+        out
+    }
+
+    /// Regression fence for the daemon request path: production code on the
+    /// path a wire request travels must carry zero bare panic sources, so a
+    /// future handler that adds one turns this RED instead of shipping a
+    /// worker-aborting panic. Green today; the only production `.expect(`s left
+    /// after stripping test code are the two enumerated same-lock invariants in
+    /// [`VIEW_EXPECT_ALLOWLIST`].
+    #[test]
+    fn daemon_request_path_has_no_production_panic_tokens() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let mut offenders: Vec<String> = Vec::new();
+
+        for rel in DAEMON_REQUEST_PATH_FILES {
+            let path = std::path::Path::new(manifest_dir).join(rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            for (lineno, line) in production_lines(&src) {
+                if VIEW_EXPECT_ALLOWLIST.iter().any(|a| line.contains(a)) {
+                    continue;
+                }
+                for tok in PANIC_TOKENS {
+                    if line.contains(tok) {
+                        offenders.push(format!("{rel}:{lineno}  `{tok}` in `{}`", line.trim()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "new panic source(s) on the daemon request path — a wire request reaching \
+             one aborts the worker thread (release builds are `panic = \"abort\"`). \
+             Replace with `?`/error return, or (if a genuine same-lock local \
+             invariant) add it to the allowlist with a one-line proof:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
 }
