@@ -43,6 +43,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: clippy
+
+      # Deny-warnings lint on the actual sibling target, with real type info.
+      # PR CI runs clippy on ubuntu only, so a dead_code/E0277 break specific to
+      # a sibling target (aarch64-apple-darwin / x86_64-pc-windows-msvc) is
+      # invisible until here. `cargo build` alone would let a dead_code WARNING
+      # through (non-fatal); this gate makes it fatal pre-tag. Fire this workflow
+      # via workflow_dispatch on the release branch before tagging to validate.
+      - name: Cross-target lint (deny warnings)
+        run: cargo clippy --release --target ${{ matrix.target }} -- -D warnings
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}

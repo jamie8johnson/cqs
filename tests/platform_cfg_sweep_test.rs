@@ -1,22 +1,39 @@
-//! Completeness guard for the *platform-cfg divergence* family — the
-//! incomplete-sweep class that PR CI is structurally blind to.
+//! PR-time tripwire for ONE shape in the platform-cfg divergence family: the
+//! E0277 "unsized back-inferred binding" straggler. This is NOT a completeness
+//! guard for the whole family — see "Coverage boundary" below for what closes
+//! the rest.
 //!
 //! ## The structural null this defends
 //!
 //! `.github/workflows/ci.yml` builds, tests, and runs `clippy -D warnings`
 //! **only on `ubuntu-latest`**. The cross-target build (Linux + macOS +
-//! Windows) lives in `release.yml` and fires only on a `v*` tag. So an entire
-//! class of bug — code that compiles clean on Linux but breaks on a *sibling*
-//! target in the release matrix {`x86_64-unknown-linux-gnu`,
-//! `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`} — is invisible until the
-//! release cross-build. v1.46.0's release build is exactly where it last bit.
+//! Windows) lives in `release.yml`. So a bug that compiles clean on Linux but
+//! breaks on a *sibling* target in the release matrix {`x86_64-unknown-linux-gnu`,
+//! `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`} is invisible to PR CI.
+//! v1.46.0's release build is exactly where this shape last bit.
 //!
 //! Each Linux build is correct **in isolation** (its own green suite passes);
 //! the defect lives in the *relation* across the platform peer-set: a sweep
 //! that updated the Linux arm but left a sibling arm diverging or unannotated.
 //! No single-target test can express "all three targets type-check", so this
-//! guard asserts the *source-level invariants* that keep the sibling arms
-//! sound, on the one platform CI actually runs.
+//! guard asserts one *source-level invariant* that keeps the sibling arms
+//! sound, on the one platform CI actually runs — catching this shape at PR time
+//! instead of waiting for the cross-build.
+//!
+//! ## Coverage boundary (what this does NOT catch, and what does)
+//!
+//! This scan recognizes exactly one shape: a `#[cfg(unix)] let X = { … }`
+//! block-let with a `#[cfg(target_os = "linux")]` value arm and no type
+//! annotation. It does NOT catch the other sibling-break shapes — most notably
+//! an ungated `fn`/`const`/`static` reachable only from a single-target cfg arm,
+//! which becomes `dead_code` on the sibling and fails `-D warnings` there.
+//!
+//! The whole family — every shape, with real type info — is closed by the
+//! `release.yml` cross-target lint: `cargo clippy --release --target <T>
+//! -- -D warnings` runs on all three native runners. Fire it via
+//! `workflow_dispatch` on the release branch **before tagging** to validate.
+//! This source scan is the cheap PR-time early warning for the one shape it
+//! knows; the dry-run is the authoritative family-level gate.
 //!
 //! ## The exemplar (the bug this family is named for)
 //!
