@@ -1294,6 +1294,264 @@ END_PROGRAM
         );
     }
 
+    // --- Relationship-extraction tests (`parse_l5x_all` calls + type refs) ---
+    //
+    // The production parse_file_all path emits a third and fourth value
+    // (calls, types) alongside chunks; the chunk-only production tests above
+    // discard them. These exercise the call-graph + type-ref surface
+    // (`parse_l5x_all` -> `extract_calls_from_chunk` / `extract_chunk_type_refs`)
+    // that powers callers/impact/dead for PLC code.
+    //
+    // The ST grammar only yields `call_expression` / typed-`var_decl_item`
+    // nodes when statements sit inside a program unit (FUNCTION_BLOCK /
+    // PROGRAM / FUNCTION), so these routine bodies carry the wrapper an
+    // Add-On-Instruction export does. A bare statement list parses to an
+    // ERROR node and yields no relationships — covered by the malformed test.
+
+    /// An L5X ST routine whose body is a FUNCTION_BLOCK with calls and typed
+    /// declarations: `parse_l5x_all` must surface those calls and type refs,
+    /// grouped under the chunk name, with syntactic `Call` edge kind.
+    #[test]
+    fn test_l5x_parse_all_extracts_calls_and_types() {
+        let source = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\n",
+            "<Routine Name=\"PumpFB\" Type=\"ST\"><STContent>\n",
+            "<Line Number=\"0\"><![CDATA[FUNCTION_BLOCK PumpFB]]></Line>\n",
+            "<Line Number=\"1\"><![CDATA[VAR lvl : REAL; t : TON; END_VAR]]></Line>\n",
+            "<Line Number=\"2\"><![CDATA[t(IN := startButton, PT := T#5s);]]></Line>\n",
+            "<Line Number=\"3\"><![CDATA[lvl := ReadLevel(sensor);]]></Line>\n",
+            "<Line Number=\"4\"><![CDATA[StartPump(speed := 100);]]></Line>\n",
+            "<Line Number=\"5\"><![CDATA[END_FUNCTION_BLOCK]]></Line>\n",
+            "</STContent></Routine>\n",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>",
+        );
+        let parser = Parser::new().unwrap();
+        let (chunks, calls, types) = parse_l5x_all(source, Path::new("pump.l5x"), &parser).unwrap();
+
+        assert_eq!(chunks.len(), 1, "expected one ST routine chunk");
+        assert_eq!(chunks[0].name, "PumpFB");
+
+        // Calls are grouped under the chunk's name (the function_calls join key).
+        assert_eq!(
+            calls.len(),
+            1,
+            "calls grouped under one chunk, got {calls:?}"
+        );
+        assert_eq!(calls[0].name, "PumpFB");
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            callees.contains(&"t"),
+            "FB-instance invocation `t(...)` must be a call edge; got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"ReadLevel"),
+            "expression-context call `ReadLevel(...)` must be a call edge; got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"StartPump"),
+            "statement call `StartPump(...)` must be a call edge; got {callees:?}"
+        );
+        // Pin the call-graph edge provenance: ST routine calls are syntactic.
+        for cs in &calls[0].calls {
+            assert_eq!(
+                cs.kind,
+                crate::parser::types::CallEdgeKind::Call,
+                "ST routine calls are syntactic, not heuristic: {cs:?}"
+            );
+        }
+
+        // Typed declarations surface as type refs grouped under the chunk name.
+        assert_eq!(
+            types.len(),
+            1,
+            "types grouped under one chunk, got {types:?}"
+        );
+        assert_eq!(types[0].name, "PumpFB");
+        let type_names: Vec<&str> = types[0]
+            .type_refs
+            .iter()
+            .map(|t| t.type_name.as_str())
+            .collect();
+        assert!(
+            type_names.contains(&"REAL"),
+            "basic data type REAL must be a type ref; got {type_names:?}"
+        );
+        assert!(
+            type_names.contains(&"TON"),
+            "derived data type TON must be a type ref; got {type_names:?}"
+        );
+    }
+
+    /// The chunk's own name must be filtered out of its type-ref set
+    /// (a self-reference is not a dependency edge — the `extract_chunk_type_refs`
+    /// retain filter). With `FUNCTION_BLOCK DerivedFB EXTENDS BaseFB`, `BaseFB`
+    /// is an Impl edge and `DerivedFB` (the definition's own name) is dropped.
+    #[test]
+    fn test_l5x_parse_all_filters_self_type_ref() {
+        let source = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\n",
+            "<Routine Name=\"DerivedFB\" Type=\"ST\"><STContent>\n",
+            "<Line Number=\"0\"><![CDATA[FUNCTION_BLOCK DerivedFB EXTENDS BaseFB]]></Line>\n",
+            "<Line Number=\"1\"><![CDATA[VAR x : INT; END_VAR]]></Line>\n",
+            "<Line Number=\"2\"><![CDATA[y := Compute(x);]]></Line>\n",
+            "<Line Number=\"3\"><![CDATA[END_FUNCTION_BLOCK]]></Line>\n",
+            "</STContent></Routine>\n",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>",
+        );
+        let parser = Parser::new().unwrap();
+        let (_chunks, calls, types) =
+            parse_l5x_all(source, Path::new("derived.l5x"), &parser).unwrap();
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "DerivedFB");
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert_eq!(callees, vec!["Compute"], "single call edge expected");
+
+        assert_eq!(types.len(), 1);
+        let type_names: Vec<&str> = types[0]
+            .type_refs
+            .iter()
+            .map(|t| t.type_name.as_str())
+            .collect();
+        assert!(
+            type_names.contains(&"BaseFB"),
+            "EXTENDS base must be a type ref (Impl edge); got {type_names:?}"
+        );
+        assert!(
+            !type_names.contains(&"DerivedFB"),
+            "chunk's own name must be filtered from its type-ref set; got {type_names:?}"
+        );
+        // The base must carry the Impl classification (FB EXTENDS).
+        let base = types[0]
+            .type_refs
+            .iter()
+            .find(|t| t.type_name == "BaseFB")
+            .expect("BaseFB ref must exist");
+        assert_eq!(
+            base.kind,
+            Some(crate::parser::types::TypeEdgeKind::Impl),
+            "EXTENDS base must classify as Impl; got {:?}",
+            base.kind
+        );
+    }
+
+    /// L5K (legacy ASCII) routine bodies route through the same per-chunk
+    /// extractor: a FUNCTION_BLOCK inside an ST_CONTENT block must yield calls
+    /// and type refs, so `parse_l5x_all`'s L5K branch is exercised too.
+    #[test]
+    fn test_l5k_parse_all_extracts_calls_and_types() {
+        let source = concat!(
+            "\nPROGRAM MainProgram\n",
+            "  ROUTINE WrappedFB\n",
+            "    Type := ST\n",
+            "    ST_CONTENT := [\n",
+            "      FUNCTION_BLOCK WrappedFB\n",
+            "      VAR n : DINT; END_VAR\n",
+            "      z := Tally(n);\n",
+            "      END_FUNCTION_BLOCK\n",
+            "    ];\n",
+            "  END_ROUTINE\n",
+            "END_PROGRAM\n",
+        );
+        let parser = Parser::new().unwrap();
+        let (chunks, calls, types) =
+            parse_l5x_all(source, Path::new("wrapped.l5k"), &parser).unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "WrappedFB");
+
+        assert_eq!(calls.len(), 1, "got {calls:?}");
+        assert_eq!(calls[0].name, "WrappedFB");
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert_eq!(callees, vec!["Tally"], "L5K call edge expected");
+
+        assert_eq!(types.len(), 1, "got {types:?}");
+        let type_names: Vec<&str> = types[0]
+            .type_refs
+            .iter()
+            .map(|t| t.type_name.as_str())
+            .collect();
+        assert!(
+            type_names.contains(&"DINT"),
+            "L5K typed declaration DINT must be a type ref; got {type_names:?}"
+        );
+    }
+
+    /// Malformed / error-recovered ST must not panic and must still yield
+    /// partial relationships. The body has an unclosed call paren
+    /// (`Mangle(q;`) and a dangling `IF r THEN` with no `END_IF`, forcing
+    /// tree-sitter ERROR nodes. `parse_l5x_all` must return Ok and recover the
+    /// extractable call/type fragments rather than dropping everything.
+    #[test]
+    fn test_l5x_parse_all_malformed_st_recovers_partial() {
+        let source = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<RSLogix5000Content><Controller Name=\"C\"><Programs><Program Name=\"P\"><Routines>\n",
+            "<Routine Name=\"Broken\" Type=\"ST\"><STContent>\n",
+            "<Line Number=\"0\"><![CDATA[FUNCTION_BLOCK Broken]]></Line>\n",
+            "<Line Number=\"1\"><![CDATA[VAR q : BOOL; END_VAR]]></Line>\n",
+            "<Line Number=\"2\"><![CDATA[r := Mangle(q;]]></Line>\n",
+            "<Line Number=\"3\"><![CDATA[IF r THEN]]></Line>\n",
+            "</STContent></Routine>\n",
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>",
+        );
+        let parser = Parser::new().unwrap();
+        // Must not panic on tree-sitter error nodes.
+        let result = parse_l5x_all(source, Path::new("broken.l5x"), &parser);
+        let (chunks, calls, types) = result.expect("parse_l5x_all must not error on malformed ST");
+
+        // The routine chunk still surfaces (the chunk path is independent of the
+        // per-chunk relationship parse).
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "Broken");
+
+        // Error recovery extracts the salvageable call fragment.
+        assert_eq!(
+            calls.len(),
+            1,
+            "partial call recovery expected; got {calls:?}"
+        );
+        let callees: Vec<&str> = calls[0]
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            callees.contains(&"Mangle"),
+            "the recoverable call `Mangle` must survive error recovery; got {callees:?}"
+        );
+
+        // And the typed declaration before the malformed line.
+        assert_eq!(
+            types.len(),
+            1,
+            "partial type recovery expected; got {types:?}"
+        );
+        let type_names: Vec<&str> = types[0]
+            .type_refs
+            .iter()
+            .map(|t| t.type_name.as_str())
+            .collect();
+        assert!(
+            type_names.contains(&"BOOL"),
+            "the recoverable type `BOOL` must survive error recovery; got {type_names:?}"
+        );
+    }
+
     /// PRODUCTION PATH: `.l5x`/`.l5k` must resolve to the grammar-less L5X
     /// LanguageDef (not XML), so both `parse_file` and `parse_file_all` share a
     /// single declarative routing path.
