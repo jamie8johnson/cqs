@@ -4,6 +4,16 @@ Audit date: 2026-06-15
 Source: `docs/audit-findings.md` (22 raw findings → 19 triaged rows after dedup/cluster).
 Prior cycle: `docs/audit-triage-v1.42.0.md` (P1+P2 COMPLETE; this cycle deduped against it — no new finding re-states a closed v1.42/v1.40 item).
 
+## Reconciliation — 2026-06-17 (post-v1.47.0)
+
+All 19 rows verified against current `main` (a 4-agent parallel pass; line numbers in the tables are v1.46.1-era and have drifted — rows were re-located by symbol). Outcome: **15 fixed** (statuses flipped to their landing PR), **3 tracked** by open issues, **1 fixed this pass**.
+
+- **Fixed (status flipped):** DOC-1/2/3 (#1989), PERF-1/2/3 (#1993), RM-3 / TC-HAP-2 / OB-1 / API-2 (#1995), TC-ADV-1 (#1996/#2000), EXT-1 / TC-HAP-3 (#2000), EH-1 (#2002). TC-HAP-1 was a **non-finding** (adversarial verify found Direction A *is* tested by `dead_overlay_worktree_*`).
+- **Tracked (still open, by design):** RM-V1.46.1-1 → #1987 (deferred real unwind isolation), CQ-V1.46.1-1 → #1990 (detection guards landed in #2003; the parse-path collapse is the open architecture decision), PB-V1.46.1-1 → #1992 (Windows dead-code cross-build sweep).
+- **Fixed this pass:** RM-V1.46.1-2 — daemon `in_flight` counter converted to an RAII `InFlightGuard` so a panicking handler can't leak a concurrency slot (was a bare post-call `fetch_sub`, skipped on unwind; moot under `panic = "abort"` but live in debug/test and under any unwind build). Tests assert the guard decrements on both normal drop and panic unwind.
+
+The per-row Status column below now reflects this; `grep '| open |'` returns 0.
+
 ## Disposition outcome — CLOSED 2026-06-15
 
 All auto-fix rows landed; all issue rows filed. The per-tier tables below are the original synthesis (statuses there read "open"); this section is the source of truth for what shipped.
@@ -44,37 +54,37 @@ New v1.46.1 findings: 21 triaged rows (from 22 raw; 2 merged into 1, on issue #1
 
 | ID | Finding | Location | Route | Status |
 |----|---------|----------|-------|--------|
-| RM-V1.46.1-1 | Daemon dispatch `catch_unwind` is dead under `panic = "abort"` — a dispatch panic aborts the warmed daemon (drops ~600MB caches; remote restart/DoS primitive) | src/cli/watch/socket.rs:257-330 × Cargo.toml:355 | issue | open |
-| TC-HAP-V1.46.1-1 | `apply_dead_overlay` Direction A (parent-dead → live resurrection) untested at every layer — high-visibility false-positive surface in dead/ci/review under overlay | src/store/calls/dead_code.rs:1022-1031 | auto-fix | open |
-| DOC-V1.46.1-1 | README documents fictional `CQS_CACHE_MAX_BYTES` with inverted behavior; real knob is `CQS_CACHE_MAX_SIZE` (auto-evicts) — silent no-op for an agent bounding cache growth | README.md:938 | auto-fix | open |
-| DOC-V1.46.1-2 | README documents nonexistent `CQS_CONVERT_WEBHELP_BYTES`; merged-output cap is a hardcoded 50 MB const — silent no-op | README.md:803 vs src/convert/webhelp.rs:118 | auto-fix | open |
+| RM-V1.46.1-1 | Daemon dispatch `catch_unwind` is dead under `panic = "abort"` — a dispatch panic aborts the warmed daemon (drops ~600MB caches; remote restart/DoS primitive) | src/cli/watch/socket.rs:257-330 × Cargo.toml:355 | issue | tracked #1987 |
+| TC-HAP-V1.46.1-1 | `apply_dead_overlay` Direction A (parent-dead → live resurrection) untested at every layer — high-visibility false-positive surface in dead/ci/review under overlay | src/store/calls/dead_code.rs:1022-1031 | auto-fix | ✅ non-finding (Dir-A tested) |
+| DOC-V1.46.1-1 | README documents fictional `CQS_CACHE_MAX_BYTES` with inverted behavior; real knob is `CQS_CACHE_MAX_SIZE` (auto-evicts) — silent no-op for an agent bounding cache growth | README.md:938 | auto-fix | ✅ fixed #1989 |
+| DOC-V1.46.1-2 | README documents nonexistent `CQS_CONVERT_WEBHELP_BYTES`; merged-output cap is a hardcoded 50 MB const — silent no-op | README.md:803 vs src/convert/webhelp.rs:118 | auto-fix | ✅ fixed #1989 |
 
 ## P3 — easy + low/med impact
 
 | ID | Finding | Location | Route | Status |
 |----|---------|----------|-------|--------|
-| PERF-V1.46.1-1 | `embed_batch` deep-clones every chunk string per batch (`texts.to_vec()`); comment wrongly claims it's unavoidable — embed/index hot path | src/embedder/core.rs:1006-1011 | auto-fix | open |
-| PERF-V1.46.1-2 | SPLADE `encode_batch` tokenizes serially in a `map()` loop, forgoing the tokenizer's rayon parallel batch — production index-build path | src/splade/mod.rs:799-808 | auto-fix | open |
-| PERF-V1.46.1-3 | `CallGraph::edge_meta` allocates two `Arc<str>` per lookup in cross-project caller/callee rendering | src/store/helpers/types.rs:568-573 | auto-fix | open |
-| DOC-V1.46.1-3 | README documents wrong default for `CQS_BUSY_TIMEOUT_MS` (5000); actual fallback is 30000 (6× under-estimate of the lock-wait window) | README.md:777 vs src/store/mod.rs:1075 | auto-fix | open |
-| RM-V1.46.1-3 | Overlay `discover_delta` builds full records/masked_origins/parse_set BEFORE the size cap rejects — the DoS rail is post-hoc, doesn't bound peak memory of the function it guards | src/worktree_overlay.rs:809-868 | auto-fix | open |
-| TC-HAP-V1.46.1-2 | `distinct_callees_from_origins` has no direct test for multi-origin / dedup / empty / path-normalization behavior (feeds Direction-B candidate set) | src/store/calls/query.rs:684 | auto-fix | open |
-| TC-ADV-V1.46.1-1 | `parse_l5x_all` call-graph + type-ref extraction has zero test coverage, incl. over malformed/error-recovered ST | src/parser/l5x.rs:590-613 | auto-fix | open |
-| OB-V1.46.1-1 | InvalidData (non-UTF8) silent-skip in `parse_file_relationships_with_candidates` diverges from the two sibling parse sites that warn (sweep straggler) | src/parser/calls.rs:1284-1285 | auto-fix | open |
-| CQ-V1.46.1-1 | Test-only parallel call/type-extraction path (`parse_file_relationships_with_candidates`) diverges from the production index path — the #1958/#1955 structural fault class; two live divergences remain | src/parser/calls.rs:1258-1569 vs src/parser/mod.rs:478-568 | issue | open |
-| API-V1.46.1-2 | `SearchArgs` duplicates the three overlay fields inline instead of flattening the shared `OverlayArgs` (copies already drifting) | src/cli/args.rs:257-284 vs :103-129 | auto-fix | open |
-| EXT-V1.46.1-1 | `cqs dead` known-gap allowlists are compile-time consts despite a docstring claiming "extensible" — docstring lie (option b) + optional `[dead]` config (option a) | src/cli/commands/review/dead.rs:98,:110-113,:144-176 | auto-fix | open |
+| PERF-V1.46.1-1 | `embed_batch` deep-clones every chunk string per batch (`texts.to_vec()`); comment wrongly claims it's unavoidable — embed/index hot path | src/embedder/core.rs:1006-1011 | auto-fix | ✅ fixed #1993 |
+| PERF-V1.46.1-2 | SPLADE `encode_batch` tokenizes serially in a `map()` loop, forgoing the tokenizer's rayon parallel batch — production index-build path | src/splade/mod.rs:799-808 | auto-fix | ✅ fixed #1993 |
+| PERF-V1.46.1-3 | `CallGraph::edge_meta` allocates two `Arc<str>` per lookup in cross-project caller/callee rendering | src/store/helpers/types.rs:568-573 | auto-fix | ✅ fixed #1993 |
+| DOC-V1.46.1-3 | README documents wrong default for `CQS_BUSY_TIMEOUT_MS` (5000); actual fallback is 30000 (6× under-estimate of the lock-wait window) | README.md:777 vs src/store/mod.rs:1075 | auto-fix | ✅ fixed #1989 |
+| RM-V1.46.1-3 | Overlay `discover_delta` builds full records/masked_origins/parse_set BEFORE the size cap rejects — the DoS rail is post-hoc, doesn't bound peak memory of the function it guards | src/worktree_overlay.rs:809-868 | auto-fix | ✅ fixed #1995 |
+| TC-HAP-V1.46.1-2 | `distinct_callees_from_origins` has no direct test for multi-origin / dedup / empty / path-normalization behavior (feeds Direction-B candidate set) | src/store/calls/query.rs:684 | auto-fix | ✅ fixed #1995 |
+| TC-ADV-V1.46.1-1 | `parse_l5x_all` call-graph + type-ref extraction has zero test coverage, incl. over malformed/error-recovered ST | src/parser/l5x.rs:590-613 | auto-fix | ✅ fixed #1996/#2000 |
+| OB-V1.46.1-1 | InvalidData (non-UTF8) silent-skip in `parse_file_relationships_with_candidates` diverges from the two sibling parse sites that warn (sweep straggler) | src/parser/calls.rs:1284-1285 | auto-fix | ✅ fixed #1995 |
+| CQ-V1.46.1-1 | Test-only parallel call/type-extraction path (`parse_file_relationships_with_candidates`) diverges from the production index path — the #1958/#1955 structural fault class; two live divergences remain | src/parser/calls.rs:1258-1569 vs src/parser/mod.rs:478-568 | issue | tracked #1990 (guards #2003) |
+| API-V1.46.1-2 | `SearchArgs` duplicates the three overlay fields inline instead of flattening the shared `OverlayArgs` (copies already drifting) | src/cli/args.rs:257-284 vs :103-129 | auto-fix | ✅ fixed #1995 |
+| EXT-V1.46.1-1 | `cqs dead` known-gap allowlists are compile-time consts despite a docstring claiming "extensible" — docstring lie (option b) + optional `[dead]` config (option a) | src/cli/commands/review/dead.rs:98,:110-113,:144-176 | auto-fix | ✅ fixed #2000 |
 
 ## P4 — hard / low impact / already-tracked
 
 | ID | Finding | Location | Route | Status |
 |----|---------|----------|-------|--------|
-| RM-V1.46.1-2 | Daemon `in_flight` slot decremented post-call, not via RAII — leaks a slot on panic outside the inner catch_unwind (moot under abort, live the moment panic policy → unwind; live now in debug/test) | src/cli/watch/daemon.rs:246-247 | issue | open |
+| RM-V1.46.1-2 | Daemon `in_flight` slot decremented post-call, not via RAII — leaks a slot on panic outside the inner catch_unwind (moot under abort, live the moment panic policy → unwind; live now in debug/test) | src/cli/watch/daemon.rs:246-247 | issue | ✅ fixed (daemon RAII, this PR) |
 | API-V1.46.1-1 | Two parallel `*Args` layers (clap wire vs core) with no exhaustiveness guard; `include_types`/`type_impact` name-mismatch is the live deserialization symptom (merged: includes the systemic copy-function duplication) | src/cli/commands/graph/impact.rs:42 vs src/cli/args.rs:341 | tracked | open (#1459) |
-| EH-V1.46.1-1 | Overlay `fingerprint()` collapses transient read errors to the deletion sentinel (ZERO32) — risks a stale-overlay cache hit, silent; needs design call (distinct sentinel vs return Result) | src/worktree_overlay.rs:978-981 | issue | open |
-| PB-V1.46.1-1 | `platform_cfg_sweep_test` guards only the unsized-binding shape, not the dead-code-on-a-sibling-target shape that also broke v1.46.0 (the other 2 of 3 cross-build breaks) | tests/platform_cfg_sweep_test.rs | issue | open |
+| EH-V1.46.1-1 | Overlay `fingerprint()` collapses transient read errors to the deletion sentinel (ZERO32) — risks a stale-overlay cache hit, silent; needs design call (distinct sentinel vs return Result) | src/worktree_overlay.rs:978-981 | issue | ✅ fixed #2002 |
+| PB-V1.46.1-1 | `platform_cfg_sweep_test` guards only the unsized-binding shape, not the dead-code-on-a-sibling-target shape that also broke v1.46.0 (the other 2 of 3 cross-build breaks) | tests/platform_cfg_sweep_test.rs | issue | tracked #1992 |
 | PB-V1.46.1-2 | `is_wsl_drvfs_path` `cfg!(windows)` UNC branch is effectively dead — forward-slash literals vs backslash Windows paths; coarse-fs falls to ZERO on a native-Windows WSL-UNC share | src/config.rs:136-140 | tracked | open (#1512) |
-| TC-HAP-V1.46.1-3 | Dart body-inclusive `canonical_hash` (the `extra`-node comment-stripping path, #1970) is untested — a regression silently changes Dart chunk ids on comment-only edits, defeating embedding-cache reuse (injectivity surface, #1947) | src/parser/chunk.rs:178-192 | auto-fix | open |
+| TC-HAP-V1.46.1-3 | Dart body-inclusive `canonical_hash` (the `extra`-node comment-stripping path, #1970) is untested — a regression silently changes Dart chunk ids on comment-only edits, defeating embedding-cache reuse (injectivity surface, #1947) | src/parser/chunk.rs:178-192 | auto-fix | ✅ fixed #2000 |
 
 > Note: RM-V1.46.1-2 is listed P4 by impact-today (moot under release abort) but its fix is trivial (RAII guard) and it becomes live under any unwind build — it should land in the SAME PR as RM-V1.46.1-1 if that PR chooses option (a) unwind, since unwind makes the leak real. Treat as a rider on RM-V1.46.1-1's panic-policy decision.
 

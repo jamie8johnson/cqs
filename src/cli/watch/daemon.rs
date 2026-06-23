@@ -41,6 +41,25 @@ use super::{
 /// `cmd_watch` scope (not local to this thread) so the watch loop can
 /// sample it into the `cqs status --watch` ops block. This
 /// thread is the only writer; the watch loop only `load`s.
+/// RAII guard for the daemon's in-flight connection counter. The counter is
+/// bumped before a client thread is spawned (so the concurrency-cap check sees
+/// it immediately); this guard, held inside that thread, decrements on `Drop`.
+/// `Drop` runs on a normal return AND during a panic unwind, so a panicking
+/// `handle_socket_client` can never leak a slot — the bare `fetch_sub` it
+/// replaced was skipped on panic (a slow-burn cap exhaustion: moot under
+/// `panic = "abort"`, but live under unwind and in debug/test builds).
+struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let prev = self.0.fetch_sub(1, Ordering::AcqRel);
+        tracing::debug!(
+            in_flight_after = prev.saturating_sub(1),
+            "Daemon connection released"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_daemon_thread(
     listener: UnixListener,
@@ -243,12 +262,10 @@ pub(super) fn spawn_daemon_thread(
                     if let Err(e) = std::thread::Builder::new()
                         .name("cqs-daemon-client".to_string())
                         .spawn(move || {
+                            // RAII so the slot is released on EVERY exit,
+                            // including a panic unwind out of the handler.
+                            let _slot = InFlightGuard(in_flight_clone);
                             handle_socket_client(stream, &ctx_clone);
-                            let prev = in_flight_clone.fetch_sub(1, Ordering::AcqRel);
-                            tracing::debug!(
-                                in_flight_after = prev.saturating_sub(1),
-                                "Daemon connection released"
-                            );
                         })
                     {
                         // Couldn't spawn a thread — decrement the
@@ -278,4 +295,40 @@ pub(super) fn spawn_daemon_thread(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod inflight_tests {
+    use super::InFlightGuard;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn guard_decrements_on_normal_drop() {
+        let c = Arc::new(AtomicUsize::new(1));
+        {
+            let _g = InFlightGuard(Arc::clone(&c));
+        }
+        assert_eq!(c.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn guard_decrements_on_panic_unwind() {
+        // A panicking handler must still release its in-flight slot — the
+        // reason the post-call `fetch_sub` was made an RAII `Drop`. Drop runs
+        // during unwind, so the counter returns to 0 even though the body
+        // never reaches its end.
+        let c = Arc::new(AtomicUsize::new(1));
+        let cc = Arc::clone(&c);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = InFlightGuard(cc);
+            panic!("simulated handler panic");
+        }));
+        assert!(r.is_err(), "the body should have panicked");
+        assert_eq!(
+            c.load(Ordering::SeqCst),
+            0,
+            "in-flight slot must be released even when the handler panics"
+        );
+    }
 }
