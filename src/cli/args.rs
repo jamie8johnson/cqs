@@ -631,7 +631,13 @@ pub(crate) struct TaskArgs {
 }
 
 /// Arguments shared between CLI `read` and batch `read`.
-#[derive(Args, Debug, Clone)]
+///
+/// Also the surface-agnostic core that `read_core` consumes directly, so it
+/// carries `serde::Deserialize` + `schemars::JsonSchema` for the daemon
+/// JSON-args path. `#[serde(default)]` lets a wire caller supply just `path`
+/// and inherit the production default for `focus`.
+#[derive(Args, Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub(crate) struct ReadArgs {
     /// File path relative to project root
     pub path: String,
