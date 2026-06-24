@@ -3419,7 +3419,7 @@ fn install() {
     }
 
     /// Regression guards for the unbounded-recursion stack-overflow DoS in the
-    /// Pass-2 relationship-extraction tree-walks (red-team RT-PARSE-1).
+    /// Pass-2 relationship-extraction tree-walks.
     ///
     /// `collect_macro_calls`, `collect_fn_pointer_args` (+ `emit_fn_pointer_arg`),
     /// and their candidate mirrors recurse one stack frame per tree level. An

@@ -1410,7 +1410,7 @@ mod tests {
         );
     }
 
-    /// Regression guards for the missing parse-timeout DoS (red-team RT-PARSE-2).
+    /// Regression guards for the parse-timeout DoS bound.
     ///
     /// tree-sitter has no internal time bound: an adversarial token stream that
     /// drives superlinear error recovery (or merely a huge file under the 50 MB
