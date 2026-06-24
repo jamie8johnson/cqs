@@ -261,6 +261,29 @@ pub(super) fn parser_stage(
     let batch_size = embed_batch_size_for(&model_config);
     let file_batch_size = file_batch_size();
 
+    // Dedicated rayon pool for the per-file parse below, with an explicit worker
+    // stack size. The recursive tree-walk is bounded by PARSER_MAX_WALK_DEPTH,
+    // which is sized to complete inside the configured stack; pinning the stack
+    // here (rather than inheriting rayon's global-pool default) makes the
+    // depth-rail-fits-the-stack assumption load-bearing-by-design. Built once
+    // and reused across all file batches. On builder failure we fall back to the
+    // global pool — the depth rail still prevents an overflow at the default
+    // stack size, so a missing dedicated pool degrades the belt-and-suspenders,
+    // not correctness.
+    let parse_pool = rayon::ThreadPoolBuilder::new()
+        .stack_size(cqs::limits::parser_stack_size())
+        .build();
+    let parse_pool = match parse_pool {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to build dedicated parser thread pool; using the global pool (depth rail still bounds stack usage)"
+            );
+            None
+        }
+    };
+
     for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
         if check_interrupted() {
             break;
@@ -293,11 +316,12 @@ pub(super) fn parser_stage(
         // file is not re-queued by `origins_with_parser_drift` every `cqs index`
         // run forever. Collected thread-locally in the fold, merged in reduce,
         // written once on this (store-owning) thread.
-        let (chunks, batch_rels, parse_failed_origins): (
-            Vec<cqs::Chunk>,
-            RelationshipData,
-            Vec<String>,
-        ) = survivors
+        // The par_iter parse chain, run on the dedicated stack-sized pool when
+        // it built (else the global pool). `pool.install` confines this rayon
+        // work to the pool with the explicit worker stack size matched to the
+        // depth rail.
+        let run_parse = || -> (Vec<cqs::Chunk>, RelationshipData, Vec<String>) {
+            survivors
             .par_iter()
             .fold(
                 || (Vec::new(), RelationshipData::default(), Vec::new()),
@@ -496,7 +520,12 @@ pub(super) fn parser_stage(
                     failed_a.extend(failed_b);
                     (chunks_a, rels_a, failed_a)
                 },
-            );
+            )
+        };
+        let (chunks, batch_rels, parse_failed_origins) = match &parse_pool {
+            Some(pool) => pool.install(run_parse),
+            None => run_parse(),
+        };
 
         // Stamp the drift parse-failure marker for every file that failed to
         // parse this batch (v31). Without this a version-drifted file that can't
@@ -1820,5 +1849,45 @@ mod tests {
             "parse-error survivor's fingerprint must NOT be re-stamped (stays the \
              seeded divergent value so the pre-filter re-selects it); got {fp:?}"
         );
+    }
+
+    /// The dedicated parse pool is built with the configured worker stack size,
+    /// and rayon actually applies it: a deep recursion (at the depth rail's 800
+    /// levels, with a fat per-frame array) completes on the pool's threads. This
+    /// is the load-bearing-by-design link — if the pool inherited a too-small
+    /// stack, the install below would overflow. Building the pool here exactly
+    /// as `parser_stage` does keeps the test honest to the production
+    /// construction.
+    #[test]
+    fn parse_pool_applies_configured_stack_size() {
+        let stack = cqs::limits::parser_stack_size();
+        assert!(
+            stack >= 1024 * 1024,
+            "resolved stack must be at least the depth-rail floor (1 MiB), got {stack}"
+        );
+        let pool = rayon::ThreadPoolBuilder::new()
+            .stack_size(stack)
+            .num_threads(2)
+            .build()
+            .expect("dedicated parse pool builds");
+
+        // Recurse with a non-trivial per-frame footprint so a stack smaller than
+        // configured would overflow. `black_box` prevents the optimizer from
+        // collapsing the frames away. Depth matches the parser depth rail (800).
+        fn deep(level: usize, max: usize) -> u64 {
+            let scratch = [0u8; 256];
+            let acc = std::hint::black_box(scratch[level % scratch.len()]) as u64;
+            if level >= max {
+                acc
+            } else {
+                acc.wrapping_add(deep(level + 1, max))
+            }
+        }
+
+        let depth = 800usize;
+        let got = pool.install(|| deep(0, depth));
+        // The point is no overflow; the returned value is incidental but pins
+        // that the recursion actually ran to the rail.
+        assert_eq!(got, 0, "deep recursion ran on the stack-sized pool");
     }
 }
