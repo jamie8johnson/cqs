@@ -248,7 +248,7 @@ src/
       search/     - query, gather, similar, related, where_cmd, scout, onboard, neighbors; search_ctx.rs (SearchCtx trait — the surface-agnostic search context implemented by both CommandContext and the daemon's BatchView, so query_core runs unchanged on either)
       graph/      - callers, deps, explain, impact, impact_diff, test_map, trace; notes_text.rs (shared kind-fallback/redirect note + text consts referenced by both CLI and daemon surfaces)
       review/     - diff_review, ci, dead, health, suggest, affected
-      index/      - build, gc, stale, stats, umap
+      index/      - build, gc, stale, stats, umap; index_args.rs (core index args struct shared by CLI and daemon paths)
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
       infra/      - audit_mode, cache_cmd, convert, doctor, hook, init, model, ping, project, reference, slot, status, telemetry_cmd
       eval/       - `cqs eval` A/B harness: mod.rs (cmd_eval, require_fresh_gate), runner.rs (load query set, run search, score against gold — reuses production search path), baseline.rs (diff R@K against a saved EvalReport, regression gate). Shared on-disk types live in `src/eval/` (not here).
@@ -271,10 +271,10 @@ src/
     files.rs    - File enumeration, lock files, path utilities
     json_envelope.rs - JSON output emission helpers: emit_json/emit_json_error (CLI direct, bare-vs-v1 via EnvelopeShape), wrap_value/wrap_error (slim batch/daemon JSONL), ErrorCode taxonomy + error_codes consts, redact_error (daemon error redaction), EnvelopeMeta (_meta worktree-stale + per-response stale_origins merge), NaN/Infinity sanitization
     limits.rs   - Shared clamp ceilings + env-overridable size limits for the CLI and batch/daemon dispatchers (keeps the two paths from drifting on `--limit`). Library-layer counterpart is `src/limits.rs`.
-    mcp/        - `cqs mcp` stdio↔daemon-socket MCP bridge (Phase 1, Lane 2): a GPU-free process that speaks MCP JSON-RPC over stdio and relays each tools/call to the warm daemon as the Lane 1 JSON-args frame. Bridge-only (requires a running daemon; no in-process fallback).
+    mcp/        - `cqs mcp` stdio↔daemon-socket MCP bridge: a GPU-free process that speaks MCP JSON-RPC (protocol 2025-11-25) over stdio and relays each tools/call to the warm daemon. Bridge-only (requires a running `cqs watch --serve` daemon; no in-process fallback).
       bridge.rs   - stdin→parse→route→stdout NDJSON loop, method dispatch, per-call daemon round-trip
-      lifecycle.rs - JSON-RPC envelope types, error codes, initialize/initialized (protocol 2025-11-25)
-      tools.rs    - tools/list (read-only registry × schemars inputSchemas, cqs_-prefixed names; context/explain withheld) + tools/call envelope→CallToolResult mapping (status:ok-wrapped handler error → isError:true)
+      lifecycle.rs - JSON-RPC envelope types, error codes, initialize/initialized handshake (protocol version negotiation)
+      tools.rs    - tool registry: 19 read-only `cqs_`-prefixed tools + schemars inputSchema generation; mutation-flag gating (`CQS_MCP_ENABLE_MUTATIONS`) adds 4 mutating tools; tools/call envelope→CallToolResult mapping
     pipeline/   - Multi-threaded indexing pipeline
       mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
       reuse.rs    - Shared embedding-reuse resolver: global cache → per-slot store cache → split chunks into reuse-cached vs embed-fresh; used by both the bulk pipeline and the watch/daemon incremental path
