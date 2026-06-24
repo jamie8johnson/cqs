@@ -76,16 +76,46 @@ pub(crate) fn parser_max_chunk_bytes() -> usize {
 /// human-written code sit in the tens, generated code in the low hundreds), and
 /// an 800-deep walk completes inside a 1 MiB worker stack even in an unoptimized
 /// debug build (release frames are far leaner), so it can never trip on a
-/// legitimate file. Override via `CQS_PARSER_MAX_WALK_DEPTH`. Past the cap the
+/// legitimate file. Override via `CQS_PARSER_MAX_WALK_DEPTH`, clamped to
+/// `[1, PARSER_MAX_WALK_DEPTH_CEIL]`. Past the cap the
 /// walk stops descending (it does NOT abort the file) — the truncated subtree is
 /// the same one whose enclosing chunk would exceed `PARSER_MAX_CHUNK_BYTES` and
 /// be dropped anyway, so legitimate output is unchanged.
 pub(crate) const PARSER_MAX_WALK_DEPTH: usize = 800;
 
+/// Hard ceiling on the resolved walk depth, regardless of the env override.
+///
+/// **Load-bearing coupling, enforced (not just documented).** The walk recurses
+/// one stack frame per tree level, so the depth rail is only a DoS rail while the
+/// resolved depth fits inside the *smallest* stack the parse pool can run on —
+/// `PARSER_STACK_SIZE_MIN` (1 MiB), the floor `parser_stack_size()` clamps up to.
+/// `panic = abort` makes a stack overflow an uncatchable SIGSEGV, so a depth the
+/// floor stack can't hold re-opens exactly the index/watch/daemon-killing DoS the
+/// rail exists to prevent. The walk depth and the stack size are configured by
+/// independent env vars, so the depth must be bounded by what the *floor* stack
+/// safely holds — not by whatever stack happens to be configured.
+///
+/// Empirically the unfixed (uncapped) walk overflows a 1 MiB debug stack past
+/// ~1000 nesting levels; the `deep_walk_stack_safety` guards in
+/// `src/parser/calls.rs` confirm the depth-800 walk completes on a 1 MiB stack.
+/// The ceiling is therefore pinned at the calibrated-safe default (800): an
+/// operator may *lower* the rail (a tighter bound), but a raised
+/// `CQS_PARSER_MAX_WALK_DEPTH` is clamped back to a depth the floor stack
+/// provably accommodates rather than silently re-opening the overflow.
+pub(crate) const PARSER_MAX_WALK_DEPTH_CEIL: usize = PARSER_MAX_WALK_DEPTH;
+
 /// Resolve the recursive tree-walk depth ceiling honoring
-/// `CQS_PARSER_MAX_WALK_DEPTH`.
+/// `CQS_PARSER_MAX_WALK_DEPTH`, clamped to `[1, PARSER_MAX_WALK_DEPTH_CEIL]`.
+/// A value above the ceiling is clamped down (with a warn) so a raised override
+/// can never push the per-frame recursion past what the floor parse-pool stack
+/// (`PARSER_STACK_SIZE_MIN`) holds — see `PARSER_MAX_WALK_DEPTH_CEIL`.
 pub(crate) fn parser_max_walk_depth() -> usize {
-    parse_env_usize("CQS_PARSER_MAX_WALK_DEPTH", PARSER_MAX_WALK_DEPTH)
+    parse_env_usize_clamped(
+        "CQS_PARSER_MAX_WALK_DEPTH",
+        PARSER_MAX_WALK_DEPTH,
+        1,
+        PARSER_MAX_WALK_DEPTH_CEIL,
+    )
 }
 
 /// Default worker-thread stack size (bytes) for the dedicated rayon pool the
@@ -932,5 +962,53 @@ mod tests {
         std::env::set_var("CQS_PARSER_STACK_SIZE", "0");
         assert_eq!(parser_stack_size(), PARSER_STACK_SIZE);
         std::env::remove_var("CQS_PARSER_STACK_SIZE");
+    }
+
+    // ===== parser_max_walk_depth tests =====
+
+    /// Unset env → the calibrated 800 default.
+    #[test]
+    #[serial]
+    fn parser_max_walk_depth_default_is_800() {
+        std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
+        assert_eq!(parser_max_walk_depth(), PARSER_MAX_WALK_DEPTH);
+        assert_eq!(parser_max_walk_depth(), 800);
+    }
+
+    /// A valid in-range override (a *tighter* rail) is honored verbatim — an
+    /// operator may lower the depth below the default.
+    #[test]
+    #[serial]
+    fn parser_max_walk_depth_lower_override_honored() {
+        std::env::set_var("CQS_PARSER_MAX_WALK_DEPTH", "200");
+        assert_eq!(parser_max_walk_depth(), 200);
+        std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
+    }
+
+    /// An over-large override clamps DOWN to the documented ceiling (the depth
+    /// the floor parse-pool stack provably accommodates), so a raised value can
+    /// never re-open the stack-overflow DoS. Mirrors
+    /// `parser_stack_size_below_floor_clamps_to_min` on the other side of the
+    /// coupling: stack clamps UP, depth clamps DOWN, and they meet at the
+    /// calibrated-safe point.
+    #[test]
+    #[serial]
+    fn parser_max_walk_depth_above_ceil_clamps_to_ceil() {
+        std::env::set_var("CQS_PARSER_MAX_WALK_DEPTH", "1000000");
+        assert_eq!(parser_max_walk_depth(), PARSER_MAX_WALK_DEPTH_CEIL);
+        assert_eq!(parser_max_walk_depth(), 800);
+        std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
+    }
+
+    /// Garbage / zero override falls back to the (clamped) default rather than
+    /// `0` — a zero depth would suppress every relationship edge.
+    #[test]
+    #[serial]
+    fn parser_max_walk_depth_garbage_uses_default() {
+        std::env::set_var("CQS_PARSER_MAX_WALK_DEPTH", "not_a_number");
+        assert_eq!(parser_max_walk_depth(), PARSER_MAX_WALK_DEPTH);
+        std::env::set_var("CQS_PARSER_MAX_WALK_DEPTH", "0");
+        assert_eq!(parser_max_walk_depth(), PARSER_MAX_WALK_DEPTH);
+        std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
     }
 }
