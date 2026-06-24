@@ -86,6 +86,13 @@ pub(crate) fn parse_with_timeout(
     tree
 }
 
+/// Shared serialization lock for tests that mutate the process-global
+/// `CQS_PARSER_TIMEOUT_MS`. Every such test (in any module) must hold this for
+/// the duration of its env mutation so two timeout cohorts can't clobber each
+/// other's value when libtest runs them on different threads.
+#[cfg(test)]
+pub(crate) static TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Default per-file size cap for parsing (50 MiB). Files larger than this
 /// are skipped at parse time. Override at runtime via
 /// `CQS_PARSER_MAX_FILE_SIZE`. Distinct from `CQS_MAX_FILE_SIZE`
@@ -1420,10 +1427,9 @@ mod tests {
     /// `None` on the budget — the same shape an oversized/unparseable file
     /// already yields (skip-with-warn).
     mod parse_timeout {
-        use std::sync::Mutex;
-
-        // `CQS_PARSER_TIMEOUT_MS` is process-global; serialise the cohort.
-        static TIMEOUT_ENV_LOCK: Mutex<()> = Mutex::new(());
+        // `CQS_PARSER_TIMEOUT_MS` is process-global; serialise the cohort on the
+        // crate-shared lock so other timeout-mutating cohorts can't interleave.
+        use crate::parser::TIMEOUT_ENV_LOCK;
 
         fn with_timeout_env<F: FnOnce()>(value: Option<&str>, f: F) {
             let _g = TIMEOUT_ENV_LOCK.lock().unwrap();

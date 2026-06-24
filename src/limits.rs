@@ -88,6 +88,39 @@ pub(crate) fn parser_max_walk_depth() -> usize {
     parse_env_usize("CQS_PARSER_MAX_WALK_DEPTH", PARSER_MAX_WALK_DEPTH)
 }
 
+/// Default worker-thread stack size (bytes) for the dedicated rayon pool the
+/// parse stage runs on (2 MiB). The recursive tree-walk is bounded by
+/// `PARSER_MAX_WALK_DEPTH` (800), which is sized to complete inside a 1 MiB
+/// stack even in an unoptimized debug build; this default doubles that, giving
+/// the depth rail headroom rather than relying on the platform/runtime default
+/// happening to be large enough. Making the parse pool's stack size explicit
+/// turns "the depth rail fits the stack" into a load-bearing-by-design
+/// invariant instead of an ambient assumption. Override via
+/// `CQS_PARSER_STACK_SIZE`.
+pub(crate) const PARSER_STACK_SIZE: usize = 2 * 1024 * 1024;
+
+/// Floor for the parse-pool worker stack (1 MiB) — the size the depth rail
+/// (`PARSER_MAX_WALK_DEPTH`) is sized to fit. An operator override below this
+/// is clamped up so the walk can never overflow a too-small stack.
+pub(crate) const PARSER_STACK_SIZE_MIN: usize = 1024 * 1024;
+
+/// Resolve the parse-pool worker stack size in bytes honoring
+/// `CQS_PARSER_STACK_SIZE`, clamped to `[PARSER_STACK_SIZE_MIN, 256 MiB]` so
+/// the depth rail always fits and a fat-fingered value can't exhaust address
+/// space. Missing/zero/garbage falls back to `PARSER_STACK_SIZE`.
+///
+/// `pub` so the indexing pipeline (binary crate) can size its dedicated parse
+/// thread pool from the same resolver the depth-rail invariant is written
+/// against.
+pub fn parser_stack_size() -> usize {
+    parse_env_usize_clamped(
+        "CQS_PARSER_STACK_SIZE",
+        PARSER_STACK_SIZE,
+        PARSER_STACK_SIZE_MIN,
+        256 * 1024 * 1024,
+    )
+}
+
 /// Default wall-clock budget (milliseconds) for a single tree-sitter parse.
 /// tree-sitter has no internal time bound, so an adversarial token stream that
 /// drives superlinear error recovery (or a merely huge file) can pin a parser
@@ -856,5 +889,48 @@ mod tests {
         assert_eq!(dim_scaled_batch(10_000, 0, 500, 50_000), 10_000);
         assert_eq!(dim_scaled_batch(50, 0, 500, 50_000), 500); // clamp up
         assert_eq!(dim_scaled_batch(99_999, 0, 500, 50_000), 50_000); // clamp down
+    }
+
+    // ===== parser_stack_size tests =====
+
+    /// Unset env → the 2 MiB default. The parse pool's worker stack must be at
+    /// least the 1 MiB the depth rail is sized to fit; the default doubles that.
+    #[test]
+    #[serial]
+    fn parser_stack_size_default_is_2mib() {
+        std::env::remove_var("CQS_PARSER_STACK_SIZE");
+        assert_eq!(parser_stack_size(), PARSER_STACK_SIZE);
+        assert_eq!(parser_stack_size(), 2 * 1024 * 1024);
+    }
+
+    /// A valid override is honored verbatim (within the clamp range).
+    #[test]
+    #[serial]
+    fn parser_stack_size_env_override_honored() {
+        std::env::set_var("CQS_PARSER_STACK_SIZE", (8 * 1024 * 1024).to_string());
+        assert_eq!(parser_stack_size(), 8 * 1024 * 1024);
+        std::env::remove_var("CQS_PARSER_STACK_SIZE");
+    }
+
+    /// A below-floor override clamps UP to the depth-rail minimum (1 MiB), so an
+    /// operator can never shrink the stack below what the 800-deep walk needs.
+    #[test]
+    #[serial]
+    fn parser_stack_size_below_floor_clamps_to_min() {
+        std::env::set_var("CQS_PARSER_STACK_SIZE", (256 * 1024).to_string());
+        assert_eq!(parser_stack_size(), PARSER_STACK_SIZE_MIN);
+        assert_eq!(parser_stack_size(), 1024 * 1024);
+        std::env::remove_var("CQS_PARSER_STACK_SIZE");
+    }
+
+    /// Garbage / zero override falls back to the (clamped) default.
+    #[test]
+    #[serial]
+    fn parser_stack_size_garbage_uses_default() {
+        std::env::set_var("CQS_PARSER_STACK_SIZE", "not_a_number");
+        assert_eq!(parser_stack_size(), PARSER_STACK_SIZE);
+        std::env::set_var("CQS_PARSER_STACK_SIZE", "0");
+        assert_eq!(parser_stack_size(), PARSER_STACK_SIZE);
+        std::env::remove_var("CQS_PARSER_STACK_SIZE");
     }
 }

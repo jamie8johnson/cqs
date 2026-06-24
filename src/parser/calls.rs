@@ -1047,7 +1047,7 @@ impl Parser {
             return (vec![], candidates);
         }
 
-        let tree = match parser.parse(source.as_ref(), None) {
+        let tree = match crate::parser::parse_with_timeout(&mut parser, source.as_ref()) {
             Some(t) => t,
             None => {
                 tracing::warn!(
@@ -1475,8 +1475,7 @@ impl Parser {
             .set_language(&grammar)
             .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
-        let tree = parser
-            .parse(&source, None)
+        let tree = crate::parser::parse_with_timeout(&mut parser, &source)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
         // Get or compile queries (lazy initialization).
@@ -3415,6 +3414,136 @@ fn install() {
             a.sort();
             b.sort();
             assert_eq!(a, b, "chunk-range and whole-file candidate sets must agree");
+        }
+    }
+
+    /// Both `pub` bare-parse sites in this module route their tree-sitter parse
+    /// through `parse_with_timeout`, so an adversarial token stream that drives
+    /// superlinear error recovery aborts on the `CQS_PARSER_TIMEOUT_MS` budget
+    /// (returning the same shape an unparseable file already yields) instead of
+    /// pinning the thread. These guard that wrapping: an abort yields the skip
+    /// shape, and normal input is unaffected (behavior-neutral).
+    mod call_parse_timeout {
+        use super::*;
+        use crate::parser::TIMEOUT_ENV_LOCK;
+
+        /// Run `f` with `CQS_PARSER_TIMEOUT_MS` set/cleared, restoring the prior
+        /// value. Holds the crate-shared lock so it can't race other cohorts
+        /// that mutate the same process-global env var.
+        fn with_timeout_env<F: FnOnce()>(value: Option<&str>, f: F) {
+            let _g = TIMEOUT_ENV_LOCK.lock().unwrap();
+            let prev = std::env::var("CQS_PARSER_TIMEOUT_MS").ok();
+            match value {
+                Some(v) => std::env::set_var("CQS_PARSER_TIMEOUT_MS", v),
+                None => std::env::remove_var("CQS_PARSER_TIMEOUT_MS"),
+            }
+            f();
+            match prev {
+                Some(p) => std::env::set_var("CQS_PARSER_TIMEOUT_MS", p),
+                None => std::env::remove_var("CQS_PARSER_TIMEOUT_MS"),
+            }
+        }
+
+        /// ~4 MB bare-token error-recovery storm: uncapped this parses for
+        /// multiple seconds. Under a tight budget the parse must abort.
+        fn pathological_rust_source() -> String {
+            let n = (4 * 1024 * 1024) / 4;
+            format!("fn x(){{{}}}\n", "a b ".repeat(n))
+        }
+
+        /// A normal Rust source with one resolvable call — the behavior-neutral
+        /// fixture (must parse under the default budget and emit the call).
+        const NORMAL_SOURCE: &str = "fn hello() -> u32 { let x = compute(1, 2); x }\n";
+
+        /// `extract_calls_with_candidates` honors the timeout: a pathological
+        /// parse aborts under a tight budget and yields the skip shape
+        /// (empty calls + empty candidates), the same `None`→skip the wrapper
+        /// produces, rather than running the storm to completion.
+        #[test]
+        fn extract_calls_aborts_under_budget() {
+            let src = pathological_rust_source();
+            with_timeout_env(Some("1"), || {
+                let parser = Parser::new().unwrap();
+                let start = std::time::Instant::now();
+                let (calls, candidates) =
+                    parser.extract_calls_with_candidates(&src, Language::Rust, 0, src.len(), 0);
+                let elapsed = start.elapsed();
+                assert!(
+                    calls.is_empty() && candidates.is_empty(),
+                    "aborted parse must yield the skip shape (empty calls/candidates)"
+                );
+                assert!(
+                    elapsed < std::time::Duration::from_secs(2),
+                    "timeout must fire promptly; took {elapsed:?}"
+                );
+            });
+        }
+
+        /// Behavior-neutral: normal source parses under the default budget and
+        /// `extract_calls_with_candidates` still emits the call.
+        #[test]
+        fn extract_calls_normal_input_unaffected() {
+            with_timeout_env(None, || {
+                let parser = Parser::new().unwrap();
+                let (calls, _candidates) = parser.extract_calls_with_candidates(
+                    NORMAL_SOURCE,
+                    Language::Rust,
+                    0,
+                    NORMAL_SOURCE.len(),
+                    0,
+                );
+                assert!(
+                    calls.iter().any(|c| c.callee_name == "compute"),
+                    "normal input must still extract the `compute` call, got: {:?}",
+                    calls.iter().map(|c| &c.callee_name).collect::<Vec<_>>()
+                );
+            });
+        }
+
+        /// `parse_file_relationships_with_candidates` honors the timeout: a
+        /// pathological file aborts under a tight budget and surfaces
+        /// `ParseFailed` (the `.ok_or_else` arm), the same error an unparseable
+        /// file yields, rather than running the storm to completion.
+        #[test]
+        fn parse_relationships_aborts_under_budget() {
+            let src = pathological_rust_source();
+            let file = write_temp_file(&src, "rs");
+            with_timeout_env(Some("1"), || {
+                let parser = Parser::new().unwrap();
+                let start = std::time::Instant::now();
+                let result = parser.parse_file_relationships_with_candidates(file.path());
+                let elapsed = start.elapsed();
+                assert!(
+                    matches!(result, Err(ParserError::ParseFailed(_))),
+                    "aborted parse must surface ParseFailed, got: {result:?}"
+                );
+                assert!(
+                    elapsed < std::time::Duration::from_secs(2),
+                    "timeout must fire promptly; took {elapsed:?}"
+                );
+            });
+        }
+
+        /// Behavior-neutral: a normal file parses under the default budget and
+        /// `parse_file_relationships_with_candidates` returns its relationships.
+        #[test]
+        fn parse_relationships_normal_input_unaffected() {
+            let file = write_temp_file(NORMAL_SOURCE, "rs");
+            with_timeout_env(None, || {
+                let parser = Parser::new().unwrap();
+                let (function_calls, _types, _candidates) = parser
+                    .parse_file_relationships_with_candidates(file.path())
+                    .expect("normal file must parse within the budget");
+                let callees: Vec<&str> = function_calls
+                    .iter()
+                    .flat_map(|fc| fc.calls.iter())
+                    .map(|c| c.callee_name.as_str())
+                    .collect();
+                assert!(
+                    callees.contains(&"compute"),
+                    "normal input must still extract the `compute` call, got: {callees:?}"
+                );
+            });
         }
     }
 
