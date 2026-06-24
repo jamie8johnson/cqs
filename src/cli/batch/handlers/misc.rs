@@ -243,6 +243,54 @@ pub(in crate::cli::batch) fn dispatch_notes_remove(
     ))
 }
 
+/// Daemon handler for `cqs index` (MCP Phase 2b — fire-and-forget).
+///
+/// **Queues, never builds.** This handler does NOT run an index pipeline. It
+/// flips the shared `SharedReconcileSignal` via [`BatchView::request_reconcile`]
+/// — the SAME async primitive `dispatch_reconcile` uses — and returns
+/// immediately; the watch loop drains the signal on its next 100 ms tick and
+/// performs the actual reindex. So the socket handler returns promptly (no
+/// minutes-long block) and never acquires a writable `Store`: the daemon's
+/// `Store<ReadOnly>` typestate is preserved, exactly as for the notes-write
+/// path. The client polls completion via the already-exposed read tools
+/// `wait_fresh` / `status`.
+///
+/// The `slot` field of the core is advisory here: the daemon queues a reconcile
+/// of the slot it already serves (the active slot it was opened against), so a
+/// differing `slot` does not redirect the rebuild. The reconcile path takes no
+/// slot argument.
+///
+/// Reachable only when `build_batch_cmd` constructed `BatchCmd::Index`, which is
+/// gated behind `CQS_MCP_ENABLE_MUTATIONS` (the operator opt-in). The
+/// destructive `index --force` variant is withheld by absence (the core exposes
+/// no `force` field).
+pub(in crate::cli::batch) fn dispatch_index(
+    ctx: &BatchView,
+    args: &crate::cli::commands::index::IndexArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!(
+        "batch_index",
+        slot = args.slot.as_deref().unwrap_or("(active)")
+    )
+    .entered();
+    let was_pending = ctx.request_reconcile();
+    tracing::info!(
+        slot = args.slot.as_deref().unwrap_or("(active)"),
+        was_pending,
+        "Reindex queued (fire-and-forget); watch loop performs the rebuild"
+    );
+    // Fire-and-forget: the rebuild is deferred to the watch loop, mirroring the
+    // notes-write `reindex_deferred` contract. `was_pending` lets a caller see
+    // that an earlier reconcile request was still un-drained (the watch loop
+    // coalesces them into one walk).
+    Ok(serde_json::json!({
+        "status": "queued",
+        "queued": true,
+        "reindex_deferred": true,
+        "was_pending": was_pending,
+    }))
+}
+
 /// Dispatches a task execution within a batch context, optionally with token budgeting.
 /// This function executes a task based on a natural language description, retrieving relevant code chunks and generating a JSON representation of the results. When a token budget is specified, it applies waterfall budgeting similar to the CLI; otherwise, it returns the standard task JSON representation.
 /// # Arguments

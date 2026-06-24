@@ -326,6 +326,20 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             let c: crate::cli::commands::notes::NotesRemoveArgs = parse_core(command, arguments)?;
             BatchCmd::NotesRemove { args: c }
         }
+        // ─── MCP Phase 2b: gated fire-and-forget reindex ───────────────────────
+        //
+        // `cqs_index` over the daemon. Same opt-in gate as the notes channel.
+        // The handler QUEUES (flips the reconcile signal) and returns
+        // immediately — it never builds the index and never acquires a writable
+        // `Store`, so the `Store<ReadOnly>` invariant holds. The scoped core
+        // exposes only the non-destructive subset (`slot`, …); `--force` is
+        // withheld by ABSENCE (the core has no `force` field), so a forced full
+        // rebuild is unreachable over the wire regardless of the flag.
+        "index" => {
+            require_mutations_enabled(command)?;
+            let c: crate::cli::commands::index::IndexArgs = parse_core(command, arguments)?;
+            BatchCmd::Index { args: c }
+        }
         other => bail!(
             "command '{other}' does not accept a JSON `arguments` object \
              (no Phase-0 core struct); use the argv `args` form"
@@ -1042,6 +1056,140 @@ mod tests {
             store.chunk_count().is_ok(),
             "the daemon's Store<ReadOnly> must stay usable across a notes write"
         );
+    }
+
+    // ─── MCP Phase 2b: gated fire-and-forget reindex (`index`) ─────────────────
+
+    /// With the flag OFF, `index` over the JSON-args path is rejected by
+    /// `build_batch_cmd` AND by the full dispatch — the daemon-side enforcement
+    /// that a raw socket client can't bypass the bridge's `tools/list` gating.
+    /// The reconcile signal is NOT flipped.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_rejected_when_flag_off() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(false);
+        let (_dir, ctx) = seed_ctx();
+        // build_batch_cmd refuses without the opt-in.
+        assert!(
+            build_batch_cmd("index", &json!({})).is_err(),
+            "`index` must be rejected when CQS_MCP_ENABLE_MUTATIONS is unset"
+        );
+        // Full dispatch returns an error envelope and does NOT queue.
+        assert!(
+            !ctx.reconcile_signal.load(Ordering::Acquire),
+            "reconcile signal must start un-pending"
+        );
+        let mut out = Vec::new();
+        dispatch_via_view_json(&ctx.build_view(None), "index", &json!({}), &mut out);
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+        assert!(
+            v.get("error").is_some_and(|e| !e.is_null()),
+            "`index` flag-off must return an error envelope, got: {v}"
+        );
+        assert!(
+            !ctx.reconcile_signal.load(Ordering::Acquire),
+            "flag-off `index` must NOT flip the reconcile signal"
+        );
+    }
+
+    /// With the flag ON, `index` returns PROMPTLY with the queued/deferred
+    /// envelope (a fire-and-forget queue, NOT a blocking build), and flips the
+    /// shared reconcile signal so the watch loop performs the rebuild.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_queues_promptly_when_flag_on() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        assert!(
+            !ctx.reconcile_signal.load(Ordering::Acquire),
+            "reconcile signal must start un-pending"
+        );
+
+        let start = std::time::Instant::now();
+        let mut out = Vec::new();
+        dispatch_via_view_json(&ctx.build_view(None), "index", &json!({}), &mut out);
+        let elapsed_ms = start.elapsed().as_millis();
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+
+        // Fire-and-forget: it must return well before any real index build could
+        // run. A blocking build would take seconds even on a tiny index; a queue
+        // is sub-millisecond. 500 ms is a generous ceiling for the dispatch.
+        assert!(
+            elapsed_ms < 500,
+            "`index` must return promptly (fire-and-forget), took {elapsed_ms}ms"
+        );
+
+        let data = &v["data"];
+        assert!(
+            v.get("data").is_some_and(|d| !d.is_null()),
+            "index must return a data envelope, got: {v}"
+        );
+        assert_eq!(data["status"], "queued");
+        assert_eq!(data["queued"], true, "the response must mark queued:true");
+        assert_eq!(
+            data["reindex_deferred"], true,
+            "the daemon defers the rebuild to the watch loop"
+        );
+        // The signal is now pending — the watch loop will drain it.
+        assert!(
+            ctx.reconcile_signal.load(Ordering::Acquire),
+            "flag-on `index` must flip the reconcile signal"
+        );
+    }
+
+    /// The daemon `index` path preserves `Store<ReadOnly>`: it never acquires a
+    /// writable store (it only flips the reconcile signal). Mirrors the notes
+    /// `Store<ReadOnly>` invariant test — type-level proof the handler had no
+    /// writable store to reach for, and the read-only store stays usable.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_keeps_store_read_only() {
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        let view = ctx.build_view(None);
+        // Type assertion: the view's store is read-only (compile-time proof the
+        // handler had no writable store to reach for).
+        let store: std::sync::Arc<cqs::store::Store<cqs::store::ReadOnly>> = view.store();
+        let mut out = Vec::new();
+        dispatch_via_view_json(&view, "index", &json!({}), &mut out);
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+        assert_eq!(v["data"]["status"], "queued");
+        // The read-only store is still live after queueing (a read succeeds —
+        // the typestate was never traded for a writable handle).
+        assert!(
+            store.chunk_count().is_ok(),
+            "the daemon's Store<ReadOnly> must stay usable across an index queue"
+        );
+    }
+
+    /// `index --force` is unreachable over the wire: the scoped `IndexArgs` core
+    /// has no `force` field, so a `force:true` key in `arguments` is silently
+    /// ignored (deserialize succeeds, dropping the unknown key) — there is no
+    /// path that turns a fire-and-forget queue into a forced full rebuild. The
+    /// queue still happens (non-destructive), and no forced behavior is invoked.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_force_key_is_ignored_not_a_forced_rebuild() {
+        let _guard = MutEnvGuard::set(true);
+        // The core deserializes `{"force": true}` to the default (force is not a
+        // field) — proving `--force` cannot be smuggled in via the wire.
+        let cmd = build_batch_cmd("index", &json!({"force": true, "slot": "primary"}))
+            .expect("index with an unknown `force` key still builds (key ignored)");
+        match cmd {
+            BatchCmd::Index { args } => {
+                assert_eq!(
+                    args.slot.as_deref(),
+                    Some("primary"),
+                    "the known `slot` field round-trips"
+                );
+                // There is no `force` field to inspect — its absence from the
+                // struct is the withhold. The build succeeding with the queue
+                // semantics (not a forced rebuild) is the assertion.
+            }
+            _ => panic!("expected BatchCmd::Index"),
+        }
     }
 
     /// Malformed `arguments` (a type the core cannot accept) produces a clean

@@ -255,6 +255,21 @@ pub(crate) enum BatchCmd {
     NotesRemove {
         args: crate::cli::commands::notes::NotesRemoveArgs,
     },
+    /// Queue a reindex (MCP Phase 2b — `cqs_index` fire-and-forget).
+    ///
+    /// `#[command(skip)]` — NOT argv-reachable on the daemon socket. The only
+    /// constructor is `json_args::build_batch_cmd`, gated behind
+    /// `CQS_MCP_ENABLE_MUTATIONS`. The handler does NOT build the index: it
+    /// flips the shared `SharedReconcileSignal` (the same primitive `reconcile`
+    /// uses) and returns immediately; the watch loop performs the actual
+    /// reindex on its next tick. So it never acquires a writable `Store` — the
+    /// daemon's read-only Store typestate is preserved. The destructive
+    /// `index --force` variant is withheld by ABSENCE: the core `IndexArgs`
+    /// exposes no `force` field.
+    #[command(skip)]
+    Index {
+        args: crate::cli::commands::index::IndexArgs,
+    },
     /// One-shot implementation context (terminal — no pipeline chaining)
     Task {
         #[command(flatten)]
@@ -444,6 +459,7 @@ macro_rules! for_each_batch_cmd {
                 (NotesAdd,    dispatch_notes_add,    false)
                 (NotesUpdate, dispatch_notes_update, false)
                 (NotesRemove, dispatch_notes_remove, false)
+                (Index,      dispatch_index,        false)
                 (Task,       dispatch_task,         false)
                 (Review,     dispatch_review,       false)
                 (Ci,         dispatch_ci,           false)

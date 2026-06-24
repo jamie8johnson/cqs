@@ -314,17 +314,24 @@ fn read_tools() -> &'static [ToolDef] {
     ]
 }
 
-/// The Phase-2a gated notes-mutation tools (§3). Appended to `tool_table` ONLY
-/// when `CQS_MCP_ENABLE_MUTATIONS=1`. Each carries per-command annotations:
+/// The gated mutation tools (§3) — the Phase-2a notes channel plus the Phase-2b
+/// fire-and-forget `cqs_index`. Appended to `tool_table` ONLY when
+/// `CQS_MCP_ENABLE_MUTATIONS=1`. Each carries per-command annotations:
 /// `add` is additive (non-destructive, non-idempotent), `update` is idempotent
-/// but mutating, `remove` is the lone `destructiveHint:true` in the set. The
-/// `command` column maps to the `json_args::build_batch_cmd` notes arms
-/// (`notes-add`/`notes-update`/`notes-remove`) — also gated daemon-side.
+/// but mutating, `remove` is the lone `destructiveHint:true` in the set, and
+/// `index` is a queued reindex (idempotent, non-destructive — rebuilds from the
+/// source tree). The `command` column maps to the `json_args::build_batch_cmd`
+/// arms (`notes-add`/`notes-update`/`notes-remove`/`index`) — also gated
+/// daemon-side.
 ///
 /// The DESTRUCTIVE set (`gc`/`slot remove`/`index --force`/`model swap`/
 /// `cache clear`) is NOT here and has no flag that re-enables it: boundary by
-/// absence, the same mechanism that withholds `context`.
+/// absence, the same mechanism that withholds `context`. Note that `cqs_index`
+/// IS exposed but `index --force` is NOT — the scoped `IndexArgs` core has no
+/// `force` field, so the destructive full-rebuild variant is unreachable over
+/// the wire.
 fn mutation_tools() -> &'static [ToolDef] {
+    use crate::cli::commands::index::IndexArgs as IndexCore;
     use crate::cli::commands::notes::{NotesAddArgs, NotesRemoveArgs, NotesUpdateArgs};
     &[
         ToolDef {
@@ -369,6 +376,26 @@ fn mutation_tools() -> &'static [ToolDef] {
                 idempotent: true,
                 // The note text is gone — the lone destructive flag in the set.
                 destructive: true,
+                open_world: false,
+            },
+        },
+        ToolDef {
+            name: "cqs_index",
+            command: "index",
+            description:
+                "Queue a reindex of the active slot (fire-and-forget): returns immediately with \
+                 {queued:true, reindex_deferred:true}; the watch loop performs the rebuild on its \
+                 next tick — it does NOT block on the build. Poll completion with cqs_wait_fresh \
+                 (or cqs_status). Non-destructive: rebuilds from the source tree (the full-rebuild \
+                 `--force` variant is withheld).",
+            input_schema: schema::<IndexCore>,
+            annotations: ToolAnnotations {
+                read_only: false,
+                // A queued reindex converges to the same fresh index — repeated
+                // calls coalesce into one watch-loop walk.
+                idempotent: true,
+                // Rebuilds from source-of-truth; no data loss.
+                destructive: false,
                 open_world: false,
             },
         },
@@ -522,6 +549,9 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "notes-add" => check::<crate::cli::commands::notes::NotesAddArgs>(arguments),
         "notes-update" => check::<crate::cli::commands::notes::NotesUpdateArgs>(arguments),
         "notes-remove" => check::<crate::cli::commands::notes::NotesRemoveArgs>(arguments),
+        // Phase-2b gated fire-and-forget reindex. The scoped core (no `force`)
+        // is the shape pre-check; the daemon re-deserializes authoritatively.
+        "index" => check::<crate::cli::commands::index::IndexArgs>(arguments),
         // Unreachable: every table command is covered above. A new tool with no
         // arm fails the pre-check loudly rather than silently skipping it.
         other => Err(format!("no argument schema for command {other}")),
