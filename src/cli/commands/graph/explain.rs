@@ -187,6 +187,13 @@ pub(crate) struct SimilarEntry {
     pub score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Injection heuristics that fired on this similar chunk's relayed body.
+    /// A similar chunk's content is relayed verbatim only under `--tokens`
+    /// (when it fits the budget), so this is populated only when `content` is
+    /// present — the scan tracks exactly what is emitted. Skip-when-empty,
+    /// mirroring the per-result `injection_flags` search and read carry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub injection_flags: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -222,10 +229,12 @@ pub(crate) struct ExplainOutput {
     /// reads from the project store; a vendored target downgrades to
     /// "vendored-code", everything else is "user-code". SECURITY.md contract.
     pub trust_level: &'static str,
-    /// Per-chunk injection-heuristic flags over the union of relayed text
-    /// (doc + signature + content). The doc comment is relayed verbatim, so a
-    /// doc-borne payload must surface here, not just a content-borne one.
-    /// Empty `Vec<String>` reflects "no heuristics fired".
+    /// Per-chunk injection-heuristic flags scanned over exactly the relayed
+    /// surfaces: `doc` and `signature` always, `content` only when it is
+    /// emitted (`--tokens`). A doc-borne payload must surface here, not just a
+    /// content-borne one; an un-relayed surface must not, so the flags never
+    /// over-report on text the response did not carry. Empty `Vec<String>`
+    /// reflects "no heuristics fired".
     pub injection_flags: Vec<String>,
 }
 
@@ -274,11 +283,23 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
                     None
                 }
             });
+            // Scan only what is relayed: a similar chunk's body is emitted
+            // verbatim only when its `content` is present (it fit the token
+            // budget), so the injection scan runs on exactly that surface and
+            // is empty otherwise.
+            let injection_flags = match &content {
+                Some(body) => cqs::llm::validation::detect_all_injection_patterns(body)
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                None => Vec::new(),
+            };
             SimilarEntry {
                 name: r.chunk.name.clone(),
                 file: rel_display(&r.chunk.file, root),
                 score: r.score,
                 content,
+                injection_flags,
             }
         })
         .collect();
@@ -295,12 +316,17 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
         None => (None, None),
     };
 
-    // Scan the union of relayed surfaces: `doc` and `signature` are relayed
-    // verbatim unconditionally, `content` only under `--tokens`. A payload in
-    // any of them must fire — the RT-RELAY gap was a doc-borne URL/fence going
-    // unscanned because detection only ever saw `content`.
+    // Scan exactly the relayed surfaces. `doc` and `signature` are relayed
+    // verbatim unconditionally; `content` is relayed only under `--tokens`
+    // (`include_target_content`). A payload in any emitted surface must fire,
+    // and a surface that is NOT emitted must not — flagging un-relayed content
+    // would over-report on a response that never carried it.
     let doc = chunk.doc.as_deref().unwrap_or("");
-    let scan_text = format!("{doc}\n{}\n{}", chunk.signature, chunk.content);
+    let scan_text = if data.include_target_content {
+        format!("{doc}\n{}\n{}", chunk.signature, chunk.content)
+    } else {
+        format!("{doc}\n{}", chunk.signature)
+    };
     let injection_flags: Vec<String> =
         cqs::llm::validation::detect_all_injection_patterns(&scan_text)
             .into_iter()
@@ -557,6 +583,7 @@ mod output_tests {
                 file: "src/baz.rs".into(),
                 score: 0.85,
                 content: None,
+                injection_flags: Vec::new(),
             }],
             hints: Some(HintsOutput {
                 caller_count: 1,

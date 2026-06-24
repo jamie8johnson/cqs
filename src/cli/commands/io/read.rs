@@ -158,11 +158,14 @@ pub(crate) struct FocusedReadResult {
     /// `ChunkSummary::vendored` (schema v24). Both CLI and daemon JSON paths
     /// emit `trust_level: "vendored-code"` when this is true.
     pub vendored: bool,
-    /// Prompt-injection heuristics that fired on the resolved focus chunk's
-    /// content. Mirrors the per-result `injection_flags` the search/scout
-    /// shape carries (`detect_all_injection_patterns`), so a focused read of a
-    /// chunk containing an injection pattern surfaces the same signal a search
-    /// hit on that chunk would. Empty in the common case (no pattern fired).
+    /// Prompt-injection heuristics that fired over the union of relayed
+    /// surfaces — the focus chunk's doc + content AND every appended
+    /// type-dependency chunk's body. A focused read relays all of those
+    /// verbatim, so a payload in any relayed type-dep definition must surface
+    /// here, not just one in the focus chunk. Mirrors the per-result
+    /// `injection_flags` the search/scout shape carries
+    /// (`detect_all_injection_patterns`). Empty in the common case (no pattern
+    /// fired).
     pub injection_flags: Vec<&'static str>,
 }
 
@@ -307,6 +310,10 @@ pub(crate) fn build_focused_output<Mode>(
         }
     };
 
+    // Accumulate the type-dependency bodies that are actually appended to the
+    // output so the injection scan below covers every relayed surface, not
+    // just the focus chunk.
+    let mut relayed_type_dep_bodies: Vec<&str> = Vec::new();
     for t in &filtered_types {
         let type_name = &t.type_name;
         let edge_kind = &t.edge_kind;
@@ -336,14 +343,23 @@ pub(crate) fn build_focused_output<Mode>(
                 );
                 output.push_str(&r.chunk.content);
                 output.push('\n');
+                relayed_type_dep_bodies.push(r.chunk.content.as_str());
             }
         }
     }
 
-    // Run the injection detector on the focus chunk content so both surfaces
-    // emit a real `injection_flags` list, matching the per-result shape search
-    // and scout carry. Empty when no heuristic fired (the common case).
-    let injection_flags = cqs::llm::validation::detect_all_injection_patterns(&chunk.content);
+    // Scan exactly the relayed surfaces. A focused read relays the focus
+    // chunk's doc + content AND every appended type-dependency chunk's body
+    // verbatim, so the injection scan runs over the union — a payload in any
+    // relayed type-dep definition must fire, not just one in the focus chunk.
+    // Empty when no heuristic fired (the common case).
+    let focus_doc = chunk.doc.as_deref().unwrap_or("");
+    let mut scan_text = format!("{focus_doc}\n{}", chunk.content);
+    for body in &relayed_type_dep_bodies {
+        scan_text.push('\n');
+        scan_text.push_str(body);
+    }
+    let injection_flags = cqs::llm::validation::detect_all_injection_patterns(&scan_text);
 
     Ok(FocusedReadResult {
         output,
