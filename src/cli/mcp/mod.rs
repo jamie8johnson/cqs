@@ -36,23 +36,66 @@ mod tools;
 
 pub use bridge::serve_stdio;
 
+/// The operator opt-in for the MCP gated-mutation channel (Phase 2a).
+///
+/// Default OFF. When unset, `tools/list` emits exactly the Phase-1 read tools
+/// (zero delta) and the daemon's JSON-args path rejects notes mutations as
+/// before. When set to `1`, the `cqs_notes_add`/`cqs_notes_update`/
+/// `cqs_notes_remove` tools are advertised AND the daemon accepts their
+/// mutating dispatch. The destructive set (`gc`, `slot remove`, …) is withheld
+/// by ABSENCE regardless of this flag — no flag re-enables it in Phase 2a.
+pub(crate) const MUTATIONS_ENV: &str = "CQS_MCP_ENABLE_MUTATIONS";
+
+/// Whether the MCP gated-mutation channel is enabled ([`MUTATIONS_ENV`] == `1`).
+///
+/// Read at both layers so the boundary holds end-to-end: the bridge gates the
+/// advertised tool surface (`tool_table`), and the daemon gates the actual
+/// mutating dispatch (`json_args::build_batch_cmd`). Both read the SAME process
+/// env var, so a raw socket client that bypasses `tools/list` still cannot
+/// trigger a notes write unless the operator opted the daemon in.
+pub(crate) fn mutations_enabled() -> bool {
+    std::env::var(MUTATIONS_ENV).as_deref() == Ok("1")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::tools;
+    use super::{tools, MUTATIONS_ENV};
 
-    /// `tools/list`-matches-registry guard.
-    ///
-    /// The exposed MCP tool set must equal the daemon's JSON-args-capable
-    /// command set (the 20 commands that carry a Phase-0 JsonSchema core, per
-    /// `cli::batch::json_args::build_batch_cmd`) MINUS the explicitly withheld
-    /// set (`context`, `explain` — RT-RELAY doc/signature scan gap, D4b). This
-    /// fails if a JSON-args command is added or removed without updating the
-    /// MCP surface, or if a withheld command leaks into `tools/list`.
-    #[test]
-    fn tools_list_matches_json_args_registry() {
-        // The canonical JSON-args-capable command set, mirrored from
-        // `build_batch_cmd`'s match arms. If Lane 1 adds a command there, this
-        // list must grow with it (and the tool table in `tools.rs`).
+    /// RAII guard that sets [`MUTATIONS_ENV`] for the duration of a test and
+    /// restores the prior value (or unset) on drop. Pairs with
+    /// `#[serial_test::serial(mcp_mutations_env)]` so concurrent tests don't
+    /// race the process-global env var.
+    struct MutationsEnvGuard {
+        prior: Option<String>,
+    }
+    impl MutationsEnvGuard {
+        fn set(on: bool) -> Self {
+            let prior = std::env::var(MUTATIONS_ENV).ok();
+            if on {
+                std::env::set_var(MUTATIONS_ENV, "1");
+            } else {
+                std::env::remove_var(MUTATIONS_ENV);
+            }
+            Self { prior }
+        }
+    }
+    impl Drop for MutationsEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var(MUTATIONS_ENV, v),
+                None => std::env::remove_var(MUTATIONS_ENV),
+            }
+        }
+    }
+
+    /// The command names that map to the exposed MCP read tools — the daemon's
+    /// JSON-args-capable read set MINUS the withheld doc/signature-relay set.
+    /// Returns the bare daemon command names (the registry comparison key).
+    fn expected_read_commands() -> std::collections::BTreeSet<String> {
+        // The canonical JSON-args-capable read command set, mirrored from
+        // `build_batch_cmd`'s match arms (the notes-mutation arms are accounted
+        // for separately by the flag-gated rows). If Lane 1 adds a read command
+        // there, this list must grow with it (and the tool table in `tools.rs`).
         let json_args_capable: std::collections::BTreeSet<&str> = [
             "search", "gather", "scout", "onboard", "similar", "callers", "callees", "deps",
             "impact", "test-map", "trace", "blame", "context", "diff", "drift", "dead", "ci",
@@ -60,41 +103,137 @@ mod tests {
         ]
         .into_iter()
         .collect();
-
-        // The P1 withheld set (D4b): unscanned doc/signature relay surfaces.
-        let withheld: std::collections::BTreeSet<&str> =
-            ["context", "explain"].into_iter().collect();
-
-        let expected: std::collections::BTreeSet<String> = json_args_capable
+        // The withheld set: the P1 doc/signature relay surfaces (`context`,
+        // `explain`) PLUS the destructive mutators that are withheld by absence
+        // in Phase 2a — naming them here makes the guard ENFORCE §1.3 (a future
+        // hand that adds `cqs_gc` to the table fails this test).
+        let withheld: std::collections::BTreeSet<&str> = [
+            "context",
+            "explain",
+            "gc",
+            "slot-remove",
+            "index-force",
+            "model-swap",
+            "cache-clear",
+        ]
+        .into_iter()
+        .collect();
+        json_args_capable
             .difference(&withheld)
             .map(|s| s.to_string())
-            .collect();
+            .collect()
+    }
 
-        let exposed: std::collections::BTreeSet<String> = tools::tool_table()
+    /// Map the exposed tool table to its bare daemon command names.
+    fn exposed_commands() -> std::collections::BTreeSet<String> {
+        tools::tool_table()
             .iter()
             .map(|t| {
-                let name = t.name.to_string();
                 // The MCP tool name carries the `cqs_` prefix (D1) and uses
                 // underscores; map it back to the bare daemon command name for
                 // the registry comparison. `test-map` is the lone hyphenated
                 // command — its MCP name is `cqs_test_map`.
-                tools::mcp_name_to_command(&name)
+                tools::mcp_name_to_command(t.name)
             })
-            .collect();
+            .collect()
+    }
 
+    /// `tools/list`-matches-registry guard (flag OFF).
+    ///
+    /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
+    /// equal the daemon's JSON-args-capable read command set MINUS the withheld
+    /// set — byte-identical to Phase 1 (19 read tools, zero mutation delta).
+    /// Fails if a JSON-args command is added/removed without updating the MCP
+    /// surface, or if a withheld command leaks into `tools/list`.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn tools_list_matches_json_args_registry() {
+        let _guard = MutationsEnvGuard::set(false);
+        let expected = expected_read_commands();
+        let exposed = exposed_commands();
         assert_eq!(
             exposed, expected,
-            "MCP tools/list set must equal the JSON-args registry minus the withheld set.\n\
-             exposed (mapped to commands): {exposed:?}\n\
-             expected:                     {expected:?}"
+            "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
+             withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
+        );
+        // Phase 1 = exactly 19 read tools.
+        assert_eq!(
+            exposed.len(),
+            19,
+            "flag-off tools/list must expose 19 tools"
         );
     }
 
-    /// Every exposed tool carries the `cqs_` prefix (D1), an `inputSchema` that
-    /// is a non-empty JSON object, and a `readOnly` annotation (all P1 tools
-    /// are reads).
+    /// Flag-gating guard: the notes-mutation tools are present IFF
+    /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
+    /// read set PLUS exactly the three notes mutators (22 total).
     #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn mutation_tools_present_iff_flag_set() {
+        // Flag off → no mutation tools.
+        {
+            let _guard = MutationsEnvGuard::set(false);
+            let off = exposed_commands();
+            for cmd in ["notes-add", "notes-update", "notes-remove"] {
+                assert!(
+                    !off.contains(cmd),
+                    "flag-off tools/list must NOT contain `{cmd}`"
+                );
+            }
+        }
+        // Flag on → read set + the three notes mutators.
+        {
+            let _guard = MutationsEnvGuard::set(true);
+            let on = exposed_commands();
+            for cmd in ["notes-add", "notes-update", "notes-remove"] {
+                assert!(on.contains(cmd), "flag-on tools/list must contain `{cmd}`");
+            }
+            let mut want = expected_read_commands();
+            want.insert("notes-add".to_string());
+            want.insert("notes-update".to_string());
+            want.insert("notes-remove".to_string());
+            assert_eq!(
+                on, want,
+                "flag-on tools/list must be the read set plus exactly the 3 notes mutators"
+            );
+            assert_eq!(on.len(), 22, "flag-on tools/list must expose 22 tools");
+        }
+    }
+
+    /// Destructive-set-absent guard: `gc` / `slot remove` / `index --force` /
+    /// `model swap` / `cache clear` must NEVER appear in `tools/list`,
+    /// REGARDLESS of the mutation flag — boundary by absence (§1.3, §2.2). No
+    /// flag re-enables the destructive set in Phase 2a.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn destructive_set_absent_regardless_of_flag() {
+        let destructive_tools = [
+            "cqs_gc",
+            "cqs_slot_remove",
+            "cqs_index",
+            "cqs_model_swap",
+            "cqs_cache_clear",
+            "cqs_audit_mode",
+        ];
+        for on in [false, true] {
+            let _guard = MutationsEnvGuard::set(on);
+            let names: Vec<&'static str> = tools::tool_table().iter().map(|t| t.name).collect();
+            for d in destructive_tools {
+                assert!(
+                    !names.contains(&d),
+                    "destructive tool `{d}` must be absent from tools/list (flag={on})"
+                );
+            }
+        }
+    }
+
+    /// Every exposed tool carries the `cqs_` prefix (D1), an `inputSchema` that
+    /// is a non-empty JSON object, and a non-empty description. Runs with the
+    /// mutation flag ON so the notes-mutator rows are covered too.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
     fn every_tool_is_well_formed() {
+        let _guard = MutationsEnvGuard::set(true);
         for t in tools::tool_table() {
             assert!(
                 t.name.starts_with("cqs_"),
@@ -121,18 +260,70 @@ mod tests {
         }
     }
 
-    /// `context`/`explain` must be ABSENT from the exposed surface (D4b).
+    /// Annotation honesty (§3): the exposed annotations in `tools/list` match
+    /// the per-command table. Read tools are read-only/idempotent/
+    /// non-destructive; `notes_add` is additive (mutating, non-idempotent,
+    /// non-destructive); `notes_update` is idempotent but mutating;
+    /// `notes_remove` is the lone `destructiveHint:true`.
     #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn tool_annotations_match_table() {
+        let _guard = MutationsEnvGuard::set(true);
+        let listed = tools::list();
+        let arr = listed
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .expect("tools array");
+        let find = |name: &str| -> serde_json::Value {
+            arr.iter()
+                .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
+                .and_then(|t| t.get("annotations").cloned())
+                .unwrap_or_else(|| panic!("tool `{name}` not in tools/list"))
+        };
+        let hint = |a: &serde_json::Value, k: &str| a.get(k).and_then(|v| v.as_bool());
+
+        // A representative read tool — the read quartet.
+        let search = find("cqs_search");
+        assert_eq!(hint(&search, "readOnlyHint"), Some(true));
+        assert_eq!(hint(&search, "destructiveHint"), Some(false));
+        assert_eq!(hint(&search, "openWorldHint"), Some(false));
+
+        let add = find("cqs_notes_add");
+        assert_eq!(hint(&add, "readOnlyHint"), Some(false));
+        assert_eq!(hint(&add, "destructiveHint"), Some(false));
+        assert_eq!(hint(&add, "idempotentHint"), Some(false));
+
+        let update = find("cqs_notes_update");
+        assert_eq!(hint(&update, "readOnlyHint"), Some(false));
+        assert_eq!(hint(&update, "destructiveHint"), Some(false));
+        assert_eq!(hint(&update, "idempotentHint"), Some(true));
+
+        let remove = find("cqs_notes_remove");
+        assert_eq!(hint(&remove, "readOnlyHint"), Some(false));
+        assert_eq!(
+            hint(&remove, "destructiveHint"),
+            Some(true),
+            "notes_remove is the lone destructiveHint:true in the exposed set"
+        );
+    }
+
+    /// `context`/`explain` must be ABSENT from the exposed surface (D4b),
+    /// regardless of the mutation flag.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
     fn withheld_tools_absent() {
-        let names: Vec<&'static str> = tools::tool_table().iter().map(|t| t.name).collect();
-        assert!(
-            !names.contains(&"cqs_context"),
-            "cqs_context must be withheld from P1 tools/list"
-        );
-        assert!(
-            !names.contains(&"cqs_explain"),
-            "cqs_explain must be withheld from P1 tools/list"
-        );
+        for on in [false, true] {
+            let _guard = MutationsEnvGuard::set(on);
+            let names: Vec<&'static str> = tools::tool_table().iter().map(|t| t.name).collect();
+            assert!(
+                !names.contains(&"cqs_context"),
+                "cqs_context must be withheld from tools/list (flag={on})"
+            );
+            assert!(
+                !names.contains(&"cqs_explain"),
+                "cqs_explain must be withheld from tools/list (flag={on})"
+            );
+        }
     }
 
     /// Schema ↔ wire consistency: a tool whose `inputSchema` advertises a
@@ -148,7 +339,9 @@ mod tests {
     /// `QueryArgs` has no `required` array at all — that path is trivially
     /// consistent.)
     #[test]
+    #[serial_test::serial(mcp_mutations_env)]
     fn tool_required_fields_are_declared_properties() {
+        let _guard = MutationsEnvGuard::set(true);
         for t in tools::tool_table() {
             let schema = (t.input_schema)();
             let props = schema

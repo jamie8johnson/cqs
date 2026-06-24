@@ -888,6 +888,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_MAX_FILE_SIZE` | `1048576` (1 MB) | Per-file size cap (bytes) for indexing. Files above this are skipped with an `info!` log; bump for generated code (`bindings.rs`, compiled TS, migrations). |
 | `CQS_MAX_QUERY_BYTES` | `32768` | Max query input bytes for embedding |
 | `CQS_MAX_SEQ_LENGTH` | (auto) | Override max sequence length for custom ONNX models |
+| `CQS_MCP_ENABLE_MUTATIONS` | (unset = off) | Operator opt-in for the `cqs mcp` bridge's gated mutation channel (Phase 2a). When unset, `tools/list` exposes only the read tools and the daemon rejects notes-mutation requests. Set to `1` to additionally expose `cqs_notes_add` / `cqs_notes_update` / `cqs_notes_remove` (which write `docs/notes.toml`; the watch loop reindexes). The destructive set (`gc`, `slot remove`, `index --force`, `model swap`, `cache clear`) is withheld unconditionally — no value of this flag re-enables it. Read by both the bridge (tool surface) and the daemon (dispatch enforcement). |
 | `CQS_MD_MAX_SECTION_LINES` | `150` | Max markdown section lines before overflow split |
 | `CQS_MD_MIN_SECTION_LINES` | `30` | Min markdown section lines (smaller sections merge) |
 | `CQS_MIGRATE_KEEP_BACKUPS` | `3` | Number of version-tagged migration backups retained in the DB's parent directory; older ones are pruned after every successful migrate. `3` = the current run's backup plus the two prior runs'. `0` is honored verbatim (prune all after a successful migrate) for tight-quota mounts. |

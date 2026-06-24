@@ -42,6 +42,44 @@ use serde_json::Value;
 
 use super::lifecycle;
 
+/// The four MCP tool-annotation hints (MCP 2025-11-25). Advisory metadata for
+/// clients that honor them — NOT a security boundary (the daemon's path/overlay
+/// gates and the §2 opt-in flag are the real boundary). cqs overrides the
+/// spec's destructive-by-default per command semantics rather than accepting it.
+pub struct ToolAnnotations {
+    /// The tool only reads state. Every Phase-1 tool is a pure read.
+    pub read_only: bool,
+    /// Re-running with the same args has the same effect as running once.
+    pub idempotent: bool,
+    /// The tool may destroy state (data loss). The lone destructive flag in the
+    /// exposed Phase-2a set is `cqs_notes_remove`.
+    pub destructive: bool,
+    /// The tool reaches the open world (network). All cqs tools are local-only.
+    pub open_world: bool,
+}
+
+impl ToolAnnotations {
+    /// The read-quartet every Phase-1 tool carries: read-only, idempotent,
+    /// non-destructive, local-only. Same values the bridge hardcoded in P1,
+    /// now expressed per-row.
+    const READ: ToolAnnotations = ToolAnnotations {
+        read_only: true,
+        idempotent: true,
+        destructive: false,
+        open_world: false,
+    };
+
+    /// Render to the `tools/list` annotations object.
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "readOnlyHint": self.read_only,
+            "idempotentHint": self.idempotent,
+            "destructiveHint": self.destructive,
+            "openWorldHint": self.open_world,
+        })
+    }
+}
+
 /// A statically-declared MCP tool. `input_schema` is a fn pointer that
 /// generates the JSON Schema on demand (schemars `schema_for!` is not `const`).
 pub struct ToolDef {
@@ -54,6 +92,9 @@ pub struct ToolDef {
     /// Generates the `inputSchema` (JSON Schema 2020-12) from the command's
     /// Phase-0 core struct.
     pub input_schema: fn() -> Value,
+    /// Per-tool annotation hints (§3). Read tools carry [`ToolAnnotations::READ`];
+    /// the Phase-2a mutators carry per-command hints.
+    pub annotations: ToolAnnotations,
 }
 
 /// Render the schema for a core `T` as a `serde_json::Value`. schemars 1.x
@@ -85,11 +126,24 @@ use crate::cli::commands::{
     TraceCoreArgs,
 };
 
-/// The P1 tool table — single source of truth for `tools/list`. Every row is a
-/// JSON-args-capable command with a Phase-0 core, EXCEPT the withheld
-/// `context`/`explain` (D4b). The registry-parity guard in `mod.rs` pins this
-/// set against `build_batch_cmd`'s arms.
-pub fn tool_table() -> &'static [ToolDef] {
+/// The composed tool table for `tools/list` — the Phase-1 read tools, plus the
+/// Phase-2a notes mutators when `CQS_MCP_ENABLE_MUTATIONS=1`
+/// ([`crate::cli::mcp::mutations_enabled`]). When the flag is unset the result
+/// is byte-identical to Phase 1 (zero delta). The registry-parity guard in
+/// `mod.rs` pins this set against `build_batch_cmd`'s arms.
+pub fn tool_table() -> Vec<&'static ToolDef> {
+    let mut tools: Vec<&'static ToolDef> = read_tools().iter().collect();
+    if crate::cli::mcp::mutations_enabled() {
+        tools.extend(mutation_tools().iter());
+    }
+    tools
+}
+
+/// The Phase-1 read tools — single source of truth for the unconditional part
+/// of `tools/list`. Every row is a JSON-args-capable command with a Phase-0
+/// core, EXCEPT the withheld `context`/`explain` (D4b). Each carries the
+/// read-quartet annotation.
+fn read_tools() -> &'static [ToolDef] {
     &[
         ToolDef {
             name: "cqs_search",
@@ -99,6 +153,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                  name — e.g. 'retry with exponential backoff' finds retry logic regardless of \
                  naming. Use name_only for fast 'where is X defined?' lookups.",
             input_schema: schema::<QueryArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_gather",
@@ -107,6 +162,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Assemble context: a seed semantic search expanded along the call graph (BFS). \
                  Returns the seed hits plus their callers/callees up to a depth.",
             input_schema: schema::<GatherCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_scout",
@@ -115,6 +171,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Investigation brief for a task: search + callers + tests + staleness + notes in \
                  one call. The first step before implementing.",
             input_schema: schema::<ScoutCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_onboard",
@@ -123,6 +180,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Guided tour of a concept: entry point → call chain → types → tests. For exploring \
                  unfamiliar code.",
             input_schema: schema::<OnboardCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_similar",
@@ -131,6 +189,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Find functions structurally/semantically similar to a named function (nearest \
                  neighbors by embedding).",
             input_schema: schema::<SimilarCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_callers",
@@ -139,12 +198,14 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Who calls this function? Direct callers from the call graph, each tagged with an \
                  edge_kind (call / serde_callback / macro_heuristic / fn_pointer / doc_reference).",
             input_schema: schema::<CallersCoreArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_callees",
             command: "callees",
             description: "What does this function call? Its direct callees from the call graph.",
             input_schema: schema::<CalleesCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_deps",
@@ -152,6 +213,7 @@ pub fn tool_table() -> &'static [ToolDef] {
             description: "Type/symbol dependencies of a function (or, with reverse, its reverse \
                  dependencies).",
             input_schema: schema::<DepsCoreArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_impact",
@@ -160,12 +222,14 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Blast radius of changing a function: callers, transitively-affected functions, \
                  and the tests that cover them. The pre-edit safety check.",
             input_schema: schema::<ImpactCoreArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_test_map",
             command: "test-map",
             description: "Which tests exercise this function (directly or transitively)?",
             input_schema: schema::<TestMapCoreArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_trace",
@@ -173,6 +237,7 @@ pub fn tool_table() -> &'static [ToolDef] {
             description:
                 "Shortest call path(s) between a source and a target function, if one exists.",
             input_schema: schema::<TraceCoreArgs>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_blame",
@@ -181,6 +246,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Semantic git blame for a function: who changed it, when, and why (commit \
                  messages), plus optional caller context.",
             input_schema: schema::<BlameCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_diff",
@@ -189,6 +255,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Semantic diff between two indexed references (or a reference and the project): \
                  added / removed / modified functions.",
             input_schema: schema::<DiffCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_drift",
@@ -197,6 +264,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Functions whose implementation has drifted from a reference index, ranked by \
                  semantic distance.",
             input_schema: schema::<DriftCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_dead",
@@ -205,6 +273,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                  low-confidence-live / known-gap / dead) — only `dead` is a confident absence \
                  claim.",
             input_schema: schema::<DeadCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_ci",
@@ -213,6 +282,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Bundled pre-merge review for the current diff: review + dead-code gate, with a \
                  pass/fail verdict.",
             input_schema: schema::<CiCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_review",
@@ -221,6 +291,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Risk-ranked review of the current diff: which changed functions have the most \
                  callers / least test coverage.",
             input_schema: schema::<ReviewCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_plan",
@@ -229,6 +300,7 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Task-planning brief for a described change: scout + gather + impact + suggested \
                  file placement.",
             input_schema: schema::<PlanCore>,
+            annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_read",
@@ -237,6 +309,68 @@ pub fn tool_table() -> &'static [ToolDef] {
                 "Read a project file with cqs notes injected (or, with focus, just one function \
                  plus its type dependencies).",
             input_schema: schema::<ReadArgs>,
+            annotations: ToolAnnotations::READ,
+        },
+    ]
+}
+
+/// The Phase-2a gated notes-mutation tools (§3). Appended to `tool_table` ONLY
+/// when `CQS_MCP_ENABLE_MUTATIONS=1`. Each carries per-command annotations:
+/// `add` is additive (non-destructive, non-idempotent), `update` is idempotent
+/// but mutating, `remove` is the lone `destructiveHint:true` in the set. The
+/// `command` column maps to the `json_args::build_batch_cmd` notes arms
+/// (`notes-add`/`notes-update`/`notes-remove`) — also gated daemon-side.
+///
+/// The DESTRUCTIVE set (`gc`/`slot remove`/`index --force`/`model swap`/
+/// `cache clear`) is NOT here and has no flag that re-enables it: boundary by
+/// absence, the same mechanism that withholds `context`.
+fn mutation_tools() -> &'static [ToolDef] {
+    use crate::cli::commands::notes::{NotesAddArgs, NotesRemoveArgs, NotesUpdateArgs};
+    &[
+        ToolDef {
+            name: "cqs_notes_add",
+            command: "notes-add",
+            description:
+                "Add a project note (a sentiment-tagged observation that biases code-search \
+                 ranking and is injected into `read`). Appends to docs/notes.toml; the watch \
+                 loop reindexes. Additive — calling twice writes two notes.",
+            input_schema: schema::<NotesAddArgs>,
+            annotations: ToolAnnotations {
+                read_only: false,
+                idempotent: false,
+                destructive: false,
+                open_world: false,
+            },
+        },
+        ToolDef {
+            name: "cqs_notes_update",
+            command: "notes-update",
+            description:
+                "Update an existing note matched by its exact text: replace its text, sentiment, \
+                 mentions, or kind. Rewrites docs/notes.toml; the watch loop reindexes.",
+            input_schema: schema::<NotesUpdateArgs>,
+            annotations: ToolAnnotations {
+                read_only: false,
+                // Re-applying the same update converges to the same rewrite.
+                idempotent: true,
+                destructive: false,
+                open_world: false,
+            },
+        },
+        ToolDef {
+            name: "cqs_notes_remove",
+            command: "notes-remove",
+            description:
+                "Remove a note matched by its exact text from docs/notes.toml (no soft-delete); \
+                 the watch loop reindexes. Removing an absent note is a no-op error.",
+            input_schema: schema::<NotesRemoveArgs>,
+            annotations: ToolAnnotations {
+                read_only: false,
+                idempotent: true,
+                // The note text is gone — the lone destructive flag in the set.
+                destructive: true,
+                open_world: false,
+            },
         },
     ]
 }
@@ -248,7 +382,7 @@ pub fn tool_table() -> &'static [ToolDef] {
 /// an unknown name so the guard fails loudly rather than silently matching.
 #[cfg(test)]
 pub fn mcp_name_to_command(mcp_name: &str) -> String {
-    if let Some(def) = tool_table().iter().find(|t| t.name == mcp_name) {
+    if let Some(def) = tool_table().into_iter().find(|t| t.name == mcp_name) {
         return def.command.to_string();
     }
     mcp_name
@@ -257,9 +391,10 @@ pub fn mcp_name_to_command(mcp_name: &str) -> String {
         .replace('_', "-")
 }
 
-/// Look up a tool by its MCP name.
+/// Look up a tool by its MCP name. Respects the mutation flag — a notes-mutation
+/// tool is not findable (and so not callable) when the flag is off.
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
-    tool_table().iter().find(|t| t.name == name)
+    tool_table().into_iter().find(|t| t.name == name)
 }
 
 /// Build the `tools/list` result: `{tools: [{name, description, inputSchema,
@@ -272,14 +407,10 @@ pub fn list() -> Value {
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": (t.input_schema)(),
-                "annotations": {
-                    // Hints, not enforcement (the daemon's path/overlay gates
-                    // are the real boundary). Every P1 tool is a pure read.
-                    "readOnlyHint": true,
-                    "idempotentHint": true,
-                    "destructiveHint": false,
-                    "openWorldHint": false
-                }
+                // Per-tool annotations (§3) — hints, not enforcement (the
+                // daemon's path/overlay gates + the §2 opt-in flag are the real
+                // boundary). Read tools carry the read-quartet; mutators differ.
+                "annotations": t.annotations.to_json()
             })
         })
         .collect();
@@ -385,6 +516,12 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "review" => check::<ReviewCore>(arguments),
         "plan" => check::<PlanCore>(arguments),
         "read" => check::<ReadArgs>(arguments),
+        // Phase-2a gated notes mutators. Only reachable when the mutation tools
+        // are in the table (flag on), since `find_tool` gates on the same flag —
+        // but the pre-check arm is unconditional so a flag-on call shape-checks.
+        "notes-add" => check::<crate::cli::commands::notes::NotesAddArgs>(arguments),
+        "notes-update" => check::<crate::cli::commands::notes::NotesUpdateArgs>(arguments),
+        "notes-remove" => check::<crate::cli::commands::notes::NotesRemoveArgs>(arguments),
         // Unreachable: every table command is covered above. A new tool with no
         // arm fails the pre-check loudly rather than silently skipping it.
         other => Err(format!("no argument schema for command {other}")),
@@ -561,8 +698,17 @@ fn is_empty_with_candidates(payload: &Value) -> bool {
 mod tests {
     use super::*;
 
+    /// With the mutation flag OFF (Phase-1 surface), every exposed tool is a
+    /// read — `readOnlyHint:true`. Serial-gated in the shared `mcp_mutations_env`
+    /// group because `list()` reads the process-global flag; an ungated parallel
+    /// run can observe a flag a serial test set, flipping a mutator into view.
     #[test]
+    #[serial_test::serial(mcp_mutations_env)]
     fn list_emits_well_formed_tools() {
+        // SAFETY: serial group + restore via the prior value below.
+        let prior = std::env::var(crate::cli::mcp::MUTATIONS_ENV).ok();
+        std::env::remove_var(crate::cli::mcp::MUTATIONS_ENV);
+
         let v = list();
         let tools = v
             .get("tools")
@@ -582,6 +728,11 @@ mod tests {
                     .and_then(|v| v.as_bool()),
                 Some(true)
             );
+        }
+
+        match prior {
+            Some(p) => std::env::set_var(crate::cli::mcp::MUTATIONS_ENV, p),
+            None => std::env::remove_var(crate::cli::mcp::MUTATIONS_ENV),
         }
     }
 

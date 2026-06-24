@@ -301,12 +301,51 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
                 output: text_json(),
             }
         }
+        // ─── MCP Phase 2a: the gated notes-mutation channel ────────────────────
+        //
+        // These reverse the historical "notes mutations not on daemon" rejection,
+        // but ONLY behind the operator opt-in `CQS_MCP_ENABLE_MUTATIONS=1`
+        // (`mcp::mutations_enabled`). The handlers write `docs/notes.toml` (a
+        // file, not the `Store<ReadOnly>`); the watch loop reindexes — so the
+        // daemon's read-only-Store typestate is preserved. The flag is checked
+        // here too (not just in the bridge's `tools/list`) so a raw socket client
+        // that bypasses the tool list still cannot mutate without the opt-in.
+        // The destructive set stays withheld by ABSENCE — no arm exists for it.
+        "notes-add" => {
+            require_mutations_enabled(command)?;
+            let c: crate::cli::commands::notes::NotesAddArgs = parse_core(command, arguments)?;
+            BatchCmd::NotesAdd { args: c }
+        }
+        "notes-update" => {
+            require_mutations_enabled(command)?;
+            let c: crate::cli::commands::notes::NotesUpdateArgs = parse_core(command, arguments)?;
+            BatchCmd::NotesUpdate { args: c }
+        }
+        "notes-remove" => {
+            require_mutations_enabled(command)?;
+            let c: crate::cli::commands::notes::NotesRemoveArgs = parse_core(command, arguments)?;
+            BatchCmd::NotesRemove { args: c }
+        }
         other => bail!(
             "command '{other}' does not accept a JSON `arguments` object \
              (no Phase-0 core struct); use the argv `args` form"
         ),
     };
     Ok(cmd)
+}
+
+/// Reject a gated mutation command when the operator has not opted in via
+/// `CQS_MCP_ENABLE_MUTATIONS=1`. The boundary is enforced daemon-side, not only
+/// in the bridge's `tools/list`, so a raw socket client cannot bypass it.
+fn require_mutations_enabled(command: &str) -> Result<()> {
+    if !crate::cli::mcp::mutations_enabled() {
+        bail!(
+            "command '{command}' is a gated MCP mutation; set \
+             {}=1 to enable the notes-mutation channel",
+            crate::cli::mcp::MUTATIONS_ENV
+        );
+    }
+    Ok(())
 }
 
 // ─── Core → args.rs converters ─────────────────────────────────────────────
@@ -815,11 +854,193 @@ mod tests {
     /// error on the JSON-args path rather than dispatching or panicking.
     #[test]
     fn argv_only_command_rejected_on_json_path() {
-        // `notes` / `where` / `explain` are argv-only in Phase 1.
+        // `where` / `explain` are argv-only. (`notes-*` mutations now have a
+        // gated core — covered by the MCP Phase-2a tests below.)
         let err = build_batch_cmd("where", &json!({"description": "x"}));
         assert!(
             err.is_err(),
             "an argv-only command must be rejected on the JSON-args path"
+        );
+    }
+
+    // ─── MCP Phase 2a: gated notes-mutation channel ────────────────────────────
+
+    /// RAII guard for `CQS_MCP_ENABLE_MUTATIONS`, restoring the prior value on
+    /// drop. Pairs with `#[serial_test::serial(mcp_mutations_env)]`.
+    struct MutEnvGuard {
+        prior: Option<String>,
+    }
+    impl MutEnvGuard {
+        fn set(on: bool) -> Self {
+            let prior = std::env::var("CQS_MCP_ENABLE_MUTATIONS").ok();
+            if on {
+                std::env::set_var("CQS_MCP_ENABLE_MUTATIONS", "1");
+            } else {
+                std::env::remove_var("CQS_MCP_ENABLE_MUTATIONS");
+            }
+            Self { prior }
+        }
+    }
+    impl Drop for MutEnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("CQS_MCP_ENABLE_MUTATIONS", v),
+                None => std::env::remove_var("CQS_MCP_ENABLE_MUTATIONS"),
+            }
+        }
+    }
+
+    /// Read `docs/notes.toml` text under a project root, "" if absent.
+    fn read_notes_toml(root: &std::path::Path) -> String {
+        std::fs::read_to_string(root.join("docs/notes.toml")).unwrap_or_default()
+    }
+
+    /// With the flag OFF, every notes mutation is rejected by `build_batch_cmd`
+    /// — the daemon-side enforcement that a raw socket client can't bypass the
+    /// bridge's `tools/list` gating. No file is written.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn notes_mutations_rejected_when_flag_off() {
+        let _guard = MutEnvGuard::set(false);
+        let (dir, ctx) = seed_ctx();
+        for (command, arguments) in [
+            ("notes-add", json!({"text": "a note", "sentiment": -0.5})),
+            (
+                "notes-update",
+                json!({"text": "a note", "new_text": "b note"}),
+            ),
+            ("notes-remove", json!({"text": "a note"})),
+        ] {
+            // build_batch_cmd refuses without the opt-in.
+            assert!(
+                build_batch_cmd(command, &arguments).is_err(),
+                "`{command}` must be rejected when CQS_MCP_ENABLE_MUTATIONS is unset"
+            );
+            // And the full dispatch returns an error envelope, no file written.
+            let mut out = Vec::new();
+            dispatch_via_view_json(&ctx.build_view(None), command, &arguments, &mut out);
+            let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+            assert!(
+                v.get("error").is_some_and(|e| !e.is_null()),
+                "`{command}` flag-off must return an error envelope, got: {v}"
+            );
+        }
+        assert!(
+            read_notes_toml(dir.path()).is_empty(),
+            "no notes.toml must be written while the flag is off"
+        );
+    }
+
+    /// With the flag ON, `notes-add` over the JSON-args path actually appends to
+    /// the temp `docs/notes.toml` (the gate-safe file write) and returns a
+    /// success envelope marked `reindex_deferred` (the daemon does NOT reindex
+    /// — the watch loop does).
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn notes_add_round_trip_writes_file() {
+        let _guard = MutEnvGuard::set(true);
+        let (dir, ctx) = seed_ctx();
+        let mut out = Vec::new();
+        dispatch_via_view_json(
+            &ctx.build_view(None),
+            "notes-add",
+            &json!({"text": "daemon wrote this", "sentiment": -0.5, "mentions": ["json_args.rs"]}),
+            &mut out,
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+        // Success envelope (data present, no error).
+        assert!(
+            v.get("data").is_some_and(|d| !d.is_null()),
+            "notes-add must return a data envelope, got: {v}"
+        );
+        let data = &v["data"];
+        assert_eq!(data["status"], "added");
+        assert_eq!(
+            data["reindex_deferred"], true,
+            "daemon path defers reindex to the watch loop"
+        );
+        assert_eq!(
+            data["indexed"], false,
+            "daemon path does not reindex from the handler"
+        );
+        // The file was actually written with the note text.
+        let toml = read_notes_toml(dir.path());
+        assert!(
+            toml.contains("daemon wrote this"),
+            "notes.toml must contain the appended note, got:\n{toml}"
+        );
+        assert!(
+            toml.contains("json_args.rs"),
+            "notes.toml must contain the mention, got:\n{toml}"
+        );
+    }
+
+    /// Flag ON: a full add → update → remove round-trip over the JSON-args path,
+    /// each mutation reflected in the temp file.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn notes_add_update_remove_round_trip() {
+        let _guard = MutEnvGuard::set(true);
+        let (dir, ctx) = seed_ctx();
+        let run = |command: &str, arguments: serde_json::Value| -> serde_json::Value {
+            let mut out = Vec::new();
+            dispatch_via_view_json(&ctx.build_view(None), command, &arguments, &mut out);
+            serde_json::from_slice(&out).expect("JSON")
+        };
+
+        // add
+        let v = run("notes-add", json!({"text": "first", "sentiment": 0.0}));
+        assert_eq!(v["data"]["status"], "added");
+        assert!(read_notes_toml(dir.path()).contains("first"));
+
+        // update (idempotent rewrite)
+        let v = run(
+            "notes-update",
+            json!({"text": "first", "new_text": "second"}),
+        );
+        assert_eq!(v["data"]["status"], "updated");
+        let toml = read_notes_toml(dir.path());
+        assert!(toml.contains("second"), "updated text present");
+        assert!(!toml.contains("\"first\""), "old text gone");
+
+        // remove
+        let v = run("notes-remove", json!({"text": "second"}));
+        assert_eq!(v["data"]["status"], "removed");
+        assert!(
+            !read_notes_toml(dir.path()).contains("second"),
+            "removed note gone from file"
+        );
+
+        // remove again → not-found error (idempotent no-op surfaces as error).
+        let v = run("notes-remove", json!({"text": "second"}));
+        assert!(
+            v.get("error").is_some_and(|e| !e.is_null()),
+            "removing an absent note must error, got: {v}"
+        );
+    }
+
+    /// The daemon notes-write path preserves `Store<ReadOnly>`: it never
+    /// acquires a writable store. We assert this by type — `ctx.store()` returns
+    /// `Arc<Store<ReadOnly>>`, and the round-trip above mutates the FILE while
+    /// the same view's store stays read-only and usable.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn notes_write_keeps_store_read_only() {
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        let view = ctx.build_view(None);
+        // Type assertion: the view's store is read-only (compile-time proof the
+        // handler had no writable store to reach for).
+        let store: std::sync::Arc<cqs::store::Store<cqs::store::ReadOnly>> = view.store();
+        let mut out = Vec::new();
+        dispatch_via_view_json(&view, "notes-add", &json!({"text": "ro check"}), &mut out);
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+        assert_eq!(v["data"]["status"], "added");
+        // The read-only store is still live after the file mutation (a read
+        // succeeds — the typestate was never traded for a writable handle).
+        assert!(
+            store.chunk_count().is_ok(),
+            "the daemon's Store<ReadOnly> must stay usable across a notes write"
         );
     }
 

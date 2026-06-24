@@ -70,6 +70,317 @@ struct NotesListOutput {
     count: usize,
 }
 
+// ─── Mutation cores (surface-agnostic, MCP-ready) ──────────────────────────────
+
+/// Input for [`notes_add_core`]: the field surface a note-add consumer sets.
+/// Derives `serde::Deserialize` + `schemars::JsonSchema` so it doubles as the
+/// MCP `cqs_notes_add` `inputSchema` source and the daemon deserialize target.
+///
+/// `#[serde(default)]` on the struct so a wire/MCP caller can supply just
+/// `text` and inherit the production defaults for the rest.
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct NotesAddArgs {
+    /// Note text (natural language). Required; whitespace-only is rejected.
+    pub text: String,
+    /// Sentiment on the discrete grid {-1, -0.5, 0, 0.5, 1}; off-grid values
+    /// snap to the nearest.
+    pub sentiment: f32,
+    /// File paths or concepts this note relates to.
+    pub mentions: Option<Vec<String>>,
+    /// Structured kind tag (`todo`, `design-decision`, `known-bug`, …);
+    /// kebab-case lowercase by convention. Empty string is treated as absent.
+    pub kind: Option<String>,
+}
+
+/// Input for [`notes_update_core`]: the exact match-text plus the optional new
+/// fields. At least one `new_*` field must be set (enforced in the core).
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct NotesUpdateArgs {
+    /// Exact (trimmed) text of the note to update — the match key.
+    pub text: String,
+    /// Replacement text. When omitted, the existing text is kept.
+    pub new_text: Option<String>,
+    /// Replacement sentiment (snapped to the discrete grid). When omitted, kept.
+    pub new_sentiment: Option<f32>,
+    /// Replacement mentions (replaces the whole list). When omitted, kept.
+    pub new_mentions: Option<Vec<String>>,
+    /// Replacement kind tag. Pass an empty string to clear; omit to keep.
+    pub new_kind: Option<String>,
+}
+
+/// Input for [`notes_remove_core`]: the exact match-text of the note to delete.
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct NotesRemoveArgs {
+    /// Exact (trimmed) text of the note to remove — the match key.
+    pub text: String,
+}
+
+/// What a mutation core produced for the adapter to format. Carries the
+/// post-write facts (status, the preview text, the sentiment/label for `add`)
+/// but does NOT perform any reindex — the gate-safe daemon path leaves the
+/// `docs/notes.toml` reindex to the watch loop, and the CLI adapter runs its
+/// own reindex on top of this.
+pub(crate) struct NoteMutationCore {
+    /// `"added"` / `"updated"` / `"removed"`.
+    pub status: &'static str,
+    /// Text-preview for the confirmation (already truncated).
+    pub text_preview: String,
+    /// The coarse sentiment label (`"warning"`/`"pattern"`/`"observation"`),
+    /// set for `add` only — `update`/`remove` leave it `None`.
+    pub note_type: Option<&'static str>,
+    /// The snapped sentiment, set for `add` only.
+    pub sentiment: Option<f32>,
+}
+
+/// Surface-agnostic core for `cqs notes add`: validate text/sentiment/mentions/
+/// kind, then append to `docs/notes.toml` under the file lock (creating the file
+/// with header if absent). Rejects whitespace-only text, over-cap text/mentions,
+/// and exact (post-trim) duplicates.
+///
+/// **No reindex.** This is the load-bearing gate-safe path: the daemon
+/// (`Store<ReadOnly>`) drives this core, writes the `notes.toml` *file*, and
+/// relies on the watch loop to reindex — it never acquires a writable `Store`.
+/// The CLI adapter calls this core and then reindexes itself.
+pub(crate) fn notes_add_core(
+    root: &std::path::Path,
+    args: &NotesAddArgs,
+) -> Result<NoteMutationCore> {
+    let _span = tracing::info_span!(
+        "notes_add_core",
+        text_len = args.text.len(),
+        sentiment = args.sentiment,
+        kind = args.kind.as_deref().unwrap_or(""),
+    )
+    .entered();
+    let text = validate_note_text(&args.text, "Note text")?;
+    // Snap to the discrete grid BEFORE the TOML write so the file, the
+    // confirmation, and (after reindex) the DB all agree — snapping only on
+    // read-back would leave the raw value in notes.toml and disagree with the DB.
+    let sentiment = cqs::note::snap_sentiment(args.sentiment);
+    let mentions = validate_mentions(args.mentions.as_deref().unwrap_or(&[]), "mentions")?;
+    let kind = normalize_kind(args.kind.as_deref());
+
+    let note_entry = NoteEntry {
+        sentiment,
+        text: text.to_string(),
+        mentions,
+        kind,
+    };
+
+    let notes_path = ensure_notes_file(root)?;
+    // Duplicate check inside the rewrite closure so it runs under the same
+    // exclusive lock as the append (no read-then-write race).
+    rewrite_notes_file(&notes_path, |entries| {
+        if entries.iter().any(|e| e.text.trim() == text) {
+            return Err(cqs::NoteError::Duplicate(format!(
+                "a note with this text already exists in docs/notes.toml: '{}' \
+                 (use 'cqs notes update' or 'cqs notes remove' instead)",
+                text_preview(text)
+            )));
+        }
+        entries.push(note_entry.clone());
+        Ok(())
+    })
+    .context("Failed to add note")?;
+
+    let note_type = if sentiment < -0.3 {
+        "warning"
+    } else if sentiment > 0.3 {
+        "pattern"
+    } else {
+        "observation"
+    };
+    Ok(NoteMutationCore {
+        status: "added",
+        text_preview: text_preview(text),
+        note_type: Some(note_type),
+        sentiment: Some(sentiment),
+    })
+}
+
+/// Surface-agnostic core for `cqs notes update`: match by exact trimmed text,
+/// apply the supplied new fields to the FIRST match, rewrite `docs/notes.toml`.
+/// Requires at least one `new_*` field. No reindex (see [`notes_add_core`]).
+pub(crate) fn notes_update_core(
+    root: &std::path::Path,
+    args: &NotesUpdateArgs,
+) -> Result<NoteMutationCore> {
+    let _span = tracing::info_span!(
+        "notes_update_core",
+        text_len = args.text.len(),
+        new_text_len = args.new_text.as_deref().map(str::len),
+    )
+    .entered();
+    if args.text.trim().is_empty() {
+        bail!("Note text cannot be empty or whitespace-only");
+    }
+    if args.new_text.is_none()
+        && args.new_sentiment.is_none()
+        && args.new_mentions.is_none()
+        && args.new_kind.is_none()
+    {
+        bail!(
+            "At least one of new_text, new_sentiment, new_mentions, or new_kind \
+             must be provided"
+        );
+    }
+    let new_text = args
+        .new_text
+        .as_deref()
+        .map(|t| validate_note_text(t, "new_text"))
+        .transpose()?;
+
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        bail!("No notes.toml found. Use 'cqs notes add' to create notes first.");
+    }
+
+    let text_trimmed = args.text.trim();
+    let new_text_owned = new_text.map(|s| s.to_string());
+    let new_sentiment_clamped = args.new_sentiment.map(cqs::note::snap_sentiment);
+    let new_mentions_owned = args
+        .new_mentions
+        .as_deref()
+        .map(|m| validate_mentions(m, "new_mentions"))
+        .transpose()?;
+    // `Some(None)` = clear the kind; `None` = leave existing.
+    let new_kind_norm: Option<Option<String>> = args.new_kind.as_deref().map(|k| {
+        let trimmed = k.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    rewrite_notes_file(&notes_path, |entries| {
+        let entry = entries
+            .iter_mut()
+            .find(|e| e.text.trim() == text_trimmed)
+            .ok_or_else(|| {
+                cqs::NoteError::NotFound(format!(
+                    "No note with text: '{}'",
+                    text_preview(text_trimmed)
+                ))
+            })?;
+        if let Some(ref t) = new_text_owned {
+            entry.text = t.clone();
+        }
+        if let Some(s) = new_sentiment_clamped {
+            entry.sentiment = s;
+        }
+        if let Some(ref m) = new_mentions_owned {
+            entry.mentions = m.clone();
+        }
+        if let Some(ref k) = new_kind_norm {
+            entry.kind = k.clone();
+        }
+        Ok(())
+    })
+    .context("Failed to update note")?;
+
+    let final_text = new_text.unwrap_or(args.text.as_str());
+    Ok(NoteMutationCore {
+        status: "updated",
+        text_preview: text_preview(final_text),
+        note_type: None,
+        sentiment: None,
+    })
+}
+
+/// Surface-agnostic core for `cqs notes remove`: match by exact trimmed text,
+/// delete the FIRST match from `docs/notes.toml`. No reindex (see
+/// [`notes_add_core`]).
+pub(crate) fn notes_remove_core(
+    root: &std::path::Path,
+    args: &NotesRemoveArgs,
+) -> Result<NoteMutationCore> {
+    let _span = tracing::info_span!("notes_remove_core", text_len = args.text.len()).entered();
+    if args.text.trim().is_empty() {
+        bail!("Note text cannot be empty or whitespace-only");
+    }
+
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        bail!("No notes.toml found");
+    }
+
+    let text_trimmed = args.text.trim();
+    let mut removed_text = String::new();
+    rewrite_notes_file(&notes_path, |entries| {
+        let pos = entries
+            .iter()
+            .position(|e| e.text.trim() == text_trimmed)
+            .ok_or_else(|| {
+                cqs::NoteError::NotFound(format!(
+                    "No note with text: '{}'",
+                    text_preview(text_trimmed)
+                ))
+            })?;
+        removed_text = entries[pos].text.clone();
+        entries.remove(pos);
+        Ok(())
+    })
+    .context("Failed to remove note")?;
+
+    Ok(NoteMutationCore {
+        status: "removed",
+        text_preview: text_preview(&removed_text),
+        note_type: None,
+        sentiment: None,
+    })
+}
+
+/// Serialize a [`NoteMutationCore`] into the daemon-path JSON `data` payload.
+///
+/// Same envelope shape as the CLI's `--json` output (`status` / `type` /
+/// `sentiment` / `text_preview` / `file`), but `indexed:false` and
+/// `total_notes:0` because the daemon (MCP Phase 2a) does NOT reindex from the
+/// handler — it wrote the `notes.toml` *file* and leaves the reindex to the
+/// watch loop (the `Store<ReadOnly>` invariant). The `reindex_deferred` flag is
+/// the honest signal that the index lags the file until the next watch tick.
+pub(crate) fn notes_mutation_daemon_json(core: &NoteMutationCore) -> serde_json::Value {
+    let result = NoteMutationOutput {
+        status: core.status.into(),
+        note_type: core.note_type.map(str::to_string),
+        sentiment: core.sentiment,
+        text_preview: core.text_preview.clone(),
+        file: "docs/notes.toml".into(),
+        indexed: false,
+        total_notes: 0,
+        index_error: None,
+    };
+    let mut value = serde_json::to_value(&result).unwrap_or_else(|e| {
+        // to_value on a #[derive(Serialize)] struct of owned primitives cannot
+        // fail in practice; degrade rather than panic on the unreachable path.
+        tracing::warn!(error = %e, "notes_mutation_daemon_json serialization failed");
+        serde_json::json!({ "status": core.status, "file": "docs/notes.toml" })
+    });
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "reindex_deferred".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    value
+}
+
+/// Normalize a `--kind` value: trim, lowercase, empty → None. Shared by the
+/// add core and the CLI/daemon paths so add/parse stay in sync.
+fn normalize_kind(raw: Option<&str>) -> Option<String> {
+    raw.and_then(|k| {
+        let trimmed = k.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 // ─── Surface-agnostic core ────────────────────────────────────────────────────
 
 /// Surface-agnostic JSON core for `cqs notes list`. Both the CLI
@@ -453,81 +764,28 @@ fn cmd_notes_add(
         no_reindex
     )
     .entered();
-    let text = validate_note_text(text, "Note text")?;
-
-    // Snap to the discrete grid {-1, -0.5, 0, 0.5, 1} BEFORE writing the TOML,
-    // not just before the DB write. `parse_notes_str` snaps on read-back so the
-    // DB stays clean either way, but snapping only there would leave the raw
-    // value (e.g. 0.7) in notes.toml and in the printed confirmation while the
-    // DB holds 0.5 — a permanent file/DB disagreement.
-    let sentiment = cqs::note::snap_sentiment(sentiment);
-    let mentions = validate_mentions(mentions.unwrap_or(&[]), "--mentions")?;
-    // Normalize kind (trim + lowercase + reject empty). Mirrors the
-    // parser's `normalize_kind` semantics so add and parse stay in sync —
-    // `--kind ""` is silently absent, not stored as Some("").
-    let kind: Option<String> = kind.and_then(|raw| {
-        let trimmed = raw.trim().to_ascii_lowercase();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    });
-
-    let note_entry = NoteEntry {
-        sentiment,
-        text: text.to_string(),
-        mentions,
-        kind,
-    };
 
     let root = resolve_root(ctx);
-    let notes_path = ensure_notes_file(&root)?;
+    // The file-write + validation lives in the shared core (also the daemon's
+    // gate-safe path); the CLI adds the reindex + rendering on top.
+    let core = notes_add_core(
+        &root,
+        &NotesAddArgs {
+            text: text.to_string(),
+            sentiment,
+            mentions: mentions.map(<[String]>::to_vec),
+            kind: kind.map(str::to_string),
+        },
+    )?;
 
-    // Duplicate check lives inside the rewrite closure so it runs under the
-    // same exclusive lock as the append — no read-then-write race with a
-    // concurrent add. Notes carry search-ranking sentiment, and update/remove
-    // mutate only the first text match, so a duplicate would survive a
-    // "remove" and keep skewing rankings; reject it outright.
-    rewrite_notes_file(&notes_path, |entries| {
-        if entries.iter().any(|e| e.text.trim() == text) {
-            return Err(cqs::NoteError::Duplicate(format!(
-                "a note with this text already exists in docs/notes.toml: '{}' \
-                 (use 'cqs notes update' or 'cqs notes remove' instead)",
-                text_preview(text)
-            )));
-        }
-        entries.push(note_entry.clone());
-        Ok(())
-    })
-    .context("Failed to add note")?;
-
-    let (indexed, index_error) = if no_reindex {
-        (0, None)
-    } else {
-        // Open read-write store lazily *only* when a mutation actually runs,
-        // so list-only invocations never pay the cost of a second connection
-        // (avoid double-connecting during pure reads).
-        match open_rw_store(&root) {
-            Ok(store) => reindex_notes(root.as_path(), &store),
-            Err(e) => (0, Some(format!("{e}"))),
-        }
-    };
-
-    let sentiment_label = if sentiment < -0.3 {
-        "warning"
-    } else if sentiment > 0.3 {
-        "pattern"
-    } else {
-        "observation"
-    };
+    let (indexed, index_error) = reindex_after_mutation(&root, no_reindex);
 
     if cli.json || output_json {
         let result = NoteMutationOutput {
-            status: "added".into(),
-            note_type: Some(sentiment_label.into()),
-            sentiment: Some(sentiment),
-            text_preview: text_preview(text),
+            status: core.status.into(),
+            note_type: core.note_type.map(str::to_string),
+            sentiment: core.sentiment,
+            text_preview: core.text_preview.clone(),
             file: "docs/notes.toml".into(),
             indexed: indexed > 0,
             total_notes: indexed,
@@ -537,9 +795,9 @@ fn cmd_notes_add(
     } else {
         println!(
             "Added {} (sentiment: {:+.1}): {}",
-            sentiment_label,
-            sentiment,
-            text_preview(text)
+            core.note_type.unwrap_or("observation"),
+            core.sentiment.unwrap_or(0.0),
+            core.text_preview
         );
         if indexed > 0 {
             println!("Indexed {} notes.", indexed);
@@ -554,6 +812,22 @@ fn cmd_notes_add(
     }
 
     Ok(())
+}
+
+/// CLI-only post-mutation reindex: open a read-write store lazily and re-parse +
+/// re-index `docs/notes.toml`. Returns `(indexed_count, optional_error)`.
+/// Skipped when `no_reindex` is set. The daemon path does NOT call this — it
+/// leaves reindexing to the watch loop (the `Store<ReadOnly>` invariant).
+fn reindex_after_mutation(root: &std::path::Path, no_reindex: bool) -> (usize, Option<String>) {
+    if no_reindex {
+        return (0, None);
+    }
+    // Open read-write store lazily *only* when a mutation actually runs, so
+    // list-only invocations never pay for a second connection.
+    match open_rw_store(root) {
+        Ok(store) => reindex_notes(root, &store),
+        Err(e) => (0, Some(format!("{e}"))),
+    }
 }
 
 /// Update a note: match by text, apply new text/sentiment/mentions/kind, optionally reindex.
@@ -589,96 +863,29 @@ fn cmd_notes_update(
         no_reindex
     )
     .entered();
-    // Trimmed-empty rejection (not just `is_empty`): a whitespace-only query
-    // would trim to "" and match any whitespace-only entry a hand-edited
-    // file might contain.
-    if text.trim().is_empty() {
-        bail!("Note text cannot be empty or whitespace-only");
-    }
-    if new_text.is_none() && new_sentiment.is_none() && new_mentions.is_none() && new_kind.is_none()
-    {
-        bail!(
-            "At least one of --new-text, --new-sentiment, --new-mentions, or --new-kind \
-             must be provided"
-        );
-    }
-    let new_text = new_text
-        .map(|t| validate_note_text(t, "--new-text"))
-        .transpose()?;
 
     let root = resolve_root(ctx);
-    let notes_path = root.join("docs/notes.toml");
-    if !notes_path.exists() {
-        bail!("No notes.toml found. Use 'cqs notes add' to create notes first.");
-    }
+    // The match + file-rewrite + validation lives in the shared core (also the
+    // daemon's gate-safe path); the CLI adds the reindex + rendering on top.
+    let core = notes_update_core(
+        &root,
+        &NotesUpdateArgs {
+            text: text.to_string(),
+            new_text: new_text.map(str::to_string),
+            new_sentiment,
+            new_mentions: new_mentions.map(<[String]>::to_vec),
+            new_kind: new_kind.map(str::to_string),
+        },
+    )?;
 
-    let text_trimmed = text.trim();
-    let new_text_owned = new_text.map(|s| s.to_string());
-    // Snap to the discrete grid before the TOML write — same rationale as
-    // `notes add`: keep the file, the confirmation output, and the DB all
-    // showing the same value.
-    let new_sentiment_clamped = new_sentiment.map(cqs::note::snap_sentiment);
-    let new_mentions_owned = new_mentions
-        .map(|m| validate_mentions(m, "--new-mentions"))
-        .transpose()?;
-    // Apply the same normalization `notes add --kind` uses: trim,
-    // lowercase, empty → None. `Some(None)` means "the user passed
-    // `--new-kind` with an empty/whitespace value, intending to
-    // clear the field"; `None` means "the flag wasn't passed, leave
-    // existing kind alone."
-    let new_kind_norm: Option<Option<String>> = new_kind.map(|k| {
-        let trimmed = k.trim().to_ascii_lowercase();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    });
+    let (indexed, index_error) = reindex_after_mutation(&root, no_reindex);
 
-    rewrite_notes_file(&notes_path, |entries| {
-        let entry = entries
-            .iter_mut()
-            .find(|e| e.text.trim() == text_trimmed)
-            .ok_or_else(|| {
-                cqs::NoteError::NotFound(format!(
-                    "No note with text: '{}'",
-                    text_preview(text_trimmed)
-                ))
-            })?;
-
-        if let Some(ref t) = new_text_owned {
-            entry.text = t.clone();
-        }
-        if let Some(s) = new_sentiment_clamped {
-            entry.sentiment = s;
-        }
-        if let Some(ref m) = new_mentions_owned {
-            entry.mentions = m.clone();
-        }
-        if let Some(ref k) = new_kind_norm {
-            entry.kind = k.clone();
-        }
-        Ok(())
-    })
-    .context("Failed to update note")?;
-
-    let (indexed, index_error) = if no_reindex {
-        (0, None)
-    } else {
-        // Open read-write store lazily *only* when a mutation actually runs.
-        match open_rw_store(&root) {
-            Ok(store) => reindex_notes(root.as_path(), &store),
-            Err(e) => (0, Some(format!("{e}"))),
-        }
-    };
-
-    let final_text = new_text.unwrap_or(text);
     if cli.json || output_json {
         let result = NoteMutationOutput {
-            status: "updated".into(),
+            status: core.status.into(),
             note_type: None,
             sentiment: None,
-            text_preview: text_preview(final_text),
+            text_preview: core.text_preview.clone(),
             file: "docs/notes.toml".into(),
             indexed: indexed > 0,
             total_notes: indexed,
@@ -686,7 +893,7 @@ fn cmd_notes_update(
         };
         crate::cli::json_envelope::emit_json(&result)?;
     } else {
-        println!("Updated: {}", text_preview(final_text));
+        println!("Updated: {}", core.text_preview);
         if indexed > 0 {
             println!("Indexed {} notes.", indexed);
         }
@@ -716,54 +923,25 @@ fn cmd_notes_remove(
     // Per-subhandler span — see `cmd_notes_add`.
     let _span =
         tracing::info_span!("cmd_notes_remove", text_len = text.len(), no_reindex).entered();
-    // Trimmed-empty rejection — see `cmd_notes_update` for the
-    // whitespace-only wildcard rationale.
-    if text.trim().is_empty() {
-        bail!("Note text cannot be empty or whitespace-only");
-    }
 
     let root = resolve_root(ctx);
-    let notes_path = root.join("docs/notes.toml");
-    if !notes_path.exists() {
-        bail!("No notes.toml found");
-    }
+    // The match + file-rewrite lives in the shared core (also the daemon's
+    // gate-safe path); the CLI adds the reindex + rendering on top.
+    let core = notes_remove_core(
+        &root,
+        &NotesRemoveArgs {
+            text: text.to_string(),
+        },
+    )?;
 
-    let text_trimmed = text.trim();
-    let mut removed_text = String::new();
-
-    rewrite_notes_file(&notes_path, |entries| {
-        let pos = entries
-            .iter()
-            .position(|e| e.text.trim() == text_trimmed)
-            .ok_or_else(|| {
-                cqs::NoteError::NotFound(format!(
-                    "No note with text: '{}'",
-                    text_preview(text_trimmed)
-                ))
-            })?;
-
-        removed_text = entries[pos].text.clone();
-        entries.remove(pos);
-        Ok(())
-    })
-    .context("Failed to remove note")?;
-
-    let (indexed, index_error) = if no_reindex {
-        (0, None)
-    } else {
-        // Open read-write store lazily *only* when a mutation actually runs.
-        match open_rw_store(&root) {
-            Ok(store) => reindex_notes(root.as_path(), &store),
-            Err(e) => (0, Some(format!("{e}"))),
-        }
-    };
+    let (indexed, index_error) = reindex_after_mutation(&root, no_reindex);
 
     if cli.json || output_json {
         let result = NoteMutationOutput {
-            status: "removed".into(),
+            status: core.status.into(),
             note_type: None,
             sentiment: None,
-            text_preview: text_preview(&removed_text),
+            text_preview: core.text_preview.clone(),
             file: "docs/notes.toml".into(),
             indexed: indexed > 0,
             total_notes: indexed,
@@ -771,7 +949,7 @@ fn cmd_notes_remove(
         };
         crate::cli::json_envelope::emit_json(&result)?;
     } else {
-        println!("Removed: {}", text_preview(&removed_text));
+        println!("Removed: {}", core.text_preview);
         if indexed > 0 {
             println!("Indexed {} notes.", indexed);
         }

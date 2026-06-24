@@ -234,6 +234,27 @@ pub(crate) enum BatchCmd {
         #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
         output: TextJsonArgs,
     },
+    /// Add a note (MCP Phase 2a gated mutation channel).
+    ///
+    /// `#[command(skip)]` — NOT argv-reachable on the daemon socket. The only
+    /// constructor is `json_args::build_batch_cmd`, gated behind
+    /// `CQS_MCP_ENABLE_MUTATIONS`. The handler writes `docs/notes.toml` (a file,
+    /// not the `Store<ReadOnly>`); the watch loop reindexes — so the daemon's
+    /// read-only Store typestate is preserved.
+    #[command(skip)]
+    NotesAdd {
+        args: crate::cli::commands::notes::NotesAddArgs,
+    },
+    /// Update a note (MCP Phase 2a gated mutation channel). See `NotesAdd`.
+    #[command(skip)]
+    NotesUpdate {
+        args: crate::cli::commands::notes::NotesUpdateArgs,
+    },
+    /// Remove a note (MCP Phase 2a gated mutation channel). See `NotesAdd`.
+    #[command(skip)]
+    NotesRemove {
+        args: crate::cli::commands::notes::NotesRemoveArgs,
+    },
     /// One-shot implementation context (terminal — no pipeline chaining)
     Task {
         #[command(flatten)]
@@ -420,6 +441,9 @@ macro_rules! for_each_batch_cmd {
                 (Stale,      dispatch_stale,        false)
                 (Drift,      dispatch_drift,        false)
                 (Notes,      dispatch_notes,        false)
+                (NotesAdd,    dispatch_notes_add,    false)
+                (NotesUpdate, dispatch_notes_update, false)
+                (NotesRemove, dispatch_notes_remove, false)
                 (Task,       dispatch_task,         false)
                 (Review,     dispatch_review,       false)
                 (Ci,         dispatch_ci,           false)
