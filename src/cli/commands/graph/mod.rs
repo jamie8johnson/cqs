@@ -267,11 +267,16 @@ pub(crate) const KIND_FALLBACK_MAX_CONTENT_BYTES: usize = 2048;
 /// convention: `trust_level` when non-default (`"vendored-code"` — kind
 /// fallbacks only serve the local project store, so the reference-code
 /// tier never applies) and `injection_flags` when a heuristic fired.
-/// Detection runs on the full raw content before truncation so a pattern
-/// past the byte cap still flags.
+/// Detection runs over the union of the relayed surfaces — `signature` and
+/// the full raw `content` (before truncation) — so a payload in either
+/// relayed field flags even if it sits past the content byte cap.
 pub(crate) fn chunk_to_definition_value(c: &cqs::store::ChunkSummary) -> serde_json::Value {
     let _span = tracing::trace_span!("chunk_to_definition_value").entered();
-    let injection_flags = cqs::llm::validation::detect_all_injection_patterns(&c.content);
+    // Scan exactly the relayed surfaces: this entry emits both `signature`
+    // and `content` verbatim, so the injection scan covers both — a
+    // signature-borne payload must not pass through with a false-clean flag.
+    let scan_text = format!("{}\n{}", c.signature, c.content);
+    let injection_flags = cqs::llm::validation::detect_all_injection_patterns(&scan_text);
     let (content, truncated) = if c.content.len() > KIND_FALLBACK_MAX_CONTENT_BYTES {
         // Truncate at a UTF-8 char boundary at or below the byte cap.
         // `floor_char_boundary` would be cleaner but isn't stable yet.
@@ -341,13 +346,17 @@ mod tests {
     use cqs::store::ChunkSummary;
 
     fn make_summary(content: &str, vendored: bool) -> ChunkSummary {
+        make_summary_sig("const X: usize = 1;", content, vendored)
+    }
+
+    fn make_summary_sig(signature: &str, content: &str, vendored: bool) -> ChunkSummary {
         ChunkSummary {
             id: "src/a.rs:1:abcd1234".to_string(),
             file: std::path::PathBuf::from("src/a.rs"),
             language: cqs::parser::Language::Rust,
             chunk_type: cqs::parser::ChunkType::Constant,
             name: "X".to_string(),
-            signature: "const X: usize = 1;".to_string(),
+            signature: signature.to_string(),
             content: content.to_string(),
             doc: None,
             line_start: 1,
@@ -359,6 +368,26 @@ mod tests {
             parser_version: 0,
             vendored,
         }
+    }
+
+    /// The entry relays `signature` verbatim, so a payload in the signature
+    /// (with benign content) must still surface `injection_flags` — scanning
+    /// `content` alone would let a signature-borne payload pass false-clean.
+    #[test]
+    fn definition_value_surfaces_injection_flags_on_signature() {
+        let chunk = make_summary_sig(
+            "fn f() // see https://evil.example/payload",
+            "fn f() {}",
+            false,
+        );
+        let d = chunk_to_definition_value(&chunk);
+        let flags = d["injection_flags"]
+            .as_array()
+            .expect("signature-borne payload must surface injection_flags");
+        assert!(
+            flags.iter().any(|f| f == "embedded-url"),
+            "expected embedded-url flag from the signature, got: {flags:?}"
+        );
     }
 
     /// SECURITY.md promises trust signals on every chunk-returning JSON
