@@ -35,6 +35,57 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::StreamingIterator;
 
+/// Parse `source` with a wall-clock timeout (`crate::limits::parser_timeout_ms`).
+///
+/// tree-sitter has no internal time bound: an adversarial token stream can drive
+/// superlinear error recovery and pin a parser thread for tens of seconds with
+/// no cancellation, stalling the in-process index/watch/daemon parse. This wraps
+/// `parse_with_options` with a progress callback that aborts (returns `None`)
+/// once the budget is exceeded. A `None` return is the SAME shape an
+/// unparseable/oversized file already yields at every call site (mapped to
+/// `ParseFailed` / skip-with-warn), so adding the timeout is behavior-neutral
+/// for legitimate input — the budget is far larger than any real parse.
+///
+/// When the timeout is disabled (`CQS_PARSER_TIMEOUT_MS=0`) this is exactly
+/// `parser.parse(source, None)`.
+pub(crate) fn parse_with_timeout(
+    parser: &mut tree_sitter::Parser,
+    source: &str,
+) -> Option<tree_sitter::Tree> {
+    let Some(budget_ms) = crate::limits::parser_timeout_ms() else {
+        return parser.parse(source, None);
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(budget_ms);
+    let mut timed_out = false;
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    // The progress callback fires periodically during parsing; checking a
+    // monotonic clock there is cheap relative to the parse work between calls.
+    let mut on_progress = |_state: &tree_sitter::ParseState| {
+        if std::time::Instant::now() >= deadline {
+            timed_out = true;
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    };
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut on_progress);
+    let tree = parser.parse_with_options(
+        &mut |i, _| if i < len { &bytes[i..] } else { &[] },
+        None,
+        Some(options),
+    );
+    if timed_out {
+        tracing::warn!(
+            budget_ms,
+            source_bytes = len,
+            "tree-sitter parse exceeded CQS_PARSER_TIMEOUT_MS budget; skipping (set CQS_PARSER_TIMEOUT_MS=0 to disable, or raise it)"
+        );
+        return None;
+    }
+    tree
+}
+
 /// Default per-file size cap for parsing (50 MiB). Files larger than this
 /// are skipped at parse time. Override at runtime via
 /// `CQS_PARSER_MAX_FILE_SIZE`. Distinct from `CQS_MAX_FILE_SIZE`
@@ -306,8 +357,7 @@ impl Parser {
             .set_language(&grammar)
             .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
-        let tree = parser
-            .parse(source, None)
+        let tree = parse_with_timeout(&mut parser, source)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
         // Get or compile query (lazy initialization)
@@ -577,8 +627,7 @@ impl Parser {
             .set_language(&grammar)
             .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
-        let tree = parser
-            .parse(&source, None)
+        let tree = parse_with_timeout(&mut parser, &source)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
         // Get queries (chunk query needed for both passes, call/type for pass 2)
@@ -1058,7 +1107,7 @@ impl Parser {
                 continue;
             }
 
-            let tree = match parser.parse(&block.content, None) {
+            let tree = match parse_with_timeout(&mut parser, &block.content) {
                 Some(t) => t,
                 None => {
                     tracing::debug!(lang = %block.lang, "Tree-sitter parse returned None for fenced block");
@@ -1359,6 +1408,99 @@ mod tests {
             "non-UTF8 file must produce empty Vec, got {} chunk(s)",
             chunks.len()
         );
+    }
+
+    /// Regression guards for the parse-timeout DoS bound.
+    ///
+    /// tree-sitter has no internal time bound: an adversarial token stream that
+    /// drives superlinear error recovery (or merely a huge file under the 50 MB
+    /// cap) pins a parser thread for tens of seconds with no cancellation,
+    /// stalling the in-process index/watch/daemon parse. `parse_with_timeout`
+    /// caps each parse at `CQS_PARSER_TIMEOUT_MS` (default 5 s) and returns
+    /// `None` on the budget — the same shape an oversized/unparseable file
+    /// already yields (skip-with-warn).
+    mod parse_timeout {
+        use std::sync::Mutex;
+
+        // `CQS_PARSER_TIMEOUT_MS` is process-global; serialise the cohort.
+        static TIMEOUT_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        fn with_timeout_env<F: FnOnce()>(value: Option<&str>, f: F) {
+            let _g = TIMEOUT_ENV_LOCK.lock().unwrap();
+            let prev = std::env::var("CQS_PARSER_TIMEOUT_MS").ok();
+            match value {
+                Some(v) => std::env::set_var("CQS_PARSER_TIMEOUT_MS", v),
+                None => std::env::remove_var("CQS_PARSER_TIMEOUT_MS"),
+            }
+            f();
+            match prev {
+                Some(p) => std::env::set_var("CQS_PARSER_TIMEOUT_MS", p),
+                None => std::env::remove_var("CQS_PARSER_TIMEOUT_MS"),
+            }
+        }
+
+        fn rust_parser() -> tree_sitter::Parser {
+            let grammar = crate::parser::types::Language::Rust
+                .try_grammar()
+                .expect("rust grammar");
+            let mut p = tree_sitter::Parser::new();
+            p.set_language(&grammar).expect("set language");
+            p
+        }
+
+        /// A pathological token-storm parse must abort under a tight budget and
+        /// return `None` within a wall-clock bound far below its uncapped parse
+        /// time. UNFIXED (`parser.parse` with no options) ran to completion
+        /// (seconds), so this is a red guard there.
+        #[test]
+        fn pathological_parse_aborts_under_budget() {
+            // ~4 MB of bare-token error-recovery storm. Uncapped this parses in
+            // multiple seconds; with a 200 ms budget it must bail well under 2 s.
+            let n = (4 * 1024 * 1024) / 4;
+            let src = format!("fn x(){{{}}}\n", "a b ".repeat(n));
+            with_timeout_env(Some("200"), || {
+                let mut p = rust_parser();
+                let start = std::time::Instant::now();
+                let tree = crate::parser::parse_with_timeout(&mut p, &src);
+                let elapsed = start.elapsed();
+                assert!(tree.is_none(), "parse must abort (None) under the budget");
+                assert!(
+                    elapsed < std::time::Duration::from_secs(2),
+                    "timeout must fire promptly; took {elapsed:?}"
+                );
+            });
+        }
+
+        /// A legitimate file parses successfully under the default budget — the
+        /// timeout is behavior-neutral for real input.
+        #[test]
+        fn normal_file_parses_within_budget() {
+            with_timeout_env(None, || {
+                let mut p = rust_parser();
+                let src = "fn hello() -> u32 { let x = compute(1, 2); x }\n";
+                let tree = crate::parser::parse_with_timeout(&mut p, src);
+                let tree = tree.expect("normal source must parse within the budget");
+                assert_eq!(tree.root_node().kind(), "source_file");
+                assert!(!tree.root_node().has_error());
+            });
+        }
+
+        /// `CQS_PARSER_TIMEOUT_MS=0` disables the timeout (pre-guard behavior),
+        /// so even the pathological input parses to completion (no abort). Pins
+        /// the documented opt-out so a refactor can't silently make 0 mean
+        /// "default".
+        #[test]
+        fn zero_disables_timeout() {
+            // Small-but-error-heavy input that parses fast either way; the point
+            // is that disabling the timeout never returns a spurious None.
+            let src = format!("fn x(){{{}}}\n", "a b ".repeat(2000));
+            with_timeout_env(Some("0"), || {
+                assert_eq!(crate::limits::parser_timeout_ms(), None);
+                let mut p = rust_parser();
+                let tree = crate::parser::parse_with_timeout(&mut p, &src);
+                assert!(tree.is_some(), "disabled timeout must never abort a parse");
+            });
+        }
     }
 
     /// Property test pinning the equivalence between

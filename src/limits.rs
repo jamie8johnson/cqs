@@ -63,6 +63,66 @@ pub(crate) fn parser_max_chunk_bytes() -> usize {
     parse_env_usize("CQS_PARSER_MAX_CHUNK_BYTES", PARSER_MAX_CHUNK_BYTES)
 }
 
+/// Default tree-walk recursion-depth ceiling for the parser's recursive
+/// relationship-extraction passes (`collect_macro_calls`,
+/// `collect_fn_pointer_args`, and their candidate mirrors in
+/// `src/parser/calls.rs`). tree-sitter's own parse is iterative and tolerates
+/// arbitrarily deep nesting cheaply, but these passes recurse one stack frame
+/// per tree level — a deeply-nested macro `token_tree` / parenthesized
+/// expression / array literal (which an adversarial indexed file can produce in
+/// a few KB) overflows the rayon parser-stage worker stack and SIGSEGV/aborts
+/// the whole index/watch/daemon process. 800 is a DoS rail, not a tuning knob:
+/// no real source nests anywhere near this (tree-sitter's own grammar limits and
+/// human-written code sit in the tens, generated code in the low hundreds), and
+/// an 800-deep walk completes inside a 1 MiB worker stack even in an unoptimized
+/// debug build (release frames are far leaner), so it can never trip on a
+/// legitimate file. Override via `CQS_PARSER_MAX_WALK_DEPTH`. Past the cap the
+/// walk stops descending (it does NOT abort the file) — the truncated subtree is
+/// the same one whose enclosing chunk would exceed `PARSER_MAX_CHUNK_BYTES` and
+/// be dropped anyway, so legitimate output is unchanged.
+pub(crate) const PARSER_MAX_WALK_DEPTH: usize = 800;
+
+/// Resolve the recursive tree-walk depth ceiling honoring
+/// `CQS_PARSER_MAX_WALK_DEPTH`.
+pub(crate) fn parser_max_walk_depth() -> usize {
+    parse_env_usize("CQS_PARSER_MAX_WALK_DEPTH", PARSER_MAX_WALK_DEPTH)
+}
+
+/// Default wall-clock budget (milliseconds) for a single tree-sitter parse.
+/// tree-sitter has no internal time bound, so an adversarial token stream that
+/// drives superlinear error recovery (or a merely huge file) can pin a parser
+/// thread for tens of seconds with no cancellation, stalling the index/watch
+/// pass. A 5 s budget is enormous relative to a legitimate parse (cqs's own
+/// largest source files parse in single-digit milliseconds; even a 1 MiB file
+/// is well under a second), so it never trips on real input — it exists purely
+/// to abort a pathological parse, which the caller then skips with a warn.
+/// Override via `CQS_PARSER_TIMEOUT_MS`. `0` is treated as "no timeout"
+/// (the pre-guard behavior) for operators who deliberately want it off.
+pub(crate) const PARSER_TIMEOUT_MS: u64 = 5_000;
+
+/// Resolve the per-parse wall-clock budget in milliseconds honoring
+/// `CQS_PARSER_TIMEOUT_MS`. Returns `None` when the resolved value is `0`
+/// (timeout disabled).
+pub(crate) fn parser_timeout_ms() -> Option<u64> {
+    // Read directly so an explicit `0` means "disabled" rather than falling
+    // back to the default (which `parse_env_u64` would do, since it rejects 0).
+    match std::env::var("CQS_PARSER_TIMEOUT_MS") {
+        Ok(v) => match v.parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => {
+                tracing::warn!(
+                    env = "CQS_PARSER_TIMEOUT_MS",
+                    value = %v,
+                    "Invalid env var (must be a u64 milliseconds, 0 to disable), using default {PARSER_TIMEOUT_MS}"
+                );
+                Some(PARSER_TIMEOUT_MS)
+            }
+        },
+        Err(_) => Some(PARSER_TIMEOUT_MS),
+    }
+}
+
 // ============ file-enumeration walk caps ============
 
 /// Default recursion-depth ceiling for `enumerate_files_iter`'s directory
