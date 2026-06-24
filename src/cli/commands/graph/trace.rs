@@ -73,6 +73,13 @@ pub(crate) struct TraceHop {
     pub line_start: u32, // was "line"
     #[serde(skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// Injection heuristics that fired on this hop's relayed signature. Trace
+    /// relays each hop's `signature` verbatim, so a payload there must surface
+    /// here — mirroring the per-chunk `injection_flags` `context --compact`
+    /// carries on its signature-only relay. Skip-when-empty, so the historical
+    /// wire shape is byte-stable when no heuristic fired (the common case).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub injection_flags: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -152,6 +159,14 @@ pub(crate) fn build_trace_output<Mode>(
                             name: name.clone(),
                             file: cqs::rel_display(&r.chunk.file, root).to_string(),
                             line_start: r.chunk.line_start,
+                            // Scan the relayed signature — the only verbatim
+                            // surface a hop carries. Skip-when-empty.
+                            injection_flags: cqs::llm::validation::detect_all_injection_patterns(
+                                &r.chunk.signature,
+                            )
+                            .into_iter()
+                            .map(String::from)
+                            .collect(),
                             signature: r.chunk.signature.clone(),
                         },
                         None => {
@@ -161,6 +176,7 @@ pub(crate) fn build_trace_output<Mode>(
                                 file: String::new(),
                                 line_start: 0,
                                 signature: String::new(),
+                                injection_flags: Vec::new(),
                             }
                         }
                     },
@@ -921,18 +937,21 @@ mod tests {
                     file: "src/a.rs".into(),
                     line_start: 1,
                     signature: "fn a()".into(),
+                    injection_flags: Vec::new(),
                 },
                 TraceHop {
                     name: "b".into(),
                     file: "src/b.rs".into(),
                     line_start: 10,
                     signature: "fn b()".into(),
+                    injection_flags: Vec::new(),
                 },
                 TraceHop {
                     name: "c".into(),
                     file: "src/c.rs".into(),
                     line_start: 20,
                     signature: "fn c()".into(),
+                    injection_flags: Vec::new(),
                 },
             ]),
             depth: Some(2),

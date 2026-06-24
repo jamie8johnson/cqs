@@ -346,9 +346,11 @@ pub(crate) struct FullChunkEntry {
     /// trust_level. `cqs context` reads from the project store only;
     /// always "user-code". SECURITY.md mitigation contract.
     pub trust_level: &'static str,
-    /// Per-chunk injection-heuristic flags. The
-    /// schema-stability contract requires the field be present and an
-    /// empty `Vec<String>` reflects "no heuristics fired".
+    /// Per-chunk injection-heuristic flags scanned over exactly the relayed
+    /// surfaces: doc + signature always, content only when it is emitted on
+    /// this chunk (token-budgeted). The schema-stability contract requires the
+    /// field be present and an empty `Vec<String>` reflects "no heuristics
+    /// fired".
     pub injection_flags: Vec<String>,
 }
 
@@ -368,16 +370,22 @@ pub(crate) struct ExternalCalleeEntry {
     pub called_from: String,
 }
 
-/// Scan the union of a chunk's relayed text surfaces for injection
-/// heuristics. `cqs context` (full mode) relays `doc`, `signature`, and
-/// (token-budgeted) `content` verbatim; a payload in ANY of them must
-/// surface in `injection_flags`, so the scan covers all three rather than
-/// `content` alone. SECURITY.md promises the flags fire on every
-/// chunk-returning JSON output whenever a heuristic matched — doc-borne
-/// payloads were the RT-RELAY gap.
-fn scan_chunk_injection_flags(chunk: &ChunkSummary) -> Vec<String> {
+/// Scan exactly the relayed surfaces of a chunk for injection heuristics.
+/// `cqs context` (full mode) relays `doc` and `signature` verbatim always, and
+/// `content` only when it fits the token budget (`content_relayed`). A payload
+/// in any emitted surface must surface in `injection_flags`, so the scan covers
+/// doc + signature always and content only when it is relayed — flagging
+/// un-relayed content would over-report on a response that never carried it.
+/// SECURITY.md promises the flags fire on every chunk-returning JSON output
+/// whenever a heuristic matched on a relayed surface — doc-borne payloads were
+/// the RT-RELAY gap.
+fn scan_chunk_injection_flags(chunk: &ChunkSummary, content_relayed: bool) -> Vec<String> {
     let doc = chunk.doc.as_deref().unwrap_or("");
-    let scan_text = format!("{doc}\n{}\n{}", chunk.signature, chunk.content);
+    let scan_text = if content_relayed {
+        format!("{doc}\n{}\n{}", chunk.signature, chunk.content)
+    } else {
+        format!("{doc}\n{}", chunk.signature)
+    };
     cqs::llm::validation::detect_all_injection_patterns(&scan_text)
         .into_iter()
         .map(String::from)
@@ -399,6 +407,12 @@ pub(crate) fn full_to_json(
         .map(|c| {
             let content =
                 content_set.and_then(|set| set.contains(&c.name).then(|| c.content.clone()));
+            // Scan exactly the relayed surfaces: doc + signature always, and
+            // content only when it is emitted on this chunk (in the budgeted
+            // content set). A doc-borne payload fires even when `content` is
+            // omitted; an un-relayed content is not scanned so the flags never
+            // over-report.
+            let injection_flags = scan_chunk_injection_flags(c, content.is_some());
             FullChunkEntry {
                 name: c.name.clone(),
                 chunk_type: c.chunk_type.to_string(),
@@ -408,11 +422,7 @@ pub(crate) fn full_to_json(
                 doc: c.doc.clone(),
                 content,
                 trust_level: "user-code",
-                // Scan the union of relayed surfaces — doc/signature are
-                // relayed verbatim regardless of token-budget content
-                // inclusion, so a doc-borne payload must fire even when
-                // `content` is omitted from the wire.
-                injection_flags: scan_chunk_injection_flags(c),
+                injection_flags,
             }
         })
         .collect();
