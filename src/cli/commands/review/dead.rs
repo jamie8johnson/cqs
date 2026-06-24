@@ -23,10 +23,11 @@ use cqs::store::{DeadConfidence, DeadFunction};
 /// least: a `test-only` fixture is almost never worth deleting, a `dead`
 /// entry is the actionable residue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
-// kebab-case on the schema to match the stable strings the `--verdict` filter /
-// `de_opt_verdict` deserializer accept (`test-only`, `low-confidence-live`,
-// `known-gap`). schemars reads serde attributes even without a serde derive.
-#[serde(rename_all = "kebab-case")]
+// schemars-only kebab-case so the SCHEMA matches the stable strings the
+// `--verdict` filter / `de_opt_verdict` deserializer accept (`test-only`,
+// `low-confidence-live`, `known-gap`). This type has no serde derive — its
+// (de)serialization is `as_str` / `parse` — so the rename is scoped to schemars.
+#[schemars(rename_all = "kebab-case")]
 pub(crate) enum DeadVerdict {
     /// Default: no classification ran / none matched above `dead`. Rendered as
     /// the absent (skip-when-default) state on JSON entries.

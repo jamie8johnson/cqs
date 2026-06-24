@@ -81,13 +81,17 @@ pub struct DeadFunction {
     PartialOrd,
     Ord,
     serde::Serialize,
-    serde::Deserialize,
     clap::ValueEnum,
     schemars::JsonSchema,
 )]
-// Lowercase on the wire/schema to match the `low`/`medium`/`high` strings the
-// CLI and the `de_confidence` deserializer accept.
-#[serde(rename_all = "lowercase")]
+// schemars-only lowercase so the SCHEMA matches the `low`/`medium`/`high`
+// strings the CLI and the `de_confidence` deserializer accept. A serde
+// rename_all would also flip the derived `Serialize`, which IS the ci
+// `dead_in_diff` JSON output path (PascalCase today) — so the rename is scoped
+// to schemars to keep that output byte-identical. The input field deserializes
+// via `de_confidence` (a `deserialize_with`), so no serde `Deserialize` is
+// needed here for the wire surface.
+#[schemars(rename_all = "lowercase")]
 pub enum DeadConfidence {
     /// Likely a false positive (methods, functions in active files)
     Low,
