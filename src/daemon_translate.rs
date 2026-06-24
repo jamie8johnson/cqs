@@ -811,6 +811,131 @@ fn daemon_request<T: serde::de::DeserializeOwned>(
     daemon_request_with_timeout(cqs_dir, command, args, payload_label, None)
 }
 
+/// Raw socket round-trip for the MCP bridge: send a JSON-args frame
+/// (`{"command": <cmd>, "arguments": {...}}`, the Lane 1 / D3-b shape) and
+/// return the FULL daemon response envelope as a `serde_json::Value` —
+/// `{"status":"ok","output":<dispatch envelope>}` on success or a typed
+/// error on a transport/parse failure.
+///
+/// Unlike [`daemon_request`], this does NOT peel the dispatch layer via
+/// [`unwrap_dispatch_payload`]: the bridge must inspect the un-peeled `output`
+/// to distinguish a handler error riding under `status:"ok"`
+/// (`{"data":null,"error":{...}}`) from a success (`{"data":...}`), and to
+/// carry the envelope `_meta` through. Peeling would collapse both into a
+/// bare payload and discard `_meta`.
+///
+/// Uses a 1 MiB response cap and the shared [`resolve_daemon_timeout_ms`]
+/// timeout because tool responses (search, gather, task) are far larger than
+/// the small ping/status RPCs the typed helper serves.
+///
+/// Returns a typed [`DaemonRpcError`] on a transport/parse failure — the
+/// bridge maps `SocketMissing`/`Transport`/`DaemonError`/`BadResponse` to the
+/// appropriate JSON-RPC protocol error.
+#[cfg(unix)]
+pub fn daemon_json_args_request(
+    cqs_dir: &std::path::Path,
+    command: &str,
+    arguments: &serde_json::Value,
+) -> Result<serde_json::Value, DaemonRpcError> {
+    use std::io::{BufRead, Read as _, Write};
+    use std::os::unix::net::UnixStream;
+
+    let sock_path = daemon_socket_path(cqs_dir);
+    let _span = tracing::info_span!(
+        "daemon_json_args_request",
+        command,
+        path = %sock_path.display()
+    )
+    .entered();
+
+    if !sock_path.exists() {
+        return Err(DaemonRpcError::SocketMissing(format!(
+            "no daemon running (socket {} does not exist)",
+            sock_path.display()
+        )));
+    }
+
+    let mut stream = UnixStream::connect(&sock_path).map_err(|e| {
+        tracing::warn!(stage = "connect", error = %e, command, "daemon json-args request failed");
+        DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
+    })?;
+
+    let timeout = resolve_daemon_timeout_ms();
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_read_timeout", error = %e, command, "daemon json-args request failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_read_timeout failed: {e}"
+        )));
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        tracing::warn!(stage = "set_write_timeout", error = %e, command, "daemon json-args request failed");
+        return Err(DaemonRpcError::Transport(format!(
+            "set_write_timeout failed: {e}"
+        )));
+    }
+
+    // The Lane 1 (D3-b) JSON-args frame: an `arguments` OBJECT deserializes
+    // directly into the command's Phase-0 core struct on the daemon side.
+    let request = serde_json::json!({"command": command, "arguments": arguments});
+    writeln!(stream, "{}", request).map_err(|e| {
+        tracing::warn!(stage = "write", error = %e, command, "daemon json-args request failed");
+        DaemonRpcError::Transport(format!("write request failed: {e}"))
+    })?;
+    stream.flush().map_err(|e| {
+        tracing::warn!(stage = "flush", error = %e, command, "daemon json-args request failed");
+        DaemonRpcError::Transport(format!("flush failed: {e}"))
+    })?;
+
+    // 1 MiB read cap — tool responses (search/gather/task) are materially
+    // larger than the few-KB ping/status payloads, but still bounded against a
+    // buggy daemon. Mirrors the MCP request-line cap.
+    let mut reader = std::io::BufReader::new(&stream).take(1024 * 1024);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line).map_err(|e| {
+        tracing::warn!(stage = "read", error = %e, command, "daemon json-args request failed");
+        DaemonRpcError::Transport(format!("read response failed: {e}"))
+    })?;
+
+    let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
+        tracing::warn!(stage = "parse", error = %e, command, "daemon json-args request failed");
+        DaemonRpcError::BadResponse(format!("parse envelope failed: {e}"))
+    })?;
+
+    let status = envelope
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            tracing::warn!(
+                stage = "parse",
+                command,
+                "daemon json-args request failed: missing status field"
+            );
+            DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
+        })?;
+
+    if status != "ok" {
+        // A non-ok status is a transport/parse failure on the socket layer
+        // (NUL bytes, bad relay, missing command). The daemon's `message` is
+        // already privacy-redacted. Handler-semantic errors do NOT come this
+        // way — they ride under status:"ok" inside `output` (Blocker #1).
+        let msg = envelope
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("daemon error")
+            .to_string();
+        tracing::warn!(
+            stage = "parse",
+            status,
+            command,
+            "daemon json-args request failed: non-ok status"
+        );
+        return Err(DaemonRpcError::DaemonError(msg));
+    }
+
+    // Return the full envelope un-peeled — the bridge classifies `output`.
+    Ok(envelope)
+}
+
 /// Like [`daemon_request`] but accepts a per-call read/write timeout
 /// override. `None` uses the default 5 s; `Some(d)` sets both timeouts
 /// to `d`. Used by [`wait_for_fresh`] where the daemon holds the connection

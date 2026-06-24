@@ -501,6 +501,14 @@ pub(super) enum Commands {
     /// Batch mode: read commands from stdin, output JSONL
     #[cqs_cmd(group = "a", batch = "cli")]
     Batch,
+    /// MCP server: bridge stdio JSON-RPC to the running cqs daemon
+    ///
+    /// Exposes the read-only cqs commands as MCP tools over stdio. Requires a
+    /// running daemon (`cqs watch --serve`); the bridge forwards each tool call
+    /// over the daemon socket and loads no model itself, so stdout stays a clean
+    /// JSON-RPC channel.
+    #[cqs_cmd(group = "a", batch = "cli")]
+    Mcp,
     /// Semantic git blame: who changed a function, when, and why
     #[cqs_cmd(group = "b", batch = "daemon")]
     Blame {
@@ -1730,6 +1738,7 @@ mod tests {
             "impact-diff",
             "index",
             "init",
+            "mcp",
             "model",
             "neighbors",
             "notes",

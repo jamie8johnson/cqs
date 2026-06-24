@@ -230,6 +230,19 @@ pub fn cmd_batch_dispatch(
     })
 }
 
+pub fn cmd_mcp_dispatch(
+    _cli: &Cli,
+    _ctx: Option<&CommandContext<'_, ReadOnly>>,
+    project_cqs_dir: &Path,
+    cmd: &Commands,
+) -> Result<()> {
+    // The MCP bridge relays to the daemon serving `project_cqs_dir` — the same
+    // `.cqs` dir the CLI's own daemon-forward path uses, derived from the cwd.
+    must_be!(cmd, Commands::Mcp => {
+        crate::cli::mcp::serve_stdio(project_cqs_dir)
+    })
+}
+
 pub fn cmd_chat_dispatch(
     _cli: &Cli,
     _ctx: Option<&CommandContext<'_, ReadOnly>>,

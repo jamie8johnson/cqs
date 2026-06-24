@@ -271,6 +271,10 @@ src/
     files.rs    - File enumeration, lock files, path utilities
     json_envelope.rs - JSON output emission helpers: emit_json/emit_json_error (CLI direct, bare-vs-v1 via EnvelopeShape), wrap_value/wrap_error (slim batch/daemon JSONL), ErrorCode taxonomy + error_codes consts, redact_error (daemon error redaction), EnvelopeMeta (_meta worktree-stale + per-response stale_origins merge), NaN/Infinity sanitization
     limits.rs   - Shared clamp ceilings + env-overridable size limits for the CLI and batch/daemon dispatchers (keeps the two paths from drifting on `--limit`). Library-layer counterpart is `src/limits.rs`.
+    mcp/        - `cqs mcp` stdio↔daemon-socket MCP bridge (Phase 1, Lane 2): a GPU-free process that speaks MCP JSON-RPC over stdio and relays each tools/call to the warm daemon as the Lane 1 JSON-args frame. Bridge-only (requires a running daemon; no in-process fallback).
+      bridge.rs   - stdin→parse→route→stdout NDJSON loop, method dispatch, per-call daemon round-trip
+      lifecycle.rs - JSON-RPC envelope types, error codes, initialize/initialized (protocol 2025-11-25)
+      tools.rs    - tools/list (read-only registry × schemars inputSchemas, cqs_-prefixed names; context/explain withheld) + tools/call envelope→CallToolResult mapping (status:ok-wrapped handler error → isError:true)
     pipeline/   - Multi-threaded indexing pipeline
       mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
       reuse.rs    - Shared embedding-reuse resolver: global cache → per-slot store cache → split chunks into reuse-cached vs embed-fresh; used by both the bulk pipeline and the watch/daemon incremental path

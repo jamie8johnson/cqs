@@ -12,6 +12,7 @@ mod enrichment;
 mod files;
 pub(crate) mod json_envelope;
 mod limits;
+mod mcp;
 mod pipeline;
 mod signal;
 pub(crate) mod staleness;
