@@ -24,7 +24,7 @@ use crate::cli::find_project_root;
 ///
 /// `#[serde(default)]` so a wire caller can supply just `reference` and inherit
 /// the production defaults (matching clap's `DriftArgs`).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct DriftArgs {
     /// Reference name to compare the project against (echoed into output).

@@ -13,7 +13,7 @@ use cqs::RiskLevel;
 /// Input for [`ci_core`]. The diff text + gate threshold are supplied by the
 /// adapter (which owns I/O and the `GateThreshold` parse); `tokens` folds the
 /// request-scoped budget in.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct CiArgs {
     /// Token budget for the embedded review (truncates callers/tests lists).
     #[serde(default)]

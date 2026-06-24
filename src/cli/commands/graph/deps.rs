@@ -18,7 +18,7 @@ use super::KindFallbackOutput;
 /// Input for [`deps_core`]. Cross-project deps is not yet supported (both
 /// surfaces warn and return the local result); the flag lives on the
 /// adapter side, so the core covers the single-project path.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct DepsArgs {
     /// Type name (forward) or function name (with `reverse`).

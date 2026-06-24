@@ -72,7 +72,26 @@ pub struct DeadFunction {
 
 /// Confidence level for dead code detection.
 /// Ordered from least to most confident, enabling `>=` filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    clap::ValueEnum,
+    schemars::JsonSchema,
+)]
+// schemars-only lowercase so the SCHEMA matches the `low`/`medium`/`high`
+// strings the CLI and the `de_confidence` deserializer accept. A serde
+// rename_all would also flip the derived `Serialize`, which IS the ci
+// `dead_in_diff` JSON output path (PascalCase today) — so the rename is scoped
+// to schemars to keep that output byte-identical. The input field deserializes
+// via `de_confidence` (a `deserialize_with`), so no serde `Deserialize` is
+// needed here for the wire surface.
+#[schemars(rename_all = "lowercase")]
 pub enum DeadConfidence {
     /// Likely a false positive (methods, functions in active files)
     Low,
@@ -90,6 +109,35 @@ impl DeadConfidence {
             DeadConfidence::Medium => "medium",
             DeadConfidence::High => "high",
         }
+    }
+}
+
+#[cfg(test)]
+mod dead_confidence_serde_guard {
+    use super::DeadConfidence;
+
+    /// Pins the DERIVED `Serialize` spelling of `DeadConfidence`. That impl is a
+    /// live JSON output path — `DeadInDiff.confidence` (`ci`) and
+    /// `DeadFunction.confidence` serialize the enum directly, no `serialize_with`
+    /// — so it emits the variant name verbatim (PascalCase) today. The schema
+    /// casing is shaped by `#[schemars(rename_all = "lowercase")]`, which cannot
+    /// touch serde. If someone ever "fixes" the schema with a bare
+    /// `#[serde(rename_all = ...)]` instead, that flips this output too; this
+    /// test fails first. (Schema casing => schemars; output is a wire contract.)
+    #[test]
+    fn derived_serialize_spelling_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::Low).unwrap(),
+            "\"Low\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::Medium).unwrap(),
+            "\"Medium\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::High).unwrap(),
+            "\"High\""
+        );
     }
 }
 

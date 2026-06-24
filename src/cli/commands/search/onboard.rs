@@ -23,7 +23,7 @@ use cqs::{Embedder, GatherDirection};
 ///
 /// `#[serde(default)]` so a wire caller can supply just `query` and inherit the
 /// production defaults (depth/direction/limit mirror clap).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct OnboardArgs {
     /// Concept or query to explore.

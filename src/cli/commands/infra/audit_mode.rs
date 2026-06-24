@@ -39,7 +39,7 @@ pub(crate) struct AuditModeOutput {
 /// Owned + `Deserialize` like every other core Args, so a wire/MCP caller can
 /// inflate it from `{"state": "on", "expires": "30m"}`. `expires` defaults to
 /// `30m` when omitted, matching the clap default.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct AuditModeArgs {
     /// `None` → query current state; `Some(On)` / `Some(Off)` → set it.
     #[serde(default)]

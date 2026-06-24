@@ -26,7 +26,7 @@ use crate::cli::commands::resolve::resolve_target;
 /// Input for [`test_map_core`]. Cross-project test-map lives in the
 /// adapters (it has no kind-fallback and a merged-graph context); the core
 /// covers the single-project path both surfaces share.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct TestMapArgs {
     /// Function name or `file:function`.

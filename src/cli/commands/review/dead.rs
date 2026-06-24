@@ -22,7 +22,12 @@ use cqs::store::{DeadConfidence, DeadFunction};
 /// Self-classification of a dead-code entry. Ordered most-excusable to
 /// least: a `test-only` fixture is almost never worth deleting, a `dead`
 /// entry is the actionable residue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+// schemars-only kebab-case so the SCHEMA matches the stable strings the
+// `--verdict` filter / `de_opt_verdict` deserializer accept (`test-only`,
+// `low-confidence-live`, `known-gap`). This type has no serde derive — its
+// (de)serialization is `as_str` / `parse` — so the rename is scoped to schemars.
+#[schemars(rename_all = "kebab-case")]
 pub(crate) enum DeadVerdict {
     /// Default: no classification ran / none matched above `dead`. Rendered as
     /// the absent (skip-when-default) state on JSON entries.
@@ -383,7 +388,7 @@ pub(crate) struct DeadOutput {
 /// Input for [`dead_core`]. Derives `Deserialize` (MCP param surface) with
 /// doc-commented fields; `min_confidence` deserializes from the same
 /// `low`/`medium`/`high` strings the CLI / wire accept.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct DeadArgs {
     /// Include public-API functions in the main `dead` list (otherwise they
     /// land in `possibly_dead_pub`, which agents usually skip).

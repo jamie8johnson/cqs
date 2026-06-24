@@ -146,6 +146,9 @@ aho-corasick = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toml = "1.1"
+# JSON Schema generation for command-core input structs (the MCP inputSchema
+# source). Additive only — no schema-gen logic or server yet.
+schemars = "1"
 
 # Path canonicalization (strips Windows UNC \\?\ prefixes)
 dunce = "1"

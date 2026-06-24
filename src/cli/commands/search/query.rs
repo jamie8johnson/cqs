@@ -50,7 +50,7 @@ use crate::cli::{display, signal, staleness, Cli};
 ///
 /// `#[serde(default)]` on the whole struct so a wire/MCP caller can supply just
 /// `query` and inherit the production defaults for the rest.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct QueryArgs {
     /// Search query (quote multi-word queries).
@@ -3315,5 +3315,178 @@ mod tests {
                  got {got:?}"
             );
         }
+    }
+}
+
+// ─── MCP Phase 0: JsonSchema smoke test ─────────────────────────────────────
+//
+// Verifies the command-core input structs are a usable MCP `inputSchema`
+// source: the schemas are JSON Schema 2020-12, their `serde(default)` fields are
+// OPTIONAL (no `required` array — the load-bearing distinction from the clap
+// `args.rs` surface, whose fields are mandatory), the `///` doc comments survive
+// into `description`s, and a minimal wire object round-trips back to the struct.
+#[cfg(test)]
+mod jsonschema_smoke {
+    use super::QueryArgs;
+    use crate::cli::commands::gather::GatherArgs;
+    use crate::cli::commands::{CallersCoreArgs, DeadArgs, ImpactCoreArgs as ImpactArgs};
+
+    /// The 2020-12 dialect URI schemars 1.x emits in the root `$schema`.
+    const DIALECT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+
+    /// Assert the shape an MCP `inputSchema` source must have for `T`:
+    /// (a) the root is the 2020-12 dialect, (b) `T` has no required fields (its
+    /// `serde(default)` makes every param optional on the wire), and (c) at
+    /// least one property carries a non-empty `description` harvested from a
+    /// `///` doc comment.
+    fn assert_inputschema_shape<T: schemars::JsonSchema>(label: &str) {
+        let schema = serde_json::to_value(schemars::schema_for!(T))
+            .unwrap_or_else(|e| panic!("{label}: schema serialize failed: {e}"));
+
+        // (a) 2020-12 dialect.
+        assert_eq!(
+            schema.get("$schema").and_then(|v| v.as_str()),
+            Some(DIALECT_2020_12),
+            "{label}: root $schema must be JSON Schema 2020-12"
+        );
+
+        // (b) No required fields — serde(default) ⇒ every param optional.
+        // Either the key is absent or it is an empty array.
+        match schema.get("required") {
+            None => {}
+            Some(req) => {
+                let arr = req
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{label}: `required` present but not an array"));
+                assert!(
+                    arr.is_empty(),
+                    "{label}: serde(default) struct must have no required fields, got {arr:?}"
+                );
+            }
+        }
+
+        // (c) At least one property has a non-empty description (proving `///`
+        // → schema description).
+        let props = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("{label}: schema has no `properties` object"));
+        let has_description = props.values().any(|p| {
+            p.get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| !d.is_empty())
+        });
+        assert!(
+            has_description,
+            "{label}: at least one property must carry a `///`-derived description"
+        );
+    }
+
+    #[test]
+    fn command_core_structs_are_mcp_inputschema_ready() {
+        // (a)+(b)+(c) over four representative cores.
+        assert_inputschema_shape::<QueryArgs>("QueryArgs");
+        assert_inputschema_shape::<ImpactArgs>("ImpactArgs");
+        assert_inputschema_shape::<GatherArgs>("GatherArgs");
+        assert_inputschema_shape::<DeadArgs>("DeadArgs");
+
+        // (d) A MINIMAL wire object deserializes — wire-optionality is real, not
+        // just declared in the schema. The search struct takes only `query`.
+        let q: QueryArgs = serde_json::from_value(serde_json::json!({ "query": "x" }))
+            .expect("minimal {query} object must deserialize into QueryArgs");
+        assert_eq!(q.query, "x");
+        // And an entirely empty object inflates to all-defaults (the ultimate
+        // optionality proof for a `serde(default)` struct).
+        let empty: GatherArgs =
+            serde_json::from_value(serde_json::json!({})).expect("empty object → GatherArgs");
+        assert_eq!(empty, GatherArgs::default());
+    }
+
+    /// The enum-typed fields must surface the same spelling the CLI accepts —
+    /// schemars reads `#[serde(rename_all = ...)]`, so the schema's enum values
+    /// match the wire/CLI form (not the PascalCase Rust variant names). Guards
+    /// the CLI-vs-schema casing mismatch the dual-surface contract requires.
+    #[test]
+    fn enum_fields_use_cli_casing() {
+        // GatherDirection → lowercase (`both` / `callers` / `callees`).
+        let gather = serde_json::to_value(schemars::schema_for!(GatherArgs)).unwrap();
+        let values = collect_enum_values(&gather);
+        for want in ["both", "callers", "callees"] {
+            assert!(
+                values.contains(&want.to_string()),
+                "GatherArgs schema must offer direction `{want}` (lowercase); got {values:?}"
+            );
+        }
+
+        // DeadArgs: DeadConfidence → lowercase, DeadVerdict → kebab-case.
+        let dead = serde_json::to_value(schemars::schema_for!(DeadArgs)).unwrap();
+        let dvalues = collect_enum_values(&dead);
+        for want in [
+            "low",
+            "medium",
+            "high",
+            "test-only",
+            "low-confidence-live",
+            "known-gap",
+        ] {
+            assert!(
+                dvalues.contains(&want.to_string()),
+                "DeadArgs schema must offer enum value `{want}`; got {dvalues:?}"
+            );
+        }
+
+        // CallersArgs.edge_kind → CallEdgeKind in snake_case (`serde_callback`,
+        // `macro_heuristic`, `fn_pointer`, `doc_reference`) — the stored / wire
+        // spelling `parse_edge_kind` accepts.
+        let callers = serde_json::to_value(schemars::schema_for!(CallersCoreArgs)).unwrap();
+        let cvalues = collect_enum_values(&callers);
+        for want in [
+            "serde_callback",
+            "macro_heuristic",
+            "fn_pointer",
+            "doc_reference",
+        ] {
+            assert!(
+                cvalues.contains(&want.to_string()),
+                "CallersArgs schema must offer edge_kind `{want}` (snake_case); got {cvalues:?}"
+            );
+        }
+    }
+
+    /// Collect every enumerated string value anywhere in the schema (root +
+    /// `$defs`). schemars 1.x emits two shapes depending on the enum: a plain
+    /// `"enum": [..]` array for variants with no per-variant docs, and a
+    /// `"oneOf": [{ "const": "low", "description": ".." }, ..]` form when each
+    /// variant carries a `///`. Both are gathered, and referenced enums live
+    /// under `$defs`, so a field-level scan is not enough.
+    fn collect_enum_values(schema: &serde_json::Value) -> Vec<String> {
+        let mut out = Vec::new();
+        fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Array(arr)) = map.get("enum") {
+                        for e in arr {
+                            if let Some(s) = e.as_str() {
+                                out.push(s.to_string());
+                            }
+                        }
+                    }
+                    if let Some(s) = map.get("const").and_then(|c| c.as_str()) {
+                        out.push(s.to_string());
+                    }
+                    for child in map.values() {
+                        walk(child, out);
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for child in arr {
+                        walk(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(schema, &mut out);
+        out
     }
 }

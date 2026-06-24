@@ -27,7 +27,7 @@ use crate::cli::OutputFormat;
 /// Input for [`trace_core`]. Cross-project trace lives in the adapters
 /// (separate cross-project BFS, no kind-fallback); the core covers the
 /// single-project path.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct TraceArgs {
     /// Source function name or `file:function`.

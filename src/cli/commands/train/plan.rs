@@ -11,7 +11,7 @@ use cqs::Embedder;
 
 /// Input for [`plan_core`]. The embedder is a resource the adapter resolves
 /// (`ctx.embedder()`); the request-scoped fields live here.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct PlanArgs {
     /// Natural-language task description to classify and plan.
     pub description: String,

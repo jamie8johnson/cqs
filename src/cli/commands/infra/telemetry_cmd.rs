@@ -453,7 +453,7 @@ fn build_telemetry(entries: &[Entry]) -> TelemetryOutput {
 // ---------------------------------------------------------------------------
 
 /// Input for [`telemetry_core`].
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct TelemetryArgs {
     /// Aggregate every `telemetry*.jsonl` (archived + current) rather than
     /// just the live `telemetry.jsonl`.

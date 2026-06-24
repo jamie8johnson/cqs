@@ -2,7 +2,19 @@
 
 Companion to `2026-06-16-mcp-wrap-assessment.md` (the *what/why/gap*). This is the *how*: module layout, the bridge protocol, schema generation, request flow, and the decisions still open. Target spec revision: **MCP 2025-11-25**.
 
-Status: **DESIGN / pre-decision.** Several choices in §10 are unresolved and gate implementation. Nothing here is built.
+Status: **BUILD GREENLIT (2026-06-17).** Phase 0 is committed (this branch). The two foundational choices §10 left open are now decided — see §0.
+
+---
+
+## 0. Status & corrections (2026-06-17)
+
+**Build greenlit (OQ-14 resolved).** The user confirmed re-introducing MCP. This is a *re-intro*, not greenfield — see §0b.
+
+**inputSchema source = the `commands::*` core-input structs, NOT the `args.rs` clap structs** (this supersedes §6 below and assessment-doc G2). Discovered while building Phase 0: the command cores under `src/cli/commands/**` are ALREADY `#[derive(serde::Deserialize)] #[serde(default)]` with `///` doc comments → their schemas are correctly **optional** (a wire caller supplies just the fields it wants) and **described** (schemars harvests `///`). The `args.rs` clap structs mark every field *required* and their clap `#[arg(help)]` is invisible to schemars. The cores are also the canonical surface-agnostic input (`*_core` consumes them), so MCP becomes a true third surface — wire JSON → core struct → `*_core`, no clap re-parse — which is the anti-duplication discipline the command-core pattern exists for. Phase 0 (committed) derives `JsonSchema` on the ~21 such cores + their enums (schemars 1, JSON Schema 2020-12). Coverage: the ~22 commands without a core-input struct are mostly no-arg (`stats`/`health`/`ping`) → empty schema; the few real ones get a core struct as command-core completion in Phase 1.
+
+## 0b. Prior art — the removed v0.10.0 MCP server
+
+cqs shipped an MCP server through v0.9.x (`src/mcp/`, `cqs serve`): **in-process** (loaded GPU + index itself), **HTTP+SSE** transport, **27 files / ~3700 lines** with a **separate handler per tool** (`search.rs` alone was 428 lines) — each tool *reimplemented* its logic parallel to the CLI. That duplication is exactly what the CLI-first migration (#320/#333) and the command-core refactor set out to kill; the server was removed in **v0.10.0 (#352, commit `291ec6b0`)** for CLI-first + slim deps. **The re-intro inverts the old design**: thin (rides the cores → no per-tool files, ~10× smaller), an `stdio`↔daemon-socket bridge to the warm daemon (not in-process; supersedes HTTP+SSE; keeps stdout clean re the #2009 leak class), optional + slim (no HTTP-server deps). Mine the old code for reference via `git show 291ec6b0^:src/mcp/<file>` — especially `validation.rs` (resurrect its security tests), `server.rs`, `types.rs`, `transports/stdio.rs`.
 
 ---
 

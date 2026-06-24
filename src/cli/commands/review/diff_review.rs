@@ -11,7 +11,7 @@ use cqs::RiskLevel;
 
 /// Input for [`review_core`]. The diff text is acquired by the adapter
 /// (CLI: git or stdin; daemon: git) and passed in, so the core stays I/O-free.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct ReviewArgs {
     /// Token budget for the output. When set, callers/tests lists are
     /// truncated to fit; changed functions + notes are always included.
