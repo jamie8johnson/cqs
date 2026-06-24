@@ -430,6 +430,38 @@ pub struct ChunkTypeRefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the DERIVED `Serialize` spelling of `CallEdgeKind` (PascalCase
+    /// variant names). Output today routes through `as_str` (snake_case) and the
+    /// derived impl is unused, but the derive exists — so a future bare
+    /// `#[serde(rename_all = ...)]` (e.g. someone "fixing" the schema casing in
+    /// serde instead of schemars) would silently flip this the moment the derived
+    /// impl reaches any output. Schema casing belongs to `#[schemars(rename_all)]`;
+    /// serde output is a wire contract. This fails first if that line is crossed.
+    #[test]
+    fn call_edge_kind_derived_serialize_spelling_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&CallEdgeKind::Call).unwrap(),
+            "\"Call\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CallEdgeKind::SerdeCallback).unwrap(),
+            "\"SerdeCallback\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CallEdgeKind::MacroHeuristic).unwrap(),
+            "\"MacroHeuristic\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CallEdgeKind::FnPointer).unwrap(),
+            "\"FnPointer\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CallEdgeKind::DocReference).unwrap(),
+            "\"DocReference\""
+        );
+    }
+
     /// Tests that all TypeEdgeKind variants can be converted to strings and parsed back to equal values.
     /// # Arguments
     /// None. This is a test function that operates on hardcoded TypeEdgeKind variants.

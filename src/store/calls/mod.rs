@@ -112,6 +112,35 @@ impl DeadConfidence {
     }
 }
 
+#[cfg(test)]
+mod dead_confidence_serde_guard {
+    use super::DeadConfidence;
+
+    /// Pins the DERIVED `Serialize` spelling of `DeadConfidence`. That impl is a
+    /// live JSON output path — `DeadInDiff.confidence` (`ci`) and
+    /// `DeadFunction.confidence` serialize the enum directly, no `serialize_with`
+    /// — so it emits the variant name verbatim (PascalCase) today. The schema
+    /// casing is shaped by `#[schemars(rename_all = "lowercase")]`, which cannot
+    /// touch serde. If someone ever "fixes" the schema with a bare
+    /// `#[serde(rename_all = ...)]` instead, that flips this output too; this
+    /// test fails first. (Schema casing => schemars; output is a wire contract.)
+    #[test]
+    fn derived_serialize_spelling_is_pinned() {
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::Low).unwrap(),
+            "\"Low\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::Medium).unwrap(),
+            "\"Medium\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeadConfidence::High).unwrap(),
+            "\"High\""
+        );
+    }
+}
+
 /// Low-confidence-liveness evidence for a callee with NO trusted caller: the
 /// heuristic-edge breakdown (from `function_calls`) AND the candidate-edge
 /// breakdown (from the `candidate_edges` side-table, Lane 2). Either population
