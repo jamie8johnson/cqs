@@ -218,6 +218,15 @@ pub(crate) struct ExplainOutput {
     pub token_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
+    /// Every chunk-returning JSON output carries a trust_level. `cqs explain`
+    /// reads from the project store; a vendored target downgrades to
+    /// "vendored-code", everything else is "user-code". SECURITY.md contract.
+    pub trust_level: &'static str,
+    /// Per-chunk injection-heuristic flags over the union of relayed text
+    /// (doc + signature + content). The doc comment is relayed verbatim, so a
+    /// doc-borne payload must surface here, not just a content-borne one.
+    /// Empty `Vec<String>` reflects "no heuristics fired".
+    pub injection_flags: Vec<String>,
 }
 
 /// Build typed explain output from explain data.
@@ -286,6 +295,23 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
         None => (None, None),
     };
 
+    // Scan the union of relayed surfaces: `doc` and `signature` are relayed
+    // verbatim unconditionally, `content` only under `--tokens`. A payload in
+    // any of them must fire — the RT-RELAY gap was a doc-borne URL/fence going
+    // unscanned because detection only ever saw `content`.
+    let doc = chunk.doc.as_deref().unwrap_or("");
+    let scan_text = format!("{doc}\n{}\n{}", chunk.signature, chunk.content);
+    let injection_flags: Vec<String> =
+        cqs::llm::validation::detect_all_injection_patterns(&scan_text)
+            .into_iter()
+            .map(String::from)
+            .collect();
+    let trust_level = if chunk.vendored {
+        "vendored-code"
+    } else {
+        "user-code"
+    };
+
     ExplainOutput {
         name: chunk.name.clone(),
         file: cqs::rel_display(&chunk.file, root).to_string(),
@@ -306,6 +332,8 @@ pub(crate) fn build_explain_output(data: &ExplainData, root: &Path) -> ExplainOu
         hints,
         token_count,
         token_budget,
+        trust_level,
+        injection_flags,
     }
 }
 
@@ -484,6 +512,8 @@ mod output_tests {
             hints: None,
             token_count: None,
             token_budget: None,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert!(json.get("line_start").is_some());
@@ -536,6 +566,8 @@ mod output_tests {
             }),
             token_count: Some(100),
             token_budget: Some(500),
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["name"], "bar");
@@ -577,6 +609,8 @@ mod output_tests {
             hints: None,
             token_count: None,
             token_budget: None,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
         };
 
         // Serialize to JSON Value
@@ -620,6 +654,8 @@ mod output_tests {
             hints: None,
             token_count: None,
             token_budget: None,
+            trust_level: "user-code",
+            injection_flags: Vec::new(),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["name"], "calculate_\u{03b1}\u{03b2}");
