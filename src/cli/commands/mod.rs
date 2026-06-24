@@ -11,7 +11,7 @@
 
 pub(crate) mod eval;
 mod graph;
-mod index;
+pub(crate) mod index;
 mod infra;
 mod io;
 pub(crate) mod resolve;

@@ -164,9 +164,10 @@ mod tests {
         );
     }
 
-    /// Flag-gating guard: the notes-mutation tools are present IFF
+    /// Flag-gating guard: the mutation tools are present IFF
     /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
-    /// read set PLUS exactly the three notes mutators (22 total).
+    /// read set PLUS exactly the three notes mutators AND the fire-and-forget
+    /// `index` (23 total).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn mutation_tools_present_iff_flag_set() {
@@ -174,43 +175,52 @@ mod tests {
         {
             let _guard = MutationsEnvGuard::set(false);
             let off = exposed_commands();
-            for cmd in ["notes-add", "notes-update", "notes-remove"] {
+            for cmd in ["notes-add", "notes-update", "notes-remove", "index"] {
                 assert!(
                     !off.contains(cmd),
                     "flag-off tools/list must NOT contain `{cmd}`"
                 );
             }
         }
-        // Flag on → read set + the three notes mutators.
+        // Flag on → read set + the three notes mutators + the index queue tool.
         {
             let _guard = MutationsEnvGuard::set(true);
             let on = exposed_commands();
-            for cmd in ["notes-add", "notes-update", "notes-remove"] {
+            for cmd in ["notes-add", "notes-update", "notes-remove", "index"] {
                 assert!(on.contains(cmd), "flag-on tools/list must contain `{cmd}`");
             }
             let mut want = expected_read_commands();
             want.insert("notes-add".to_string());
             want.insert("notes-update".to_string());
             want.insert("notes-remove".to_string());
+            want.insert("index".to_string());
             assert_eq!(
                 on, want,
-                "flag-on tools/list must be the read set plus exactly the 3 notes mutators"
+                "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
+                 and the index queue tool"
             );
-            assert_eq!(on.len(), 22, "flag-on tools/list must expose 22 tools");
+            assert_eq!(on.len(), 23, "flag-on tools/list must expose 23 tools");
         }
     }
 
     /// Destructive-set-absent guard: `gc` / `slot remove` / `index --force` /
     /// `model swap` / `cache clear` must NEVER appear in `tools/list`,
     /// REGARDLESS of the mutation flag — boundary by absence (§1.3, §2.2). No
-    /// flag re-enables the destructive set in Phase 2a.
+    /// flag re-enables the destructive set in Phase 2b.
+    ///
+    /// Note: `cqs_index` (the non-destructive fire-and-forget queue) IS exposed
+    /// when the flag is on — it is NOT in this list. The withheld variant is the
+    /// FORCED full rebuild, which has no tool name at all (the scoped `IndexArgs`
+    /// core exposes no `force` field), so there is nothing to assert-absent for
+    /// it beyond the absence of any `--force` reachability (covered by the
+    /// `index --force` unreachability test).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn destructive_set_absent_regardless_of_flag() {
         let destructive_tools = [
             "cqs_gc",
             "cqs_slot_remove",
-            "cqs_index",
+            "cqs_index_force",
             "cqs_model_swap",
             "cqs_cache_clear",
             "cqs_audit_mode",
@@ -225,6 +235,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `index --force` is unreachable as a tool regardless of the flag: the only
+    /// `index` tool exposed is the non-destructive queue (`cqs_index`), and its
+    /// scoped `IndexArgs` core has NO `force` field — so a `force` key in
+    /// `arguments` is simply ignored (the core does not deserialize it), and
+    /// there is no separate forced-rebuild tool. This pins the §1.3 withhold.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_force_is_unreachable_as_a_tool() {
+        let _guard = MutationsEnvGuard::set(true);
+        let names: Vec<&'static str> = tools::tool_table().iter().map(|t| t.name).collect();
+        // Exactly one `index` tool — the queue — and no forced variant.
+        let index_tools: Vec<&&'static str> =
+            names.iter().filter(|n| n.contains("index")).collect();
+        assert_eq!(
+            index_tools.len(),
+            1,
+            "exactly one index tool must be exposed (the non-destructive queue), got: {index_tools:?}"
+        );
+        assert!(
+            names.contains(&"cqs_index"),
+            "the exposed index tool must be the non-destructive `cqs_index` queue"
+        );
+        // The exposed `cqs_index` schema must NOT advertise a `force` property —
+        // the destructive flag is withheld by absence from the scoped core.
+        let listed = tools::list();
+        let arr = listed
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .expect("tools array");
+        let index_schema = arr
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("cqs_index"))
+            .and_then(|t| t.get("inputSchema"))
+            .and_then(|s| s.get("properties"))
+            .and_then(|p| p.as_object())
+            .expect("cqs_index inputSchema properties");
+        assert!(
+            !index_schema.contains_key("force"),
+            "cqs_index schema must not expose a `force` property (destructive variant withheld), \
+             got properties: {:?}",
+            index_schema.keys().collect::<Vec<_>>()
+        );
     }
 
     /// Every exposed tool carries the `cqs_` prefix (D1), an `inputSchema` that
@@ -305,6 +359,19 @@ mod tests {
             Some(true),
             "notes_remove is the lone destructiveHint:true in the exposed set"
         );
+
+        // The Phase-2b queue tool: a mutator that is idempotent (repeated calls
+        // coalesce into one watch-loop walk) and non-destructive (rebuilds from
+        // the source tree).
+        let index = find("cqs_index");
+        assert_eq!(hint(&index, "readOnlyHint"), Some(false));
+        assert_eq!(hint(&index, "idempotentHint"), Some(true));
+        assert_eq!(
+            hint(&index, "destructiveHint"),
+            Some(false),
+            "cqs_index is a non-destructive queued reindex"
+        );
+        assert_eq!(hint(&index, "openWorldHint"), Some(false));
     }
 
     /// `context`/`explain` must be ABSENT from the exposed surface (D4b),

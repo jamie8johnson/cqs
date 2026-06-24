@@ -191,7 +191,7 @@ pub(crate) fn dispatch_via_view_json(
     }
 
     // NUL byte rejection — same contract as the argv path, but over the JSON
-    // string values rather than argv tokens (serde decodes ` ` into a
+    // string values rather than argv tokens (serde decodes `\0` into a
     // String, so a structural walk is the equivalent check).
     if json_value_contains_nul(arguments) {
         view.error_count.fetch_add(1, Ordering::Relaxed);
