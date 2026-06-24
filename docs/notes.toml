@@ -2,6 +2,7 @@
 # Surprises (prediction errors) worth remembering
 # sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
 #   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
+# GENRE: code-search observations about THIS Rust codebase. Eval/training findings -> ~/training-data/{RESULTS,research/eval,research/training}.md; cross-project lessons -> that project's own notes.
 
 [[note]]
 sentiment = -0.5
@@ -195,15 +196,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = '''SignatureStyle::UntilAs doesn't handle \r\n line endings. Patterns " AS ", "\nAS\n", "\nAS " won't match "\r\nAS\r\n". Git usually normalizes but raw Windows .sql files will break signature extraction.'''
-mentions = [
-    "src/parser/chunk.rs",
-    "extract_signature",
-    "SignatureStyle::UntilAs",
-]
-
-[[note]]
 sentiment = 0.5
 text = "PDF-to-markdown pipeline works: pymupdf4llm converts AVEVA Historian manuals cleanly. Heading hierarchy preserved (# through ######). Noise: copyright footers, page numbers, ToC dot leaders need stripping. 39 PDFs → 14MB markdown in samples/md/."
 mentions = ["pymupdf4llm"]
@@ -211,16 +203,6 @@ mentions = ["pymupdf4llm"]
 [[note]]
 sentiment = -0.5
 text = '''Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\[...\] to match all links then check preceding byte. Common gotcha when porting regex from other languages.'''
-mentions = ["src/parser/markdown/"]
-
-[[note]]
-sentiment = -0.5
-text = "Merge-small-sections logic was backwards: small section absorbed the next instead of being absorbed by it. Title (4 lines) ate Section A (37 lines), producing one giant chunk. Direction matters — small merges INTO next, not extends to swallow."
-mentions = ["src/parser/markdown/"]
-
-[[note]]
-sentiment = 0.5
-text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
 mentions = ["src/parser/markdown/"]
 
 [[note]]
@@ -398,14 +380,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = 'score_name_match("foo", "") returns 0.9 because "foo".starts_with("") is always true in Rust. Empty string is a valid prefix of everything. Always guard name-match functions against empty queries.'
-mentions = [
-    "src/store/helpers.rs",
-    "score_name_match",
-]
-
-[[note]]
-sentiment = -0.5
 text = "to_ascii_lowercase() silently passes through non-ASCII chars unchanged — Ü.to_ascii_lowercase() returns Ü, not ü. Use to_lowercase() (returns iterator) via flat_map when Unicode input is possible."
 mentions = [
     "src/convert/naming.rs",
@@ -414,18 +388,10 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = '''ort 2.0.0-rc.11: raw ndarray can't be passed to ort::inputs\![]. Must wrap with Tensor::from_array(). Easy to miss — compiler error is 'SessionInputValue trait not satisfied' which doesn't mention Tensor.'''
+text = "ort 2.0.0-rc.12: raw ndarray can't be passed to ort::inputs![]. Must wrap with Tensor::from_array(). Easy to miss — compiler error is 'SessionInputValue trait not satisfied' which doesn't mention Tensor. Used in src/reranker.rs:452-467."
 mentions = [
     "reranker.rs",
     "src/embedder/mod.rs",
-]
-
-[[note]]
-sentiment = 0.0
-text = "Cross-encoder reranking incompatible with multi-index merge — sigmoid scores (0-1) vs cosine/RRF scores are on different scales. Must rerank before merge or skip entirely."
-mentions = [
-    "reranker.rs",
-    "query.rs",
 ]
 
 [[note]]
@@ -480,14 +446,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "OnceLock::get_or_try_init is still unstable (nightly-only). For fallible lazy init, use manual pattern: check get(), compute Result, set(), get().unwrap(). See BatchContext::file_set() for the pattern."
-mentions = [
-    "src/cli/batch/mod.rs",
-    "OnceLock",
-]
-
-[[note]]
 sentiment = 1.0
 text = "Parent type context injection improves method search significantly. E5 Recall@1 went from 86% to 90.9%, MRR from 0.885 to 0.941 on hard eval (55 confusable queries). Methods like should_allow() now get 'circuit breaker method' in their NL description. Extraction covers 6 languages: Rust impl/trait, Python class, JS/TS/Java class, Go receiver."
 mentions = [
@@ -539,14 +497,6 @@ mentions = [
     "src/language/mod.rs",
     "src/parser/calls.rs",
     "ChunkType",
-]
-
-[[note]]
-sentiment = 0.5
-text = "git log %x00 (NUL byte) as field separator avoids ambiguity with | in commit messages. --no-pager must come before 'log' (git-level flag, not log flag). Pattern used in blame.rs for reliable parse_git_log_output."
-mentions = [
-    "src/cli/commands/blame.rs",
-    "git",
 ]
 
 [[note]]
@@ -613,14 +563,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "SQ-5 filename stems: including filename in NL helps real codebases but regresses fixture eval by ~3pp. Generic stems (mod, index, utils, helpers) must be filtered. Fixture eval overfits to test file naming conventions."
-mentions = [
-    "src/nl/mod.rs",
-    "extract_file_context",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Red team verified 21+ protections solid: FTS injection double-sanitized, pipeline fan-out linear not exponential, BFS depth capped at 5 + 200 nodes, all graph traversals use visited sets, HNSW checksummed."
 mentions = [
@@ -634,14 +576,6 @@ text = "ORT CUDA provider path resolution: dladdr returns argv[0] on glibc stati
 mentions = [
     "src/embedder/mod.rs",
     "ort",
-]
-
-[[note]]
-sentiment = -1.0
-text = "CAGRA use-after-free: ManagedTensor::to_device copies shape pointer from host ndarray. If host array is dropped before search(), shape pointer dangles. Manifests as dimension mismatch error, not crash, because cuVS validates shapes."
-mentions = [
-    "cagra.rs",
-    "cuvs",
 ]
 
 [[note]]
@@ -703,23 +637,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "Hard eval R@1 varies 2-3pp between runs due to HNSW non-determinism (graph structure differs on rebuild). 92.7% and 94.5% observed on same code/model. Don't draw conclusions from <3pp differences. Run 3x and take median for reliable comparisons."
-mentions = [
-    "src/hnsw/build.rs",
-    "tests/model_eval.rs",
-]
-
-[[note]]
-sentiment = -1.0
-text = "CRITICAL: Hard eval results differ dramatically between GPUs. A6000 showed base/v5/v7 all at 89.1% R@1. RTX 4000 shows base 90.9%, v5 85.5%, v7 83.6% (median of 3). LoRA models are WORSE than base on hard eval. Different CUDA architectures (Ampere vs Turing) produce different float rounding in ORT. All prior hard eval comparisons on A6000 were unreliable — models looked equivalent when they weren't."
-mentions = [
-    "tests/model_eval.rs",
-    "src/embedder/mod.rs",
-    "CUDA",
-]
-
-[[note]]
 sentiment = 0.5
 text = "TypeFirst vs NameFirst field extraction: C/C++/Java/C# put type before name (Type name;) while Rust/TS/Python put name first (name: Type). The original plan assumed all languages use separator-first extraction — fresh-eyes review caught this fundamental design flaw before implementation."
 mentions = [
@@ -773,24 +690,11 @@ text = "CLAUDE.md restructured from 35-command reference list to task-triggered 
 mentions = ["CLAUDE.md"]
 
 [[note]]
-sentiment = 0.0
-text = "For balanced training datasets: Ruby gems and TS packages produce fewer callable functions per repo than Go/Java. Need 3-5x more repos to reach the same pair count. Min-stars threshold must be lowered (10 vs 100) to get enough repos."
-mentions = ["training-data"]
-
-[[note]]
 sentiment = 0.5
-text = "Adding a new language to cqs is now documented as a data-entry task in CONTRIBUTING.md. The only creative work is writing tree-sitter chunk/call queries. Everything else is filling LanguageDef fields from a template. bash.rs is the minimal template (65 lines definition). An agent can follow the guide without prior cqs context."
+text = "Adding a new language to cqs is now documented as a data-entry task in CONTRIBUTING.md (lines 604-668). The only creative work is writing tree-sitter chunk/call queries in src/language/queries/<lang>.*.scm. Everything else is filling LanguageDef fields (defined inline in languages.rs) from a template. See Bash or Rust in languages.rs for minimal vs complex examples. An agent can follow the guide without prior cqs context."
 mentions = [
     "language",
     "CONTRIBUTING.md",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Processing manifest added to training pipeline. index_stack_repos.py now records per-repo status, pair/edge counts, index time, cqs version. Retroactive manifest covers 2,305 repos."
-mentions = [
-    "index_stack_repos.py",
-    "build_manifest.py",
 ]
 
 [[note]]
@@ -803,16 +707,11 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "BGE-large raw eval: 61.8% R@1, 0.7688 MRR. +12.7pp over E5-base raw (49.1%). Configurable models feature verified end-to-end. Found init bug (dim defaulting to 768 on fresh DB) during testing."
+text = "BGE-large raw eval: 61.8% R@1, 0.7688 MRR. +12.7pp over E5-base raw (49.1%). Configurable models feature verified end-to-end. Found init bug (dim defaulting to 768 on fresh DB) during testing (discovered while working on src/index.rs dim validation)."
 mentions = [
     "src/cli/commands/index.rs",
     "src/store/mod.rs",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "OpenClaw codebase is unusually clean — all catches annotated, all as-any suppressed, no deprecated APIs, no floating promises. Verification before submission is critical: initial scan claimed 30 duplicate utilities, verification reduced to 6 actionable (2 clean drop-in). Always verify agent findings before filing."
-mentions = ["openclaw-contributions.md"]
 
 [[note]]
 sentiment = 0.5
@@ -835,30 +734,9 @@ text = "P4 audit findings: trivially fixable items (doc comments, one-liners, un
 mentions = ["audit"]
 
 [[note]]
-sentiment = 0.0
-text = "v9-200k-1.5ep: pipeline regresses 5.4pp (94.5→89.1%), raw flat (70.9%). Third independent confirmation that more training hurts pipeline. 200K × 1ep × CG-filter is the ceiling for this architecture."
-mentions = [
-    "train_lora.py",
-    "research_log.md",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Pre-Edit hook works: .claude/hooks/pre-edit-context.py runs cqs context on .rs files, injects function list + external caller count into agent context. Zero agent effort, automatic awareness. Key: paths from Claude Code are absolute, must convert to relative for cqs."
 mentions = ["hooks"]
-
-[[note]]
-sentiment = 0.0
-text = "89.1% basin of attraction confirmed with 5 data points: more data, FAISS negs, more epochs, contrastive queries all land at exactly 89.1% pipeline R@1. The 94.5% optimum is a narrow peak reachable only by v9-200k exact recipe. Breaking the ceiling requires fundamentally different training pairs, not format variations."
-mentions = [
-    "train_lora.py",
-    "research_log.md",
-]
-
-[[note]]
-sentiment = -0.5
-text = "OpenClaw 10-PR limit: auto-closes PRs when >10 open. Consolidate related changes into single PRs. We went from 12 to 7 by grouping: 4 perf optimizations into 1, 2 code quality fixes into 1."
-mentions = ["openclaw-contributions.md"]
 
 [[note]]
 sentiment = -0.5
@@ -1084,14 +962,6 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Store::into_readonly() zero-cost type-level erasure — RW to RO via ManuallyDrop + ptr::read (Store<Mode> has Drop). Pub because integration tests need it; doc-comment steers production to Store::open_readonly."
-mentions = [
-    "src/store/mod.rs",
-    "typestate",
-]
-
-[[note]]
-sentiment = 0.5
 text = "Use the Monitor tool for long-running PR/CI watchers. Shell-backgrounded poll scripts risk being killed, logs wiped from /tmp, and duplicate instances racing on the same PR. Monitor is session-scoped and single-lifecycle."
 mentions = [
     "Monitor",
@@ -1120,14 +990,6 @@ text = "dual-judge consensus (Claude Haiku + Gemma 4 31B local) gives 85% gold a
 mentions = [
     "eval",
     "consensus",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Python subprocess.Popen(stderr=PIPE) deadlocks if stderr >64KB and parent never drains. cqs batch emits ~90 WARNs per query (content_hash missing). Fix: stderr to file."
-mentions = [
-    "subprocess",
-    "batch",
 ]
 
 [[note]]
@@ -1212,16 +1074,6 @@ mentions = [
 
 [[note]]
 sentiment = -1.0
-text = "v9-200k embedder is fine-tuned E5-base, NOT a true code-aware model. v3 R@1 = 28.4% (vs BGE-large 42.2%, -13.8pp). The basin paper's 'ties on R@1' claim was on 296q chunk-to-description fixture, not v3 real-code search. Don't conflate."
-mentions = [
-    "v9-200k",
-    "embedder",
-    "E5",
-    "BGE-large",
-]
-
-[[note]]
-sentiment = -1.0
 text = "Wins-vanish-through-router pattern: this session saw 3 cases (centroid -4.6pp, reranker v2 pilot -5.5pp, full alpha sweep only xlang transferred). ALWAYS validate retrieval changes end-to-end on v3 dev with production router before declaring win. Forced-α/bypassed measurements lie."
 mentions = [
     "router",
@@ -1267,11 +1119,6 @@ mentions = [
     "evals/train_reranker_v2.py",
     "reranker_v2_corpus",
 ]
-
-[[note]]
-sentiment = -0.5
-text = "ColBERT 2-stage rerank R@5 wins on test (+5.5pp at α=0.7) don't replicate on dev (0.0pp at α=0.7). Test baseline 58.7% leaves headroom; dev baseline 74.3% doesn't. Single-split A/B at N=109 is noisy; always confirm both splits before declaring a lever real."
-mentions = ["evals/colbert_rerank_eval.py"]
 
 [[note]]
 sentiment = -0.5
@@ -1356,15 +1203,6 @@ mentions = [
 
 [[note]]
 sentiment = 0.0
-text = "v3 alpha sweep predicts +14pp held-out R@5 lift but production produced 0.9pp. Oracle test (Gemma-perfect router) confirmed +9.2pp is achievable. The dilution math (sweep_lift × classifier_accuracy = production_lift) DOES hold but the multiplier is tiny because rule+centroid is at 38%. Fix is classifier accuracy, not alpha grid."
-mentions = [
-    "src/search/router.rs",
-    "evals/alpha_sweep_v3_r5.py",
-    "classifier",
-]
-
-[[note]]
-sentiment = 0.0
 text = "R@5 sweep predictions overstate production lift by ~8x. The sweep harness uses --splade-alpha per query (perfect routing assumption); production routes via classifier (~38% accuracy for rule+centroid). Rule of thumb: production_lift ≈ sweep_lift × classifier_accuracy. Always quote both numbers when projecting from a sweep — and run the oracle test (force alpha via Gemma-perfect prediction) to bound the achievable ceiling separately from classifier headroom."
 mentions = [
     "evals/alpha_sweep_v3_r5.py",
@@ -1415,15 +1253,6 @@ mentions = [
     "fused_head_ab_eval.py",
     "convex_hull",
     "alpha_routing",
-]
-
-[[note]]
-sentiment = 0.0
-text = "v4 synthetic queries are ~20pp harder than v3.v2 hand-curated (R@5 baseline 49% vs 69%). Gold-in-top-50 retrieval rate drops 91% → 65% on v4. Synthetic = LLM-generated from chunks then Gemma-validated, never human-reviewed. Use both v3 (curated) AND v4 (large N) in any future A/B — agreement across both is required for ship/kill verdicts."
-mentions = [
-    "v4_generated.json",
-    "split_v4.py",
-    "build_contrastive_shards.py",
 ]
 
 [[note]]
@@ -1516,15 +1345,6 @@ mentions = [
     "#1182",
     "positioning",
     "freshness",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Pre-existing daemon_ping bug: production daemon wraps dispatch output in {data, error, version, _meta} envelope, but daemon_ping was deserializing the envelope directly into PingResponse. Mock test bypassed the envelope so the bug shipped silently in v1.30.0+. Fixed in #1189 (drive-by during watch_status work) via unwrap_dispatch_payload helper that digs into 'data' if present, falls through to bare-payload for legacy mocks."
-mentions = [
-    "daemon_translate.rs",
-    "daemon_ping",
-    "unwrap_dispatch_payload",
 ]
 
 [[note]]
@@ -1960,4 +1780,54 @@ mentions = [
     "src/parser/chunk.rs",
     "src/parser/markdown/tables.rs",
     "chunk_id_suffixed",
+]
+
+[[note]]
+sentiment = -0.5
+text = "#[schemars(rename_all)] shapes ONLY the JSON schema; #[serde(rename_all)] flips BOTH the input schema AND the derived Serialize output, silently changing wire output if the type's Serialize is a live output path (DeadConfidence/CallEdgeKind serialize PascalCase in ci/dead_in_diff). Use schemars(rename_all) for schema-only renames and pin the output spelling with a test."
+mentions = [
+    "src/store/calls/mod.rs",
+    "src/parser/types.rs",
+    "schemars",
+    "serde",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Daemon connection slots need RAII Drop guards, not post-call fetch_sub: a panic in handle_socket_client skips post-return cleanup and leaks the in_flight slot (Drop runs on unwind; moot under release panic=abort but live in debug/test). See InFlightGuard."
+mentions = [
+    "src/cli/watch/daemon.rs",
+    "InFlightGuard",
+]
+
+[[note]]
+sentiment = 0.5
+text = "L5X/L5K bare Rockwell ST routine bodies (not wrapped in PROGRAM/FUNCTION_BLOCK) parse to ERROR nodes with zero call/type edges. Prepend a synthetic PROGRAM _cqs_wrap wrapper to force typed nodes, then lift extracted coordinates back by the line offset. Reusable for any grammar needing top-level scope."
+mentions = [
+    "src/parser/l5x.rs",
+    "tree-sitter",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Per-chunk extraction is scoped to the captured node range, so adjacent tree-sitter siblings get missed: Dart function_signature + function_body are siblings with no covering span, so body calls were skipped. Fix widened the chunk span to include the body. Adjacent-sibling AST nodes need explicit span widening."
+mentions = [
+    "src/parser/chunk.rs",
+    "tree-sitter",
+]
+
+[[note]]
+sentiment = -0.5
+text = "hnsw_rs modify_level_scale() unconditionally println!s, corrupting any --json stdout path (e.g. cqs gc --json). Guard with a cross-platform fd-1 RAII redirect (libc dup/redirect; works unix + Windows MSVCRT); test via subprocess re-exec since libtest stdout capture won't catch fd-level leaks."
+mentions = [
+    "src/hnsw/stdout_gag.rs",
+    "hnsw_rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Every authored *.calls.scm must be wired into the language's call_query: Dart's existed but was unwired (call_query=None), silently producing empty call graphs. A floor check that every language has call_query=Some(...) catches authored-but-unwired queries at CI."
+mentions = [
+    "src/language/languages.rs",
+    "call_query",
 ]
