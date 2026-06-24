@@ -1,0 +1,477 @@
+//! Integration smoke for the `cqs mcp` stdio↔daemon-socket bridge
+//! (MCP Phase 1, Lane 2).
+//!
+//! HERMETIC: this does NOT touch the installed daemon / systemd service. It
+//! spawns the just-built `cqs mcp` binary as a child, pointed (via a private
+//! `XDG_RUNTIME_DIR`) at a MOCK daemon bound at the exact socket path the
+//! bridge computes for the temp project. The mock returns canned daemon
+//! envelopes, so the test exercises the bridge end-to-end — stdio NDJSON
+//! framing, JSON-RPC routing, the Lane 1 JSON-args frame it sends, and the
+//! envelope→`CallToolResult` classification (including the Blocker #1
+//! error-mapping invariant) — without a GPU/model load. The real json-args
+//! dispatch is Lane 1's tested territory; this lane owns the bridge.
+//!
+//! `#![cfg(unix)]`: the daemon socket is unix-only.
+#![cfg(unix)]
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tempfile::TempDir;
+
+/// Build the temp project: a `.git` marker (so the child's `find_project_root`
+/// stops here deterministically) and a `.cqs/` dir (so `resolve_index_dir`
+/// returns `<root>/.cqs` rather than walking a worktree fallback). Returns the
+/// CANONICAL project root (the bytes the socket-path hash is taken over must
+/// match between the mock side and the child side).
+fn make_project() -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dunce::canonicalize(dir.path()).expect("canonicalize root");
+    std::fs::create_dir_all(root.join(".git")).expect("mkdir .git");
+    std::fs::create_dir_all(root.join(".cqs")).expect("mkdir .cqs");
+    let cqs_dir = root.join(".cqs");
+    (dir, root, cqs_dir)
+}
+
+/// A canned daemon: bind a `UnixListener` at `socket_path`, accept connections
+/// in a loop, and reply to each with an envelope chosen by the request's
+/// `command`. Returns a handle to stop it and join.
+struct MockDaemon {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl MockDaemon {
+    fn start(socket_path: PathBuf) -> Self {
+        // Clean any stale socket.
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind mock daemon socket");
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !stop_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        // Each daemon connection is one request → one response.
+                        handle_conn(stream);
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        MockDaemon {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for MockDaemon {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Read one request line, choose a canned envelope by `command`, write it back.
+fn handle_conn(mut stream: UnixStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+        return;
+    }
+    let req: Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let command = req.get("command").and_then(|c| c.as_str()).unwrap_or("");
+    // The bridge MUST send the Lane 1 JSON-args frame: an `arguments` object,
+    // never an argv `args` array. Echo nothing if the contract is violated so
+    // the test's response assertion fails loudly.
+    let has_arguments_object = matches!(req.get("arguments"), Some(Value::Object(_)));
+
+    let envelope = if !has_arguments_object {
+        json!({"status": "error", "message": "expected an `arguments` object frame"})
+    } else {
+        match command {
+            // A normal success: data + envelope _meta.
+            "callers" => json!({
+                "status": "ok",
+                "output": {
+                    "data": {
+                        "function": "callee_fn",
+                        "callers": [{ "name": "caller_fn", "edge_kind": "call" }]
+                    },
+                    "_meta": { "stale_origins": [] }
+                }
+            }),
+            // A handler error riding under status:"ok" (Blocker #1).
+            "impact" => json!({
+                "status": "ok",
+                "output": {
+                    "error": { "code": "not_found", "message": "function 'ghost' not found" }
+                }
+            }),
+            // search: minimal data payload, used for the structuredContent check.
+            "search" => json!({
+                "status": "ok",
+                "output": { "data": { "results": [{ "name": "hit", "score": 0.9 }] } }
+            }),
+            _ => json!({"status": "error", "message": format!("unexpected command {command}")}),
+        }
+    };
+    let mut buf = serde_json::to_vec(&envelope).expect("serialize envelope");
+    buf.push(b'\n');
+    let _ = stream.write_all(&buf);
+    let _ = stream.flush();
+}
+
+/// A live `cqs mcp` child plus its piped stdin/stdout, with a line reader.
+struct Bridge {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    reader: BufReader<std::process::ChildStdout>,
+}
+
+impl Bridge {
+    /// Spawn `cqs mcp` with cwd = project root and `XDG_RUNTIME_DIR` =
+    /// `socket_dir`, so the child computes the same daemon socket path the mock
+    /// bound. `CQS_NO_DAEMON` is intentionally NOT set (the bridge is itself the
+    /// daemon client; the env knob governs the *other* daemon-forward path).
+    fn spawn(root: &Path, socket_dir: &Path) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cqs"))
+            .arg("mcp")
+            .current_dir(root)
+            .env("XDG_RUNTIME_DIR", socket_dir)
+            // Keep the child's timeout snappy so a missing reply fails the test
+            // fast rather than hanging.
+            .env("CQS_DAEMON_TIMEOUT_MS", "5000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cqs mcp");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        Bridge {
+            child,
+            stdin,
+            reader: BufReader::new(stdout),
+        }
+    }
+
+    /// Send one JSON-RPC request line.
+    fn send(&mut self, msg: &Value) {
+        let line = serde_json::to_string(msg).expect("serialize request");
+        writeln!(self.stdin, "{line}").expect("write to child stdin");
+        self.stdin.flush().expect("flush child stdin");
+    }
+
+    /// Read one response line, parsed as JSON. Panics on EOF / timeout.
+    fn recv(&mut self) -> Value {
+        let mut line = String::new();
+        let n = self.reader.read_line(&mut line).expect("read child stdout");
+        assert!(n > 0, "bridge closed stdout before responding");
+        serde_json::from_str(line.trim())
+            .unwrap_or_else(|e| panic!("bridge response not JSON ({e}): {line}"))
+    }
+}
+
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        // Closing stdin → the bridge's stdin loop hits EOF and exits.
+        // (Take and drop the stdin handle explicitly.)
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// End-to-end session: initialize → tools/list → tools/call (success) drives
+/// the full bridge with a mock daemon behind the socket.
+#[test]
+fn stdio_round_trip_smoke() {
+    let (_dir, root, cqs_dir) = make_project();
+    // The mock daemon and the child both resolve the socket path from
+    // `XDG_RUNTIME_DIR = socket_dir` + the canonical cqs_dir bytes.
+    let socket_dir = root.clone();
+    // Compute the socket path WITHOUT mutating process-wide env (which races
+    // across parallel tests). The thread-local override sets the dir on this
+    // test thread; the child gets the matching dir via `Command::env`
+    // (`XDG_RUNTIME_DIR`). Both compute `socket_dir/cqs-<hash(cqs_dir)>.sock`.
+    cqs::daemon_translate::set_socket_dir_override_for_test(Some(socket_dir.clone()));
+    let socket_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    let _daemon = MockDaemon::start(socket_path);
+
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+
+    // 1. initialize → handshake.
+    bridge.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name":"smoke","version":"1"} }
+    }));
+    let init = bridge.recv();
+    assert_eq!(init.get("id").and_then(|v| v.as_u64()), Some(1));
+    let result = init.get("result").expect("initialize result");
+    assert_eq!(
+        result.get("protocolVersion").and_then(|v| v.as_str()),
+        Some("2025-11-25"),
+        "handshake must advertise the P1 protocol version"
+    );
+    assert_eq!(
+        result
+            .get("serverInfo")
+            .and_then(|s| s.get("name"))
+            .and_then(|v| v.as_str()),
+        Some("cqs")
+    );
+
+    // 2. notifications/initialized → NO response (notification).
+    bridge.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+
+    // 3. tools/list → cqs_search present, context/explain absent, schemas present.
+    bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let listed = bridge.recv();
+    assert_eq!(listed.get("id").and_then(|v| v.as_u64()), Some(2));
+    let tools = listed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .expect("tools array");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+        .collect();
+    assert!(names.contains(&"cqs_search"), "cqs_search must be listed");
+    assert!(names.contains(&"cqs_callers"), "cqs_callers must be listed");
+    assert!(
+        !names.contains(&"cqs_context"),
+        "cqs_context must be withheld (D4b)"
+    );
+    assert!(
+        !names.contains(&"cqs_explain"),
+        "cqs_explain must be withheld (D4b)"
+    );
+    // Every listed tool carries an inputSchema object.
+    for t in tools {
+        let schema = t.get("inputSchema").expect("inputSchema");
+        assert_eq!(
+            schema.get("type").and_then(|v| v.as_str()),
+            Some("object"),
+            "tool {} inputSchema must be an object",
+            t.get("name").and_then(|n| n.as_str()).unwrap_or("?")
+        );
+    }
+
+    // 4. tools/call cqs_search → valid CallToolResult with structuredContent.
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params": { "name": "cqs_search", "arguments": { "query": "anything" } }
+    }));
+    let called = bridge.recv();
+    assert_eq!(called.get("id").and_then(|v| v.as_u64()), Some(3));
+    let call_result = called.get("result").expect("tools/call result");
+    assert_eq!(
+        call_result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "a successful search must not be an error"
+    );
+    let structured = call_result
+        .get("structuredContent")
+        .expect("structuredContent present on success");
+    assert!(
+        structured.get("results").is_some(),
+        "structuredContent must carry the handler data"
+    );
+    // The content[text] mirror is also present.
+    assert!(call_result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|b| b.get("text"))
+        .is_some());
+}
+
+/// Blocker #1: a handler error riding under the daemon's outer `status:"ok"`
+/// becomes a `CallToolResult{isError:true}`, NOT a JSON-RPC protocol error and
+/// NOT a false success. Driven end-to-end through the child.
+#[test]
+fn handler_error_becomes_is_error_true() {
+    let (_dir, root, cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    // Compute the socket path WITHOUT mutating process-wide env (which races
+    // across parallel tests). The thread-local override sets the dir on this
+    // test thread; the child gets the matching dir via `Command::env`
+    // (`XDG_RUNTIME_DIR`). Both compute `socket_dir/cqs-<hash(cqs_dir)>.sock`.
+    cqs::daemon_translate::set_socket_dir_override_for_test(Some(socket_dir.clone()));
+    let socket_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    let _daemon = MockDaemon::start(socket_path);
+
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    // cqs_impact on a ghost symbol → the mock returns a status:"ok"-wrapped
+    // handler error.
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":7,"method":"tools/call",
+        "params": { "name": "cqs_impact", "arguments": { "name": "ghost" } }
+    }));
+    let resp = bridge.recv();
+    // It is a SUCCESS at the JSON-RPC layer (has `result`, no `error`)...
+    assert!(
+        resp.get("error").is_none(),
+        "handler error must NOT be a JSON-RPC protocol error: {resp}"
+    );
+    let result = resp.get("result").expect("tools/call result");
+    // ...but the CallToolResult is flagged isError:true.
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "a status:ok-wrapped handler error must map to isError:true (Blocker #1): {result}"
+    );
+    // The redacted message reaches the client.
+    let text = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    assert!(
+        text.contains("not found"),
+        "error text must surface: {text}"
+    );
+}
+
+/// Protocol-layer failures: an unknown method → -32601, malformed JSON →
+/// -32700, an unknown tool → -32601. Driven through the child; no daemon needed
+/// for the method/parse cases.
+#[test]
+fn protocol_errors_map_to_jsonrpc_codes() {
+    let (_dir, root, cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    // Compute the socket path WITHOUT mutating process-wide env (which races
+    // across parallel tests). The thread-local override sets the dir on this
+    // test thread; the child gets the matching dir via `Command::env`
+    // (`XDG_RUNTIME_DIR`). Both compute `socket_dir/cqs-<hash(cqs_dir)>.sock`.
+    cqs::daemon_translate::set_socket_dir_override_for_test(Some(socket_dir.clone()));
+    let socket_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    let _daemon = MockDaemon::start(socket_path);
+
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    // Unknown method → -32601.
+    bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"no/such/method","params":{}}));
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32601),
+        "unknown method must be -32601: {r}"
+    );
+
+    // Unknown tool name → -32601.
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params": { "name": "cqs_does_not_exist", "arguments": {} }
+    }));
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32601),
+        "unknown tool must be -32601: {r}"
+    );
+
+    // Malformed JSON line → -32700 (parse error, no id).
+    write_raw_line(&mut bridge, "{ this is not json");
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32700),
+        "malformed JSON must be -32700: {r}"
+    );
+
+    // Malformed arguments (wrong-typed field) → -32602 invalid params.
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":5,"method":"tools/call",
+        "params": { "name": "cqs_callers", "arguments": { "name": 42 } }
+    }));
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32602),
+        "malformed arguments must be -32602: {r}"
+    );
+}
+
+/// D4a: with NO daemon running, a `tools/call` fails clean with a transport
+/// protocol error (no in-process fallback, no GPU load, no stdout leak).
+#[test]
+fn no_daemon_fails_clean() {
+    let (_dir, root, _cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    // Intentionally do NOT start a mock daemon — the socket does not exist. The
+    // child gets `XDG_RUNTIME_DIR` via `Command::env`, so it computes a socket
+    // path that points at nothing (no process-env mutation needed here).
+
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params": { "name": "cqs_callers", "arguments": { "name": "foo" } }
+    }));
+    let r = bridge.recv();
+    // No daemon → internal/transport protocol error (-32603), with advice.
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32603),
+        "missing daemon must be -32603: {r}"
+    );
+    let msg = r
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("daemon"),
+        "the error must mention the daemon: {msg}"
+    );
+}
+
+/// Write a raw (possibly invalid-JSON) line straight to the child stdin,
+/// bypassing the `Value` serializer.
+fn write_raw_line(bridge: &mut Bridge, raw: &str) {
+    writeln!(bridge.stdin, "{raw}").expect("write raw line");
+    bridge.stdin.flush().expect("flush raw line");
+}
