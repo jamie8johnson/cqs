@@ -1,6 +1,6 @@
 # cqs ("seeks")
 
-Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
+Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, smart context assembly, and MCP server — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
 **TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **72.0% R@5 / 47.2% R@1 / 87.2% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (2026-06-16 v1.47.0 release-gate snapshot at 16.9k chunks; gemma dense + SPLADE sparse with per-category α fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
@@ -329,6 +329,37 @@ cqs chat
 cqs batch
 echo 'search "error handling" | callers | test-map' | cqs batch
 ```
+
+## MCP (Model Context Protocol)
+
+`cqs mcp` is a stdio↔daemon-socket bridge that exposes cqs as an MCP server (protocol `2025-11-25`) for any MCP-capable client such as Claude Code.
+
+**Prerequisites**: a running `cqs watch --serve` daemon. The bridge forwards every request to the daemon; it loads no ML model and uses no GPU.
+
+```bash
+# Start the daemon (if not already running)
+cqs watch --serve
+
+# Then start the MCP bridge (typically launched by the MCP client)
+cqs mcp
+```
+
+**MCP client config** (e.g. Claude Code `mcp.json`):
+```json
+{
+  "mcpServers": {
+    "cqs": {
+      "command": "cqs",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Tool surface**:
+- **Default (read-only)**: 19 `cqs_`-prefixed tools — `cqs_search`, `cqs_callers`, `cqs_callees`, `cqs_impact`, `cqs_gather`, `cqs_scout`, `cqs_task`, `cqs_explain`, `cqs_context`, `cqs_read`, `cqs_notes_list`, `cqs_onboard`, `cqs_where`, `cqs_trace`, `cqs_test_map`, `cqs_dead`, `cqs_health`, `cqs_review`, `cqs_stats`.
+- **Opt-in mutations** (`CQS_MCP_ENABLE_MUTATIONS=1`): adds 4 mutating tools — `cqs_notes_add`, `cqs_notes_update`, `cqs_notes_remove`, `cqs_index`. Notes mutations write `docs/notes.toml` (the watch loop reindexes); `cqs_index` queues a non-blocking reconcile. Neither writes the daemon's in-memory Store directly.
+- **Permanently withheld**: the destructive set (`gc`, `slot remove`, `index --force`, `model swap`, `cache clear`) is never exposed, regardless of flag value.
 
 ## Code Intelligence
 
