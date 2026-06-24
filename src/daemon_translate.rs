@@ -819,10 +819,10 @@ fn daemon_request<T: serde::de::DeserializeOwned>(
 ///
 /// Unlike [`daemon_request`], this does NOT peel the dispatch layer via
 /// [`unwrap_dispatch_payload`]: the bridge must inspect the un-peeled `output`
-/// to distinguish a handler error riding under `status:"ok"`
-/// (`{"data":null,"error":{...}}`) from a success (`{"data":...}`), and to
-/// carry the envelope `_meta` through. Peeling would collapse both into a
-/// bare payload and discard `_meta`.
+/// to distinguish a handler error riding under `status:"ok"` (the slim error
+/// envelope `{"error":{...}}` — error-present, no `data` key) from a success
+/// (`{"data":...}`), and to carry the envelope `_meta` through. Peeling would
+/// collapse both into a bare payload and discard `_meta`.
 ///
 /// Uses a 1 MiB response cap and the shared [`resolve_daemon_timeout_ms`]
 /// timeout because tool responses (search, gather, task) are far larger than

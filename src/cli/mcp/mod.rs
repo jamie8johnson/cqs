@@ -89,23 +89,27 @@ mod tests {
     }
 
     /// The command names that map to the exposed MCP read tools — the daemon's
-    /// JSON-args-capable read set MINUS the withheld doc/signature-relay set.
-    /// Returns the bare daemon command names (the registry comparison key).
+    /// JSON-args-capable read set MINUS the gated-mutation arms MINUS the
+    /// withheld doc/signature-relay set. Returns the bare daemon command names
+    /// (the registry comparison key).
+    ///
+    /// DERIVED, not hand-mirrored: the capable set comes from
+    /// `build_batch_cmd`'s single source of truth
+    /// ([`crate::cli::batch::JSON_ARGS_CAPABLE_COMMANDS`]), so a Lane-1 command
+    /// added there auto-enrolls in this guard rather than silently skipping it.
+    /// The const is itself pinned against the match arms by an exhaustiveness
+    /// test in `json_args.rs`, closing the incomplete-sweep gap.
     fn expected_read_commands() -> std::collections::BTreeSet<String> {
-        // The canonical JSON-args-capable read command set, mirrored from
-        // `build_batch_cmd`'s match arms (the notes-mutation arms are accounted
-        // for separately by the flag-gated rows). If Lane 1 adds a read command
-        // there, this list must grow with it (and the tool table in `tools.rs`).
-        let json_args_capable: std::collections::BTreeSet<&str> = [
-            "search", "gather", "scout", "onboard", "similar", "callers", "callees", "deps",
-            "impact", "test-map", "trace", "blame", "context", "diff", "drift", "dead", "ci",
-            "review", "plan", "read",
-        ]
-        .into_iter()
-        .collect();
+        // The gated mutators (`notes-*`, `index`) are JSON-args-capable but are
+        // NOT read tools — they ride the flag-gated rows and are accounted for
+        // separately. Subtract them here so this set is the READ surface only.
+        let gated_mutators: std::collections::BTreeSet<&str> =
+            ["notes-add", "notes-update", "notes-remove", "index"]
+                .into_iter()
+                .collect();
         // The withheld set: the P1 doc/signature relay surfaces (`context`,
         // `explain`) PLUS the destructive mutators that are withheld by absence
-        // in Phase 2a — naming them here makes the guard ENFORCE §1.3 (a future
+        // — naming them here makes the guard ENFORCE the withhold (a future
         // hand that adds `cqs_gc` to the table fails this test).
         let withheld: std::collections::BTreeSet<&str> = [
             "context",
@@ -118,8 +122,10 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        json_args_capable
-            .difference(&withheld)
+        crate::cli::batch::JSON_ARGS_CAPABLE_COMMANDS
+            .iter()
+            .copied()
+            .filter(|c| !gated_mutators.contains(c) && !withheld.contains(c))
             .map(|s| s.to_string())
             .collect()
     }

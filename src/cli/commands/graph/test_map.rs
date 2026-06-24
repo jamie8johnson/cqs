@@ -39,7 +39,14 @@ pub(crate) struct TestMapArgs {
     /// once at the adapter boundary from `CQS_TEST_MAP_MAX_NODES` (default
     /// 10,000) via [`test_map_max_nodes`]; the core never reads the env.
     /// `#[serde(default)]` so a wire caller that omits it gets the default.
+    ///
+    /// `#[schemars(skip)]`: the JSON-args adapter does not round-trip this field
+    /// (the handler env-resolves the ceiling), so the advertised MCP
+    /// `inputSchema` must NOT offer it — advertising a knob the daemon silently
+    /// ignores misleads the caller. Deserialize still accepts it (a wire client
+    /// that sends it is tolerated, just inert), only the schema hides it.
     #[serde(default = "test_map_max_nodes")]
+    #[schemars(skip)]
     pub max_nodes: usize,
 }
 

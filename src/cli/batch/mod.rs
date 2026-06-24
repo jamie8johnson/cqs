@@ -47,6 +47,14 @@ pub(crate) use commands::{dispatch, BatchInput};
 #[cfg(test)]
 pub(crate) use commands::BatchCmd;
 pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
+// The canonical JSON-args-capable command set, surfaced for the MCP
+// registry-parity guard (`cli::mcp::mod`) so it derives the expected tool set
+// from `build_batch_cmd`'s single source of truth rather than re-listing the
+// commands. Test-only — the guard that consumes it is `#[cfg(test)]`. The
+// `is_json_args_capable` probe predicate that pins this list against the match
+// arms stays local to `json_args` (used by its own exhaustiveness test).
+#[cfg(test)]
+pub(crate) use json_args::JSON_ARGS_CAPABLE_COMMANDS;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
