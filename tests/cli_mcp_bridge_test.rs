@@ -135,6 +135,20 @@ fn handle_conn(mut stream: UnixStream) {
                 "status": "ok",
                 "output": { "data": { "results": [{ "name": "hit", "score": 0.9 }] } }
             }),
+            // notes-add (Phase 2a gated mutation): the daemon's notes-write
+            // success envelope. The bridge relayed the `notes-add` json-args
+            // frame, proving the gated mutation tool reaches the daemon.
+            "notes-add" => json!({
+                "status": "ok",
+                "output": { "data": {
+                    "status": "added",
+                    "text_preview": "from the bridge",
+                    "file": "docs/notes.toml",
+                    "indexed": false,
+                    "total_notes": 0,
+                    "reindex_deferred": true
+                } }
+            }),
             _ => json!({"status": "error", "message": format!("unexpected command {command}")}),
         }
     };
@@ -157,8 +171,15 @@ impl Bridge {
     /// bound. `CQS_NO_DAEMON` is intentionally NOT set (the bridge is itself the
     /// daemon client; the env knob governs the *other* daemon-forward path).
     fn spawn(root: &Path, socket_dir: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cqs"))
-            .arg("mcp")
+        Self::spawn_with_env(root, socket_dir, &[])
+    }
+
+    /// Spawn with extra env pairs (e.g. `CQS_MCP_ENABLE_MUTATIONS=1` for the
+    /// Phase-2a gated-mutation path). Each child has its OWN process env, so
+    /// setting the flag here does not race other tests' process env.
+    fn spawn_with_env(root: &Path, socket_dir: &Path, extra_env: &[(&str, &str)]) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cqs"));
+        cmd.arg("mcp")
             .current_dir(root)
             .env("XDG_RUNTIME_DIR", socket_dir)
             // Keep the child's timeout snappy so a missing reply fails the test
@@ -166,9 +187,11 @@ impl Bridge {
             .env("CQS_DAEMON_TIMEOUT_MS", "5000")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn cqs mcp");
+            .stderr(Stdio::null());
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("spawn cqs mcp");
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = child.stdout.take().expect("child stdout");
         Bridge {
@@ -466,6 +489,135 @@ fn no_daemon_fails_clean() {
     assert!(
         msg.contains("daemon"),
         "the error must mention the daemon: {msg}"
+    );
+}
+
+/// MCP Phase 2a: with `CQS_MCP_ENABLE_MUTATIONS=1` in the child env, the bridge
+/// advertises `cqs_notes_add` in `tools/list` (with mutating annotations) and a
+/// `tools/call cqs_notes_add` relays the `notes-add` json-args frame to the
+/// daemon, mapping the success envelope to `isError:false`. Driven end-to-end
+/// through the child — proves the gated mutation channel works over the bridge.
+#[test]
+fn gated_notes_add_round_trips_when_flag_set() {
+    let (_dir, root, cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    cqs::daemon_translate::set_socket_dir_override_for_test(Some(socket_dir.clone()));
+    let socket_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    let _daemon = MockDaemon::start(socket_path);
+
+    let mut bridge =
+        Bridge::spawn_with_env(&root, &socket_dir, &[("CQS_MCP_ENABLE_MUTATIONS", "1")]);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    // tools/list → cqs_notes_add present with mutating annotations.
+    bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let listed = bridge.recv();
+    let tools = listed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .expect("tools array");
+    let add = tools
+        .iter()
+        .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("cqs_notes_add"))
+        .expect("cqs_notes_add must be listed when the flag is set");
+    let ann = add.get("annotations").expect("annotations");
+    assert_eq!(
+        ann.get("readOnlyHint").and_then(|v| v.as_bool()),
+        Some(false),
+        "notes_add is mutating, not read-only"
+    );
+    assert_eq!(
+        ann.get("destructiveHint").and_then(|v| v.as_bool()),
+        Some(false),
+        "notes_add is additive, not destructive"
+    );
+    // notes_remove must also be present and carry destructiveHint:true.
+    let remove = tools
+        .iter()
+        .find(|t| t.get("name").and_then(|n| n.as_str()) == Some("cqs_notes_remove"))
+        .expect("cqs_notes_remove must be listed when the flag is set");
+    assert_eq!(
+        remove
+            .get("annotations")
+            .and_then(|a| a.get("destructiveHint"))
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "notes_remove carries destructiveHint:true"
+    );
+
+    // tools/call cqs_notes_add → success CallToolResult (relayed `notes-add`).
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params": { "name": "cqs_notes_add", "arguments": { "text": "from the bridge", "sentiment": -0.5 } }
+    }));
+    let called = bridge.recv();
+    let result = called.get("result").expect("tools/call result");
+    assert_eq!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(false),
+        "a successful notes-add must not be an error: {result}"
+    );
+    let structured = result
+        .get("structuredContent")
+        .expect("structuredContent present");
+    assert_eq!(
+        structured.get("status").and_then(|v| v.as_str()),
+        Some("added")
+    );
+    assert_eq!(
+        structured.get("reindex_deferred").and_then(|v| v.as_bool()),
+        Some(true),
+        "daemon defers the reindex to the watch loop"
+    );
+}
+
+/// MCP Phase 2a: WITHOUT the flag, the bridge's `tools/list` must NOT advertise
+/// any notes mutator, and a `tools/call cqs_notes_add` is an unknown tool
+/// (-32601) — the bridge can't even route it. Boundary by absence + opt-in.
+#[test]
+fn gated_notes_tools_absent_without_flag() {
+    let (_dir, root, cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    cqs::daemon_translate::set_socket_dir_override_for_test(Some(socket_dir.clone()));
+    let socket_path = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    let _daemon = MockDaemon::start(socket_path);
+
+    // No CQS_MCP_ENABLE_MUTATIONS in the child env.
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let listed = bridge.recv();
+    let names: Vec<String> = listed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
+        .collect();
+    for tool in ["cqs_notes_add", "cqs_notes_update", "cqs_notes_remove"] {
+        assert!(
+            !names.contains(&tool.to_string()),
+            "{tool} must be absent from tools/list without the flag"
+        );
+    }
+
+    // Calling it is an unknown tool — the bridge can't route what it doesn't list.
+    bridge.send(&json!({
+        "jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params": { "name": "cqs_notes_add", "arguments": { "text": "blocked" } }
+    }));
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32601),
+        "notes_add must be unknown (-32601) without the flag: {r}"
     );
 }
 

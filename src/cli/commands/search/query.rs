@@ -3384,11 +3384,18 @@ mod jsonschema_smoke {
 
     #[test]
     fn command_core_structs_are_mcp_inputschema_ready() {
-        // (a)+(b)+(c) over four representative cores.
+        use crate::cli::commands::notes::{NotesAddArgs, NotesRemoveArgs, NotesUpdateArgs};
+        // (a)+(b)+(c) over four representative read cores.
         assert_inputschema_shape::<QueryArgs>("QueryArgs");
         assert_inputschema_shape::<ImpactArgs>("ImpactArgs");
         assert_inputschema_shape::<GatherArgs>("GatherArgs");
         assert_inputschema_shape::<DeadArgs>("DeadArgs");
+        // The Phase-2a notes-mutation cores are MCP inputSchema sources too —
+        // hold them to the same shape (serde(default) ⇒ wire-optional, 2020-12,
+        // `///`-derived descriptions).
+        assert_inputschema_shape::<NotesAddArgs>("NotesAddArgs");
+        assert_inputschema_shape::<NotesUpdateArgs>("NotesUpdateArgs");
+        assert_inputschema_shape::<NotesRemoveArgs>("NotesRemoveArgs");
 
         // (d) A MINIMAL wire object deserializes — wire-optionality is real, not
         // just declared in the schema. The search struct takes only `query`.

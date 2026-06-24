@@ -195,6 +195,54 @@ pub(in crate::cli::batch) fn dispatch_notes(
     ))
 }
 
+/// Daemon handler for `notes add` (MCP Phase 2a gated mutation channel).
+///
+/// Writes `docs/notes.toml` via the shared [`notes_add_core`] — a plain file
+/// write under the file lock, NOT a `Store` write. The watch loop reindexes the
+/// file on its next tick. This is the load-bearing invariant: the daemon holds
+/// a `Store<ReadOnly>` (`ctx.store()` returns `Arc<Store<ReadOnly>>`), and this
+/// handler never acquires a writable store, so the typestate guarantee that the
+/// daemon cannot mutate the index DB is preserved.
+///
+/// Reachable only when `build_batch_cmd` constructed `BatchCmd::NotesAdd`, which
+/// is gated behind `CQS_MCP_ENABLE_MUTATIONS` (the operator opt-in).
+pub(in crate::cli::batch) fn dispatch_notes_add(
+    ctx: &BatchView,
+    args: &crate::cli::commands::notes::NotesAddArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_notes_add").entered();
+    let core = crate::cli::commands::notes::notes_add_core(&ctx.root, args)?;
+    Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
+        &core,
+    ))
+}
+
+/// Daemon handler for `notes update` (MCP Phase 2a). See [`dispatch_notes_add`]
+/// for the `Store<ReadOnly>` invariant — this writes the file, watch reindexes.
+pub(in crate::cli::batch) fn dispatch_notes_update(
+    ctx: &BatchView,
+    args: &crate::cli::commands::notes::NotesUpdateArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_notes_update").entered();
+    let core = crate::cli::commands::notes::notes_update_core(&ctx.root, args)?;
+    Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
+        &core,
+    ))
+}
+
+/// Daemon handler for `notes remove` (MCP Phase 2a). See [`dispatch_notes_add`]
+/// for the `Store<ReadOnly>` invariant — this writes the file, watch reindexes.
+pub(in crate::cli::batch) fn dispatch_notes_remove(
+    ctx: &BatchView,
+    args: &crate::cli::commands::notes::NotesRemoveArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_notes_remove").entered();
+    let core = crate::cli::commands::notes::notes_remove_core(&ctx.root, args)?;
+    Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
+        &core,
+    ))
+}
+
 /// Dispatches a task execution within a batch context, optionally with token budgeting.
 /// This function executes a task based on a natural language description, retrieving relevant code chunks and generating a JSON representation of the results. When a token budget is specified, it applies waterfall budgeting similar to the CLI; otherwise, it returns the standard task JSON representation.
 /// # Arguments
