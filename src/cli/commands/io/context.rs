@@ -180,7 +180,12 @@ pub(crate) fn compact_to_json(
                 caller_count: cc,
                 callee_count: ce,
                 trust_level: "user-code",
-                injection_flags: Vec::new(),
+                // Compact mode relays only the signature (no doc / content),
+                // so the scan is scoped to what it actually emits.
+                injection_flags: cqs::llm::validation::detect_all_injection_patterns(&c.signature)
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
             }
         })
         .collect();
@@ -363,6 +368,22 @@ pub(crate) struct ExternalCalleeEntry {
     pub called_from: String,
 }
 
+/// Scan the union of a chunk's relayed text surfaces for injection
+/// heuristics. `cqs context` (full mode) relays `doc`, `signature`, and
+/// (token-budgeted) `content` verbatim; a payload in ANY of them must
+/// surface in `injection_flags`, so the scan covers all three rather than
+/// `content` alone. SECURITY.md promises the flags fire on every
+/// chunk-returning JSON output whenever a heuristic matched — doc-borne
+/// payloads were the RT-RELAY gap.
+fn scan_chunk_injection_flags(chunk: &ChunkSummary) -> Vec<String> {
+    let doc = chunk.doc.as_deref().unwrap_or("");
+    let scan_text = format!("{doc}\n{}\n{}", chunk.signature, chunk.content);
+    cqs::llm::validation::detect_all_injection_patterns(&scan_text)
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
 /// Serialize full data to JSON, optionally including content within a token budget.
 /// When `content_set` is `Some`, only chunks whose names are in the set include content.
 /// When `None`, no content is included.
@@ -387,7 +408,11 @@ pub(crate) fn full_to_json(
                 doc: c.doc.clone(),
                 content,
                 trust_level: "user-code",
-                injection_flags: Vec::new(),
+                // Scan the union of relayed surfaces — doc/signature are
+                // relayed verbatim regardless of token-budget content
+                // inclusion, so a doc-borne payload must fire even when
+                // `content` is omitted from the wire.
+                injection_flags: scan_chunk_injection_flags(c),
             }
         })
         .collect();
