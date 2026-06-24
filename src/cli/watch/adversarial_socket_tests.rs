@@ -1006,3 +1006,214 @@ fn daemon_rejects_nonexistent_overlay_root_over_socket() {
     );
     join_worker(client, handle);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// JSON-args daemon path (MCP Phase 1, D3-b) — wire-level coverage.
+//
+// These drive the REAL `handle_socket_client` over a socket pair with an
+// `arguments` OBJECT instead of an `args` array, proving the new relay is
+// wired into the wire path AND that it routes through the same validated
+// `dispatch_via_view` → `dispatch_*` chain — not a `*_core` bypass. The
+// in-process `cli::batch::json_args::tests` cover the converter + dispatch
+// unit; these are the end-to-end socket guards.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Seed a store with one caller→callee edge and a real `src/lib.rs` on disk,
+/// returning the tempdir and a daemon context. Mirrors the call-graph seed in
+/// `batch::json_args::tests` but produces an `Arc<Mutex<BatchContext>>` for the
+/// socket harness.
+fn seed_call_graph_ctx() -> (
+    tempfile::TempDir,
+    Arc<Mutex<crate::cli::batch::BatchContext>>,
+) {
+    use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
+    use cqs::store::ModelInfo;
+    use std::path::{Path, PathBuf};
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let cqs_dir = dir.path().join(".cqs");
+    std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+    std::fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn caller_fn() { callee_fn(); }\nfn callee_fn() {}\n",
+    )
+    .expect("write src/lib.rs");
+    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+    let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+    emb_vec[0] = 1.0;
+    let embedding = cqs::embedder::Embedding::new(emb_vec);
+    let make = |id: &str, name: &str| -> Chunk {
+        let content = format!("fn {name}() {{ }}");
+        Chunk {
+            id: id.to_string(),
+            file: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {name}()"),
+            content: content.clone(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            byte_start: 0,
+            content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        }
+    };
+    {
+        let store = cqs::store::Store::open(&index_path).expect("open store");
+        store.init(&ModelInfo::default()).expect("init store");
+        store
+            .upsert_chunks_batch(
+                &[
+                    (make("src/lib.rs:1:caller", "caller_fn"), embedding.clone()),
+                    (make("src/lib.rs:2:callee", "callee_fn"), embedding.clone()),
+                ],
+                Some(0),
+            )
+            .expect("seed chunks");
+        let fc = FunctionCalls {
+            name: "caller_fn".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
+                callee_name: "callee_fn".to_string(),
+                line_number: 1,
+                kind: CallEdgeKind::Call,
+            }],
+        };
+        store
+            .upsert_function_calls(Path::new("src/lib.rs"), &[fc])
+            .expect("seed edge");
+    }
+    let ctx = crate::cli::batch::create_test_context(&cqs_dir).expect("create ctx");
+    (dir, Arc::new(Mutex::new(ctx)))
+}
+
+/// Happy path: a JSON-args `callers` request round-trips through the real
+/// socket handler and returns the seeded caller, proving the `arguments`-object
+/// relay is wired into `handle_socket_client` and dispatches correctly.
+#[test]
+fn daemon_json_args_callers_roundtrip() {
+    let (_dir, ctx) = seed_call_graph_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    let request = serde_json::json!({
+        "command": "callers",
+        "arguments": {"name": "callee_fn"},
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write json-args callers request");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    assert_eq!(
+        resp.get("status").and_then(|v| v.as_str()),
+        Some("ok"),
+        "json-args happy path must carry status:ok: {line}"
+    );
+    let callers = resp
+        .pointer("/output/data/callers")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("expected output.data.callers array: {line}"));
+    assert!(
+        callers.iter().any(|c| c["name"] == "caller_fn"),
+        "json-args callers must surface the seeded caller_fn: {line}"
+    );
+    join_worker(client, handle);
+}
+
+/// A foreign `overlay_root` carried in a JSON-args request is rejected by the
+/// SAME overlay-root validation gate the argv path uses, proven end-to-end over
+/// the socket. The relay routes through `dispatch_callers` →
+/// `resolve_graph_overlay` → `set_validated_overlay_request`, never a `*_core`
+/// bypass.
+#[test]
+fn daemon_json_args_rejects_foreign_overlay_root() {
+    let foreign = tempfile::TempDir::new().expect("foreign tempdir");
+    const SECRET: &str = "REDTEAM_JSON_OVERLAY_ESCAPE_CANARY_3b9f";
+    std::fs::write(
+        foreign.path().join("leak_me.rs"),
+        format!("pub fn x() {{ let s = \"{SECRET}\"; }}\n"),
+    )
+    .expect("plant secret file");
+    let foreign_path = foreign.path().to_string_lossy().into_owned();
+
+    let (_dir, ctx) = seed_call_graph_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    let request = serde_json::json!({
+        "command": "callers",
+        "arguments": {
+            "name": "callee_fn",
+            "overlay": true,
+            "overlay_root": foreign_path,
+        },
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write json-args overlay-root attack");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    assert!(
+        !line.contains(SECRET),
+        "SECURITY: foreign overlay_root content leaked over the JSON-args socket path: {line}"
+    );
+    let inner_err = resp.pointer("/output/error").is_some();
+    let top_err = resp.get("status").and_then(|v| v.as_str()) == Some("error");
+    assert!(
+        inner_err || top_err,
+        "a foreign overlay_root on the JSON-args path must be rejected loudly: {line}"
+    );
+    join_worker(client, handle);
+}
+
+/// A `read` with a path that escapes the project root is blocked on the
+/// JSON-args socket path by `read_core`'s canonicalize + starts_with gate.
+#[test]
+fn daemon_json_args_read_path_traversal_blocked() {
+    let (_dir, ctx) = seed_call_graph_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    let request = serde_json::json!({
+        "command": "read",
+        "arguments": {"path": "../../../../etc/hostname"},
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write json-args traversal read");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    let inner_err = resp.pointer("/output/error").is_some();
+    let top_err = resp.get("status").and_then(|v| v.as_str()) == Some("error");
+    assert!(
+        inner_err || top_err,
+        "a path-traversal read on the JSON-args path must be blocked: {line}"
+    );
+    join_worker(client, handle);
+}
+
+/// A non-object `arguments` (here an array) is rejected at the socket boundary
+/// rather than silently treated as an argv call.
+#[test]
+fn daemon_json_args_rejects_non_object_arguments() {
+    let (_dir, ctx) = seed_call_graph_ctx();
+    let (mut client, handle) = spawn_handler(Arc::clone(&ctx));
+    let request = serde_json::json!({
+        "command": "callers",
+        "arguments": ["callee_fn"],
+    });
+    client
+        .write_all(format!("{request}\n").as_bytes())
+        .expect("write non-object arguments");
+    let line = read_line(&mut client);
+    let resp = parse_response(&line);
+    assert_eq!(
+        resp.get("status").and_then(|v| v.as_str()),
+        Some("error"),
+        "a non-object `arguments` must be rejected at the socket boundary: {line}"
+    );
+    join_worker(client, handle);
+}

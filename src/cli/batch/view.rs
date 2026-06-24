@@ -161,6 +161,116 @@ pub(crate) fn dispatch_via_view(
     }
 }
 
+/// JSON-args sibling of [`dispatch_via_view`] (MCP Phase 1, D3-b).
+///
+/// Accepts a typed `arguments` object instead of an argv `args` array,
+/// deserializes it into the command's Phase-0 core struct
+/// ([`super::json_args::build_batch_cmd`]), and feeds the resulting `BatchCmd`
+/// into the SAME [`commands::dispatch`] the argv path uses. The ONLY argv step
+/// skipped is the clap token parse; the Refresh special-case, the downstream
+/// handler overlay/path gates, error redaction, and the envelope contract are
+/// all shared. The routing invariant: the JSON path never calls a `*_core` fn
+/// directly, so the overlay-root validation
+/// ([`BatchView::set_validated_overlay_request`]) and `read`'s traversal gate
+/// fire identically to argv.
+///
+/// Daemon callers MUST have already bumped `query_count` and run
+/// `check_idle_timeout` under the outer lock (as in [`dispatch_via_view`]);
+/// this function does not duplicate that work.
+pub(crate) fn dispatch_via_view_json(
+    view: &BatchView,
+    command: &str,
+    arguments: &serde_json::Value,
+    out: &mut impl std::io::Write,
+) {
+    use crate::cli::json_envelope::error_codes;
+
+    // Empty command is a no-op (parity with the argv path).
+    if command.is_empty() {
+        return;
+    }
+
+    // NUL byte rejection — same contract as the argv path, but over the JSON
+    // string values rather than argv tokens (serde decodes ` ` into a
+    // String, so a structural walk is the equivalent check).
+    if json_value_contains_nul(arguments) {
+        view.error_count.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            code = error_codes::INVALID_INPUT,
+            "Daemon JSON-args dispatch: NUL byte in arguments"
+        );
+        let _ = write_envelope_error(out, error_codes::INVALID_INPUT, "Input contains null bytes");
+        return;
+    }
+    // query_count bumped after the NUL check, matching the argv path's contract
+    // (NUL rejection does not count as a query).
+    view.query_count.fetch_add(1, Ordering::Relaxed);
+
+    let cmd = match super::json_args::build_batch_cmd(command, arguments) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            view.error_count.fetch_add(1, Ordering::Relaxed);
+            let msg = format!("{e:#}");
+            tracing::warn!(
+                code = error_codes::INVALID_INPUT,
+                error = %msg,
+                "Daemon JSON-args dispatch: argument deserialization failed"
+            );
+            let _ = write_envelope_error(out, error_codes::INVALID_INPUT, &msg);
+            return;
+        }
+    };
+
+    // Refresh is the only daemon-dispatchable command that mutates BatchContext
+    // interior; it re-locks via the view's outer back-channel, exactly as the
+    // argv path does. (It carries no `arguments`, so this is unreachable on the
+    // JSON path today, but kept in lock-step so the two paths can't diverge if
+    // Refresh ever gains a JSON shape.)
+    if matches!(cmd, commands::BatchCmd::Refresh) {
+        match view.invalidate_via_outer() {
+            Ok(()) => {
+                let _ = write_json_line(
+                    out,
+                    &serde_json::json!({
+                        "status": "ok",
+                        "message": "Caches invalidated, Store re-opened",
+                    }),
+                );
+            }
+            Err(e) => {
+                view.error_count.fetch_add(1, Ordering::Relaxed);
+                let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                let _ = write_envelope_error(out, code.as_str(), &msg);
+            }
+        }
+        return;
+    }
+
+    match commands::dispatch(view, cmd) {
+        Ok(value) => {
+            let _ = write_json_line(out, &value);
+        }
+        Err(e) => {
+            view.error_count.fetch_add(1, Ordering::Relaxed);
+            let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+            let _ = write_envelope_error(out, code.as_str(), &msg);
+        }
+    }
+}
+
+/// Recursively test whether any string in a JSON value contains a NUL byte.
+/// The JSON-args NUL gate (mirrors the argv `reject_null_tokens` contract).
+fn json_value_contains_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(s) => s.contains('\0'),
+        serde_json::Value::Array(arr) => arr.iter().any(json_value_contains_nul),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| k.contains('\0') || json_value_contains_nul(v)),
+        _ => false,
+    }
+}
+
 /// Shared helper for `BatchContext::get_ref` and `BatchView::get_ref`.
 /// Operates directly on the LRU mutex so both paths see the same cache.
 pub(crate) fn get_ref_via_refs_lru(

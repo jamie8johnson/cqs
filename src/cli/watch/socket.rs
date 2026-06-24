@@ -173,12 +173,44 @@ pub(super) fn handle_socket_client(
         .get("command")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // JSON-args path (MCP Phase 1, D3-b): an `arguments` OBJECT deserializes
+    // directly into the command's Phase-0 core struct, dispatched through the
+    // SAME validated downstream path as the argv form. Additive: the frame is
+    // untyped, so an absent `arguments` falls through to the historical argv
+    // `args` array unchanged (no wire-version bump). A non-object `arguments`
+    // (array / scalar) is rejected rather than silently ignored, so a
+    // malformed object can't read as an argv call.
+    let arguments = request.get("arguments");
+    let use_json_args = match arguments {
+        Some(serde_json::Value::Object(_)) => true,
+        Some(serde_json::Value::Null) | None => false,
+        Some(_) => {
+            tracing::warn!(
+                command,
+                "Daemon rejected request: `arguments` must be an object"
+            );
+            let delivered =
+                write_daemon_error_tracked(&mut stream, "`arguments` must be a JSON object");
+            tracing::info!(
+                status = "bad_args",
+                delivered,
+                latency_ms = start.elapsed().as_millis() as u64,
+                "Daemon query complete"
+            );
+            return;
+        }
+    };
     // Structurally validate args. Silently dropping non-string elements
     // (numbers, nested arrays, nulls) would leave surviving args that look
     // correct while the daemon runs a half-formed command. Instead: collect
     // the indices of non-string elements, warn on them, and reject the whole
     // request as malformed rather than execute on a truncated arg list.
-    let raw_args = request.get("args").and_then(|v| v.as_array());
+    // Skipped on the JSON-args path (the typed object replaces the array).
+    let raw_args = if use_json_args {
+        None
+    } else {
+        request.get("args").and_then(|v| v.as_array())
+    };
     // Fold validation + extraction into a single walk: one pass collects
     // both the typed `Vec<String>` and a parallel `Vec<usize>` of bad
     // indices.
@@ -281,7 +313,14 @@ pub(super) fn handle_socket_client(
         // re-locked briefly inside `dispatch_via_view` via the view's
         // `outer_lock` back-channel.
         let view = crate::cli::batch::checkout_view_from_arc(batch_ctx);
-        crate::cli::batch::dispatch_via_view(&view, command, &args, &mut output);
+        match arguments {
+            Some(args_obj) if use_json_args => {
+                crate::cli::batch::dispatch_via_view_json(&view, command, args_obj, &mut output);
+            }
+            _ => {
+                crate::cli::batch::dispatch_via_view(&view, command, &args, &mut output);
+            }
+        }
         // Parse the dispatch bytes into a JSON `Value` and embed it as a real
         // JSON field of the response envelope instead of round-tripping
         // through `String::from_utf8` and embedding as a string-in-string.

@@ -26,6 +26,7 @@ mod handlers;
 /// from a normal build.
 #[cfg(all(cqs_loom, test))]
 mod interleaving_model;
+mod json_args;
 /// Loom model of the worktree-overlay LRU cross-thread protocol (the
 /// interleaving-auditor lane, #1858 Part A). Same `--cfg cqs_loom` + test-build
 /// gate as `interleaving_model`. Covers the load-outside-lock overlay rebuild
@@ -79,7 +80,9 @@ pub(super) type EpochCell<T> = (u64, Arc<T>);
 
 pub(crate) use context::BatchContext;
 pub(crate) use session::{cmd_batch, create_context, create_context_with_runtime};
-pub(crate) use view::{checkout_view_from_arc, dispatch_via_view, BatchView};
+pub(crate) use view::{
+    checkout_view_from_arc, dispatch_via_view, dispatch_via_view_json, BatchView,
+};
 // Shared LRU helpers live in `view` but are called from `context`'s
 // `get_ref` / `get_all_refs`; surface them at the module root so the sibling
 // reaches them via `use super::*`.
