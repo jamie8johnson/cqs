@@ -27,7 +27,7 @@ use crate::cli::OutputFormat;
 /// Input for [`impact_core`]. Cross-project impact lives in the adapters
 /// (separate cross-project analyzer); the core covers the single-project
 /// path both surfaces share.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct ImpactArgs {
     /// Function name or `file:function`.

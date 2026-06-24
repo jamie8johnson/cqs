@@ -221,7 +221,7 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
 
 /// Input for [`stats_core`]. `cqs stats` takes no positional or flag input
 /// beyond the freshness toggle — both CLI and daemon want the same numbers.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct StatsArgs {
     /// When `true`, walk the filesystem and populate `stale_files` /
     /// `missing_files`. Both surfaces set this; it is an Arg (not hardcoded)

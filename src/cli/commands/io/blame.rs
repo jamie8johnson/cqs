@@ -25,7 +25,7 @@ use cqs::{normalize_path, rel_display, resolve_target};
 ///
 /// `#[serde(default)]` so a wire caller can supply just `name` and inherit the
 /// production defaults (commits mirrors clap's `--commits` default of 10).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct BlameArgs {
     /// Function name or `file:function` to blame.

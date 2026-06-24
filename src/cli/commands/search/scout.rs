@@ -19,7 +19,7 @@ use cqs::{scout_with_options, scout_with_overlay, Embedder, ScoutOptions};
 ///
 /// `#[serde(default)]` so a wire caller can supply just `query` and inherit the
 /// production defaults (limit mirrors clap's `LimitArg`).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct ScoutArgs {
     /// Search query to investigate.

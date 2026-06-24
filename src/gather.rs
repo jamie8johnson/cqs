@@ -186,8 +186,20 @@ impl Default for GatherOptions {
 
 /// Direction of call graph expansion
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+    schemars::JsonSchema,
 )]
+// Lowercase on the wire/schema to match the CLI spelling (`both`/`callers`/
+// `callees` via clap `FromStr`); without it serde + schemars would expect the
+// PascalCase variant names.
+#[serde(rename_all = "lowercase")]
 pub enum GatherDirection {
     Both,
     Callers,

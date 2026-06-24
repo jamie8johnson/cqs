@@ -97,7 +97,13 @@ pub struct Chunk {
 /// `Call` is the default and the overwhelming majority — it is the
 /// skip-when-default value, so a present `edge_kind` always signals a
 /// non-syntactic edge worth extra scrutiny.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default, schemars::JsonSchema)]
+// snake_case on the schema to match the stored / wire strings
+// (`serde_callback`, `macro_heuristic`, `fn_pointer`, `doc_reference`) that the
+// `parse_edge_kind` deserializer accepts. The derived `Serialize` is not the
+// JSON output path — every output struct routes through `serialize_edge_kind` /
+// `as_str` — so this only governs the input schema.
+#[serde(rename_all = "snake_case")]
 pub enum CallEdgeKind {
     /// Syntactic `call_expression` — ground truth.
     #[default]

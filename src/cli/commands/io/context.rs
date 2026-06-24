@@ -30,7 +30,7 @@ use crate::cli::staleness;
 /// `#[serde(default)]` so a wire caller can supply just `path` and inherit the
 /// production defaults. `summary`/`compact` are mutually-exclusive modes (clap
 /// enforces; the core treats `compact` as winning if both are somehow set).
-#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct ContextArgs {
     /// File path (relative to project root) to build context for.

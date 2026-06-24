@@ -38,7 +38,7 @@ use super::KindFallbackOutput;
 /// core: the cross-project path has its own (multi-index) semantics and no
 /// kind-fallback. The core covers the single-project path both surfaces
 /// share.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct CallersArgs {
     /// Function name to analyze.

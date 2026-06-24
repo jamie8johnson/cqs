@@ -28,7 +28,7 @@ use crate::cli::find_project_root;
 ///
 /// `#[serde(default)]` so a wire caller can omit `target`/`lang` and inherit
 /// the production defaults; `threshold` defaults to the clap value.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct DiffArgs {
     /// Source reference name (echoed into the output label).

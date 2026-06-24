@@ -72,7 +72,22 @@ pub struct DeadFunction {
 
 /// Confidence level for dead code detection.
 /// Ordered from least to most confident, enabling `>=` filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, clap::ValueEnum)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+    schemars::JsonSchema,
+)]
+// Lowercase on the wire/schema to match the `low`/`medium`/`high` strings the
+// CLI and the `de_confidence` deserializer accept.
+#[serde(rename_all = "lowercase")]
 pub enum DeadConfidence {
     /// Likely a false positive (methods, functions in active files)
     Low,
