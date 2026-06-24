@@ -294,7 +294,7 @@ fn build_injection_tree(
         return None;
     }
 
-    let tree = parser.parse(source, None);
+    let tree = super::parse_with_timeout(&mut parser, source);
     if tree.is_none() {
         tracing::warn!(%language, "Injection parse returned None");
     }

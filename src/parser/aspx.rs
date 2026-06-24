@@ -242,7 +242,7 @@ fn parse_server_code(
         return vec![];
     }
 
-    let tree = match ts_parser.parse(source, None) {
+    let tree = match crate::parser::parse_with_timeout(&mut ts_parser, source) {
         Some(t) => t,
         None => {
             tracing::warn!(%language, path = %path.display(), "ASPX server code parse returned None");
@@ -349,7 +349,7 @@ fn parse_server_code_calls(
         return vec![];
     }
 
-    let tree = match ts_parser.parse(source, None) {
+    let tree = match crate::parser::parse_with_timeout(&mut ts_parser, source) {
         Some(t) => t,
         None => {
             tracing::warn!(%language, "ASPX call parser returned no tree");
@@ -486,7 +486,7 @@ fn parse_server_code_types(
         return vec![];
     }
 
-    let tree = match ts_parser.parse(source, None) {
+    let tree = match crate::parser::parse_with_timeout(&mut ts_parser, source) {
         Some(t) => t,
         None => {
             tracing::warn!(%language, "ASPX type parser returned no tree");

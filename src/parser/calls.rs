@@ -165,7 +165,16 @@ pub(crate) fn extract_macro_call_edges(
     }
 
     let mut calls = Vec::new();
-    collect_macro_calls(node, source, line_offset, false, known_fns, &mut calls);
+    collect_macro_calls(
+        node,
+        source,
+        line_offset,
+        false,
+        known_fns,
+        &mut calls,
+        0,
+        crate::limits::parser_max_walk_depth(),
+    );
     calls
 }
 
@@ -178,6 +187,7 @@ pub(crate) fn extract_macro_call_edges(
 /// double-count. A bare `identifier` NOT followed by a `token_tree` emits only
 /// when it is in `known_fns` (the precision gate for the noise-prone bare-arg
 /// case — see [`extract_macro_call_edges`]).
+#[allow(clippy::too_many_arguments)]
 fn collect_macro_calls(
     node: tree_sitter::Node,
     source: &str,
@@ -185,7 +195,17 @@ fn collect_macro_calls(
     in_token_tree: bool,
     known_fns: &std::collections::HashSet<String>,
     out: &mut Vec<CallSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail: deeply-nested `token_tree`s (adversarial indexed content) would
+    // recurse one stack frame per level and overflow the rayon parser-stage
+    // worker stack, aborting the whole index/watch process. Stop descending past
+    // the cap; see `crate::limits::PARSER_MAX_WALK_DEPTH`. Behavior-neutral for
+    // legitimate code, which never nests this deep.
+    if depth >= max_depth {
+        return;
+    }
     let mut cursor = node.walk();
     let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
 
@@ -231,6 +251,8 @@ fn collect_macro_calls(
             child_in_token_tree,
             known_fns,
             out,
+            depth + 1,
+            max_depth,
         );
     }
 }
@@ -275,13 +297,24 @@ pub(crate) fn collect_macro_arg_candidates(
     if language != Language::Rust {
         return;
     }
-    collect_macro_arg_candidates_inner(node, source, line_offset, false, known_fns, file, out);
+    collect_macro_arg_candidates_inner(
+        node,
+        source,
+        line_offset,
+        false,
+        known_fns,
+        file,
+        out,
+        0,
+        crate::limits::parser_max_walk_depth(),
+    );
 }
 
 /// Recursive worker for [`collect_macro_arg_candidates`]. Mirrors
 /// [`collect_macro_calls`]'s `in_token_tree`-latching traversal exactly, but
 /// routes the dropped bare-ident case to a `macro_arg_unresolved`
 /// [`CandidateSite`].
+#[allow(clippy::too_many_arguments)]
 fn collect_macro_arg_candidates_inner(
     node: tree_sitter::Node,
     source: &str,
@@ -290,7 +323,13 @@ fn collect_macro_arg_candidates_inner(
     known_fns: &std::collections::HashSet<String>,
     file: &Path,
     out: &mut Vec<CandidateSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail against stack overflow; see `crate::limits::PARSER_MAX_WALK_DEPTH`.
+    if depth >= max_depth {
+        return;
+    }
     let mut cursor = node.walk();
     let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
 
@@ -338,6 +377,8 @@ fn collect_macro_arg_candidates_inner(
             known_fns,
             file,
             out,
+            depth + 1,
+            max_depth,
         );
     }
 }
@@ -433,7 +474,15 @@ pub(crate) fn extract_fn_pointer_arg_edges(
     }
 
     let mut calls = Vec::new();
-    collect_fn_pointer_args(node, source, line_offset, known_fns, &mut calls);
+    collect_fn_pointer_args(
+        node,
+        source,
+        line_offset,
+        known_fns,
+        &mut calls,
+        0,
+        crate::limits::parser_max_walk_depth(),
+    );
     calls
 }
 
@@ -441,25 +490,41 @@ pub(crate) fn extract_fn_pointer_arg_edges(
 /// `call_expression`, inspects its `arguments` node, and emits fn-pointer edges
 /// per the two-tier precision rule. Recurses through the whole subtree so calls
 /// nested in any position are reached.
+#[allow(clippy::too_many_arguments)]
 fn collect_fn_pointer_args(
     node: tree_sitter::Node,
     source: &str,
     line_offset: u32,
     known_fns: &std::collections::HashSet<String>,
     out: &mut Vec<CallSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail against stack overflow on adversarial deep nesting; see
+    // `crate::limits::PARSER_MAX_WALK_DEPTH`. Behavior-neutral for real code.
+    if depth >= max_depth {
+        return;
+    }
     if node.kind() == "call_expression" {
         if let Some(args) = node.child_by_field_name("arguments") {
             let mut cursor = args.walk();
             for arg in args.named_children(&mut cursor) {
-                emit_fn_pointer_arg(arg, source, line_offset, known_fns, out);
+                emit_fn_pointer_arg(arg, source, line_offset, known_fns, out, depth, max_depth);
             }
         }
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_fn_pointer_args(child, source, line_offset, known_fns, out);
+        collect_fn_pointer_args(
+            child,
+            source,
+            line_offset,
+            known_fns,
+            out,
+            depth + 1,
+            max_depth,
+        );
     }
 }
 
@@ -473,13 +538,21 @@ fn collect_fn_pointer_args(
 /// Other argument shapes (literals, real nested `call_expression`s, references,
 /// closures) are left alone: nested calls are handled by the outer recursion in
 /// [`collect_fn_pointer_args`], and the rest are not fn-pointer values.
+#[allow(clippy::too_many_arguments)]
 fn emit_fn_pointer_arg(
     arg: tree_sitter::Node,
     source: &str,
     line_offset: u32,
     known_fns: &std::collections::HashSet<String>,
     out: &mut Vec<CallSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail: tuple/array element recursion below can descend on adversarial
+    // deep nesting; see `crate::limits::PARSER_MAX_WALK_DEPTH`.
+    if depth >= max_depth {
+        return;
+    }
     match arg.kind() {
         "identifier" => {
             let name = source[arg.byte_range()].to_string();
@@ -500,7 +573,15 @@ fn emit_fn_pointer_arg(
         "tuple_expression" | "array_expression" => {
             let mut cursor = arg.walk();
             for inner in arg.named_children(&mut cursor) {
-                emit_fn_pointer_arg(inner, source, line_offset, known_fns, out);
+                emit_fn_pointer_arg(
+                    inner,
+                    source,
+                    line_offset,
+                    known_fns,
+                    out,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
         // `f as *const ()` / `on_sigterm as sighandler_t` — Rust coerces a
@@ -512,7 +593,15 @@ fn emit_fn_pointer_arg(
         // on_sigterm as *const ()...)` shape (false-DEAD `on_sigterm`).
         "type_cast_expression" => {
             if let Some(value) = arg.child_by_field_name("value") {
-                emit_fn_pointer_arg(value, source, line_offset, known_fns, out);
+                emit_fn_pointer_arg(
+                    value,
+                    source,
+                    line_offset,
+                    known_fns,
+                    out,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
         _ => {}
@@ -607,13 +696,23 @@ pub(crate) fn collect_fn_pointer_arg_candidates(
     if language != Language::Rust {
         return;
     }
-    collect_fn_pointer_arg_candidates_inner(node, source, line_offset, known_fns, file, out);
+    collect_fn_pointer_arg_candidates_inner(
+        node,
+        source,
+        line_offset,
+        known_fns,
+        file,
+        out,
+        0,
+        crate::limits::parser_max_walk_depth(),
+    );
 }
 
 /// Recursive worker for [`collect_fn_pointer_arg_candidates`]. Mirrors
 /// [`collect_fn_pointer_args`]'s traversal (every `call_expression`'s arguments,
 /// recursing the whole subtree) but routes each argument to the candidate arm
 /// of [`emit_fn_pointer_arg_candidate`].
+#[allow(clippy::too_many_arguments)]
 fn collect_fn_pointer_arg_candidates_inner(
     node: tree_sitter::Node,
     source: &str,
@@ -621,19 +720,43 @@ fn collect_fn_pointer_arg_candidates_inner(
     known_fns: &std::collections::HashSet<String>,
     file: &Path,
     out: &mut Vec<CandidateSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail against stack overflow; see `crate::limits::PARSER_MAX_WALK_DEPTH`.
+    if depth >= max_depth {
+        return;
+    }
     if node.kind() == "call_expression" {
         if let Some(args) = node.child_by_field_name("arguments") {
             let mut cursor = args.walk();
             for arg in args.named_children(&mut cursor) {
-                emit_fn_pointer_arg_candidate(arg, source, line_offset, known_fns, file, out);
+                emit_fn_pointer_arg_candidate(
+                    arg,
+                    source,
+                    line_offset,
+                    known_fns,
+                    file,
+                    out,
+                    depth,
+                    max_depth,
+                );
             }
         }
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_fn_pointer_arg_candidates_inner(child, source, line_offset, known_fns, file, out);
+        collect_fn_pointer_arg_candidates_inner(
+            child,
+            source,
+            line_offset,
+            known_fns,
+            file,
+            out,
+            depth + 1,
+            max_depth,
+        );
     }
 }
 
@@ -643,6 +766,7 @@ fn collect_fn_pointer_arg_candidates_inner(
 /// cross-file case). Scoped paths, tuples/arrays, and casts are descended the
 /// same way so a bare ident nested in any of them is reached; none of those
 /// wrapper shapes themselves produce a candidate.
+#[allow(clippy::too_many_arguments)]
 fn emit_fn_pointer_arg_candidate(
     arg: tree_sitter::Node,
     source: &str,
@@ -650,7 +774,13 @@ fn emit_fn_pointer_arg_candidate(
     known_fns: &std::collections::HashSet<String>,
     file: &Path,
     out: &mut Vec<CandidateSite>,
+    depth: usize,
+    max_depth: usize,
 ) {
+    // Depth rail against stack overflow; see `crate::limits::PARSER_MAX_WALK_DEPTH`.
+    if depth >= max_depth {
+        return;
+    }
     match arg.kind() {
         "identifier" => {
             let name = &source[arg.byte_range()];
@@ -674,12 +804,30 @@ fn emit_fn_pointer_arg_candidate(
         "tuple_expression" | "array_expression" => {
             let mut cursor = arg.walk();
             for inner in arg.named_children(&mut cursor) {
-                emit_fn_pointer_arg_candidate(inner, source, line_offset, known_fns, file, out);
+                emit_fn_pointer_arg_candidate(
+                    inner,
+                    source,
+                    line_offset,
+                    known_fns,
+                    file,
+                    out,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
         "type_cast_expression" => {
             if let Some(value) = arg.child_by_field_name("value") {
-                emit_fn_pointer_arg_candidate(value, source, line_offset, known_fns, file, out);
+                emit_fn_pointer_arg_candidate(
+                    value,
+                    source,
+                    line_offset,
+                    known_fns,
+                    file,
+                    out,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
         // `scoped_identifier` args always emit a confident edge (never dropped),
@@ -3267,6 +3415,130 @@ fn install() {
             a.sort();
             b.sort();
             assert_eq!(a, b, "chunk-range and whole-file candidate sets must agree");
+        }
+    }
+
+    /// Regression guards for the unbounded-recursion stack-overflow DoS in the
+    /// Pass-2 relationship-extraction tree-walks (red-team RT-PARSE-1).
+    ///
+    /// `collect_macro_calls`, `collect_fn_pointer_args` (+ `emit_fn_pointer_arg`),
+    /// and their candidate mirrors recurse one stack frame per tree level. An
+    /// adversarial indexed file with a deeply-nested macro `token_tree` /
+    /// parenthesized expression / array literal (a few KB of source, well under
+    /// every size cap) drove the recursion deep enough to overflow the rayon
+    /// parser-stage worker stack and SIGABRT the whole `cqs index` / `cqs watch`
+    /// / daemon process. tree-sitter's own parse is iterative and tolerates the
+    /// nesting cheaply; only our walks overflowed. The fix is a depth rail
+    /// (`crate::limits::PARSER_MAX_WALK_DEPTH`, default 800) on each walk.
+    ///
+    /// Each guard parses a deeply-nested fixture and runs the walk **on a thread
+    /// with a 1 MiB stack** — small enough that the UNFIXED recursive walk
+    /// overflows it (aborting the test binary, a red failure), large enough that
+    /// the depth-capped walk completes and the thread joins cleanly. They are the
+    /// `calls.rs` siblings of `chunk.rs`'s `deep_tree_stack_safety` module
+    /// (which guards the already-iterative `collect_comment_ranges` /
+    /// `find_type_identifier_recursive`).
+    mod deep_walk_stack_safety {
+        use super::*;
+
+        /// 1 MiB — below the unfixed walk's overflow threshold for the depths
+        /// below (empirically the unfixed walk overflows a 1 MiB debug stack
+        /// past ~1000 nesting levels), comfortably above the depth-800-capped
+        /// walk's need.
+        const SMALL_STACK_BYTES: usize = 1024 * 1024;
+
+        /// Nesting depth for every fixture. ~20× the depth cap, so it would deep-
+        /// recurse far past overflow on the unfixed code, but the fixed walk
+        /// stops at the cap and returns.
+        const NEST: usize = 16_000;
+
+        fn run_on_small_stack<F: FnOnce() + Send + 'static>(f: F) {
+            std::thread::Builder::new()
+                .stack_size(SMALL_STACK_BYTES)
+                .spawn(f)
+                .expect("spawn parse thread")
+                .join()
+                .expect("walk thread overflowed its stack / panicked (unfixed depth guard?)");
+        }
+
+        fn parse_rust(src: &str) -> (tree_sitter::Tree, String) {
+            let grammar = Language::Rust.try_grammar().expect("rust grammar");
+            let mut ts = tree_sitter::Parser::new();
+            ts.set_language(&grammar).expect("set language");
+            let tree = ts.parse(src, None).expect("tree-sitter parse succeeds");
+            (tree, src.to_string())
+        }
+
+        /// Deeply-nested parenthesized call argument: drives
+        /// `collect_fn_pointer_args` / `emit_fn_pointer_arg` to tree depth.
+        #[test]
+        fn fn_pointer_walk_no_overflow_on_deep_nesting() {
+            run_on_small_stack(|| {
+                let src = format!(
+                    "fn deep() {{ let _ = f({}1{}); }}\n",
+                    "(".repeat(NEST),
+                    ")".repeat(NEST)
+                );
+                let (tree, src) = parse_rust(&src);
+                let known = collect_rust_fn_names(tree.root_node(), &src);
+                // Must return (depth rail) rather than overflow the 1 MiB stack.
+                let _edges =
+                    extract_fn_pointer_arg_edges(tree.root_node(), &src, Language::Rust, 0, &known);
+                let mut cands = Vec::new();
+                collect_fn_pointer_arg_candidates(
+                    tree.root_node(),
+                    &src,
+                    Language::Rust,
+                    0,
+                    &known,
+                    std::path::Path::new("deep.rs"),
+                    &mut cands,
+                );
+            });
+        }
+
+        /// Deeply-nested macro `token_tree`: drives `collect_macro_calls` and
+        /// `collect_macro_arg_candidates_inner` to tree depth.
+        #[test]
+        fn macro_walk_no_overflow_on_deep_nesting() {
+            run_on_small_stack(|| {
+                let src = format!(
+                    "fn deep() {{ my_macro!({}{}); }}\n",
+                    "(".repeat(NEST),
+                    ")".repeat(NEST)
+                );
+                let (tree, src) = parse_rust(&src);
+                let known = collect_rust_fn_names(tree.root_node(), &src);
+                let _edges =
+                    extract_macro_call_edges(tree.root_node(), &src, Language::Rust, 0, &known);
+                let mut cands = Vec::new();
+                collect_macro_arg_candidates(
+                    tree.root_node(),
+                    &src,
+                    Language::Rust,
+                    0,
+                    &known,
+                    std::path::Path::new("deep.rs"),
+                    &mut cands,
+                );
+            });
+        }
+
+        /// Behavior-neutrality pin: a *shallow* fixture (well under the depth
+        /// cap) must still extract its fn-pointer edge after the rail was added.
+        /// Guards against a future cap value (or off-by-one) that truncates real
+        /// code.
+        #[test]
+        fn shallow_nesting_still_extracts_edge() {
+            let src = "fn handler() {}\nfn build() { register(handler); }\n";
+            let (tree, src) = parse_rust(src);
+            let known = collect_rust_fn_names(tree.root_node(), &src);
+            let edges =
+                extract_fn_pointer_arg_edges(tree.root_node(), &src, Language::Rust, 0, &known);
+            assert!(
+                edges.iter().any(|c| c.callee_name == "handler"),
+                "depth rail must not suppress the edge in shallow real code: {edges:?}"
+            );
         }
     }
 }

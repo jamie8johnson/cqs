@@ -165,7 +165,7 @@ fn parse_st_regions(
             .set_language(&grammar)
             .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
-        let tree = match ts_parser.parse(&region.source, None) {
+        let tree = match crate::parser::parse_with_timeout(&mut ts_parser, &region.source) {
             Some(t) => t,
             None => {
                 tracing::warn!(
@@ -754,7 +754,7 @@ fn extract_chunk_type_refs(chunk: &Chunk, parser: &Parser) -> Vec<TypeRef> {
         return Vec::new();
     }
     let wrapped = wrap_bare_st(&chunk.content);
-    let tree = match ts_parser.parse(&wrapped.source, None) {
+    let tree = match crate::parser::parse_with_timeout(&mut ts_parser, &wrapped.source) {
         Some(t) => t,
         None => {
             tracing::warn!("ST type-ref parse returned no tree");
