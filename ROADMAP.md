@@ -1,6 +1,18 @@
 # Roadmap
 
-## Current: v1.46.0 (cut 2026-06-15)
+## Current: v1.48.0 (cut 2026-06-24, crates.io + GitHub Release)
+
+Minor — **MCP server re-introduction** (`cqs mcp`, removed in v0.10.0, now riding the command cores; ~10× smaller than the old in-process server). Scoring path **byte-identical** to v1.47.0 (recall carried: 72.0% R@5 / 47.2% R@1 / 87.2% R@20; the session's index growth to 17.2k chunks is corpus churn, not a scoring change).
+- **MCP (Phases 0→2):** Phase 0 schemars `JsonSchema` on the command cores as the inputSchema source (#2019); Phase 1 a stdio↔daemon-socket bridge — daemon JSON-args path (#2023) + the `cqs mcp` bridge, 19 read-only `cqs_*` tools (#2029); Phase 2 gated mutating tools — `cqs_notes_add/update/remove` + `cqs_index` fire-and-forget behind opt-in `CQS_MCP_ENABLE_MUTATIONS`, destructive set withheld **by absence**, daemon `Store` stays read-only (#2033/#2034). Decision ledgers in `docs/plans/2026-06-2{3,4}-mcp-phase{1,2}-*.md`.
+- **Security:** RT-PARSE — a stack-overflow DoS via deeply-nested adversarial indexed content (cqs's recursive `calls.rs` walk SIGABRT'd `cqs index`/the daemon — the incomplete-sweep straggler; tree-sitter itself was fine) fixed with a depth rail + parse timeout + stack-sized parser pool (#2028/#2031; outer-layer C-scanner subprocess sandboxing deferred, PoC-gated, #2027). RT-RELAY — `context`/`explain` now scan doc-comments + signatures for injection, not just content (#2024).
+- Notes groom 238→220 (#2022); daemon `in_flight` RAII guard against panic unwind (#2018); telemetry/serde-output guards.
+- **Process note:** this session's deploys' `systemctl --user restart` ran in background shells and silently no-op'd (no session DBUS/XDG) — the daemon served a stale binary for 12h until a verified foreground restart. Lesson banked.
+
+## v1.47.0 (cut 2026-06-16, crates.io published)
+
+Minor — PARSER_VERSION 13→14 (L5X bare-routine ST wrap-normalization, #2005). Recall **72.0% R@5 / 47.2% R@1 / 87.2% R@20** (R@5 dead-flat vs v1.46.0; the first-gate 71.1 was a two-pass `--llm-summaries` enrichment artifact, not a regression). v1.46.1 was the patch fixing the v1.46.0 macOS cross-build `E0277`.
+
+## v1.46.0 (cut 2026-06-15)
 
 Minor release. Schema v32, PARSER_VERSION 10→13 (L5X byte_start + production wire-up, Dart call_query — reindex required). Recall: **72.0% R@5 / 48.7% R@1 / 87.6% R@20** (v3.v2 dual-judge, 218q; R@5 headline flat vs v1.45.0, R@1 +1.0 / R@20 −0.9 = PV13-reindex corpus churn, default scoring path byte-for-byte unchanged).
 
