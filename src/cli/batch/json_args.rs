@@ -137,6 +137,73 @@ fn overlay_from_args(arguments: &serde_json::Value) -> OverlayArgs {
     }
 }
 
+/// Substring marker in the catch-all rejection for a command with no Phase-0
+/// core. The probe predicate [`is_json_args_capable`] keys off this exact
+/// phrase, so the bail message and the predicate cannot drift — change one and
+/// the other follows.
+const NO_CORE_REJECTION: &str = "does not accept a JSON `arguments` object";
+
+/// The canonical set of JSON-args-capable command names — the SINGLE source of
+/// truth for "which commands [`build_batch_cmd`] accepts an `arguments` object
+/// for." Lists exactly the non-catch-all match arms below (the read commands
+/// plus the gated `notes-*` / `index` mutators). Co-located with the arms so a
+/// reviewer edits both together; the `json_args_capability_matches_arms`
+/// exhaustiveness test PROVES this list equals the arms by probing
+/// `build_batch_cmd`, so a new arm without an entry here (or vice versa) fails
+/// the build. The MCP registry-parity guard derives its expected tool set from
+/// this slice rather than re-listing it.
+///
+/// Test-only: its consumers are the exhaustiveness test here and the MCP guard
+/// in `cli::mcp` (both `#[cfg(test)]`). Production routing reads the match arms
+/// directly, never this list.
+#[cfg(test)]
+pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
+    "search",
+    "gather",
+    "scout",
+    "onboard",
+    "similar",
+    "callers",
+    "callees",
+    "deps",
+    "impact",
+    "test-map",
+    "trace",
+    "blame",
+    "context",
+    "diff",
+    "drift",
+    "dead",
+    "ci",
+    "review",
+    "plan",
+    "read",
+    "notes-add",
+    "notes-update",
+    "notes-remove",
+    "index",
+];
+
+/// Whether `command` is JSON-args-capable: [`build_batch_cmd`] accepts an
+/// `arguments` object for it (it has a Phase-0 core) rather than falling through
+/// to the catch-all "no Phase-0 core" rejection. Derived by probing
+/// `build_batch_cmd` with an empty object and inspecting whether the error (if
+/// any) is the catch-all — so the predicate reads the arms directly and cannot
+/// drift from them. A capable command with `{}` either builds (serde defaults)
+/// or fails for a different reason (a missing required field, the gated-mutation
+/// opt-in); only an argv-only / unknown command yields the catch-all marker.
+///
+/// Test-only: it exists to pin [`JSON_ARGS_CAPABLE_COMMANDS`] against the arms
+/// (the `json_args_capability_matches_arms` guard). Production never needs a
+/// capability predicate — `build_batch_cmd` already returns the right error.
+#[cfg(test)]
+pub(crate) fn is_json_args_capable(command: &str) -> bool {
+    match build_batch_cmd(command, &serde_json::Value::Object(Default::default())) {
+        Ok(_) => true,
+        Err(e) => !e.to_string().contains(NO_CORE_REJECTION),
+    }
+}
+
 /// Build the `BatchCmd` for a JSON-args request: deserialize `arguments` into
 /// the command's Phase-0 core, then construct the matching argv-side
 /// `BatchCmd` variant. The caller feeds the result into the SAME
@@ -341,7 +408,7 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             BatchCmd::Index { args: c }
         }
         other => bail!(
-            "command '{other}' does not accept a JSON `arguments` object \
+            "command '{other}' {NO_CORE_REJECTION} \
              (no Phase-0 core struct); use the argv `args` form"
         ),
     };
@@ -1295,6 +1362,77 @@ mod tests {
                 assert_eq!(args.limit_arg.limit, 4);
             }
             _ => panic!("expected Plan"),
+        }
+    }
+
+    /// Exhaustiveness guard for the §2 derivation: the canonical
+    /// `JSON_ARGS_CAPABLE_COMMANDS` list must equal the set of commands
+    /// `build_batch_cmd` actually accepts (the non-catch-all arms), proven by
+    /// probing the builder rather than re-reading the arms by eye. A new arm
+    /// added without a list entry (or a list entry with no arm) fails here, so
+    /// the MCP registry-parity guard — which derives from this list — cannot
+    /// silently miss a newly-capable command.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn json_args_capability_matches_arms() {
+        // The flag-gated mutators are capable arms; enable the opt-in so the
+        // probe sees them as capable (with the flag off they bail on the gate,
+        // not the catch-all — still "capable", but we exercise the on path too).
+        let _g = MutEnvGuard::set(true);
+
+        // 1. Every listed command is genuinely capable (no catch-all rejection).
+        for &cmd in JSON_ARGS_CAPABLE_COMMANDS {
+            assert!(
+                is_json_args_capable(cmd),
+                "`{cmd}` is in JSON_ARGS_CAPABLE_COMMANDS but build_batch_cmd rejects it as \
+                 having no Phase-0 core — the list and the match arms diverged"
+            );
+        }
+
+        // 2. A representative spread of argv-only / unknown commands is NOT
+        //    capable — the catch-all bites, and they are absent from the list.
+        for cmd in [
+            "where",
+            "explain",
+            "notes",
+            "health",
+            "task",
+            "nonexistent_cmd",
+        ] {
+            assert!(
+                !is_json_args_capable(cmd),
+                "`{cmd}` is argv-only/unknown but build_batch_cmd treats it as JSON-args-capable"
+            );
+            assert!(
+                !JSON_ARGS_CAPABLE_COMMANDS.contains(&cmd),
+                "`{cmd}` is not JSON-args-capable yet appears in JSON_ARGS_CAPABLE_COMMANDS"
+            );
+        }
+
+        // 3. The list has no duplicates (a copy-paste straggler would inflate
+        //    the derived MCP tool count).
+        let unique: std::collections::BTreeSet<&&str> = JSON_ARGS_CAPABLE_COMMANDS.iter().collect();
+        assert_eq!(
+            unique.len(),
+            JSON_ARGS_CAPABLE_COMMANDS.len(),
+            "JSON_ARGS_CAPABLE_COMMANDS contains a duplicate"
+        );
+    }
+
+    /// The flag-OFF probe still classifies a gated mutator as capable: the gate
+    /// bail is NOT the catch-all "no Phase-0 core" rejection, so `notes-add`
+    /// remains JSON-args-capable regardless of the opt-in. This pins that the
+    /// capability predicate keys on the core's existence, not the flag.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn gated_mutator_is_capable_even_with_flag_off() {
+        let _g = MutEnvGuard::set(false);
+        for cmd in ["notes-add", "notes-update", "notes-remove", "index"] {
+            assert!(
+                is_json_args_capable(cmd),
+                "`{cmd}` must be JSON-args-capable even with the mutation flag off \
+                 (the gate bail is not the no-core catch-all)"
+            );
         }
     }
 

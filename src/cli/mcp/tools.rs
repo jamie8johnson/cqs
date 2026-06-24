@@ -22,8 +22,9 @@
 //! authoritative deserialize happens daemon-side), then relayed as the Lane 1
 //! JSON-args frame. The daemon's two-layer envelope is classified:
 //! - Socket-layer transport/parse failure → a JSON-RPC protocol error.
-//! - A handler error riding under `status:"ok"`
-//!   (`output = {data:null, error:{...}}`, mirrored from `classify_slim_envelope`)
+//! - A handler error riding under `status:"ok"` (the slim error envelope:
+//!   `output = {error:{...}}` — error-present, NO `data` key, optional `_meta`,
+//!   the shape `classify_slim_envelope` matches as `Error`)
 //!   → `CallToolResult{isError:true}` with the redacted message — NOT a
 //!   protocol error (Blocker #1).
 //! - A success (`output = {data:..., (opt)_meta:...}`) → `CallToolResult` with
@@ -850,6 +851,35 @@ mod tests {
         assert_eq!(mcp_name_to_command("cqs_test_map"), "test-map");
         assert_eq!(mcp_name_to_command("cqs_search"), "search");
         assert_eq!(mcp_name_to_command("cqs_callers"), "callers");
+    }
+
+    /// Schema honesty: the `cqs_trace` / `cqs_test_map` `inputSchema` must NOT
+    /// advertise `max_nodes`. The field is env-resolved in the handler and does
+    /// NOT round-trip on the JSON-args adapter, so advertising it would offer a
+    /// knob the daemon silently ignores. `#[schemars(skip)]` drops it from the
+    /// schema while serde still tolerates it on the wire (inert).
+    #[test]
+    fn trace_and_test_map_schema_omits_max_nodes() {
+        for tool in ["cqs_trace", "cqs_test_map"] {
+            let def = find_tool(tool).unwrap_or_else(|| panic!("`{tool}` must be in the table"));
+            let schema = (def.input_schema)();
+            let props = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .unwrap_or_else(|| panic!("`{tool}` schema must carry properties"));
+            assert!(
+                !props.contains_key("max_nodes"),
+                "`{tool}` inputSchema must NOT advertise the inert `max_nodes` field; \
+                 got properties: {:?}",
+                props.keys().collect::<Vec<_>>()
+            );
+            // A real, advertised field is still present — proves we didn't
+            // accidentally empty the schema.
+            assert!(
+                props.contains_key("max_depth"),
+                "`{tool}` inputSchema must still advertise `max_depth`"
+            );
+        }
     }
 
     /// An unknown tool name is a -32601 protocol error, not a panic.

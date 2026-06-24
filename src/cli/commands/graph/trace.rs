@@ -40,7 +40,14 @@ pub(crate) struct TraceArgs {
     /// the adapter boundary from `CQS_TRACE_MAX_NODES` (default 10,000) via
     /// [`trace_max_nodes`]; the core never reads the env itself. `#[serde(default)]`
     /// so an MCP/wire caller that omits it falls back to the default ceiling.
+    ///
+    /// `#[schemars(skip)]`: the JSON-args adapter does not round-trip this field
+    /// (the handler env-resolves the ceiling), so the advertised MCP
+    /// `inputSchema` must NOT offer it — advertising a knob the daemon silently
+    /// ignores misleads the caller. Deserialize still accepts it (a wire client
+    /// that sends it is tolerated, just inert), only the schema hides it.
     #[serde(default = "trace_max_nodes")]
+    #[schemars(skip)]
     pub max_nodes: usize,
 }
 
