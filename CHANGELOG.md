@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] - 2026-06-24
+
+MCP server re-introduction (Phases 0–2), RT-PARSE security hardening, RT-RELAY injection scanning, and a notes groom.
+
+### Added
+
+- **MCP server re-introduction over a daemon-socket bridge (#2019, #2023, #2029, #2033, #2034).** The v0.10.0 in-process server was removed in favor of the command-core refactor; it returns now *riding* the cores (no per-tool reimplementation, ~10× smaller). **Phase 0** (#2019) derives `schemars::JsonSchema` on ~21 command core-input structs as the MCP `inputSchema` source. **Phase 1 Lane 1** (#2023) extends the daemon socket to accept a JSON `arguments` object alongside argv, deserializing into the command cores via the same validated `dispatch_via_view → dispatch_*` path (overlay/path gates preserved; additive, no wire-version bump). **Phase 1 Lane 2** (#2029) adds `cqs mcp` — a GPU-free stdio↔daemon-socket bridge speaking MCP JSON-RPC (`2025-11-25`), relaying `tools/call` to the warm daemon as JSON-args frames; 19 read-only `cqs_*` tools, `readOnlyHint` on each, bridge-only (no in-process fallback). **Phase 2a** (#2033) exposes the notes-write trio (`cqs_notes_add/update/remove`) behind opt-in `CQS_MCP_ENABLE_MUTATIONS`, preserving the daemon's `Store<ReadOnly>` typestate — notes mutations write the `docs/notes.toml` file and the watch loop reindexes (no writable Store in the handler). **Phase 2b** (#2034) adds `cqs_index` as a queued, non-blocking reindex (via `request_reconcile`) behind the same flag, exposing only the non-destructive subset (optional `slot`; `--force`/model-swap unreachable). The destructive set (`gc` / `slot remove` / `index --force` / `model` / `cache clear`) is withheld by absence.
+
+### Changed
+
+- **Notes groom (#2022): `docs/notes.toml` 238 → 220.** Removed 24 stale/wrong-genre entries (eval telemetry, cross-project, fixed-bug lessons), kept 2 the scanner over-flagged, applied 3 detail updates, added 6 from the recent arc; recovered eval wisdom ported to training data; added a genre-discipline header to stop future research/cross-project accumulation.
+
+### Fixed
+
+- **RAII-guard the daemon `in_flight` counter against panic unwind (#2018).** The connection counter was decremented after `handle_socket_client` returns — skipped on a handler panic, leaking concurrency slots. Converted to an `InFlightGuard` `Drop`.
+
+### Security
+
+- **RT-PARSE: harden the parse path against a stack-overflow DoS via adversarial indexed content (#2028, #2031).** cqs's Pass-2 relationship-extraction tree-walks (`collect_macro_calls`, `collect_fn_pointer_args`, candidate mirrors) recursed unbounded — a deeply-nested ~20KB file SIGABRT-crashed `cqs index` and the daemon (the incomplete-sweep straggler; tree-sitter itself was fine). Fixed with a depth rail `CQS_PARSER_MAX_WALK_DEPTH` (default 800, behavior-neutral for real code), `parse_with_timeout` (`CQS_PARSER_TIMEOUT_MS`, default 5000 ms) at all parse sites, the two remaining `pub` bare-parse sites wrapped, and a dedicated rayon parser pool with an explicit `CQS_PARSER_STACK_SIZE` (default 2 MiB) making the stack-fit load-bearing-by-design. (Outer-layer subprocess sandboxing of the C external scanners deferred, #2027.)
+- **RT-RELAY: scan doc-comments & signatures for injection on `context`/`explain` (#2024).** `detect_all_injection_patterns` ran only on chunk `content`; the `doc`/signature were relayed verbatim with a false-clean `injection_flags`, violating SECURITY.md's promise. Now scans the doc + signature + content union, and adds `injection_flags`/`trust_level` to `explain` output; CLI and daemon are fixed together via the shared core.
+
+### Dependencies
+
+- Bumped `quote`, `log`, `tree-sitter-r`, `syn` (dependabot).
+
 ## [1.47.0] - 2026-06-16
 
 Idle-loop residual cycle since v1.46.1 (PRs #2002–#2010): an overnight-nightly fix, two parser fixes, and CI cross-build hardening. **PARSER_VERSION 13 → 14 — a reindex is required** for the new bare-list L5X/L5K call/type edges (#2005); cqs's own (Rust) corpus is unaffected (drift-driven on the next `cqs index`, or `cqs index --force`).

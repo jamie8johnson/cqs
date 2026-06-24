@@ -2,7 +2,6 @@
 # Surprises (prediction errors) worth remembering
 # sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
 #   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
-# GENRE: code-search observations about THIS Rust codebase. Eval/training findings -> ~/training-data/{RESULTS,research/eval,research/training}.md; cross-project lessons -> that project's own notes.
 
 [[note]]
 sentiment = -0.5
@@ -1830,4 +1829,14 @@ text = "Every authored *.calls.scm must be wired into the language's call_query:
 mentions = [
     "src/language/languages.rs",
     "call_query",
+]
+
+[[note]]
+sentiment = 0.5
+text = "MCP/daemon mutations must NOT acquire a writable Store from the request handler — the daemon serves Store<ReadOnly> (typestate-enforced). The Phase 2 pattern: notes mutations write the notes.toml FILE + let the watch loop reindex; cqs_index QUEUES a reconcile via request_reconcile (returns {queued}, watch loop rebuilds). require_mutations_enabled (CQS_MCP_ENABLE_MUTATIONS, default off) gates at BOTH the bridge tool_table AND the daemon json_args dispatch — defense in depth, fails closed. The destructive set (gc/slot-remove/index-force) is withheld by ABSENCE (never in tool_table), not by annotation."
+mentions = [
+    "src/cli/batch/json_args.rs",
+    "src/cli/batch/handlers/misc.rs",
+    "src/cli/mcp/tools.rs",
+    "Store",
 ]
