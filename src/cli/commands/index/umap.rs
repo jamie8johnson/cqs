@@ -35,6 +35,28 @@ fn umap_stream_batch_size(dim: usize) -> usize {
     cqs::limits::dim_scaled_batch(baseline, dim, 64, 8_192)
 }
 
+/// Default wall-clock ceiling for the `run_umap.py` fit subprocess, in seconds.
+///
+/// Generous because the fit's cost scales with corpus size: a ~17k-chunk slot
+/// fits in ~20s, but a much larger corpus on a CPU-only host can legitimately
+/// take minutes. The default exists only to convert a pathological *hang* (a
+/// degenerate fit, a wedged BLAS thread) into a bounded skip; it is not a
+/// performance target. Override with `CQS_UMAP_FIT_TIMEOUT_SECS`.
+const UMAP_FIT_TIMEOUT_SECS_DEFAULT: u64 = 600;
+
+/// Resolve the fit-subprocess wall-clock timeout, honoring
+/// `CQS_UMAP_FIT_TIMEOUT_SECS`. A `0` (or unparseable/empty) value falls back
+/// to the default rather than meaning "no timeout" — a zero ceiling would kill
+/// every fit instantly, which is never what an operator wants.
+fn umap_fit_timeout() -> std::time::Duration {
+    let secs = std::env::var("CQS_UMAP_FIT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(UMAP_FIT_TIMEOUT_SECS_DEFAULT);
+    std::time::Duration::from_secs(secs)
+}
+
 /// The UMAP projection script, embedded at compile time. Avoids a
 /// "script not found" failure when `cqs index --umap` runs outside the
 /// source tree (i.e. anywhere the installed binary is invoked). The script
@@ -51,16 +73,17 @@ type EmbeddingRows = Vec<(String, Vec<f32>)>;
 /// `run_umap_projection` reads every embedding from the store via random-page
 /// SQLite IO. On a slow mmap filesystem (WSL `/mnt/c` 9P / NFS / SMB) that
 /// access pattern collapses — measured at hours for a ~17k-chunk slot — while
-/// the same read against a fast-disk snapshot finishes in seconds. Staging
-/// snapshots the live DB onto fast disk, reads embeddings from the snapshot,
-/// and writes coords back to the original (a single bounded transaction —
-/// sequential write IO is fine on v9fs).
+/// the same read against a fast-disk copy finishes in seconds. Staging copies
+/// the live DB onto fast disk with a sequential file copy (NOT a page-walking
+/// VACUUM INTO — that re-incurs the same random-page IO over v9fs), reads
+/// embeddings from the copy, and writes coords back to the original (a single
+/// bounded transaction — sequential write IO is fine on v9fs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StagingDecision {
-    /// DB is on a fast fs — read embeddings directly, no snapshot.
+    /// DB is on a fast fs — read embeddings directly, no copy.
     DirectRead,
-    /// DB is on a slow fs and a fast temp dir was found — snapshot the DB
-    /// into this dir, read from the snapshot.
+    /// DB is on a slow fs and a fast temp dir was found — copy the DB into
+    /// this dir, read from the copy.
     StageVia(PathBuf),
     /// DB is on a slow fs but no fast temp dir is available — the caller must
     /// loud-warn and skip rather than silently hang on the slow read.
@@ -81,7 +104,7 @@ fn decide_staging(db_path: &Path) -> StagingDecision {
     }
 }
 
-/// Pick a fast temp directory to stage the snapshot through.
+/// Pick a fast temp directory to stage the DB copy through.
 ///
 /// Prefers `$XDG_RUNTIME_DIR` (typically a tmpfs), falling back to
 /// `std::env::temp_dir()` (`/tmp`, the WSL ext4 rootfs). A candidate is
@@ -108,8 +131,8 @@ fn pick_fast_temp_dir() -> Option<PathBuf> {
 /// Stream every `(id, embedding)` pair out of a store into an owned buffer.
 ///
 /// Generic over the store mode so it can read from the original
-/// `Store<ReadWrite>` (direct path) or a `Store<ReadOnly>` snapshot (staged
-/// path). The `dim` drives the streaming batch size only.
+/// `Store<ReadWrite>` (direct path) or a `Store<ReadOnly>` copy (staged path).
+/// The `dim` drives the streaming batch size only.
 fn collect_embeddings<Mode>(store: &Store<Mode>, dim: usize) -> Result<EmbeddingRows> {
     let stream_batch = umap_stream_batch_size(dim);
     let mut buffered: EmbeddingRows = Vec::new();
@@ -122,61 +145,229 @@ fn collect_embeddings<Mode>(store: &Store<Mode>, dim: usize) -> Result<Embedding
     Ok(buffered)
 }
 
-/// Snapshot the live DB onto fast disk and read embeddings from the snapshot.
+/// Append a sidecar suffix (`-wal` / `-shm`) to a DB path.
 ///
-/// Returns the buffered embeddings plus the snapshot's `TempPath` — the caller
-/// must keep the `TempPath` alive until the read is consumed, and it cleans up
-/// the snapshot file (and its `-wal`/`-shm` sidecars, if any) on drop. The
-/// snapshot is a `VACUUM INTO` single-file copy, torn-page-safe under a
-/// concurrent daemon writer.
+/// SQLite names sidecars by appending the suffix to the full filename, not by
+/// replacing the extension: `index.db` -> `index.db-wal`, `index.db-shm`.
+fn sidecar_path(db: &Path, ext: &str) -> PathBuf {
+    let mut s = db.as_os_str().to_os_string();
+    s.push(ext);
+    PathBuf::from(s)
+}
+
+/// Sequentially copy the live DB onto fast disk and read embeddings from the
+/// copy.
+///
+/// Returns the buffered embeddings plus the copy's `TempPath` — the caller must
+/// keep the `TempPath` alive until the read is consumed, and it cleans up the
+/// copy file (and its `-wal`/`-shm` sidecars, if any) on drop.
+///
+/// The copy is a plain sequential `std::fs::copy` of the main DB file plus its
+/// `-wal`/`-shm` sidecars, NOT a `VACUUM INTO`. VACUUM INTO reads the source DB
+/// page-by-page through SQLite's pager, which on a slow mmap filesystem (WSL 9P
+/// / NFS / SMB) is the same random-page IO pathology the staging exists to
+/// escape — measured at ~12 minutes for a ~17k-chunk slot. A sequential file
+/// copy of the same 543 MB DB on v9fs takes ~3 seconds. The copy is a
+/// throwaway, read-only projection source: it does not need VACUUM's rebuild or
+/// backup-grade compaction.
+///
+/// Consistency under a concurrent daemon writer: the main DB file is copied
+/// first, then the `-wal`/`-shm` sidecars. A writer committing into the WAL
+/// mid-copy can leave a partial trailing frame in the copied `-wal`; SQLite's
+/// WAL recovery validates frame checksums and stops at the first invalid frame,
+/// so the read sees a valid (possibly slightly older) committed state, never a
+/// torn/corrupt one. The narrow remaining window — a concurrent checkpoint
+/// draining + truncating the source WAL between the main copy and the sidecar
+/// copy — can drop a handful of just-committed rows from the copy, which for a
+/// cosmetic 2D projection only means those chunks keep their prior coords. In
+/// the real `cqs index --umap` flow the source is the indexer's own handle
+/// under the index lock, so a competing writer is not present. The sidecars
+/// are copied — rather than `wal_checkpoint(TRUNCATE)` then copy-main — to
+/// avoid contending for the exclusive lock with a live daemon; the PASSIVE
+/// drain below shrinks the WAL without blocking.
 fn stage_and_read(
     store: &Store,
     db_path: &Path,
     fast_dir: &Path,
     dim: usize,
 ) -> Result<(EmbeddingRows, tempfile::TempPath)> {
-    // Reserve a unique path in the fast dir. `snapshot_to` -> VACUUM INTO
-    // clears any pre-existing file at the target first, so the empty
-    // NamedTempFile placeholder is fine; the TempPath owns cleanup.
+    // Reserve a unique path in the fast dir. The copy below overwrites the
+    // placeholder's contents; the TempPath owns cleanup of the copy (and its
+    // sidecars are removed explicitly when the read is done — see below).
     let placeholder = tempfile::Builder::new()
-        .prefix("cqs-umap-snapshot-")
+        .prefix("cqs-umap-copy-")
         .suffix(".db")
         .tempfile_in(fast_dir)
         .with_context(|| {
             format!(
-                "failed to create UMAP snapshot temp file in {}",
+                "failed to create UMAP staging temp file in {}",
                 fast_dir.display()
             )
         })?;
-    let snapshot_path = placeholder.into_temp_path();
+    let copy_path = placeholder.into_temp_path();
 
-    store
-        .snapshot_to(&snapshot_path)
-        .with_context(|| format!("failed to snapshot index DB to {}", snapshot_path.display()))?;
-    tracing::info!(
-        src = %db_path.display(),
-        snapshot = %snapshot_path.display(),
-        "UMAP: staged embedding read through fast-disk snapshot"
-    );
+    // Drain the in-memory pool's buffered writes into the on-disk WAL so the
+    // copied sidecars reflect committed state. PASSIVE never blocks on the
+    // exclusive lock — it skips frames a concurrent reader/writer is past
+    // rather than waiting — so it cannot stall against a live daemon; if it
+    // can't fully drain, the sidecar copy below still captures whatever is
+    // committed. A checkpoint failure is non-fatal to the copy.
+    store.checkpoint_passive_best_effort();
 
-    // Open the snapshot read-write and read embeddings from it. A read-only
-    // open forces WAL journal-mode on connect, which is itself a header write —
-    // and a `VACUUM INTO` output is born in rollback-journal mode, so a
-    // read-only open errors with "attempt to write a readonly database". The
-    // snapshot is a private throwaway on fast disk (unique temp name, no
-    // concurrent reader), so a read-write open is safe and avoids that footgun.
-    // Migrations are a no-op: the snapshot is a copy of the already-current DB.
-    let snapshot_store = Store::open(&snapshot_path).with_context(|| {
+    // Sequential copy: main DB first, then sidecars. Reading every page through
+    // a sequential file copy is fast on v9fs; reading them through SQLite's
+    // random-page pager (VACUUM INTO) is not.
+    std::fs::copy(db_path, &copy_path).with_context(|| {
         format!(
-            "failed to open UMAP snapshot at {}",
-            snapshot_path.display()
+            "failed to copy index DB {} -> {}",
+            db_path.display(),
+            copy_path.display()
         )
     })?;
-    let rows = collect_embeddings(&snapshot_store, dim)?;
-    // Drop the snapshot store's connections before returning so the TempPath
-    // can be unlinked cleanly (no lingering fds against the snapshot file).
-    drop(snapshot_store);
-    Ok((rows, snapshot_path))
+    for ext in ["-wal", "-shm"] {
+        let src_side = sidecar_path(db_path, ext);
+        if src_side.exists() {
+            let dst_side = sidecar_path(&copy_path, ext);
+            std::fs::copy(&src_side, &dst_side).with_context(|| {
+                format!(
+                    "failed to copy index DB sidecar {} -> {}",
+                    src_side.display(),
+                    dst_side.display()
+                )
+            })?;
+        }
+    }
+    tracing::info!(
+        src = %db_path.display(),
+        copy = %copy_path.display(),
+        "UMAP: staged embedding read through fast-disk sequential copy"
+    );
+
+    // Open the copy read-only and read embeddings from it. The copy is a
+    // byte-identical clone of the already-current WAL-mode DB, so a read-only
+    // open needs no header write and runs no migration (the read-only open
+    // path bails on a schema mismatch but here the version matches exactly).
+    // Read-only keeps the projection a pure consumer — it never mutates the
+    // throwaway copy, and the source DB is untouched.
+    let copy_store =
+        Store::<cqs::store::ReadOnly>::open_readonly(&copy_path).with_context(|| {
+            format!(
+                "failed to open UMAP staging copy at {}",
+                copy_path.display()
+            )
+        })?;
+    let rows = collect_embeddings(&copy_store, dim)?;
+    // Drop the copy store's connections before returning so the TempPath can be
+    // unlinked cleanly (no lingering fds against the copy file).
+    drop(copy_store);
+
+    // Remove the copied sidecars eagerly — the TempPath only unlinks the main
+    // `.db` on drop, so without this the fast temp dir would accumulate
+    // `-wal`/`-shm` orphans across repeated `--umap` runs.
+    for ext in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(sidecar_path(&copy_path, ext));
+    }
+
+    Ok((rows, copy_path))
+}
+
+/// Outcome of a bounded child-process run: the wait result (or `Err` if the
+/// reaping `wait()` itself failed), the captured stdout/stderr, and whether the
+/// wall-clock timeout fired and killed the child.
+struct ChildOutcome {
+    /// `Ok(status)` once the child was reaped; `Err` only if the underlying
+    /// `wait()` syscall failed (rare). When `timed_out` is true the status
+    /// reflects the kill, and the caller ignores it.
+    status: Result<std::process::ExitStatus>,
+    stdout_buf: Vec<u8>,
+    stderr_buf: Vec<u8>,
+    /// True when the wall-clock deadline expired and the child was killed.
+    timed_out: bool,
+}
+
+/// Run `child` to completion under a wall-clock `timeout`, capturing stdout and
+/// stderr with the same byte caps the inline read used to apply.
+///
+/// Mechanism (std-only, no extra deps): stdout and stderr are drained on
+/// dedicated threads (so a full stderr pipe can't deadlock the stdout drain),
+/// and the `Child` is owned by a watchdog thread that polls `try_wait()` until
+/// the child exits or the deadline passes. On the deadline it `kill()`s the
+/// child; the kill closes the child's pipe write ends, so the drain threads hit
+/// EOF and join. The watchdog returns the final `ExitStatus` and whether it had
+/// to kill.
+///
+/// The poll loop (rather than a blocking `wait()` on a second thread) is what
+/// keeps the watchdog cancellable: as soon as the child exits on its own the
+/// next `try_wait()` observes it and the loop ends without ever touching the
+/// kill path, so a healthy fit is never signalled.
+fn run_child_bounded(
+    mut child: std::process::Child,
+    max_stdout_bytes: usize,
+    timeout: std::time::Duration,
+) -> ChildOutcome {
+    use std::io::Read;
+
+    // Take the pipe handles out of the child up front. They are independent
+    // OS resources — owning them here lets the drain threads read while the
+    // watchdog thread owns the `Child` for `try_wait`/`kill`.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::with_capacity(64 * 1024);
+        if let Some(s) = stdout {
+            // Read one byte past the cap so the caller can detect overflow.
+            let _ = s.take((max_stdout_bytes as u64) + 1).read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::with_capacity(8 * 1024);
+        if let Some(s) = stderr {
+            // 1 MiB cap on stderr — operators only need the tail for diagnostics.
+            let _ = s.take(1024 * 1024).read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    // Poll for exit until the deadline; kill on expiry. The poll interval is a
+    // small fixed step — cheap, and the worst-case extra wait past a natural
+    // exit is one interval.
+    let deadline = std::time::Instant::now() + timeout;
+    let poll = std::time::Duration::from_millis(50);
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // Deadline hit and the child is still running — kill it.
+                    // The kill closes its stdout/stderr write ends, unblocking
+                    // the drain threads. Then reap with a blocking wait().
+                    let _ = child.kill();
+                    timed_out = true;
+                    break child.wait().map_err(|e| {
+                        anyhow::anyhow!("failed to reap killed UMAP subprocess: {e}")
+                    });
+                }
+                std::thread::sleep(poll);
+            }
+            Err(e) => break Err(anyhow::anyhow!("failed to wait for UMAP subprocess: {e}")),
+        }
+    };
+
+    // Join the drain threads. They terminate once the child's pipes close
+    // (natural exit or kill). A panicked drain thread degrades to empty output
+    // rather than poisoning the whole projection.
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+
+    ChildOutcome {
+        status,
+        stdout_buf,
+        stderr_buf,
+        timed_out,
+    }
 }
 
 /// Run the UMAP projection pass and write coords back to the store.
@@ -186,12 +377,17 @@ fn stage_and_read(
 ///
 /// `db_path` is the on-disk path of `store`'s SQLite database. When it lives on
 /// a slow mmap filesystem (WSL 9P / NFS / SMB), the embedding read is staged
-/// through a fast-disk snapshot — see [`decide_staging`] — because reading all
-/// embeddings via random-page SQLite IO over v9fs collapses to hours. Coords
-/// are always written back to the original `store`.
+/// through a fast-disk sequential copy — see [`decide_staging`] and
+/// [`stage_and_read`] — because reading all embeddings via random-page SQLite
+/// IO over v9fs collapses to hours. Coords are always written back to the
+/// original `store`.
 ///
-/// Returns the number of rows successfully updated. Empty corpora and
-/// "no Python" both return `Ok(0)` after logging — the index build is not
+/// The fit subprocess is bounded by a wall-clock timeout
+/// (`CQS_UMAP_FIT_TIMEOUT_SECS`); a pathological fit is killed and the
+/// projection skipped rather than hanging the index build.
+///
+/// Returns the number of rows successfully updated. Empty corpora, "no Python",
+/// and a fit timeout all return `Ok(0)` after logging — the index build is not
 /// considered failed when the optional projection can't run.
 pub(crate) fn run_umap_projection(store: &Store, db_path: &Path, quiet: bool) -> Result<usize> {
     let _span = tracing::info_span!("umap_projection").entered();
@@ -243,27 +439,28 @@ pub(crate) fn run_umap_projection(store: &Store, db_path: &Path, quiet: bool) ->
     // The read of every embedding is random-page SQLite IO. On a slow mmap
     // filesystem (WSL 9P / NFS / SMB) that pattern collapses — measured at
     // hours for a ~17k-chunk slot — so stage the read through a fast-disk
-    // snapshot when the live DB is on such a mount. Coords are always written
-    // back to the original `store` below (sequential write IO, fine on v9fs).
+    // sequential copy when the live DB is on such a mount. Coords are always
+    // written back to the original `store` below (sequential write IO, fine on
+    // v9fs).
     let dim = store.dim();
-    let _stage_snapshot; // keep the TempPath alive across the read when staging
+    let _stage_copy; // keep the TempPath alive across the read when staging
     let buffered: EmbeddingRows = match decide_staging(db_path) {
         StagingDecision::DirectRead => collect_embeddings(store, dim)?,
         StagingDecision::StageVia(fast_dir) => {
-            // Snapshot the live DB onto fast disk, read embeddings from the
-            // snapshot. A snapshot failure is not fatal: fall back to a
-            // direct (slow) read with a loud warning rather than failing the
-            // whole index — but warn so the operator knows why it may stall.
+            // Copy the live DB onto fast disk, read embeddings from the copy.
+            // A copy failure is not fatal: fall back to a direct (slow) read
+            // with a loud warning rather than failing the whole index — but
+            // warn so the operator knows why it may stall.
             match stage_and_read(store, db_path, &fast_dir, dim) {
-                Ok((rows, snapshot_path)) => {
-                    _stage_snapshot = snapshot_path;
+                Ok((rows, copy_path)) => {
+                    _stage_copy = copy_path;
                     rows
                 }
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         db = %db_path.display(),
-                        "UMAP staging snapshot failed; falling back to a direct read \
+                        "UMAP staging copy failed; falling back to a direct read \
                          on the slow filesystem (this may take a very long time)"
                     );
                     if !quiet {
@@ -394,6 +591,9 @@ pub(crate) fn run_umap_projection(store: &Store, db_path: &Path, quiet: bool) ->
             .write_all(&payload)
             .context("failed to write embeddings to UMAP stdin")?;
     }
+    // Drop stdin so the child sees EOF and starts the fit. `child.stdin` is an
+    // Option; take it explicitly so the write end is closed before we wait.
+    drop(child.stdin.take());
     drop(payload); // free wire buffer; child has it now
 
     // Bounded streaming read of stdout/stderr instead of
@@ -402,23 +602,43 @@ pub(crate) fn run_umap_projection(store: &Store, db_path: &Path, quiet: bool) ->
     // so pathological / hostile script output can't OOM the indexer process.
     // Default 1 GiB (sufficient for ~16M chunks at 64 bytes/line),
     // env-overridable via `CQS_UMAP_MAX_STDOUT_BYTES`.
-    use std::io::Read;
     let max_stdout_bytes: usize = std::env::var("CQS_UMAP_MAX_STDOUT_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1024 * 1024 * 1024);
-    let mut stdout_buf = Vec::with_capacity(64 * 1024);
-    let mut stderr_buf = Vec::with_capacity(8 * 1024);
-    if let Some(s) = child.stdout.take() {
-        let _ = s
-            .take((max_stdout_bytes as u64) + 1)
-            .read_to_end(&mut stdout_buf);
+
+    // Bound the whole fit subprocess by wall-clock time. A pathological /
+    // adversarial fit (a degenerate corpus, a hung BLAS thread) otherwise
+    // blocks the read below indefinitely — the staging fallbacks cover the
+    // filesystem stage, but not the subprocess. On timeout the child is
+    // killed, its pipes close (so the reads unblock), and we warn + return
+    // Ok(0): the projection is optional, never a fatal index failure.
+    let fit_timeout = umap_fit_timeout();
+    let ChildOutcome {
+        status,
+        stdout_buf,
+        stderr_buf,
+        timed_out,
+    } = run_child_bounded(child, max_stdout_bytes, fit_timeout);
+
+    if timed_out {
+        tracing::warn!(
+            timeout_secs = fit_timeout.as_secs(),
+            n_rows,
+            "UMAP fit subprocess exceeded CQS_UMAP_FIT_TIMEOUT_SECS — killed; \
+             skipping projection (coords left unchanged)"
+        );
+        if !quiet {
+            eprintln!(
+                "  UMAP: fit timed out after {}s ({n_rows} embeddings) — killed and \
+                 skipped. Raise CQS_UMAP_FIT_TIMEOUT_SECS or project a smaller corpus.",
+                fit_timeout.as_secs()
+            );
+        }
+        return Ok(0);
     }
-    if let Some(s) = child.stderr.take() {
-        // 1 MiB cap on stderr — operators only need the tail for diagnostics.
-        let _ = s.take(1024 * 1024).read_to_end(&mut stderr_buf);
-    }
-    let status = child.wait().context("failed to wait for UMAP subprocess")?;
+
+    let status = status.context("failed to wait for UMAP subprocess")?;
     if stdout_buf.len() > max_stdout_bytes {
         anyhow::bail!(
             "UMAP subprocess stdout exceeded CQS_UMAP_MAX_STDOUT_BYTES ({} bytes) — \
@@ -678,13 +898,15 @@ mod tests {
     }
 
     /// The staged read produces the same rows as a direct read on the same
-    /// corpus. This pins the snapshot path's correctness without reproducing
-    /// the slow-fs hang: seed N>n_neighbors embeddings, read them directly and
-    /// via a fast-disk snapshot, and assert the two reads are identical.
+    /// corpus. This pins the copy path's correctness without reproducing the
+    /// slow-fs hang: seed N>n_neighbors embeddings, read them directly and via
+    /// a fast-disk sequential copy, and assert the two reads are identical.
     ///
-    /// `stage_and_read` snapshots the live DB and reads from the snapshot;
-    /// `collect_embeddings` is the direct read. Equal output proves the
-    /// snapshot round-trips every embedding faithfully.
+    /// `stage_and_read` copies the live DB (main + `-wal`/`-shm` sidecars) and
+    /// reads from the copy; `collect_embeddings` is the direct read. Equal
+    /// output proves the sequential copy round-trips every embedding faithfully
+    /// — including data still resident in the WAL at copy time, which the
+    /// copy's read-only open replays.
     #[test]
     fn staged_read_matches_direct_read() {
         let dim = 8usize;
@@ -714,7 +936,7 @@ mod tests {
             "temp_dir must be fast for this test to stage meaningfully: {}",
             fast_dir.display()
         );
-        let (staged, _snapshot) =
+        let (staged, _copy) =
             stage_and_read(&store, &db_path, &fast_dir, dim).expect("staged read");
 
         // Compare by id (order-independent): both reads are rowid-ascending,
@@ -725,7 +947,42 @@ mod tests {
         staged_sorted.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             staged_sorted, direct_sorted,
-            "staged snapshot read must yield identical (id, embedding) rows as the direct read"
+            "staged sequential-copy read must yield identical (id, embedding) rows as the direct read"
+        );
+    }
+
+    /// The fast-copy staging must leave no `-wal`/`-shm` orphans in the temp
+    /// dir after the read. `stage_and_read` removes the copied sidecars
+    /// eagerly (the `TempPath` only owns the main `.db`); a regression there
+    /// would silently accumulate files across repeated `--umap` runs.
+    #[test]
+    fn staged_copy_cleans_up_sidecars() {
+        let dim = 8usize;
+        let (store, db_path, _tmp) = fresh_empty_store(dim);
+        let seeded: Vec<(String, Vec<f32>)> = (0..16u32)
+            .map(|i| {
+                (
+                    format!("src/g{i}.rs:1:{i:08x}"),
+                    (0..dim).map(|d| (i as f32) + (d as f32)).collect(),
+                )
+            })
+            .collect();
+        seed_chunks_with_embeddings(&store, dim, &seeded);
+
+        let fast_dir = std::env::temp_dir();
+        let (_rows, copy_path) =
+            stage_and_read(&store, &db_path, &fast_dir, dim).expect("staged read");
+
+        // The main copy file still exists (owned by the TempPath), but neither
+        // sidecar should survive the read.
+        assert!(copy_path.exists(), "copy .db must still exist before drop");
+        assert!(
+            !sidecar_path(&copy_path, "-wal").exists(),
+            "copy -wal sidecar must be cleaned up after the read"
+        );
+        assert!(
+            !sidecar_path(&copy_path, "-shm").exists(),
+            "copy -shm sidecar must be cleaned up after the read"
         );
     }
 
@@ -772,5 +1029,101 @@ mod tests {
         store
             .upsert_chunks_batch(&batch, Some(1))
             .expect("seed chunks with embeddings");
+    }
+
+    /// `umap_fit_timeout` honors `CQS_UMAP_FIT_TIMEOUT_SECS`, falls back to the
+    /// default when unset/empty/garbage, and rejects `0` (which would kill
+    /// every fit instantly) in favor of the default.
+    ///
+    /// Mutates a process-global env var, so `#[serial]`.
+    #[test]
+    #[serial]
+    fn umap_fit_timeout_honors_env_and_rejects_zero() {
+        let saved = std::env::var_os("CQS_UMAP_FIT_TIMEOUT_SECS");
+
+        std::env::remove_var("CQS_UMAP_FIT_TIMEOUT_SECS");
+        assert_eq!(
+            umap_fit_timeout().as_secs(),
+            UMAP_FIT_TIMEOUT_SECS_DEFAULT,
+            "unset must use the default"
+        );
+
+        std::env::set_var("CQS_UMAP_FIT_TIMEOUT_SECS", "42");
+        assert_eq!(umap_fit_timeout().as_secs(), 42, "set value must win");
+
+        std::env::set_var("CQS_UMAP_FIT_TIMEOUT_SECS", "0");
+        assert_eq!(
+            umap_fit_timeout().as_secs(),
+            UMAP_FIT_TIMEOUT_SECS_DEFAULT,
+            "0 must fall back to the default, not mean an instant-kill ceiling"
+        );
+
+        std::env::set_var("CQS_UMAP_FIT_TIMEOUT_SECS", "garbage");
+        assert_eq!(
+            umap_fit_timeout().as_secs(),
+            UMAP_FIT_TIMEOUT_SECS_DEFAULT,
+            "garbage must fall back to the default"
+        );
+
+        match saved {
+            Some(v) => std::env::set_var("CQS_UMAP_FIT_TIMEOUT_SECS", v),
+            None => std::env::remove_var("CQS_UMAP_FIT_TIMEOUT_SECS"),
+        }
+    }
+
+    /// A child that exits promptly is reaped by `run_child_bounded` with its
+    /// stdout captured and `timed_out == false` — the timeout path never
+    /// fires for a healthy fit.
+    #[cfg(unix)]
+    #[test]
+    fn run_child_bounded_captures_fast_child_without_timeout() {
+        let child = Command::new("sh")
+            .args(["-c", "printf 'hello-umap'"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn fast child");
+
+        let outcome = run_child_bounded(child, 1024 * 1024, std::time::Duration::from_secs(30));
+        assert!(!outcome.timed_out, "a fast child must not be timed out");
+        let status = outcome.status.expect("status must be Ok");
+        assert!(status.success(), "fast child must exit 0");
+        assert_eq!(
+            outcome.stdout_buf, b"hello-umap",
+            "stdout must be captured verbatim"
+        );
+    }
+
+    /// A child that hangs past the wall-clock deadline is killed and reported
+    /// with `timed_out == true`. Uses a sub-second timeout against a long
+    /// `sleep` so the test itself stays fast. Pins the fit-subprocess
+    /// robustness contract: a pathological fit can never hang the indexer.
+    #[cfg(unix)]
+    #[test]
+    fn run_child_bounded_kills_hung_child_on_timeout() {
+        let start = std::time::Instant::now();
+        // `sleep 30` never exits within the test window; the watchdog must kill
+        // it. We keep its stdout piped but it never writes, so the only way the
+        // drain threads finish is the kill closing the pipe.
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn hung child");
+
+        let outcome = run_child_bounded(child, 1024 * 1024, std::time::Duration::from_millis(300));
+        assert!(
+            outcome.timed_out,
+            "a child that outlives the deadline must be reported timed_out"
+        );
+        // The kill + reap must happen quickly — nowhere near the 30s sleep.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "timeout path must kill promptly, took {:?}",
+            start.elapsed()
+        );
     }
 }
