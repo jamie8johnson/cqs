@@ -745,7 +745,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // can lift the cap.
     let max_daemon_response = crate::cli::limits::max_daemon_response_bytes();
     use std::io::Read as _;
-    let mut reader = std::io::BufReader::new(&stream).take(max_daemon_response);
+    // Read one byte past the cap so the cap-hit test is `> max`, not `== max`:
+    // a valid payload exactly `max_daemon_response` bytes (newline included) is
+    // accepted, not mistaken for one truncated at the cap.
+    let mut reader = std::io::BufReader::new(&stream).take(max_daemon_response.saturating_add(1));
     let mut response_line = String::new();
     let bytes_read = match reader.read_line(&mut response_line) {
         Ok(n) => n,
@@ -754,7 +757,7 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             return Ok(None);
         }
     };
-    if bytes_read as u64 == max_daemon_response {
+    if bytes_read as u64 > max_daemon_response {
         // Surface this on stderr, not just tracing — agents tuning latency
         // won't see tracing.
         let cap_mib = max_daemon_response / 1024 / 1024;
