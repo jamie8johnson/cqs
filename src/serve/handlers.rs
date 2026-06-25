@@ -134,6 +134,23 @@ fn default_search_limit() -> usize {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct SearchLegsQuery {
+    /// The search query.
+    pub q: String,
+    /// Number of results (`k`). Defaults to `default_legs_k`, clamped 1..=200.
+    #[serde(default = "default_legs_k")]
+    pub k: usize,
+    /// Optional constant SPLADE fusion weight α (overrides the per-category
+    /// router). 1.0 = pure cosine, 0.0 = pure sparse.
+    #[serde(default)]
+    pub splade_alpha: Option<f32>,
+}
+
+fn default_legs_k() -> usize {
+    10
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct HierarchyQuery {
     /// `callers` (BFS up) or `callees` (BFS down). Defaults to `callees`.
     #[serde(default)]
@@ -262,6 +279,74 @@ pub(crate) async fn search(
 
     tracing::info!(matches = matches.len(), "search returned");
     Ok(Json(SearchResponse { matches }))
+}
+
+/// `GET /api/search_legs?q=…&k=…[&splade_alpha=…]` — the SPLADE-fusion
+/// inspector ("mechanism mode").
+///
+/// Unlike the other `/api/*` handlers, this one holds NO retrieval stack in the
+/// serve process: the embedder / vector index / SPLADE index live only in the
+/// retrieval daemon (`cqs watch --serve`). This handler is a CLIENT of that
+/// daemon's socket — it forwards the query as a `search-legs` verb and returns
+/// the daemon's three pre-fusion legs (dense / sparse / fused) verbatim.
+///
+/// If the daemon is down (or no socket path was resolved), it returns a clean
+/// 503 with the "mechanism mode requires `cqs watch --serve`" hint — it never
+/// silently falls back to FTS.
+pub(crate) async fn search_legs(
+    State(state): State<AppState>,
+    Query(params): Query<SearchLegsQuery>,
+) -> Result<Json<serde_json::Value>, ServeError> {
+    tracing::debug!(query = %params.q, "serve::search_legs query received");
+    tracing::info!(q_len = params.q.len(), k = params.k, "serve::search_legs");
+
+    if params.q.trim().is_empty() {
+        return Err(ServeError::BadRequest(
+            "missing query parameter 'q'".to_string(),
+        ));
+    }
+
+    let socket = match &state.daemon_socket {
+        Some(s) => s.clone(),
+        None => {
+            // No socket path was resolved at launch — mechanism mode is
+            // structurally unavailable. Same 503 the daemon-down path returns.
+            return Err(ServeError::ServiceUnavailable(
+                "mechanism mode requires the retrieval daemon — start it with `cqs watch --serve`"
+                    .to_string(),
+            ));
+        }
+    };
+
+    // Build the daemon argv: the verb is supplied by the client; these are the
+    // tokens after it. Clamp `k` to the same bound the name-search handler uses.
+    let k = params.k.clamp(1, 200);
+    let mut args = vec![params.q.clone(), "--limit".to_string(), k.to_string()];
+    if let Some(alpha) = params.splade_alpha {
+        args.push("--splade-alpha".to_string());
+        args.push(alpha.to_string());
+    }
+
+    // The daemon round-trip is blocking socket I/O; run it off the async
+    // executor. The permit cap shares the same semaphore the SQL handlers use
+    // so a fan-out client can't pin unbounded blocking threads.
+    let permit = state
+        .blocking_permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| ServeError::Internal(format!("blocking permit: {e}")))?;
+    let span = tracing::Span::current();
+    let output = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _entered = span.enter();
+        super::daemon_client::query_search_legs(&socket, &args)
+    })
+    .await
+    .map_err(|e| ServeError::Internal(format!("search_legs join: {e}")))??;
+
+    tracing::info!("serve::search_legs forwarded to daemon");
+    Ok(Json(output))
 }
 
 /// `GET /api/hierarchy/{id}?direction={callers|callees}&depth=N`

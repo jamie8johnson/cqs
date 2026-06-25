@@ -107,7 +107,12 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
         }
     }
 
-    cqs::serve::run_server(store, bind_addr, false, auth)
+    // The retrieval daemon's socket — `/api/search_legs` forwards to it (the
+    // serve process holds no embedder/index, so mechanism mode requires
+    // `cqs watch --serve`). Same path resolution the CLI client uses.
+    let daemon_socket = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+
+    cqs::serve::run_server(store, bind_addr, false, auth, Some(daemon_socket))
 }
 
 /// Reject URLs containing shell metacharacters before handing them to

@@ -16,6 +16,11 @@ pub mod synonyms;
 // their own (mostly `pub(crate)`) visibility.
 pub use scoring::knob;
 
+// The SPLADE-fusion leg structs surfaced by `Store::search_hybrid_legs`. Public
+// so the daemon/serve inspector surfaces (and integration tests) can serialize
+// the three pre-fusion rankings.
+pub use query::{DenseLegEntry, FusedLegEntry, SearchLegs, SparseLegEntry};
+
 use crate::store::helpers::{ChunkSummary, SearchResult};
 use crate::store::{Store, StoreError};
 

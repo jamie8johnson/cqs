@@ -450,9 +450,10 @@ src/
     query.rs    - Query normalization for training pairs
   serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
     mod.rs      - run_server, build_router, server wiring
-    handlers.rs - axum route handlers (search, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
+    handlers.rs - axum route handlers (search, search_legs, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
+    daemon_client.rs - Synchronous client of the retrieval daemon socket; `/api/search_legs` (SPLADE-fusion inspector) forwards to the daemon rather than loading the embedder/index into the web process
     data.rs     - Wire-format types + builders for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention); wire-shaping only — SQL lives in store/serve_queries.rs
-    error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses
+    error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses (incl. 503 ServiceUnavailable for daemon-down mechanism mode)
     assets.rs   - Static assets baked into the binary via `include_str!` (index.html + app.css + app.js; no request-time filesystem reads)
     auth.rs     - Per-launch auth token: 256-bit URL-safe base64, constant-time compare, Bearer/cookie/?token= surfaces (#1118 / SEC-7)
     tests.rs    - Router + auth integration tests (test_router_with_auth helper, host allowlist, gzip)

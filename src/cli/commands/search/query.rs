@@ -1058,6 +1058,128 @@ fn run_project_search<Mode>(
     }
 }
 
+// ─── SPLADE-leg inspector (search_legs) ─────────────────────────────────────
+//
+// The mechanism-mode surface: surface the three pre-fusion retrieval legs
+// (dense cosine, sparse SPLADE, fused) for a query, reusing the SAME query
+// preparation (`prepare_query`) the production search uses, then calling
+// `Store::search_hybrid_legs`. `search_legs_core` is the surface-agnostic core;
+// the daemon `dispatch_search_legs` adapter is the thin wrapper over it.
+
+/// Chunk metadata returned alongside the legs so a consumer can resolve a leg's
+/// `chunk_id` to a path/name/line range without a second query. Mirrors the
+/// fields the inspector needs from a `SearchResult`'s [`cqs::store::ChunkSummary`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct LegChunkMeta {
+    /// Chunk ID (joins to `dense`/`sparse`/`fused` leg entries by `chunk_id`).
+    pub chunk_id: String,
+    /// Source file path (forward-slash normalized, as stored).
+    #[serde(serialize_with = "cqs::serialize_path_normalized")]
+    pub file: std::path::PathBuf,
+    /// Function/struct/etc. name.
+    pub name: String,
+    /// 1-indexed start line.
+    pub line_start: u32,
+    /// 1-indexed end line.
+    pub line_end: u32,
+}
+
+/// Output of [`search_legs_core`]: the three pre-fusion legs plus per-chunk
+/// metadata for the final result set.
+///
+/// `legs` is `None` when the SPLADE fusion path did not run for this query
+/// (SPLADE could not be enabled — e.g. no SPLADE index built, or the query
+/// short-circuited to FTS-by-name before embedding). The inspector treats a
+/// `None` as "mechanism view unavailable for this query", distinct from an
+/// empty-but-present leg set.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct SearchLegsOutput {
+    /// Echo of the resolved query string.
+    pub query: String,
+    /// The three pre-fusion legs, or `None` when fusion did not run.
+    pub legs: Option<cqs::search::SearchLegs>,
+    /// Chunk metadata for the final ranked result set (path/name/lines), in
+    /// final-rank order.
+    pub results: Vec<LegChunkMeta>,
+}
+
+/// Surface-agnostic core for the SPLADE-leg inspector.
+///
+/// Forces SPLADE on (`args.splade = true` is the caller's responsibility — the
+/// adapter sets it), runs the shared [`prepare_query`] prelude so the embedding,
+/// SPLADE encoding, filter, and base-index selection are byte-identical to the
+/// production search, then calls [`cqs::Store::search_hybrid_legs`] to capture
+/// the three legs WITHOUT changing the fused result.
+///
+/// Returns `legs: None` (with the dense-only results still populated) when the
+/// query short-circuited before fusion or the project surface resolved no
+/// SPLADE index — the three-leg view is only defined when fusion ran.
+pub(crate) fn search_legs_core(
+    ctx: &dyn search_ctx::SearchCtx,
+    args: &QueryArgs,
+) -> Result<SearchLegsOutput> {
+    let _span = tracing::info_span!("search_legs_core", query_len = args.query.len()).entered();
+
+    let prepared = match prepare_query(ctx, args, ProjectSurface::Resolve)? {
+        // FTS-by-name short-circuited before any embedding/fusion ran: there is
+        // no dense or sparse leg to surface. Return the results with no legs.
+        Prepared::ShortCircuit(results) => {
+            return Ok(SearchLegsOutput {
+                query: args.query.clone(),
+                legs: None,
+                results: leg_chunk_meta(&results),
+            });
+        }
+        Prepared::Dense(p) => p,
+    };
+
+    let splade_arg = prepared
+        .splade_index
+        .as_deref()
+        .zip(prepared.splade_query.as_ref());
+
+    let (code_results, legs) = ctx.store().search_hybrid_legs(
+        &prepared.query_embedding,
+        &prepared.filter,
+        prepared.search_limit,
+        args.threshold,
+        prepared.index.as_deref(),
+        splade_arg,
+    )?;
+
+    if legs.is_none() {
+        // SPLADE was not active for this query (no index resolved on the project
+        // surface, or the filter disabled it). The dense-only results still come
+        // back; the inspector reports "no fusion" via the `None` legs.
+        tracing::debug!("search_legs: SPLADE fusion did not run; returning dense-only results");
+    }
+
+    let results: Vec<UnifiedResult> = code_results.into_iter().map(UnifiedResult::Code).collect();
+    Ok(SearchLegsOutput {
+        query: args.query.clone(),
+        legs,
+        results: leg_chunk_meta(&results),
+    })
+}
+
+/// Project a result set into the per-chunk metadata the inspector joins to the
+/// leg entries by `chunk_id`.
+fn leg_chunk_meta(results: &[UnifiedResult]) -> Vec<LegChunkMeta> {
+    results
+        .iter()
+        .map(|r| {
+            let UnifiedResult::Code(sr) = r;
+            LegChunkMeta {
+                chunk_id: sr.chunk.id.clone(),
+                file: sr.chunk.file.clone(),
+                name: sr.chunk.name.clone(),
+                line_start: sr.chunk.line_start,
+                line_end: sr.chunk.line_end,
+            }
+        })
+        .collect()
+}
+
 // ─── Multi-store fan-out (the seam) ─────────────────────────────────────────
 //
 // The same prepared query that drives the single-store project path also drives

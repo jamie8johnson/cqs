@@ -3,10 +3,10 @@
 use anyhow::{bail, Result};
 
 use super::super::BatchView;
-use crate::cli::args::SearchArgs;
+use crate::cli::args::{SearchArgs, SearchLegsArgs};
 use crate::cli::commands::search::query::{
-    merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped, Prepared,
-    ProjectSurface, QueryArgs,
+    merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped,
+    search_legs_core, Prepared, ProjectSurface, QueryArgs,
 };
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
@@ -265,6 +265,95 @@ pub(in crate::cli::batch) fn dispatch_search(
 
     let origins = result_origins(&output.results);
     attach_stale_origins_meta(ctx, args, &origins, &mut value);
+    Ok(value)
+}
+
+/// Build the surface-agnostic [`QueryArgs`] for the SPLADE-leg inspector from
+/// the wire [`SearchLegsArgs`].
+///
+/// Forces `splade = true` (the inspector's whole point is fusion) and mirrors
+/// the daemon search posture (`always_route = true`, `fts_first = false`) so the
+/// query preparation — embedding, SPLADE encoding, filter, base-index selection
+/// — is the same one `dispatch_search` would run. Token packing / parent
+/// expansion / overlay are off: the legs describe raw retrieval, not the packed
+/// final view.
+fn legs_query_args(args: &SearchLegsArgs) -> QueryArgs {
+    QueryArgs {
+        query: args.query.clone(),
+        limit: args.limit_arg.limit.clamp(1, SEARCH_LIMIT_CAP),
+        name_only: false,
+        lang: args.lang.clone(),
+        include_type: args.include_type.clone(),
+        exclude_type: args.exclude_type.clone(),
+        path: args.path.clone(),
+        pattern: None,
+        include_docs: false,
+        rrf: false,
+        rerank: false,
+        // Force SPLADE on — the inspector exists to show the fusion legs.
+        splade: true,
+        splade_alpha: args.splade_alpha,
+        threshold: args.threshold,
+        name_boost: 0.2,
+        no_demote: false,
+        tokens: None,
+        expand_parent: false,
+        force_base_index: std::env::var("CQS_FORCE_BASE_INDEX").as_deref() == Ok("1"),
+        json_overhead: 0,
+        always_route: true,
+        fts_first: false,
+        // The legs are the side channel; per-result rank_signals are not needed
+        // for the mechanism view and would only add cost to the final scoring.
+        record_rank_signals: false,
+        overlay: false,
+    }
+}
+
+/// Validate the legs filter args, reusing the search filter validation by
+/// projecting `SearchLegsArgs` onto the fields it checks.
+fn validate_legs_filter_args(args: &SearchLegsArgs) -> Result<()> {
+    if let Some(l) = &args.lang {
+        l.parse::<cqs::parser::Language>()
+            .map_err(|_| anyhow::anyhow!("Invalid language '{}'", l))?;
+    }
+    if let Some(types) = &args.include_type {
+        let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
+            types.iter().map(|t| t.parse()).collect();
+        parsed.map_err(|e| anyhow::anyhow!("Invalid --include-type: {e}"))?;
+    }
+    if let Some(types) = &args.exclude_type {
+        let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
+            types.iter().map(|t| t.parse()).collect();
+        parsed.map_err(|e| anyhow::anyhow!("Invalid --exclude-type: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Dispatches the `search-legs` SPLADE-fusion inspector and returns the three
+/// pre-fusion legs (dense / sparse / fused) plus per-chunk metadata as JSON.
+///
+/// A thin adapter over [`search_legs_core`]: it validates the filter flags at
+/// the wire boundary (same fast-fail contract as `dispatch_search`), maps the
+/// wire [`SearchLegsArgs`] onto a `splade`-forced [`QueryArgs`], runs the core
+/// through the [`BatchView`] `SearchCtx` impl, and serializes the typed
+/// [`crate::cli::commands::search::query::SearchLegsOutput`] verbatim.
+///
+/// # Errors
+/// Returns an error if a filter flag is invalid, the embedder cannot be
+/// initialized, query embedding/encoding fails, or a store operation fails.
+pub(in crate::cli::batch) fn dispatch_search_legs(
+    ctx: &BatchView,
+    args: &SearchLegsArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_search_legs", query = %args.query).entered();
+
+    validate_legs_filter_args(args)?;
+
+    let qargs = legs_query_args(args);
+    let output = search_legs_core(ctx, &qargs)?;
+
+    let value = serde_json::to_value(&output)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize search-legs output: {e}"))?;
     Ok(value)
 }
 
@@ -634,6 +723,90 @@ mod tests {
             BatchCmd::Search { args, .. } => args,
             other => panic!("Expected Search, got {:?}", other),
         }
+    }
+
+    /// Parse a `SearchLegsArgs` through the same clap pipeline the daemon runs.
+    fn parse_search_legs_args(cli_args: &[&str]) -> crate::cli::args::SearchLegsArgs {
+        let mut full = vec!["search-legs"];
+        full.extend_from_slice(cli_args);
+        let input = BatchInput::try_parse_from(&full).expect("clap parse failed");
+        match input.cmd {
+            BatchCmd::SearchLegs { args, .. } => args,
+            other => panic!("Expected SearchLegs, got {:?}", other),
+        }
+    }
+
+    /// Wire round-trip: the `search-legs` verb parses to `BatchCmd::SearchLegs`
+    /// with the query, `k`, and SPLADE-α threaded through. Pins the registry
+    /// mapping — a missing/misnamed verb row is the bug class here.
+    #[test]
+    fn search_legs_verb_parses_from_wire_tokens() {
+        let args =
+            parse_search_legs_args(&["error handling", "--limit", "7", "--splade-alpha", "0.3"]);
+        assert_eq!(args.query, "error handling");
+        assert_eq!(args.limit_arg.limit, 7);
+        assert_eq!(args.splade_alpha, Some(0.3));
+    }
+
+    /// The verb appears in the dispatch table's command-name set (so the
+    /// exhaustive macro routed it) and is NOT pipeable (query-based).
+    #[test]
+    fn search_legs_verb_is_registered_and_not_pipeable() {
+        let cmd = BatchInput::try_parse_from(["search-legs", "q"])
+            .expect("clap parse")
+            .cmd;
+        assert_eq!(cmd.command_name(), "search-legs");
+        assert!(
+            !cmd.is_pipeable(),
+            "search-legs is query-based, not function-name-piped"
+        );
+    }
+
+    /// Full daemon round-trip through `dispatch_search_legs` with a real
+    /// embedder but NO SPLADE index built: the query embeds, fusion does not run
+    /// (no sparse index), so the envelope carries `legs: null` and a `results`
+    /// array. Exercises the whole adapter → core → store path. Skipped when the
+    /// embedder can't init (CI-without-model).
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn search_legs_dispatch_round_trip_no_splade_returns_null_legs() {
+        let embedder = match cqs::Embedder::new_cpu(cqs::embedder::ModelConfig::resolve(None, None))
+        {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping search-legs round-trip: embedder init failed: {e}");
+                return;
+            }
+        };
+
+        let (_dir, ctx) = ctx_with_chunks(vec![make_chunk(
+            "src/lib.rs:1:legs0001",
+            "src/lib.rs",
+            Language::Rust,
+            ChunkType::Function,
+            "parse_config",
+            "fn parse_config(path: &str) -> Config",
+            "fn parse_config(path: &str) -> Config { Config::load(path) }",
+        )]);
+        assert!(
+            ctx.adopt_embedder(std::sync::Arc::new(embedder)),
+            "embedder slot must be empty"
+        );
+
+        let args = parse_search_legs_args(&["parse configuration", "--limit", "5"]);
+        let json = dispatch_search_legs(&ctx.build_view(None), &args)
+            .expect("dispatch_search_legs failed");
+
+        assert_eq!(json["query"], "parse configuration");
+        // No SPLADE index in this corpus, so fusion did not run.
+        assert!(
+            json["legs"].is_null(),
+            "legs must be null when SPLADE fusion did not run; got {json}"
+        );
+        assert!(
+            json["results"].is_array(),
+            "results must be present even with no fusion; got {json}"
+        );
     }
 
     /// Exact-name `--name-only` query returns the matching chunk as the *top*

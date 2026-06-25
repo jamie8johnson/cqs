@@ -26,6 +26,13 @@ pub enum ServeError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// A required upstream is down — e.g. mechanism mode (`/api/search_legs`)
+    /// when the retrieval daemon socket is absent or unresponsive. Renders 503
+    /// so the client distinguishes "transiently unavailable, retry after
+    /// starting the daemon" from a 4xx/5xx.
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 #[derive(Serialize)]
@@ -39,6 +46,9 @@ impl IntoResponse for ServeError {
         let (status, code) = match &self {
             ServeError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             ServeError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
+            ServeError::ServiceUnavailable(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
+            }
             ServeError::Store(_) | ServeError::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
             }

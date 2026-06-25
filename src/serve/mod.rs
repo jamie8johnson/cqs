@@ -40,6 +40,7 @@ use crate::store::{ReadOnly, Store};
 
 mod assets;
 mod auth;
+mod daemon_client;
 mod data;
 mod error;
 mod handlers;
@@ -71,6 +72,12 @@ pub(crate) struct AppState {
     pub(crate) store: Arc<Store<ReadOnly>>,
     pub(crate) blocking_permits: Arc<tokio::sync::Semaphore>,
     pub(crate) last_request_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// Path to the retrieval daemon's Unix socket (the SAME socket the CLI
+    /// connects to). `/api/search_legs` is a CLIENT of this socket — the serve
+    /// process holds no embedder / vector index / SPLADE index, so mechanism
+    /// mode forwards the query to the daemon and returns its three legs. `None`
+    /// when no socket path was resolved (legs mode then always 503s).
+    pub(crate) daemon_socket: Option<Arc<std::path::PathBuf>>,
 }
 
 /// Allowed `Host` header values, built at router-build time from the
@@ -109,6 +116,7 @@ pub fn run_server(
     bind_addr: SocketAddr,
     quiet: bool,
     auth: AuthMode,
+    daemon_socket: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
@@ -123,6 +131,7 @@ pub fn run_server(
         store: Arc::new(store),
         blocking_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         last_request_epoch: Arc::clone(&last_request_epoch),
+        daemon_socket: daemon_socket.map(Arc::new),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
     let idle_minutes = crate::limits::serve_idle_minutes();
@@ -371,6 +380,7 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         .route("/api/hierarchy/{id}", get(handlers::hierarchy))
         .route("/api/embed/2d", get(handlers::cluster_2d))
         .route("/api/search", get(handlers::search))
+        .route("/api/search_legs", get(handlers::search_legs))
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state);

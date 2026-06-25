@@ -25,6 +25,188 @@ use super::scoring::{
 };
 use super::synonyms::expand_query_for_fts;
 
+/// One chunk's position in the dense (cosine) retrieval leg of SPLADE fusion.
+///
+/// `raw_cosine` is the un-normalized cosine the vector index reported. NOTE the
+/// honest fusion semantics (see [`SearchLegs`]): the dense leg is NOT scaled
+/// before fusion, so this value lives in cosine `[-1, 1]`, not `[0, 1]`.
+///
+/// `present_in_pool` distinguishes "the dense retriever returned this chunk and
+/// it ranked low" (`true`) from "the dense retriever never retrieved this chunk;
+/// fusion injected `raw_cosine = 0.0` for it" (`false`). A chunk found only by
+/// the sparse leg appears here with `present_in_pool = false`, `raw_cosine =
+/// 0.0`, and `rank = 0` — its dense state is *absent*, not *zero-similarity*.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DenseLegEntry {
+    /// Chunk ID (matches `Store` chunk IDs and the other legs' `chunk_id`).
+    pub chunk_id: String,
+    /// Un-normalized cosine in `[-1, 1]` when present; `0.0` (injected) when not.
+    pub raw_cosine: f32,
+    /// 1-indexed rank within the dense pool when present; `0` when absent
+    /// (`rank == 0` iff `present_in_pool == false`).
+    pub rank: usize,
+    /// Whether the dense retriever actually returned this chunk.
+    pub present_in_pool: bool,
+}
+
+/// One chunk's position in the sparse (SPLADE) retrieval leg of SPLADE fusion.
+///
+/// Carries BOTH the value fusion uses and the raw measurement:
+/// - `minmax_score` is the query-relative min-max normalization
+///   (`raw_splade_dot / max_sparse`) in `[0, 1]` — the value that enters the
+///   fusion sum. `max_sparse` is the maximum dot over THIS query's sparse pool,
+///   so the same chunk can normalize differently across queries.
+/// - `raw_splade_dot` is the un-normalized query·document SPLADE dot product —
+///   stable across queries, which token-attribution inspection needs (the
+///   min-max value is query-relative and not comparable across runs).
+///
+/// `present_in_pool` has the same meaning as on [`DenseLegEntry`]: `false`
+/// marks a chunk the sparse retriever never returned (both scores injected
+/// `0.0`, `rank = 0`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SparseLegEntry {
+    /// Chunk ID (matches `Store` chunk IDs and the other legs' `chunk_id`).
+    pub chunk_id: String,
+    /// Query-relative min-max normalized score in `[0, 1]` (the fused value).
+    pub minmax_score: f32,
+    /// Un-normalized SPLADE dot product (stable across queries).
+    pub raw_splade_dot: f32,
+    /// 1-indexed rank within the sparse pool when present; `0` when absent
+    /// (`rank == 0` iff `present_in_pool == false`).
+    pub rank: usize,
+    /// Whether the sparse retriever actually returned this chunk.
+    pub present_in_pool: bool,
+}
+
+/// One chunk's position in the fused (final pre-truncation) ranking.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FusedLegEntry {
+    /// Chunk ID (matches `Store` chunk IDs and the other legs' `chunk_id`).
+    pub chunk_id: String,
+    /// The fused score `score = α·dense_raw_cosine + (1−α)·sparse_minmax`.
+    pub fused_score: f32,
+    /// 1-indexed rank in the fused ranking.
+    pub rank: usize,
+}
+
+/// The three pre-fusion retrieval legs surfaced for the SPLADE inspector.
+///
+/// HONEST FUSION SEMANTICS (the inspector must present these, not hide them):
+/// the fused score is
+/// `α·dense_raw_cosine([-1, 1]) + (1−α)·sparse_minmax([0, 1])`. The two legs
+/// are on ASYMMETRIC scales — the dense leg is the raw cosine and is NOT
+/// normalized, while the sparse leg is min-max normalized to `[0, 1]` using a
+/// `max_sparse` that is computed per-query (so a chunk's `minmax_score` is not
+/// comparable across queries; its `raw_splade_dot` is). `α = filter.splade_alpha`.
+///
+/// `dense` and `sparse` are each built over the UNION of candidate IDs from
+/// both legs (sorted by their own leg's rank, present entries first), so a
+/// consumer can align all three arrays by `chunk_id` and read, per chunk,
+/// whether each leg retrieved it (`present_in_pool`) and at what raw score.
+/// `fused` is the post-sort, post-truncate ranking the final result list is
+/// built from — `fused[i].chunk_id` is the i-th candidate fusion produced.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchLegs {
+    /// Dense (cosine) leg over the candidate union.
+    pub dense: Vec<DenseLegEntry>,
+    /// Sparse (SPLADE) leg over the candidate union.
+    pub sparse: Vec<SparseLegEntry>,
+    /// Fused leg: the final pre-truncation ranking.
+    pub fused: Vec<FusedLegEntry>,
+}
+
+/// Build the three [`SearchLegs`] from the in-flight fusion state.
+///
+/// Called only on the `capture_legs` path of `search_hybrid_inner`, so its
+/// allocations never touch the production hot path. Every input is borrowed
+/// from data the fusion already computed; this function only reshapes it into
+/// the leg structs (no re-retrieval, no re-scoring).
+///
+/// `dense_results` / `sparse_results` are each already sorted by their leg's
+/// score descending (the vector index and `BoundedScoreHeap::into_sorted_vec`
+/// respectively), so the enumeration index is the 1-indexed leg rank. `fused`
+/// is the sorted-and-truncated fused ranking.
+fn build_search_legs(
+    dense_results: &[crate::index::IndexResult],
+    dense_scores: &std::collections::HashMap<&str, f32>,
+    sparse_results: &[crate::index::IndexResult],
+    sparse_scores: &std::collections::HashMap<&str, f32>,
+    max_sparse: f32,
+    all_ids: &[&str],
+    fused: &[crate::index::IndexResult],
+) -> SearchLegs {
+    // Per-leg rank maps from the already-sorted result vecs. Insertion-order
+    // dedup (`or_insert`) keeps the first (best-ranked) occurrence, matching
+    // the `sparse_ranks` convention used by the rank-signals recorder.
+    let mut dense_rank: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(dense_results.len());
+    for (i, r) in dense_results.iter().enumerate() {
+        dense_rank.entry(r.id.as_str()).or_insert(i + 1);
+    }
+    // Raw SPLADE dot per id (un-normalized). `sparse_scores` holds the min-max
+    // value; the raw dot lives on `sparse_results.score`.
+    let mut sparse_rank: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(sparse_results.len());
+    let mut sparse_raw: std::collections::HashMap<&str, f32> =
+        std::collections::HashMap::with_capacity(sparse_results.len());
+    for (i, r) in sparse_results.iter().enumerate() {
+        if sparse_rank.insert(r.id.as_str(), i + 1).is_none() {
+            sparse_raw.insert(r.id.as_str(), r.score);
+        }
+    }
+
+    // Dense + sparse legs over the candidate union, in `all_ids` order (dense
+    // pool first, then sparse-only — the same deterministic order fusion used).
+    let mut dense = Vec::with_capacity(all_ids.len());
+    let mut sparse = Vec::with_capacity(all_ids.len());
+    for &id in all_ids {
+        let dense_present = dense_scores.contains_key(id);
+        dense.push(DenseLegEntry {
+            chunk_id: id.to_string(),
+            // Mirrors the fusion `unwrap_or(0.0)`: absent ⇒ injected zero.
+            raw_cosine: dense_scores.get(id).copied().unwrap_or(0.0),
+            rank: dense_rank.get(id).copied().unwrap_or(0),
+            present_in_pool: dense_present,
+        });
+        let sparse_present = sparse_scores.contains_key(id);
+        sparse.push(SparseLegEntry {
+            chunk_id: id.to_string(),
+            minmax_score: sparse_scores.get(id).copied().unwrap_or(0.0),
+            raw_splade_dot: sparse_raw.get(id).copied().unwrap_or(0.0),
+            rank: sparse_rank.get(id).copied().unwrap_or(0),
+            present_in_pool: sparse_present,
+        });
+    }
+
+    // Sort each leg so present entries lead in rank order; absent entries
+    // (rank 0) sink to the tail keeping `all_ids` order among themselves. This
+    // makes the array directly readable as "the leg's ranking, then the chunks
+    // the other leg contributed".
+    dense.sort_by_key(|e| if e.rank == 0 { usize::MAX } else { e.rank });
+    sparse.sort_by_key(|e| if e.rank == 0 { usize::MAX } else { e.rank });
+
+    let fused_leg = fused
+        .iter()
+        .enumerate()
+        .map(|(i, r)| FusedLegEntry {
+            chunk_id: r.id.clone(),
+            fused_score: r.score,
+            rank: i + 1,
+        })
+        .collect();
+
+    // `max_sparse` is referenced for documentation parity with the fusion math;
+    // the normalized values are already in `sparse_scores`. Keep the param so
+    // the signature names the query-relative normalizer the doc comment cites.
+    let _ = max_sparse;
+
+    SearchLegs {
+        dense,
+        sparse,
+        fused: fused_leg,
+    }
+}
+
 /// Resolve the type-boost factor used by `finalize_results` Step 4b.
 ///
 /// Multiplicative boost applied to chunks whose type matches the
@@ -581,17 +763,81 @@ impl<Mode> Store<Mode> {
             &crate::splade::SparseVector,
         )>,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        // Thin wrapper: production callers never pay for leg capture. The legs
+        // arm allocates nothing when `capture_legs == false`, so the fused
+        // result this returns is byte-for-byte the historical output.
+        let (results, _legs) =
+            self.search_hybrid_inner(query, filter, limit, threshold, index, splade, false)?;
+        Ok(results)
+    }
+
+    /// Like [`Self::search_hybrid`], but additionally surfaces the three
+    /// pre-fusion retrieval legs (dense cosine, sparse SPLADE, fused) for the
+    /// SPLADE inspector, WITHOUT changing the fused result.
+    ///
+    /// Returns `(results, Some(legs))` when the SPLADE fusion path actually
+    /// ran, and `(results, None)` when it short-circuited to dense-only
+    /// retrieval (SPLADE disabled in the filter, or no SPLADE index supplied) —
+    /// the three-leg view is only meaningful when fusion happened, so the
+    /// `None` is honest rather than a synthesized degenerate leg set.
+    ///
+    /// The `results` returned here are identical to what
+    /// [`Self::search_hybrid`] returns for the same arguments; the legs are a
+    /// pure side channel captured during fusion.
+    pub fn search_hybrid_legs(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        index: Option<&dyn VectorIndex>,
+        splade: Option<(
+            &crate::splade::index::SpladeIndex,
+            &crate::splade::SparseVector,
+        )>,
+    ) -> Result<(Vec<SearchResult>, Option<SearchLegs>), StoreError> {
+        self.search_hybrid_inner(query, filter, limit, threshold, index, splade, true)
+    }
+
+    /// Shared body for [`Self::search_hybrid`] and [`Self::search_hybrid_legs`].
+    ///
+    /// `capture_legs` gates EVERY leg allocation: when `false` the function
+    /// runs the exact historical fusion code and returns `None` legs, so the
+    /// production hot path (`search_hybrid`) is unchanged. When `true` it
+    /// additionally materializes the three pre-fusion rankings during the same
+    /// fusion pass — so the captured `fused` leg is, by construction, the same
+    /// ranking the result list is built from, not a parallel recomputation.
+    #[allow(clippy::too_many_arguments)]
+    fn search_hybrid_inner(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        index: Option<&dyn VectorIndex>,
+        splade: Option<(
+            &crate::splade::index::SpladeIndex,
+            &crate::splade::SparseVector,
+        )>,
+        capture_legs: bool,
+    ) -> Result<(Vec<SearchResult>, Option<SearchLegs>), StoreError> {
         // The "not enabled OR no index" guard and the `splade` unwrap collapse
         // into a single match so the unwrap branch is structurally impossible.
+        // The dense-only fallbacks carry `None` legs: the three-leg view is
+        // only defined when SPLADE fusion ran.
         let (splade_index, sparse_query) = match (filter.enable_splade, splade) {
             (false, _) => {
-                return self.search_filtered_with_index(query, filter, limit, threshold, index);
+                let results =
+                    self.search_filtered_with_index(query, filter, limit, threshold, index)?;
+                return Ok((results, None));
             }
             (true, None) => {
                 tracing::debug!(
                     "SPLADE requested but index unavailable, falling back to dense-only search"
                 );
-                return self.search_filtered_with_index(query, filter, limit, threshold, index);
+                let results =
+                    self.search_filtered_with_index(query, filter, limit, threshold, index)?;
+                return Ok((results, None));
             }
             (true, Some(s)) => s,
         };
@@ -778,6 +1024,26 @@ impl<Mode> Store<Mode> {
             fused_map.insert(r.id.clone(), r.score);
         }
 
+        // Capture the three pre-fusion legs for the SPLADE inspector. Gated
+        // entirely behind `capture_legs`: when false NOTHING below this point
+        // allocates, so the fused result the production path returns is
+        // byte-identical. The legs are built from the SAME `dense_results`,
+        // `sparse_results`, `max_sparse`, and `fused` the fusion just used, so
+        // they describe the exact ranking the result list is derived from.
+        let legs = if capture_legs {
+            Some(build_search_legs(
+                &dense_results,
+                &dense_scores,
+                &sparse_results,
+                &sparse_scores,
+                max_sparse,
+                &all_ids,
+                &fused,
+            ))
+        } else {
+            None
+        };
+
         // Capture the sparse leg's per-result rank for the `rank_signals`
         // recorder. `sparse_results` is already sorted by sparse score
         // descending (BoundedScoreHeap::into_sorted_vec), so the enumeration
@@ -795,7 +1061,7 @@ impl<Mode> Store<Mode> {
             None
         };
 
-        self.search_by_candidate_ids_with_notes(
+        let results = self.search_by_candidate_ids_with_notes(
             &candidate_ids,
             query,
             filter,
@@ -804,7 +1070,8 @@ impl<Mode> Store<Mode> {
             &notes,
             Some(&fused_map),
             sparse_ranks,
-        )
+        )?;
+        Ok((results, legs))
     }
 
     pub fn search_filtered_with_index(

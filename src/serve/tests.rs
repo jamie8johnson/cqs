@@ -95,6 +95,9 @@ fn fixture_state() -> Fixture {
             // handler shape, not the wall-clock-driven eviction future, so
             // any starting value is fine.
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            // No daemon socket in the handler-shape tests — mechanism mode
+            // (`/api/search_legs`) is exercised by its own dedicated tests.
+            daemon_socket: None,
         }),
         _dir: Some(dir),
     }
@@ -234,6 +237,9 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
             // handler shape, not the wall-clock-driven eviction future, so
             // any starting value is fine.
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            // No daemon socket in the handler-shape tests — mechanism mode
+            // (`/api/search_legs`) is exercised by its own dedicated tests.
+            daemon_socket: None,
         }),
         _dir: Some(dir),
     }
@@ -315,6 +321,9 @@ fn single_chunk_fixture(content: &str, vendored: bool) -> (Fixture, String) {
                 crate::limits::serve_blocking_permits(),
             )),
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            // No daemon socket in the handler-shape tests — mechanism mode
+            // (`/api/search_legs`) is exercised by its own dedicated tests.
+            daemon_socket: None,
         }),
         _dir: Some(dir),
     };
@@ -1600,6 +1609,156 @@ async fn host_allowlist_rejects_missing_host_header() {
         body.contains("Host"),
         "rejection body should mention Host, got {body:?}"
     );
+}
+
+// ===== /api/search_legs (mechanism mode) — daemon-client forwarding =====
+//
+// `/api/search_legs` holds NO retrieval stack in the serve process — it is a
+// client of the retrieval daemon socket. These pin: (1) a clean 503 with the
+// "requires `cqs watch --serve`" hint when the daemon is absent, and (2) that
+// a present daemon's three-leg response is forwarded verbatim.
+
+/// A `Fixture` whose `AppState.daemon_socket` points at `socket`.
+fn fixture_state_with_socket(socket: std::path::PathBuf) -> Fixture {
+    let mut fixture = fixture_state();
+    let mut state = fixture.state.take().expect("fixture state");
+    state.daemon_socket = Some(Arc::new(socket));
+    fixture.state = Some(state);
+    fixture
+}
+
+/// Spawn a one-shot fake daemon on `socket`: accept a single connection, read
+/// the request line, hand it to `responder`, and write the response line back.
+/// Returns the join handle (carrying the parsed request for assertions).
+fn spawn_fake_daemon(
+    socket: std::path::PathBuf,
+    response: serde_json::Value,
+) -> std::thread::JoinHandle<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind(&socket).expect("bind fake daemon socket");
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read request");
+        let request: serde_json::Value =
+            serde_json::from_str(line.trim()).expect("parse request JSON");
+        let mut w = &stream;
+        writeln!(w, "{response}").expect("write response");
+        w.flush().expect("flush");
+        request
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_legs_503_when_no_daemon_socket() {
+    let fixture = fixture_state(); // daemon_socket: None
+    let state = fixture.state();
+    let app = test_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search_legs?q=parse+config&k=5")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let body = std::str::from_utf8(&bytes).expect("utf8");
+    assert!(
+        body.contains("cqs watch --serve"),
+        "503 body must name the fix; got {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_legs_503_when_socket_path_absent() {
+    let dir = TempDir::new().expect("tempdir");
+    let socket = dir.path().join("nonexistent.sock");
+    let fixture = fixture_state_with_socket(socket);
+    let state = fixture.state();
+    let app = test_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search_legs?q=foo")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_legs_forwards_daemon_legs_response() {
+    let dir = TempDir::new().expect("tempdir");
+    let socket = dir.path().join("daemon.sock");
+
+    // The fake daemon returns a minimal three-leg payload as the `output`.
+    let legs_payload = serde_json::json!({
+        "query": "parse config",
+        "legs": {
+            "dense":  [{"chunk_id": "A", "raw_cosine": 0.9, "rank": 1, "present_in_pool": true}],
+            "sparse": [{"chunk_id": "A", "minmax_score": 1.0, "raw_splade_dot": 0.5, "rank": 1, "present_in_pool": true}],
+            "fused":  [{"chunk_id": "A", "fused_score": 0.7, "rank": 1}]
+        },
+        "results": [{"chunk_id": "A", "file": "src/lib.rs", "name": "parse_config", "line_start": 1, "line_end": 5}]
+    });
+    let daemon_response = serde_json::json!({"status": "ok", "output": legs_payload});
+
+    let handle = spawn_fake_daemon(socket.clone(), daemon_response);
+    // Give the listener a moment to bind before the request connects.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let fixture = fixture_state_with_socket(socket);
+    let state = fixture.state();
+    let app = test_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search_legs?q=parse+config&k=5&splade_alpha=0.4")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse body JSON");
+
+    // The handler forwards the daemon's `output` verbatim — the three legs are
+    // present at the top level of the response body.
+    assert_eq!(body["query"], "parse config");
+    assert!(body["legs"]["dense"].is_array(), "dense leg forwarded");
+    assert!(body["legs"]["sparse"].is_array(), "sparse leg forwarded");
+    assert!(body["legs"]["fused"].is_array(), "fused leg forwarded");
+    assert_eq!(body["legs"]["sparse"][0]["raw_splade_dot"], 0.5);
+
+    // The daemon saw the right verb + forwarded query/k/α args.
+    let request = handle.join().expect("fake daemon join");
+    assert_eq!(request["command"], "search-legs");
+    let args: Vec<String> = request["args"]
+        .as_array()
+        .expect("args array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(args[0], "parse config");
+    assert!(args.contains(&"--limit".to_string()) && args.contains(&"5".to_string()));
+    assert!(args.contains(&"--splade-alpha".to_string()) && args.contains(&"0.4".to_string()));
 }
 
 // ===== per-launch auth token integration tests =====

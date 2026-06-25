@@ -35,7 +35,7 @@ pub(super) use misc::{
     dispatch_ping, dispatch_plan, dispatch_reconcile, dispatch_refresh, dispatch_scout,
     dispatch_status, dispatch_task, dispatch_wait_fresh, dispatch_where,
 };
-pub(super) use search::dispatch_search;
+pub(super) use search::{dispatch_search, dispatch_search_legs};
 
 use super::BatchView;
 use anyhow::Result;
