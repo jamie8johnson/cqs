@@ -432,58 +432,62 @@ macro_rules! for_each_batch_cmd {
     ($emit:ident) => {
         $emit! {
             args_variants: {
-                // Pipeable — primary input is a function name.
-                (Blame,      dispatch_blame,        true)
-                (Callers,    dispatch_callers,      true)
-                (Callees,    dispatch_callees,      true)
-                (Deps,       dispatch_deps,         true)
-                (Explain,    dispatch_explain,      true)
-                (Similar,    dispatch_similar,      true)
-                (Impact,     dispatch_impact,       true)
-                (TestMap,    dispatch_test_map,     true)
-                (Related,    dispatch_related,      true)
-                (Scout,      dispatch_scout,        true)
+                // Pipeable — primary input is a function name. Each row is
+                // `(Variant, handler_fn, cli_name, pipeable)`; `cli_name` is
+                // the canonical surface command (matches `clap`'s subcommand
+                // name and `telemetry::describe_command`'s output), used to
+                // attribute kind-fallback telemetry to the top-level command.
+                (Blame,      dispatch_blame,        "blame",       true)
+                (Callers,    dispatch_callers,      "callers",     true)
+                (Callees,    dispatch_callees,      "callees",     true)
+                (Deps,       dispatch_deps,         "deps",        true)
+                (Explain,    dispatch_explain,      "explain",     true)
+                (Similar,    dispatch_similar,      "similar",     true)
+                (Impact,     dispatch_impact,       "impact",      true)
+                (TestMap,    dispatch_test_map,     "test-map",    true)
+                (Related,    dispatch_related,      "related",     true)
+                (Scout,      dispatch_scout,        "scout",       true)
 
                 // Not pipeable — queries, paths, git refs.
-                (Search,     dispatch_search,       false)
-                (Gather,     dispatch_gather,       false)
-                (Trace,      dispatch_trace,        false)
-                (Dead,       dispatch_dead,         false)
-                (Context,    dispatch_context,      false)
-                (Onboard,    dispatch_onboard,      false)
-                (Where,      dispatch_where,        false)
-                (Read,       dispatch_read,         false)
-                (Stale,      dispatch_stale,        false)
-                (Drift,      dispatch_drift,        false)
-                (Notes,      dispatch_notes,        false)
-                (NotesAdd,    dispatch_notes_add,    false)
-                (NotesUpdate, dispatch_notes_update, false)
-                (NotesRemove, dispatch_notes_remove, false)
-                (Index,      dispatch_index,        false)
-                (Task,       dispatch_task,         false)
-                (Review,     dispatch_review,       false)
-                (Ci,         dispatch_ci,           false)
-                (Diff,       dispatch_diff,         false)
-                (ImpactDiff, dispatch_impact_diff,  false)
-                (Plan,       dispatch_plan,         false)
-                (Suggest,    dispatch_suggest,      false)
-                (Reconcile,  dispatch_reconcile,    false)
+                (Search,     dispatch_search,       "search",      false)
+                (Gather,     dispatch_gather,       "gather",      false)
+                (Trace,      dispatch_trace,        "trace",       false)
+                (Dead,       dispatch_dead,         "dead",        false)
+                (Context,    dispatch_context,      "context",     false)
+                (Onboard,    dispatch_onboard,      "onboard",     false)
+                (Where,      dispatch_where,        "where",       false)
+                (Read,       dispatch_read,         "read",        false)
+                (Stale,      dispatch_stale,        "stale",       false)
+                (Drift,      dispatch_drift,        "drift",       false)
+                (Notes,      dispatch_notes,        "notes",       false)
+                (NotesAdd,    dispatch_notes_add,    "notes-add",    false)
+                (NotesUpdate, dispatch_notes_update, "notes-update", false)
+                (NotesRemove, dispatch_notes_remove, "notes-remove", false)
+                (Index,      dispatch_index,        "index",       false)
+                (Task,       dispatch_task,         "task",        false)
+                (Review,     dispatch_review,       "review",      false)
+                (Ci,         dispatch_ci,           "ci",          false)
+                (Diff,       dispatch_diff,         "diff",        false)
+                (ImpactDiff, dispatch_impact_diff,  "impact-diff", false)
+                (Plan,       dispatch_plan,         "plan",        false)
+                (Suggest,    dispatch_suggest,      "suggest",     false)
+                (Reconcile,  dispatch_reconcile,    "reconcile",   false)
                 // wait_secs-only — no positional function name to receive
                 // a pipe.
-                (WaitFresh,  dispatch_wait_fresh,   false)
+                (WaitFresh,  dispatch_wait_fresh,   "wait-fresh",  false)
             }
             ctx_only_variants: {
                 // Struct variants with only `output: TextJsonArgs` (no
                 // primary `args` payload). Dispatched as `handler(ctx)`.
-                (Stats,   dispatch_stats,   false)
-                (Health,  dispatch_health,  false)
-                (Gc,      dispatch_gc,      false)
+                (Stats,   dispatch_stats,   "stats",  false)
+                (Health,  dispatch_health,  "health", false)
+                (Gc,      dispatch_gc,      "gc",     false)
             }
             unit_variants: {
-                (Refresh,  dispatch_refresh,  false)
-                (Ping,     dispatch_ping,     false)
-                (Status,   dispatch_status,   false)
-                (Help,     dispatch_help,     false)
+                (Refresh,  dispatch_refresh,  "refresh", false)
+                (Ping,     dispatch_ping,     "ping",    false)
+                (Status,   dispatch_status,   "status",  false)
+                (Help,     dispatch_help,     "help",    false)
             }
         }
     };
@@ -496,9 +500,9 @@ macro_rules! for_each_batch_cmd {
 /// `test_is_pipeable_exhaustive` below double-pins this.
 macro_rules! gen_is_pipeable_impl {
     (
-        args_variants:     { $(($v:ident, $h:ident, $p:expr))* }
-        ctx_only_variants: { $(($v2:ident, $h2:ident, $p2:expr))* }
-        unit_variants:     { $(($v3:ident, $h3:ident, $p3:expr))* }
+        args_variants:     { $(($v:ident, $h:ident, $n:literal, $p:expr))* }
+        ctx_only_variants: { $(($v2:ident, $h2:ident, $n2:literal, $p2:expr))* }
+        unit_variants:     { $(($v3:ident, $h3:ident, $n3:literal, $p3:expr))* }
     ) => {
         impl BatchCmd {
             /// Whether this command accepts a piped function name as its first positional arg.
@@ -508,13 +512,45 @@ macro_rules! gen_is_pipeable_impl {
                 // not this one — `let _` arms keep them in scope without
                 // tripping the unused-ident lint.
                 match self {
-                    $(BatchCmd::$v { .. } => { let _ = stringify!($h); $p },)*
-                    $(BatchCmd::$v2 { .. } => { let _ = stringify!($h2); $p2 },)*
-                    $(BatchCmd::$v3 => { let _ = stringify!($h3); $p3 },)*
+                    $(BatchCmd::$v { .. } => { let _ = stringify!($h); let _ = $n; $p },)*
+                    $(BatchCmd::$v2 { .. } => { let _ = stringify!($h2); let _ = $n2; $p2 },)*
+                    $(BatchCmd::$v3 => { let _ = stringify!($h3); let _ = $n3; $p3 },)*
                     #[cfg(test)]
                     BatchCmd::TestSleep { .. } => false,
                 }
             }
+
+            /// Canonical surface command name for this variant — the same
+            /// string `clap` parses and `telemetry::describe_command` records
+            /// for the CLI path. Used at the dispatch chokepoint to attribute
+            /// a kind-fallback fired by an internal graph core to the
+            /// top-level command the agent actually invoked.
+            ///
+            /// `TestSleep` is a test-only fixture with no surface command; it
+            /// maps to `"test-sleep"` for completeness.
+            pub(crate) fn command_name(&self) -> &'static str {
+                match self {
+                    $(BatchCmd::$v { .. } => { let _ = stringify!($h); let _ = $p; $n },)*
+                    $(BatchCmd::$v2 { .. } => { let _ = stringify!($h2); let _ = $p2; $n2 },)*
+                    $(BatchCmd::$v3 => { let _ = stringify!($h3); let _ = $p3; $n3 },)*
+                    #[cfg(test)]
+                    BatchCmd::TestSleep { .. } => "test-sleep",
+                }
+            }
+
+            /// Every name `command_name()` can return in a test build, in
+            /// table order plus the `#[cfg(test)]` `TestSleep` fixture (which
+            /// IS a real clap subcommand under test, so the bidirectional
+            /// exhaustiveness check must account for it). Built from the SAME
+            /// table as `command_name()`, so the test reads from the one
+            /// source of truth — no second hand-maintained list to drift.
+            #[cfg(test)]
+            pub(crate) const ALL_COMMAND_NAMES: &'static [&'static str] = &[
+                $($n,)*
+                $($n2,)*
+                $($n3,)*
+                "test-sleep",
+            ];
         }
     };
 }
@@ -526,9 +562,9 @@ for_each_batch_cmd!(gen_is_pipeable_impl);
 /// has a handler.
 macro_rules! gen_dispatch_impl {
     (
-        args_variants:     { $(($v:ident, $h:ident, $p:expr))* }
-        ctx_only_variants: { $(($v2:ident, $h2:ident, $p2:expr))* }
-        unit_variants:     { $(($v3:ident, $h3:ident, $p3:expr))* }
+        args_variants:     { $(($v:ident, $h:ident, $n:literal, $p:expr))* }
+        ctx_only_variants: { $(($v2:ident, $h2:ident, $n2:literal, $p2:expr))* }
+        unit_variants:     { $(($v3:ident, $h3:ident, $n3:literal, $p3:expr))* }
     ) => {
         /// Execute a batch command and return a JSON value. The
         /// BatchCmd → handler mapping lives in `for_each_batch_cmd!`
@@ -537,25 +573,41 @@ macro_rules! gen_dispatch_impl {
         ///
         /// Takes a [`BatchView`] (snapshot of BatchContext caches built
         /// under a brief critical section).
+        ///
+        /// This is the single daemon/batch/stdin/pipeline/JSON-args dispatch
+        /// chokepoint (every surface funnels through here), so it installs the
+        /// kind-fallback origin — the top-level command name plus the served
+        /// project dir — for the duration of the handler. A graph core that
+        /// fires a fallback deeper in the same synchronous call reads it back
+        /// and attributes the fallback to this command and this project rather
+        /// than to its own sub-op name or the daemon's process cwd.
         pub(crate) fn dispatch(ctx: &BatchView, cmd: BatchCmd) -> Result<serde_json::Value> {
             let _span = tracing::debug_span!("batch_dispatch").entered();
             // Single table-driven query-log call.
             log_query_for(&cmd);
+            let _fallback_origin = crate::cli::telemetry::enter_fallback_origin(
+                cmd.command_name(),
+                &ctx.cqs_dir,
+            );
             // `output` field on each variant is intentionally dropped —
             // batch always emits JSON. Pattern-match `..` so the
             // destructure stays exhaustive even if future fields are
-            // added to a variant.
+            // added to a variant. `$n` (cli_name) is consumed by
+            // `command_name()` above, referenced here to keep the column live.
             match cmd {
                 $(BatchCmd::$v { args, .. } => {
                     let _ = $p; // keep the pipeability column referenced
+                    let _ = $n;
                     handlers::$h(ctx, &args)
                 },)*
                 $(BatchCmd::$v2 { .. } => {
                     let _ = $p2;
+                    let _ = $n2;
                     handlers::$h2(ctx)
                 },)*
                 $(BatchCmd::$v3 => {
                     let _ = $p3;
+                    let _ = $n3;
                     handlers::$h3(ctx)
                 },)*
                 #[cfg(test)]
@@ -1103,6 +1155,86 @@ mod tests {
             output: TextJsonArgs { json: false },
         };
         assert!(!dead.is_pipeable());
+    }
+
+    /// The `#[command(skip)]` variants — argv-UNreachable on the daemon
+    /// socket (their only constructor is `json_args::build_batch_cmd`, gated
+    /// behind `CQS_MCP_ENABLE_MUTATIONS`), so clap's `find_subcommand` does
+    /// NOT know them. They never fire kind-fallbacks (they're notes-mutation /
+    /// reindex commands, not graph cores), so their `command_name()` is inert
+    /// for telemetry attribution. Listed here so the exhaustiveness test below
+    /// excludes them DELIBERATELY: adding a new `#[command(skip)]` variant
+    /// forces a conscious edit to this slice, and dropping `#[command(skip)]`
+    /// from one of these (making it a real subcommand) trips the
+    /// `skip_set_is_genuinely_not_clap_subcommands` arm.
+    #[cfg(test)]
+    const CLAP_SKIPPED_COMMAND_NAMES: &[&str] =
+        &["notes-add", "notes-update", "notes-remove", "index"];
+
+    /// `command_name()` must return the canonical clap subcommand string for
+    /// EVERY argv-reachable variant — the same name
+    /// `telemetry::describe_command` records on the CLI path, so kind-fallback
+    /// telemetry buckets line up across the CLI and daemon surfaces.
+    ///
+    /// Exhaustive and bidirectional (no hand-picked spot-check):
+    /// - Every name in `BatchCmd::ALL_COMMAND_NAMES` (built from the dispatch
+    ///   table, the single source of truth) that is NOT a documented
+    ///   `#[command(skip)]` variant must resolve to a real clap subcommand.
+    ///   A renamed `cli_name` that drifts from its clap name fails here.
+    /// - Conversely, every clap subcommand must appear in
+    ///   `ALL_COMMAND_NAMES`. A new argv-reachable variant whose `cli_name`
+    ///   doesn't match its clap subcommand name fails here.
+    /// - Every skip-listed name must genuinely NOT be a clap subcommand, so
+    ///   the exclusion stays honest: lose `#[command(skip)]` and this fails.
+    #[test]
+    fn command_name_matches_clap_subcommand_exhaustively() {
+        use clap::CommandFactory;
+        use std::collections::HashSet;
+
+        let batch = BatchInput::command();
+        let skip: HashSet<&str> = CLAP_SKIPPED_COMMAND_NAMES.iter().copied().collect();
+
+        // Forward: every table name (minus skips) is a real clap subcommand.
+        let table_names: HashSet<&str> = BatchCmd::ALL_COMMAND_NAMES.iter().copied().collect();
+        for &name in BatchCmd::ALL_COMMAND_NAMES {
+            if skip.contains(name) {
+                continue;
+            }
+            assert!(
+                batch.find_subcommand(name).is_some(),
+                "BatchCmd::command_name() yields `{name}`, which is not a clap \
+                 subcommand — a `cli_name` drifted from its clap name, or the \
+                 variant should be in CLAP_SKIPPED_COMMAND_NAMES"
+            );
+        }
+
+        // Reverse: every clap subcommand is covered by a table name.
+        for sub in batch.get_subcommands() {
+            let name = sub.get_name();
+            assert!(
+                table_names.contains(name),
+                "clap subcommand `{name}` has no matching BatchCmd::command_name() \
+                 entry — a new argv-reachable variant whose cli_name doesn't match \
+                 its clap subcommand name"
+            );
+        }
+
+        // The skip-list documents a REAL exclusion: each skipped name must
+        // genuinely be absent from clap, so dropping `#[command(skip)]` from
+        // one of these variants is a conscious, test-visible change.
+        for &name in CLAP_SKIPPED_COMMAND_NAMES {
+            assert!(
+                batch.find_subcommand(name).is_none(),
+                "`{name}` is in CLAP_SKIPPED_COMMAND_NAMES but IS a clap subcommand \
+                 — it lost its `#[command(skip)]`; remove it from the skip-list"
+            );
+            // …and it must still be a real table row (the inert telemetry name
+            // exists even though clap can't reach the variant from argv).
+            assert!(
+                table_names.contains(name),
+                "skip-listed `{name}` is missing from the dispatch table"
+            );
+        }
     }
 
     /// Exhaustiveness link between the two enums the daemon-forward path

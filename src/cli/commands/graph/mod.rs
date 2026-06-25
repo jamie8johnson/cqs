@@ -101,34 +101,66 @@ pub(crate) fn detect_fallback(
 /// command fired it:
 ///
 /// - `tracing::info!` — the structured event an operator greps for, the
-///   routing-prioritization signal the audit asked for (command, name,
-///   kind, definition count).
+///   routing-prioritization signal the audit asked for (top-level command,
+///   firing sub-op, name, kind, definition count).
 /// - `telemetry::log_kind_fallback` — the durable counter `cqs telemetry`
 ///   aggregates into a per-command fallback rate (the Phase-2 routing
 ///   decision: do agents still bounce between commands). The telemetry
 ///   write self-gates on the `CQS_TELEMETRY` activation rules, so this is
 ///   a no-op when telemetry is off.
 ///
-/// The project `.cqs` dir is resolved here (rather than threaded through
-/// the surface-agnostic core signatures) because a fallback is a rare,
-/// off-the-hot-path event — the resolution cost is negligible against the
-/// SQL the command already ran, and keeping it out of the core signatures
-/// preserves their wire shape.
+/// `fallback_from` is the graph core's own sub-operation label (`callers` /
+/// `impact` / …). The *attribution* — which command to count against and
+/// which project's telemetry to write — comes from the
+/// [`telemetry::FallbackOrigin`] the dispatch boundary installed on this
+/// thread, NOT from `fallback_from` or the process cwd:
+///
+/// - The command counted (`cmd`) is the top-level command the agent
+///   invoked, so an aggregating command (`scout` / `gather` / …) that fans
+///   out to several graph cores attributes every fallback to itself — the
+///   count stays comparable to `commands[cmd]` instead of inflating the
+///   internal sub-ops the user never invoked directly. `fallback_from` is
+///   logged as a separate field so the sub-op detail survives.
+/// - The served-project `.cqs` dir comes from the origin (carried from
+///   `BatchContext` on the daemon path), not from `find_project_root()` on
+///   the process cwd — the daemon serves one project regardless of the cwd
+///   it was launched from, so a cwd-derived dir would mis-attribute the
+///   write. The core signatures stay surface-agnostic (the origin rides a
+///   thread-local, not a parameter), preserving their wire shape.
+///
+/// Fallback when no origin is installed (a direct-test call, or a future
+/// surface that forgot the guard): count against `fallback_from` and
+/// resolve the project from cwd — the historical behavior, so the recorder
+/// is never silently a no-op.
 pub(crate) fn record_kind_fallback(
     name: &str,
     kind: &'static str,
     fallback_from: &'static str,
     definitions: usize,
 ) {
-    tracing::info!(
-        command = fallback_from,
-        name,
-        kind,
-        definitions,
-        "kind-mismatch fallback fired"
-    );
-    let cqs_dir = cqs::resolve_index_dir(&crate::cli::config::find_project_root());
-    crate::cli::telemetry::log_kind_fallback(&cqs_dir, fallback_from, kind, name, definitions);
+    use crate::cli::telemetry;
+    telemetry::with_fallback_origin(|origin| {
+        let command = origin.map(|o| o.command.as_str()).unwrap_or(fallback_from);
+        tracing::info!(
+            command,
+            fallback_from,
+            name,
+            kind,
+            definitions,
+            "kind-mismatch fallback fired"
+        );
+        // Prefer the served-project dir from the origin; only re-derive from
+        // cwd when no dispatch boundary installed one.
+        let owned_dir;
+        let cqs_dir: &std::path::Path = match origin {
+            Some(o) => &o.cqs_dir,
+            None => {
+                owned_dir = cqs::resolve_index_dir(&crate::cli::config::find_project_root());
+                &owned_dir
+            }
+        };
+        telemetry::log_kind_fallback(cqs_dir, command, fallback_from, kind, name, definitions);
+    });
 }
 
 /// Map a [`KindResolution`] to the [`FallbackKind`] that drives a graph
@@ -448,6 +480,91 @@ mod tests {
         assert!(
             flags.iter().any(|f| f == "embedded-url"),
             "expected embedded-url flag, got: {flags:?}"
+        );
+    }
+
+    /// Read every `kind_fallback` event row from a project's telemetry log.
+    fn read_fallback_events(cqs_dir: &std::path::Path) -> Vec<serde_json::Value> {
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap_or_default();
+        body.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["event"] == "kind_fallback")
+            .collect()
+    }
+
+    /// Bug A: a fan-out command's internal-core fallback attributes to the
+    /// TOP-LEVEL command, not the firing sub-op. When `scout` (which fans out
+    /// to several graph cores) triggers a `callers`-core fallback, the
+    /// telemetry must bucket it under `scout` so the count stays comparable to
+    /// `commands[scout]` — a rate that can no longer exceed 100% for a
+    /// single-core invocation. `fallback_from` preserves the `callers` sub-op.
+    #[test]
+    fn fallback_attributes_to_top_level_command_not_sub_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+
+        {
+            // Simulate the dispatch boundary: the agent invoked `scout`.
+            let _origin = crate::cli::telemetry::enter_fallback_origin("scout", cqs_dir);
+            // A graph core fires its fallback tagged with its own sub-op.
+            super::record_kind_fallback("MAX", "const", "callers", 1);
+        }
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let events = read_fallback_events(cqs_dir);
+        assert_eq!(events.len(), 1, "exactly one fallback recorded");
+        assert_eq!(
+            events[0]["cmd"], "scout",
+            "fallback must bucket under the top-level command the agent invoked"
+        );
+        assert_eq!(
+            events[0]["fallback_from"], "callers",
+            "the firing sub-op is preserved as fallback_from"
+        );
+    }
+
+    /// Bug B: the recorder writes to the SERVED project (the origin's `.cqs`
+    /// dir), not the process cwd. The origin points at `served/.cqs` while the
+    /// process cwd is elsewhere; the fallback must land in `served`, leaving a
+    /// cwd-derived project untouched.
+    #[test]
+    fn fallback_writes_to_served_project_not_cwd() {
+        let served = tempfile::tempdir().unwrap();
+        let served_cqs = served.path().join(".cqs");
+        std::fs::create_dir_all(&served_cqs).unwrap();
+        std::fs::write(served_cqs.join("telemetry.jsonl"), "").unwrap();
+
+        // A second project that a cwd-derived resolution might wrongly target.
+        let other = tempfile::tempdir().unwrap();
+        let other_cqs = other.path().join(".cqs");
+        std::fs::create_dir_all(&other_cqs).unwrap();
+        std::fs::write(other_cqs.join("telemetry.jsonl"), "").unwrap();
+
+        std::env::set_var("CQS_TELEMETRY", "1");
+        {
+            // Origin names the served project explicitly.
+            let _origin = crate::cli::telemetry::enter_fallback_origin("impact", &served_cqs);
+            super::record_kind_fallback("Config", "type", "impact", 2);
+        }
+        std::env::remove_var("CQS_TELEMETRY");
+
+        // The served project got the event…
+        let served_events = read_fallback_events(&served_cqs);
+        assert_eq!(
+            served_events.len(),
+            1,
+            "fallback must land in the served project's telemetry"
+        );
+        assert_eq!(served_events[0]["cmd"], "impact");
+
+        // …and the other project's log is still empty.
+        let other_events = read_fallback_events(&other_cqs);
+        assert!(
+            other_events.is_empty(),
+            "no fallback may land in a project the origin did not name"
         );
     }
 }

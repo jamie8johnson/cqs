@@ -36,15 +36,23 @@ pub(crate) struct TelemetryOutput {
     pub sessions: Option<usize>,
     pub commands: HashMap<String, usize>,
     pub categories: HashMap<String, usize>,
-    /// Per-command kind-mismatch fallback counts. Keyed by the firing graph
-    /// command (`callers`, `impact`, `deps`, `test-map`, `trace`, …); the
-    /// value is how many times that command redirected to a kind-labeled
-    /// fallback instead of running its normal flow. The Phase-2 routing
-    /// signal: a high `kind_fallbacks` rate relative to a command's total
-    /// invocations means agents are still bouncing between commands (asking
-    /// `callers` about a const, `impact` about a type) rather than routing
-    /// the first time. Skip-when-empty so the historical wire shape is
-    /// unchanged for telemetry logs with no fallback events.
+    /// Per-command kind-mismatch fallback counts. Keyed by the top-level
+    /// command the agent invoked (`callers`, `scout`, `impact`, `gather`, …)
+    /// — the same bucket `commands` uses — so the count is directly
+    /// comparable to that command's invocation total. The value is how many
+    /// times an invocation of that command (directly, or via the graph cores
+    /// it fans out to internally) redirected to a kind-labeled fallback. The
+    /// Phase-2 routing signal: a high `kind_fallbacks` rate relative to a
+    /// command's invocations means agents are still bouncing between commands
+    /// (asking `callers` about a const, `impact` about a type) rather than
+    /// routing the first time.
+    ///
+    /// The firing sub-operation (which internal graph core fired the
+    /// fallback) is recorded per-event as `fallback_from`, not folded into
+    /// this key — so an aggregating command's fan-out no longer inflates the
+    /// sub-op buckets the user never invoked directly. Skip-when-empty so the
+    /// historical wire shape is unchanged for telemetry logs with no fallback
+    /// events.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub kind_fallbacks: HashMap<String, usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -103,6 +111,12 @@ struct RawEntry {
     /// entry flavor.
     #[serde(default)]
     kind: Option<String>,
+    /// The internal graph core that fired a `kind_fallback` (`callers` /
+    /// `impact` / `trace` / …). Distinct from `cmd`, which is the top-level
+    /// command the agent invoked. Unset on every other entry flavor (and on
+    /// pre-fix `kind_fallback` rows, where the sub-op was stored in `cmd`).
+    #[serde(default)]
+    fallback_from: Option<String>,
 }
 
 #[derive(Debug)]
@@ -116,13 +130,17 @@ enum Entry {
         ts: u64,
         _reason: Option<String>,
     },
-    /// A graph command redirected to a kind-mismatch fallback. Counted
-    /// separately from `Command` (the invoke event for the same command
-    /// already lands via `log_command` at dispatch entry), so a fallback
-    /// neither double-counts the command nor inflates the event total.
+    /// A command redirected to a kind-mismatch fallback. `cmd` is the
+    /// top-level command the agent invoked (the bucket key, comparable to
+    /// `Command`); `_fallback_from` is the internal graph core that fired it.
+    /// Counted separately from `Command` (the invoke event for the same
+    /// command already lands via `log_command` at dispatch entry), so a
+    /// fallback neither double-counts the command nor inflates the event
+    /// total.
     KindFallback {
         cmd: String,
         _kind: Option<String>,
+        _fallback_from: Option<String>,
         ts: u64,
     },
 }
@@ -146,6 +164,7 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
                         entries.push(Entry::KindFallback {
                             cmd,
                             _kind: raw.kind,
+                            _fallback_from: raw.fallback_from,
                             ts: raw.ts,
                         });
                     }
@@ -612,9 +631,15 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     }
     println!();
 
-    // Kind-mismatch fallbacks (Phase-2 routing signal). Shown as a rate
-    // against each command's total invocations so a high bounce-rate is
-    // visible at a glance.
+    // Kind-mismatch fallbacks (Phase-2 routing signal). `kind_fallbacks` is
+    // keyed by the top-level command, the same bucket as `commands`, so the
+    // rate is per user-invocation and comparable. Render the rate only when
+    // the count fits inside the invocation total (`fb_count <= cmd_total`);
+    // a single invocation that fans out to several graph cores can fire more
+    // than one fallback, so a per-invocation `% of invocations` would still
+    // read >100% there — show a bare count in that case rather than a
+    // misleading percentage. Pre-fix logs (where the key was the sub-op, not
+    // the top-level command) land in the same bare-count branch.
     if !output.kind_fallbacks.is_empty() {
         println!();
         println!("{}:", "Kind Fallbacks".cyan());
@@ -622,11 +647,19 @@ fn print_telemetry_text(output: &TelemetryOutput) {
         fb_sorted.sort_by(|a, b| b.1.cmp(a.1));
         for (cmd, &fb_count) in &fb_sorted {
             let cmd_total = output.commands.get(*cmd).copied().unwrap_or(0);
-            if cmd_total > 0 {
+            if cmd_total > 0 && fb_count <= cmd_total {
                 let pct = (fb_count as f64 / cmd_total as f64) * 100.0;
                 println!(
                     "  {:<14} {:>4} / {:<4}  ({:.0}% of invocations)",
                     cmd, fb_count, cmd_total, pct,
+                );
+            } else if cmd_total > 0 {
+                // More fallbacks than invocations of this command (multi-core
+                // fan-out within single invocations) — a percentage would
+                // mislead, so report both raw counts.
+                println!(
+                    "  {:<14} {:>4} / {:<4}  (fallbacks / invocations)",
+                    cmd, fb_count, cmd_total,
                 );
             } else {
                 println!("  {:<14} {:>4}", cmd, fb_count);
@@ -988,6 +1021,76 @@ mod tests {
         );
         // Structural category counts only the real invocations.
         assert_eq!(out.categories.get("Structural").copied(), Some(3));
+    }
+
+    /// Bug A at the aggregation layer: a fan-out command's fallbacks bucket
+    /// under the TOP-LEVEL command (`cmd`), not the firing sub-op
+    /// (`fallback_from`). A single `scout` invocation that fans out to several
+    /// graph cores records several `kind_fallback` events all tagged
+    /// `cmd: scout` — they roll up under `scout`, the sub-op names never
+    /// become buckets, and the count stays comparable to `commands[scout]`.
+    #[test]
+    fn telemetry_core_buckets_fanout_fallbacks_under_top_level_command() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                // Two scout invocations.
+                r#"{"cmd":"scout","query":"a","ts":1001}"#,
+                r#"{"cmd":"scout","query":"b","ts":1002}"#,
+                // The second fans out to three graph cores, each firing a
+                // fallback. All tagged with the top-level command `scout`;
+                // `fallback_from` carries the distinct sub-op.
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"callers","kind":"const","name":"X","definitions":1,"ts":1002}"#,
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"impact","kind":"const","name":"X","definitions":1,"ts":1002}"#,
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"test-map","kind":"const","name":"X","definitions":1,"ts":1002}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(out.events, 2, "two scout invocations, fallbacks annotate");
+        assert_eq!(out.commands.get("scout").copied(), Some(2));
+        // All three fallbacks roll up under the top-level command.
+        assert_eq!(
+            out.kind_fallbacks.get("scout").copied(),
+            Some(3),
+            "fan-out fallbacks bucket under the top-level command"
+        );
+        // The sub-op names are NOT buckets — they never become comparable to
+        // a `commands[callers]` the user never invoked.
+        assert_eq!(
+            out.kind_fallbacks.get("callers").copied(),
+            None,
+            "sub-op names must not become kind_fallbacks buckets"
+        );
+        assert_eq!(out.kind_fallbacks.get("impact").copied(), None);
+    }
+
+    /// A single-core command can never produce a `kind_fallbacks` count above
+    /// its invocation total — the rate the renderer prints stays `<= 100%`.
+    /// Pins the Bug-A invariant at the data layer: one `callers` invocation
+    /// that fell back records exactly one fallback bucketed under `callers`.
+    #[test]
+    fn telemetry_single_core_fallback_rate_within_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"callers","query":"X","ts":2001}"#,
+                r#"{"event":"kind_fallback","cmd":"callers","fallback_from":"callers","kind":"const","name":"X","definitions":1,"ts":2001}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        let invocations = out.commands.get("callers").copied().unwrap_or(0);
+        let fallbacks = out.kind_fallbacks.get("callers").copied().unwrap_or(0);
+        assert_eq!(invocations, 1);
+        assert_eq!(fallbacks, 1);
+        assert!(
+            fallbacks <= invocations,
+            "single-core fallback count must not exceed its invocation total \
+             (no >100% rate): {fallbacks} > {invocations}"
+        );
     }
 
     /// A `kind_fallback` event serializes into the `kind_fallbacks` map and
