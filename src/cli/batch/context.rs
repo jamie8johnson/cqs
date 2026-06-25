@@ -299,6 +299,14 @@ pub(crate) struct BatchContext {
     /// `cqs watch --serve`, dispatching `reconcile` is a no-op rather than an
     /// error.
     pub(crate) reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    /// Shared one-shot pending-notes signal. The daemon notes-mutation handlers
+    /// flip this `true` after writing `docs/notes.toml`; the watch loop swaps it
+    /// back and drains the note reindex on its next cycle. Drives the notes
+    /// reindex off the writer's explicit signal instead of an inotify event that
+    /// is unreliable on the WSL `/mnt/c` deployment. Default outside
+    /// `cqs watch --serve` is a fresh `Arc<AtomicBool>` with no listener — a
+    /// notes write there is a plain file write with no daemon to reindex.
+    pub(crate) pending_notes_signal: cqs::watch_status::SharedNotesSignal,
     /// Event-driven freshness wake-up. The watch loop's
     /// `publish_watch_snapshot` calls `set_fresh` every cycle; the daemon's
     /// `wait_fresh` handler parks on `wait_until_fresh` until the state flips.
@@ -377,6 +385,7 @@ impl BatchContext {
             query_count: Arc::new(AtomicU64::new(0)),
             watch_snapshot: cqs::watch_status::shared_unknown(),
             reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
+            pending_notes_signal: cqs::watch_status::shared_notes_signal(),
             fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
         };
         // Baseline the data_version probe at construction (not lazily on the
@@ -1104,6 +1113,16 @@ impl BatchContext {
         self.reconcile_signal = shared;
     }
 
+    /// Install the shared pending-notes-signal handle. Called from the daemon
+    /// thread before lock-wrapping the `BatchContext`, so the notes-mutation
+    /// handlers flip a flag the watch loop is actually watching.
+    ///
+    /// Outside `cqs watch --serve`, this is never called and the field stays at
+    /// the no-op default (no listener picks it up).
+    pub fn adopt_pending_notes_signal(&mut self, shared: cqs::watch_status::SharedNotesSignal) {
+        self.pending_notes_signal = shared;
+    }
+
     /// Install the shared `FreshNotifier`. Called from the daemon thread
     /// alongside `adopt_watch_snapshot` so the `wait_fresh` handler parks on
     /// the same notifier the watch loop updates from `publish_watch_snapshot`.
@@ -1522,6 +1541,7 @@ impl BatchContext {
             outer_lock,
             watch_snapshot: Arc::clone(&self.watch_snapshot),
             reconcile_signal: Arc::clone(&self.reconcile_signal),
+            pending_notes_signal: Arc::clone(&self.pending_notes_signal),
             fresh_notifier: Arc::clone(&self.fresh_notifier),
         }
     }

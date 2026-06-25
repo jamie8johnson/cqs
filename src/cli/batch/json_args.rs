@@ -1056,6 +1056,63 @@ mod tests {
         );
     }
 
+    /// DATA-SAFETY: a daemon notes mutation must flip the shared pending-notes
+    /// signal so the note reindex is driven by the writer — independent of an
+    /// inotify event, which is unreliable for `docs/notes.toml` on the WSL
+    /// `/mnt/c` deployment. Without this, a successfully-written note could be
+    /// NEVER indexed and the index would diverge from the file indefinitely.
+    ///
+    /// Each of add / update / remove must flip it: all three write the file.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn notes_mutation_flips_pending_notes_signal() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(true);
+
+        for (command, arguments) in [
+            (
+                "notes-add",
+                json!({"text": "needs index", "sentiment": 0.0}),
+            ),
+            // update/remove target the note add seeds, so add first inside each
+            // case via a fresh ctx to keep the cases independent.
+            ("notes-update", json!({"text": "seed", "new_text": "seed2"})),
+            ("notes-remove", json!({"text": "seed"})),
+        ] {
+            let (_dir, ctx) = seed_ctx();
+            // Seed a note for the update/remove cases (add case ignores it).
+            if command != "notes-add" {
+                let mut seed_out = Vec::new();
+                dispatch_via_view_json(
+                    &ctx.build_view(None),
+                    "notes-add",
+                    &json!({"text": "seed", "sentiment": 0.0}),
+                    &mut seed_out,
+                );
+                // The seed add already flips the signal; clear it so the case
+                // under test proves IT flips the signal, not the seed.
+                ctx.pending_notes_signal.store(false, Ordering::Release);
+            }
+            assert!(
+                !ctx.pending_notes_signal.load(Ordering::Acquire),
+                "{command}: pending-notes signal must start cleared"
+            );
+
+            let mut out = Vec::new();
+            dispatch_via_view_json(&ctx.build_view(None), command, &arguments, &mut out);
+            let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+            assert!(
+                v.get("data").is_some_and(|d| !d.is_null()),
+                "{command} must succeed, got: {v}"
+            );
+            assert!(
+                ctx.pending_notes_signal.load(Ordering::Acquire),
+                "{command} must flip the pending-notes signal so the watch loop reindexes \
+                 the note independent of inotify"
+            );
+        }
+    }
+
     /// Flag ON: a full add → update → remove round-trip over the JSON-args path,
     /// each mutation reflected in the temp file.
     #[test]
@@ -1228,6 +1285,81 @@ mod tests {
         assert!(
             store.chunk_count().is_ok(),
             "the daemon's Store<ReadOnly> must stay usable across an index queue"
+        );
+    }
+
+    /// A `slot` that names a DIFFERENT slot than the daemon serves must be
+    /// REFUSED — not silently accepted as a bare queued success against the
+    /// served slot. The reconcile path cannot target a non-served slot, so
+    /// honoring the request is impossible; reporting `queued` while reindexing a
+    /// different slot would be an undetectable lie across the interop boundary.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_mismatched_slot_is_refused_not_a_bare_queued_success() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        let view = ctx.build_view(None);
+
+        // Seed the shared watch snapshot with a served slot the daemon is bound
+        // to (the watch loop publishes this in production; here we plant it).
+        let mut snap = cqs::watch_status::WatchSnapshot::unknown();
+        snap.active_slot = Some("served".to_string());
+        view.test_overwrite_watch_snapshot(snap);
+
+        let mut out = Vec::new();
+        dispatch_via_view_json(&view, "index", &json!({"slot": "other"}), &mut out);
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+
+        // Must be an ERROR envelope, not a queued success.
+        assert!(
+            v.get("error").is_some_and(|e| !e.is_null()),
+            "a mismatched-slot index must return an error envelope, got: {v}"
+        );
+        assert!(
+            v.get("data").is_none_or(|d| d.is_null()),
+            "a mismatched-slot index must NOT return a queued data payload, got: {v}"
+        );
+        // The error message must NAME the served slot so the caller can act.
+        let msg = v["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("served"),
+            "the rejection must name the served slot, got: {msg}"
+        );
+        // And it must NOT have flipped the reconcile signal — no wrong-slot
+        // reindex was queued.
+        assert!(
+            !ctx.reconcile_signal.load(Ordering::Acquire),
+            "a refused mismatched-slot index must NOT queue a reconcile"
+        );
+    }
+
+    /// A `slot` that MATCHES the served slot proceeds to a normal queued
+    /// success and echoes `served_slot` so the caller can confirm the target.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_matching_slot_queues_and_echoes_served_slot() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        let view = ctx.build_view(None);
+
+        let mut snap = cqs::watch_status::WatchSnapshot::unknown();
+        snap.active_slot = Some("served".to_string());
+        view.test_overwrite_watch_snapshot(snap);
+
+        let mut out = Vec::new();
+        dispatch_via_view_json(&view, "index", &json!({"slot": "served"}), &mut out);
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+
+        assert_eq!(v["data"]["status"], "queued");
+        assert_eq!(
+            v["data"]["served_slot"], "served",
+            "the success payload must echo the served slot, got: {v}"
+        );
+        assert!(
+            ctx.reconcile_signal.load(Ordering::Acquire),
+            "a matching-slot index must queue the reconcile"
         );
     }
 

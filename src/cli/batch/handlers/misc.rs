@@ -198,11 +198,15 @@ pub(in crate::cli::batch) fn dispatch_notes(
 /// Daemon handler for `notes add` (MCP Phase 2a gated mutation channel).
 ///
 /// Writes `docs/notes.toml` via the shared [`notes_add_core`] — a plain file
-/// write under the file lock, NOT a `Store` write. The watch loop reindexes the
-/// file on its next tick. This is the load-bearing invariant: the daemon holds
-/// a `Store<ReadOnly>` (`ctx.store()` returns `Arc<Store<ReadOnly>>`), and this
-/// handler never acquires a writable store, so the typestate guarantee that the
-/// daemon cannot mutate the index DB is preserved.
+/// write under the file lock, NOT a `Store` write. The handler then flips the
+/// shared pending-notes signal ([`BatchView::request_notes_reindex`]) so the
+/// watch loop reindexes the notes table on its next tick — driven by the
+/// writer's explicit signal, not by an inotify event (unreliable for this path
+/// on the WSL `/mnt/c` deployment). This is the load-bearing invariant: the
+/// daemon holds a `Store<ReadOnly>` (`ctx.store()` returns
+/// `Arc<Store<ReadOnly>>`), and this handler never acquires a writable store, so
+/// the typestate guarantee that the daemon cannot mutate the index DB is
+/// preserved — the reindex happens in the watch loop, not here.
 ///
 /// Reachable only when `build_batch_cmd` constructed `BatchCmd::NotesAdd`, which
 /// is gated behind `CQS_MCP_ENABLE_MUTATIONS` (the operator opt-in).
@@ -212,6 +216,16 @@ pub(in crate::cli::batch) fn dispatch_notes_add(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_notes_add").entered();
     let core = crate::cli::commands::notes::notes_add_core(&ctx.root, args)?;
+    // Signal the watch loop to reindex the notes table — driving the reindex off
+    // this explicit signal rather than an inotify event the WSL `/mnt/c`
+    // deployment may never deliver.
+    let was_pending = ctx.request_notes_reindex();
+    tracing::info!(
+        status = core.status,
+        sentiment = core.sentiment,
+        was_pending,
+        "notes write committed; note reindex queued"
+    );
     Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
         &core,
     ))
@@ -225,6 +239,13 @@ pub(in crate::cli::batch) fn dispatch_notes_update(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_notes_update").entered();
     let core = crate::cli::commands::notes::notes_update_core(&ctx.root, args)?;
+    let was_pending = ctx.request_notes_reindex();
+    tracing::info!(
+        status = core.status,
+        sentiment = core.sentiment,
+        was_pending,
+        "notes write committed; note reindex queued"
+    );
     Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
         &core,
     ))
@@ -238,6 +259,13 @@ pub(in crate::cli::batch) fn dispatch_notes_remove(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_notes_remove").entered();
     let core = crate::cli::commands::notes::notes_remove_core(&ctx.root, args)?;
+    let was_pending = ctx.request_notes_reindex();
+    tracing::info!(
+        status = core.status,
+        sentiment = core.sentiment,
+        was_pending,
+        "notes write committed; note reindex queued"
+    );
     Ok(crate::cli::commands::notes::notes_mutation_daemon_json(
         &core,
     ))
@@ -255,10 +283,17 @@ pub(in crate::cli::batch) fn dispatch_notes_remove(
 /// path. The client polls completion via the already-exposed read tools
 /// `wait_fresh` / `status`.
 ///
-/// The `slot` field of the core is advisory here: the daemon queues a reconcile
-/// of the slot it already serves (the active slot it was opened against), so a
-/// differing `slot` does not redirect the rebuild. The reconcile path takes no
-/// slot argument.
+/// The `slot` field of the core targets a specific slot, but the reconcile path
+/// the daemon drives takes no slot argument — it reconciles whatever slot the
+/// daemon was opened against. So a `slot` that names a DIFFERENT slot than the
+/// served one cannot be honored without redirecting the daemon. Rather than
+/// silently reconcile the served slot while reporting `queued` (a wrong-slot
+/// reindex the caller cannot detect across the interop boundary), this handler
+/// REFUSES the mismatch with a client-facing error naming the served slot. A
+/// matching or omitted `slot` proceeds. When the served slot is not yet known
+/// (the watch loop hasn't published a snapshot — daemon ramp-up), the queue
+/// still fires but the response echoes `served_slot: null` so the caller can see
+/// the target was not verified.
 ///
 /// Reachable only when `build_batch_cmd` constructed `BatchCmd::Index`, which is
 /// gated behind `CQS_MCP_ENABLE_MUTATIONS` (the operator opt-in). The
@@ -273,21 +308,54 @@ pub(in crate::cli::batch) fn dispatch_index(
         slot = args.slot.as_deref().unwrap_or("(active)")
     )
     .entered();
+
+    let served_slot = ctx.served_slot();
+
+    // Refuse a request that names a slot the daemon does not serve. Failing
+    // loud beats a silent wrong-slot reindex: the reconcile path cannot target
+    // a non-served slot, so honoring the request is impossible — reporting
+    // success while reindexing a different slot would be an undetectable lie to
+    // an autonomous caller.
+    if let Some(requested) = args.slot.as_deref() {
+        if let Some(served) = served_slot.as_deref() {
+            if requested != served {
+                tracing::warn!(
+                    requested,
+                    served,
+                    "cqs_index slot mismatch — refusing to reindex a slot the daemon does not serve"
+                );
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    format!(
+                        "slot '{requested}' is not the slot this daemon serves ('{served}'); \
+                         the daemon reconciles only its served slot — restart `cqs watch --serve` \
+                         bound to '{requested}', or omit `slot` to reindex the served slot"
+                    ),
+                )
+                .into());
+            }
+        }
+    }
+
     let was_pending = ctx.request_reconcile();
     tracing::info!(
         slot = args.slot.as_deref().unwrap_or("(active)"),
+        served_slot = served_slot.as_deref().unwrap_or("(unknown)"),
         was_pending,
         "Reindex queued (fire-and-forget); watch loop performs the rebuild"
     );
     // Fire-and-forget: the rebuild is deferred to the watch loop, mirroring the
     // notes-write `reindex_deferred` contract. `was_pending` lets a caller see
     // that an earlier reconcile request was still un-drained (the watch loop
-    // coalesces them into one walk).
+    // coalesces them into one walk). `served_slot` echoes the slot the queued
+    // reconcile actually targets so the caller can confirm the substitution did
+    // not occur (it carries `null` only during the daemon's ramp-up window).
     Ok(serde_json::json!({
         "status": "queued",
         "queued": true,
         "reindex_deferred": true,
         "was_pending": was_pending,
+        "served_slot": served_slot,
     }))
 }
 

@@ -608,6 +608,24 @@ pub fn parse_env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
+// ============ daemon response cap ============
+
+/// Default 16 MiB cap on a single daemon-to-client response buffer. Bounds the
+/// `read_line` allocation against a rogue/buggy daemon while staying large
+/// enough for real `gather` / `search` / `task` JSON outputs on big corpora.
+///
+/// Lives in the library `limits` module (not `cli::limits`) because BOTH the
+/// binary CLI daemon-forward path AND the library-side MCP relay
+/// (`daemon_translate::daemon_json_args_request`) size their read cap from it —
+/// a single source of truth so the relay can never be narrower than the CLI it
+/// fronts. `cli::limits::max_daemon_response_bytes` delegates here.
+pub const MAX_DAEMON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Resolve the daemon response cap honoring `CQS_DAEMON_MAX_RESPONSE_BYTES`.
+pub fn max_daemon_response_bytes() -> u64 {
+    parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
+}
+
 // ============ cqs serve idle eviction ============
 
 /// Default idle-shutdown threshold for `cqs serve` in minutes. After this

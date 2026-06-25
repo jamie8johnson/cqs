@@ -37,10 +37,12 @@
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct IndexArgs {
-    /// Target slot name (per-project `.cqs/slots/<name>/`). Advisory on the
-    /// fire-and-forget daemon path: the daemon queues a reconcile of the slot it
-    /// already serves (the active slot it was opened against), so a `slot` that
-    /// differs from the served slot does not redirect the rebuild. Present in the
-    /// schema for honesty and forward use; omit it to reindex the active slot.
+    /// Target slot name (per-project `.cqs/slots/<name>/`). On the
+    /// fire-and-forget daemon path the reconcile targets the slot the daemon was
+    /// opened against; the reconcile path cannot redirect to another slot. A
+    /// `slot` that matches the served slot (or is omitted) queues that slot's
+    /// reindex. A `slot` that names a DIFFERENT slot is REFUSED with an error
+    /// naming the served slot — the daemon will not silently reindex the wrong
+    /// slot while reporting success. Omit it to reindex the served slot.
     pub slot: Option<String>,
 }

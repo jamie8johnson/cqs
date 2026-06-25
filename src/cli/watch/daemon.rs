@@ -37,6 +37,13 @@ use super::{
 /// daemon's `dispatch_reconcile` handler flips a flag the watch loop is
 /// actually reading.
 ///
+/// `daemon_pending_notes_signal`: the notes-table sibling of the reconcile
+/// signal. Plugged in via
+/// [`crate::cli::batch::BatchContext::adopt_pending_notes_signal`] so the
+/// notes-mutation handlers flip a flag the watch loop drains into a note
+/// reindex — driving the reindex off the writer's signal rather than an
+/// inotify event that is unreliable on the WSL `/mnt/c` deployment.
+///
 /// `in_flight`: the shared per-connection counter. Owned by the outer
 /// `cmd_watch` scope (not local to this thread) so the watch loop can
 /// sample it into the `cqs status --watch` ops block. This
@@ -68,6 +75,7 @@ pub(super) fn spawn_daemon_thread(
     daemon_runtime: Arc<tokio::runtime::Runtime>,
     daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
     daemon_reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    daemon_pending_notes_signal: cqs::watch_status::SharedNotesSignal,
     daemon_fresh_notifier: cqs::watch_status::SharedFreshNotifier,
     in_flight: Arc<AtomicUsize>,
 ) -> JoinHandle<()> {
@@ -117,6 +125,9 @@ pub(super) fn spawn_daemon_thread(
         // (called when a git hook posts to the socket) flips a flag the watch
         // loop checks.
         ctx.adopt_reconcile_signal(daemon_reconcile_signal);
+        // Same shape for the pending-notes signal: the notes-mutation handlers
+        // flip a flag the watch loop drains into a note reindex.
+        ctx.adopt_pending_notes_signal(daemon_pending_notes_signal);
         // Same shape for the freshness notifier: `dispatch_wait_fresh` parks
         // on the same notifier the watch loop signals from
         // `publish_watch_snapshot`.

@@ -340,8 +340,11 @@ pub(crate) fn notes_remove_core(
 /// `sentiment` / `text_preview` / `file`), but `indexed:false` and
 /// `total_notes:0` because the daemon (MCP Phase 2a) does NOT reindex from the
 /// handler — it wrote the `notes.toml` *file* and leaves the reindex to the
-/// watch loop (the `Store<ReadOnly>` invariant). The `reindex_deferred` flag is
-/// the honest signal that the index lags the file until the next watch tick.
+/// watch loop (the `Store<ReadOnly>` invariant). The reindex is driven by the
+/// handler flipping the shared pending-notes signal the watch loop drains every
+/// tick — NOT by an inotify event, which is unreliable for this path on the WSL
+/// `/mnt/c` deployment. The `reindex_deferred` flag is the honest signal that
+/// the index lags the file until the next watch tick.
 pub(crate) fn notes_mutation_daemon_json(core: &NoteMutationCore) -> serde_json::Value {
     let result = NoteMutationOutput {
         status: core.status.into(),
