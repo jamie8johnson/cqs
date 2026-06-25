@@ -816,7 +816,17 @@ pub(crate) struct ImpactDiffArgs {
 /// `Commands::Search { args: SearchArgs }`). The flattened fields include
 /// `check`, which the daemon batch path picks up via
 /// `BatchCmd::Notes { args, .. }`.
-#[derive(Args, Debug, Clone)]
+///
+/// Also the surface-agnostic core that the daemon JSON-args path (`cqs_notes_list`)
+/// deserializes directly — the four filter knobs (`warnings` / `patterns` /
+/// `kind` / `check`) are read off the wire and consumed by `dispatch_notes`,
+/// mirroring `StaleArgs`. Input-only: it derives `Deserialize` + `JsonSchema`,
+/// never `Serialize`. The command's JSON OUTPUT is the separate `{notes, count}`
+/// object built in `dispatch_notes`, so these derives cannot change the output
+/// wire shape. `#[serde(default)]` lets a wire caller omit any filter and inherit
+/// the clap default (all `false` / `None`).
+#[derive(Args, Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub(crate) struct NotesListArgs {
     /// Show only warnings (negative sentiment)
     #[arg(long)]

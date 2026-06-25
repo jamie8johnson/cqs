@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`cqs_notes_list` — the read half of the MCP notes channel (#2021).** Lifts the read-only `notes` (list) subaction to a Phase-0 core: `NotesListArgs` now derives `serde::Deserialize` + `schemars::JsonSchema` (input-only — the `{notes, count}` output is unchanged), a `build_batch_cmd` "notes" arm deserializes the four filter knobs (`warnings`/`patterns`/`kind`/`check`), `notes` joins `JSON_ARGS_CAPABLE_COMMANDS`, and an unconditional `cqs_notes_list` read tool joins `tools/list` (26 read tools, up from 25). Read-only and ungated — `dispatch_notes` only reads the cached notes and the read-only store; the gated `cqs_notes_add/update/remove` mutators are unaffected. CLI==daemon parity pinned (a JSON-args `notes` request lists byte-identically to the argv path).
+
 ## [1.49.0] - 2026-06-24
 
 v1.48.0 16-category audit fix cycle. A full audit (16 parallel category auditors → per-category adversarial verification → triage) produced 36 verified findings consolidating to 19 rows; all P1–P3 and two of three P4 are fixed here across PRs #2038–#2042, weighted to the v1.48.0 MCP/parse/RT-RELAY churn. The scoring path is byte-identical to v1.48.0 — retrieval is unchanged. Triage in `docs/audit-triage.md`, findings in `docs/audit-findings.md`.

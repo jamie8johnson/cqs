@@ -47,9 +47,9 @@ use serde::de::DeserializeOwned;
 
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
-    GatherArgs, ImpactArgs, LimitArg, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs, RelatedArgs,
-    ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TaskArgs, TestMapArgs, TraceArgs,
-    WhereArgs,
+    GatherArgs, ImpactArgs, LimitArg, NotesListArgs, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs,
+    RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TaskArgs, TestMapArgs,
+    TraceArgs, WhereArgs,
 };
 use crate::cli::definitions::{GateThreshold, OutputArgs, OutputFormat, TextJsonArgs};
 
@@ -186,6 +186,7 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "related",
     "stale",
     "task",
+    "notes",
     "stats",
     "health",
     "notes-add",
@@ -220,8 +221,8 @@ pub(crate) fn is_json_args_capable(command: &str) -> bool {
 /// `commands::dispatch` the argv path uses.
 ///
 /// An unknown command, or a command that has no Phase-0 core struct (and so is
-/// argv-only in Phase 1 — `notes`, `where`, `explain`, `read`'s siblings, the
-/// zero-arg infra commands, …), returns an error rather than dispatching.
+/// argv-only — `explain`, `context`, the zero-arg infra commands, …), returns an
+/// error rather than dispatching.
 pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> Result<BatchCmd> {
     let _span = tracing::info_span!("json_args_build_cmd", command).entered();
 
@@ -419,6 +420,20 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
         "stale" => {
             let c: StaleArgs = parse_core(command, arguments)?;
             BatchCmd::Stale {
+                args: c,
+                output: text_json(),
+            }
+        }
+        // The READ half of the notes channel (`cqs_notes_list`). The filter knobs
+        // live on the clap-side `NotesListArgs`, which IS the deserialize target
+        // here (the `stale` pattern) — so the `BatchCmd::Notes` field and the
+        // schema source are the same type. Read-only and UNGATED: `dispatch_notes`
+        // only reads the cached notes (and, with `check`, the read-only store),
+        // never `docs/notes.toml`. The JSON OUTPUT is the separate `{notes, count}`
+        // object the handler builds, so this input-only core leaves it unchanged.
+        "notes" => {
+            let c: NotesListArgs = parse_core(command, arguments)?;
+            BatchCmd::Notes {
                 args: c,
                 output: text_json(),
             }
@@ -1012,6 +1027,75 @@ mod tests {
             v_argv, v_json,
             "JSON-args output must equal argv output for `task`\nargv:  {v_argv}\njson:  {v_json}"
         );
+    }
+
+    /// Like [`seed_ctx`], plus two notes (one warning, one pattern) written to
+    /// the store BEFORE it is reopened read-only, so the daemon's note cache
+    /// (`ctx.notes()`, built at context creation) reflects them. Backs the
+    /// `notes` parity test, which needs a non-empty list to prove the filter
+    /// knobs round-trip across surfaces.
+    fn seed_ctx_with_notes() -> (TempDir, crate::cli::batch::BatchContext) {
+        use cqs::note::Note;
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            let notes = vec![
+                Note {
+                    id: "note:0".to_string(),
+                    text: "watch the read-only store invariant".to_string(),
+                    sentiment: -0.5,
+                    mentions: vec!["json_args.rs".to_string()],
+                    kind: None,
+                },
+                Note {
+                    id: "note:1".to_string(),
+                    text: "the command-core pattern keeps CLI and daemon in parity".to_string(),
+                    sentiment: 0.5,
+                    mentions: vec!["tools.rs".to_string()],
+                    kind: Some("design-decision".to_string()),
+                },
+            ];
+            store
+                .upsert_notes_batch(&notes, Path::new("docs/notes.toml"), 0)
+                .expect("upsert notes");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// `notes` (the read-only `cqs_notes_list` tool) parity: a JSON-args request
+    /// must produce a list envelope byte-identical to the equivalent argv flags,
+    /// across the bare list, the `--warnings` filter, the `--patterns` filter,
+    /// and a `--kind` filter. Proves the input-only `NotesListArgs` core round-
+    /// trips through `build_batch_cmd` → `dispatch_notes` to the SAME output the
+    /// argv path produces — and that the four filter knobs ride the wire.
+    #[test]
+    fn parity_notes_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx_with_notes();
+        let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+            (vec![], json!({})),
+            (vec!["--warnings"], json!({"warnings": true})),
+            (vec!["--patterns"], json!({"patterns": true})),
+            (
+                vec!["--kind", "design-decision"],
+                json!({"kind": "design-decision"}),
+            ),
+        ];
+        for (argv, arguments) in cases {
+            let (v_argv, v_json) = run_both(&ctx, "notes", &argv, arguments);
+            assert!(
+                v_argv.get("data").is_some_and(|d| !d.is_null()),
+                "argv path for `notes` {argv:?} should return data, got: {v_argv}"
+            );
+            assert_eq!(
+                v_argv, v_json,
+                "JSON-args output must equal argv output for `notes` {argv:?}\nargv:  {v_argv}\njson:  {v_json}"
+            );
+        }
     }
 
     /// A missing optional field deserializes via `#[serde(default)]` — an empty
@@ -1754,10 +1838,11 @@ mod tests {
         // 2. A representative spread of argv-only / unknown commands is NOT
         //    capable — the catch-all bites, and they are absent from the list.
         //    (`stats` / `health` are Phase-1 zero-arg read tools,
-        //    `where` / `related` / `stale` are Phase-2 read tools, and `task`
-        //    is the Phase-3 overlay-capable brief tool — all capable now — so
-        //    they are deliberately excluded from this not-capable spread.)
-        for cmd in ["explain", "notes", "ping", "nonexistent_cmd"] {
+        //    `where` / `related` / `stale` are Phase-2 read tools, `task` is the
+        //    Phase-3 overlay-capable brief tool, and `notes` is the read-only
+        //    notes-list tool — all capable now — so they are deliberately
+        //    excluded from this not-capable spread.)
+        for cmd in ["explain", "ping", "nonexistent_cmd"] {
             assert!(
                 !is_json_args_capable(cmd),
                 "`{cmd}` is argv-only/unknown but build_batch_cmd treats it as JSON-args-capable"
