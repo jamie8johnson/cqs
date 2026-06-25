@@ -537,6 +537,20 @@ macro_rules! gen_is_pipeable_impl {
                     BatchCmd::TestSleep { .. } => "test-sleep",
                 }
             }
+
+            /// Every name `command_name()` can return in a test build, in
+            /// table order plus the `#[cfg(test)]` `TestSleep` fixture (which
+            /// IS a real clap subcommand under test, so the bidirectional
+            /// exhaustiveness check must account for it). Built from the SAME
+            /// table as `command_name()`, so the test reads from the one
+            /// source of truth — no second hand-maintained list to drift.
+            #[cfg(test)]
+            pub(crate) const ALL_COMMAND_NAMES: &'static [&'static str] = &[
+                $($n,)*
+                $($n2,)*
+                $($n3,)*
+                "test-sleep",
+            ];
         }
     };
 }
@@ -1143,56 +1157,82 @@ mod tests {
         assert!(!dead.is_pipeable());
     }
 
+    /// The `#[command(skip)]` variants — argv-UNreachable on the daemon
+    /// socket (their only constructor is `json_args::build_batch_cmd`, gated
+    /// behind `CQS_MCP_ENABLE_MUTATIONS`), so clap's `find_subcommand` does
+    /// NOT know them. They never fire kind-fallbacks (they're notes-mutation /
+    /// reindex commands, not graph cores), so their `command_name()` is inert
+    /// for telemetry attribution. Listed here so the exhaustiveness test below
+    /// excludes them DELIBERATELY: adding a new `#[command(skip)]` variant
+    /// forces a conscious edit to this slice, and dropping `#[command(skip)]`
+    /// from one of these (making it a real subcommand) trips the
+    /// `skip_set_is_genuinely_not_clap_subcommands` arm.
+    #[cfg(test)]
+    const CLAP_SKIPPED_COMMAND_NAMES: &[&str] =
+        &["notes-add", "notes-update", "notes-remove", "index"];
+
     /// `command_name()` must return the canonical clap subcommand string for
-    /// each variant — the same name `telemetry::describe_command` records for
-    /// the CLI path, so kind-fallback telemetry buckets line up across the
-    /// CLI and daemon surfaces. Pins the renamed variants (`test-map`,
-    /// `impact-diff`, `notes-add`, `wait-fresh`) whose `command_name()` is NOT
-    /// the lowercased ident, and confirms every returned name resolves to a
-    /// real clap subcommand (a drift guard on the table's name column).
+    /// EVERY argv-reachable variant — the same name
+    /// `telemetry::describe_command` records on the CLI path, so kind-fallback
+    /// telemetry buckets line up across the CLI and daemon surfaces.
+    ///
+    /// Exhaustive and bidirectional (no hand-picked spot-check):
+    /// - Every name in `BatchCmd::ALL_COMMAND_NAMES` (built from the dispatch
+    ///   table, the single source of truth) that is NOT a documented
+    ///   `#[command(skip)]` variant must resolve to a real clap subcommand.
+    ///   A renamed `cli_name` that drifts from its clap name fails here.
+    /// - Conversely, every clap subcommand must appear in
+    ///   `ALL_COMMAND_NAMES`. A new argv-reachable variant whose `cli_name`
+    ///   doesn't match its clap subcommand name fails here.
+    /// - Every skip-listed name must genuinely NOT be a clap subcommand, so
+    ///   the exclusion stays honest: lose `#[command(skip)]` and this fails.
     #[test]
-    fn command_name_matches_clap_subcommand() {
+    fn command_name_matches_clap_subcommand_exhaustively() {
         use clap::CommandFactory;
+        use std::collections::HashSet;
+
         let batch = BatchInput::command();
+        let skip: HashSet<&str> = CLAP_SKIPPED_COMMAND_NAMES.iter().copied().collect();
 
-        // The renamed variants: ident-lowercasing would NOT produce these.
-        let test_map = BatchCmd::TestMap {
-            args: crate::cli::args::TestMapArgs {
-                name: "f".into(),
-                depth: 5,
-                cross_project: false,
-                limit_arg: crate::cli::args::LimitArg { limit: 5 },
-            },
-            output: TextJsonArgs { json: false },
-        };
-        assert_eq!(test_map.command_name(), "test-map");
-
-        let wait_fresh = BatchCmd::WaitFresh {
-            args: crate::cli::args::WaitFreshArgs { wait_secs: 1 },
-        };
-        assert_eq!(wait_fresh.command_name(), "wait-fresh");
-
-        // Every name a variant reports must be a real clap subcommand —
-        // otherwise the telemetry bucket would never match a logged command.
-        for name in [
-            test_map.command_name(),
-            wait_fresh.command_name(),
-            BatchCmd::Callers {
-                args: crate::cli::args::CallersArgs {
-                    name: "f".into(),
-                    cross_project: false,
-                    limit_arg: crate::cli::args::LimitArg { limit: 5 },
-                    edge_kind: None,
-                    overlay: Default::default(),
-                },
-                output: TextJsonArgs { json: false },
+        // Forward: every table name (minus skips) is a real clap subcommand.
+        let table_names: HashSet<&str> = BatchCmd::ALL_COMMAND_NAMES.iter().copied().collect();
+        for &name in BatchCmd::ALL_COMMAND_NAMES {
+            if skip.contains(name) {
+                continue;
             }
-            .command_name(),
-            BatchCmd::Refresh.command_name(),
-        ] {
             assert!(
                 batch.find_subcommand(name).is_some(),
-                "command_name() returned `{name}`, which is not a clap subcommand"
+                "BatchCmd::command_name() yields `{name}`, which is not a clap \
+                 subcommand — a `cli_name` drifted from its clap name, or the \
+                 variant should be in CLAP_SKIPPED_COMMAND_NAMES"
+            );
+        }
+
+        // Reverse: every clap subcommand is covered by a table name.
+        for sub in batch.get_subcommands() {
+            let name = sub.get_name();
+            assert!(
+                table_names.contains(name),
+                "clap subcommand `{name}` has no matching BatchCmd::command_name() \
+                 entry — a new argv-reachable variant whose cli_name doesn't match \
+                 its clap subcommand name"
+            );
+        }
+
+        // The skip-list documents a REAL exclusion: each skipped name must
+        // genuinely be absent from clap, so dropping `#[command(skip)]` from
+        // one of these variants is a conscious, test-visible change.
+        for &name in CLAP_SKIPPED_COMMAND_NAMES {
+            assert!(
+                batch.find_subcommand(name).is_none(),
+                "`{name}` is in CLAP_SKIPPED_COMMAND_NAMES but IS a clap subcommand \
+                 — it lost its `#[command(skip)]`; remove it from the skip-list"
+            );
+            // …and it must still be a real table row (the inert telemetry name
+            // exists even though clap can't reach the variant from argv).
+            assert!(
+                table_names.contains(name),
+                "skip-listed `{name}` is missing from the dispatch table"
             );
         }
     }

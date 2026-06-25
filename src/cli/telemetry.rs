@@ -715,6 +715,57 @@ mod tests {
         with_fallback_origin(|o| assert!(o.is_none()));
     }
 
+    /// Cross-request restore on a POOLED thread — the invariant the daemon
+    /// relies on. A daemon worker thread is reused across requests; if a
+    /// guard's drop failed to restore the thread-local, request B would read
+    /// request A's leaked origin and mis-attribute its fallback. This pins the
+    /// no-leak property by serving two requests on the SAME thread (the same
+    /// `FALLBACK_ORIGIN` cell), asserting B never observes A's origin.
+    ///
+    /// Both "requests" run inline on the test thread — that is exactly a
+    /// pooled worker serving two sequential dispatches, which a per-test
+    /// thread (cargo's default) does NOT exercise on its own.
+    #[test]
+    fn fallback_origin_no_cross_request_leak_on_pooled_thread() {
+        // Baseline before any request: clean.
+        with_fallback_origin(|o| assert!(o.is_none(), "thread must start clean"));
+
+        // ── Request A: sets its origin, runs, guard drops at scope end. ──
+        {
+            let _a = enter_fallback_origin("callers", Path::new("/tmp/projA/.cqs"));
+            with_fallback_origin(|o| {
+                let o = o.expect("request A origin installed");
+                assert_eq!(o.command, "callers");
+                assert_eq!(o.cqs_dir, Path::new("/tmp/projA/.cqs"));
+            });
+        }
+
+        // Between requests on the reused thread: A's origin must be GONE.
+        with_fallback_origin(|o| {
+            assert!(
+                o.is_none(),
+                "request A's origin leaked to the next request on the pooled thread"
+            );
+        });
+
+        // ── Request B: a DIFFERENT command/project on the same thread. ──
+        {
+            let _b = enter_fallback_origin("impact", Path::new("/tmp/projB/.cqs"));
+            with_fallback_origin(|o| {
+                let o = o.expect("request B origin installed");
+                // B sees ITS OWN origin, never A's stale one.
+                assert_eq!(
+                    o.command, "impact",
+                    "request B must see its own origin, not A's"
+                );
+                assert_eq!(o.cqs_dir, Path::new("/tmp/projB/.cqs"));
+            });
+        }
+
+        // Thread returns to the pool clean for the next request.
+        with_fallback_origin(|o| assert!(o.is_none(), "thread must return clean"));
+    }
+
     #[test]
     fn telemetry_rotates_at_10mb_with_reused_handle() {
         // The size gate now uses `file.metadata()` (fstat on the open append
