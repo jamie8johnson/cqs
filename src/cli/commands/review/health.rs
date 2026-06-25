@@ -16,7 +16,15 @@ use cqs::Parser;
 /// today; the struct exists so the core matches the established
 /// `*Args` + `*_core` shape and can grow Deserialize-able fields without a
 /// signature change (MCP-ready).
-#[derive(Debug, Default, serde::Deserialize)]
+///
+/// Derives `schemars::JsonSchema` so the MCP bridge can advertise its
+/// (currently empty) `inputSchema`. `#[serde(default)]` lets a wire caller send
+/// `{}` and inherit the production default. INPUT-only: there is no `Serialize`
+/// derive, and the command's output is the separate
+/// `cqs::health::HealthReport`, so adding these derives cannot alter the JSON
+/// output wire shape.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub(crate) struct HealthArgs {}
 
 /// Surface-agnostic core for `cqs health`. Returns the typed
