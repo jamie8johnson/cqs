@@ -1170,13 +1170,15 @@ fn daemon_request_with_timeout<T: serde::de::DeserializeOwned>(
 /// is present — i.e. the value is already the bare handler payload — return
 /// it as-is so the legacy mock-test path keeps working.
 //
-// Compiled on unix (its only production caller, `daemon_request_with_timeout`,
-// is `#[cfg(unix)]`) and under any test build (the unit tests below are
-// cross-platform `#[test]`). On a non-unix release build it has no caller, so
-// gating it here keeps `clippy -D warnings` (run per-target in release.yml)
-// from tripping dead_code on the Windows cross-build.
+// Compiled on unix (its production callers are unix-confined:
+// `daemon_request_with_timeout` is `#[cfg(unix)]`, and the serve
+// `/api/search_legs` daemon client speaks `std::os::unix::net::UnixStream`)
+// and under any test build (the unit tests below are cross-platform `#[test]`).
+// On a non-unix release build it has no caller, so gating it here keeps
+// `clippy -D warnings` (run per-target in release.yml) from tripping dead_code
+// on the Windows cross-build.
 #[cfg(any(unix, test))]
-fn unwrap_dispatch_payload(
+pub(crate) fn unwrap_dispatch_payload(
     output: &serde_json::Value,
     type_name: &str,
 ) -> Result<serde_json::Value, String> {
