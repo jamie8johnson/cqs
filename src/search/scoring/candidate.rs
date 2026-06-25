@@ -792,6 +792,132 @@ mod tests {
         assert_eq!(results[1].score, score_before);
     }
 
+    /// Adequacy regression: pin the EXACT parent-boost multiplier at the
+    /// unsaturated child counts (2 and 3 children).
+    ///
+    /// The existing parent-boost tests only assert loose inequalities
+    /// (`circuit_breaker`: `score > 0.90`) or the *saturated* 5-children case
+    /// (`caps_at_1_15`), where the value already equals `parent_boost_cap`.
+    /// At saturation the final `.min(cap)`, the inner `.min(max_children)`
+    /// clamp, and the `count - 1` term are all masked, so mutating any of them
+    /// (`count - 1` → `count + 1`; inner `.min` → `.max`; final `.min` →
+    /// `.max`) left every parent-boost test green. The boost is the score-mover
+    /// the recall gate protects, so an unpinned multiplier is a silent
+    /// ranking-regression hole.
+    ///
+    /// `apply_parent_boost` returns the per-id multiplier it actually applied,
+    /// so we read it directly. With defaults `per_child = 0.05`, `cap = 1.15`
+    /// (`max_children = 3.0`): 2 children → 1.05, 3 children → 1.10. Neither
+    /// equals the cap, so all three inner-arithmetic mutations move the value.
+    #[test]
+    fn test_parent_boost_exact_multiplier_unsaturated() {
+        let cfg = ScoringConfig::DEFAULT;
+
+        // Exactly TWO children of `Hub` + the container → boost = 1.0 +
+        // 0.05 * (2 - 1) = 1.05. Kills `count + 1` (→1.10) and inner
+        // `.max(max_children)` (→1.15).
+        let mut two = vec![
+            make_result("childA", ChunkType::Method, Some("Hub"), 0.88),
+            make_result("childB", ChunkType::Method, Some("Hub"), 0.87),
+            make_result("Hub", ChunkType::Class, None, 0.50),
+        ];
+        let applied = apply_parent_boost(&mut two);
+        let boost2 = *applied
+            .get("Hub")
+            .expect("Hub must be boosted with 2 children present");
+        let expected2 = 1.0 + cfg.parent_boost_per_child * 1.0; // 1.05
+        assert!(
+            (boost2 - expected2).abs() < 1e-6,
+            "2-children boost must be exactly {expected2}, got {boost2}"
+        );
+
+        // Exactly THREE children → boost = 1.0 + 0.05 * (3 - 1) = 1.10.
+        // Still below cap (1.15), so the final `.min(cap)` → `.max(cap)`
+        // mutation (which would force 1.15) is caught here.
+        let mut three = vec![
+            make_result("m1", ChunkType::Method, Some("Hub"), 0.88),
+            make_result("m2", ChunkType::Method, Some("Hub"), 0.87),
+            make_result("m3", ChunkType::Method, Some("Hub"), 0.86),
+            make_result("Hub", ChunkType::Class, None, 0.50),
+        ];
+        let applied3 = apply_parent_boost(&mut three);
+        let boost3 = *applied3
+            .get("Hub")
+            .expect("Hub must be boosted with 3 children present");
+        let expected3 = 1.0 + cfg.parent_boost_per_child * 2.0; // 1.10
+        assert!(
+            (boost3 - expected3).abs() < 1e-6,
+            "3-children boost must be exactly {expected3}, got {boost3}"
+        );
+        // Sanity: 3-children boost is strictly larger than 2-children and both
+        // are strictly below the cap (so none is saturated).
+        assert!(boost3 > boost2);
+        assert!(boost3 < cfg.parent_boost_cap);
+    }
+
+    /// Adequacy regression: pin the inner `count >= 2` gate inside
+    /// `apply_parent_boost`'s per-container filter.
+    ///
+    /// `test_parent_boost_needs_minimum_two_children` exercises the *outer*
+    /// guard (`any parent appears 2+ times`) — with a single 1-child container
+    /// the function returns early before the inner check. So mutating the inner
+    /// `count >= 2` → `count >= 1` survived: no test put a 2+-children parent
+    /// (to pass the outer guard) alongside a *separate* 1-child container (to
+    /// expose the inner gate). This test does exactly that: `Big` has 2
+    /// children (passes the outer guard), `Solo` has 1 child and is a
+    /// container present in results. Real code must NOT boost `Solo`; the
+    /// mutant boosts it.
+    #[test]
+    fn test_parent_boost_inner_count_gate_excludes_single_child() {
+        let mut results = vec![
+            make_result("b1", ChunkType::Method, Some("Big"), 0.90),
+            make_result("b2", ChunkType::Method, Some("Big"), 0.89),
+            make_result("s1", ChunkType::Method, Some("Solo"), 0.88),
+            make_result("Big", ChunkType::Class, None, 0.50),
+            make_result("Solo", ChunkType::Class, None, 0.50),
+        ];
+        let applied = apply_parent_boost(&mut results);
+        assert!(
+            applied.contains_key("Big"),
+            "Big has 2 children — must be boosted"
+        );
+        assert!(
+            !applied.contains_key("Solo"),
+            "Solo has only 1 child — must NOT be boosted (inner count >= 2 gate)"
+        );
+    }
+
+    /// Adequacy regression: pin the deterministic id tie-break of the
+    /// re-sort at the end of `apply_parent_boost`.
+    ///
+    /// After boosting, results are re-sorted `score desc, then id asc`. No
+    /// existing parent-boost test produces two *equal* post-boost scores, so
+    /// the secondary `a.chunk.id.cmp(&b.chunk.id)` was unconstrained — flipping
+    /// it to descending left every test green. Here two boosted containers tie
+    /// on score (both `0.50 * 1.05`), so the tie-break alone decides order:
+    /// `Aaa` must precede `Zzz`.
+    #[test]
+    fn test_parent_boost_resort_id_tiebreak_ascending() {
+        let mut results = vec![
+            make_result("za", ChunkType::Method, Some("Zzz"), 0.10),
+            make_result("zb", ChunkType::Method, Some("Zzz"), 0.10),
+            make_result("aa", ChunkType::Method, Some("Aaa"), 0.10),
+            make_result("ab", ChunkType::Method, Some("Aaa"), 0.10),
+            make_result("Zzz", ChunkType::Class, None, 0.50),
+            make_result("Aaa", ChunkType::Class, None, 0.50),
+        ];
+        let applied = apply_parent_boost(&mut results);
+        // Both containers get the 2-child boost (1.05) on an identical base
+        // (0.50), so their post-boost scores are bit-identical and only the id
+        // tie-break orders them.
+        assert!(applied.contains_key("Zzz") && applied.contains_key("Aaa"));
+        let pos = |name: &str| results.iter().position(|r| r.chunk.name == name).unwrap();
+        assert!(
+            pos("Aaa") < pos("Zzz"),
+            "equal-score containers must order by id ascending (Aaa before Zzz)"
+        );
+    }
+
     // ===== chunk_importance tests =====
 
     #[test]
@@ -1141,6 +1267,111 @@ mod tests {
         assert!(
             score_boosted > score_plain,
             "Positive note should boost score"
+        );
+    }
+
+    /// Adequacy regression: pin the UPPER bound of NameBlend's
+    /// `name_boost.clamp(0.0, 1.0)`.
+    ///
+    /// `test_score_candidate_name_boost` only feeds `name_boost = 0.3` (inside
+    /// `[0,1]`) and asserts `score > 0.0`, so widening the clamp ceiling
+    /// (`clamp(0.0, 1.0)` → `clamp(0.0, 5.0)`) had no effect — the mutant
+    /// survived. The clamp is documented defense-in-depth: a deserialised
+    /// `name_boost = 5.0` would make `(1 - 5) * current` sign-flip results. We
+    /// feed an out-of-range `name_boost = 5.0` and pin that the blend behaves
+    /// as if it were clamped to exactly 1.0 (→ pure `name_score`), not the
+    /// unclamped `-4*current + 5*name_score`.
+    #[test]
+    fn test_name_blend_clamps_name_boost_above_one() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0); // cosine ≈ 1.0 → base clamps to 1.0
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let matcher = NameMatcher::new("parseConfig");
+
+        // Out-of-range name_boost; only the clamp ceiling stops it from
+        // sign-flipping the blend.
+        let filter = SearchFilter {
+            name_boost: 5.0,
+            query_text: "parseConfig".to_string(),
+            ..Default::default()
+        };
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: Some(&matcher),
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: f32::NEG_INFINITY, // never gate, observe the raw blend
+        };
+
+        // "parse" vs query "parseConfig" is the contained-by tier
+        // (name_score = name_contained_by = 0.6); base ≈ 1.0. With the boost
+        // clamped to 1.0: blend = (1-1)*1 + 1*0.6 = 0.6. With the mutant clamp
+        // to 5.0 and boost 5.0: (1-5)*1 + 5*0.6 = -4 + 3 = -1.0.
+        let score = score_candidate(&emb, Some("parse"), "src/a.rs", &ctx).unwrap();
+
+        let cfg = ScoringConfig::DEFAULT;
+        let expected = cfg.name_contained_by; // 0.6
+        assert!(
+            (score - expected).abs() < 1e-5,
+            "name_boost above 1.0 must clamp to 1.0 (blend → name_score {expected}), got {score}"
+        );
+        // Hard floor: a correctly-clamped blend can never go negative here;
+        // the unclamped mutant produces -1.0.
+        assert!(
+            score >= 0.0,
+            "clamped blend must stay non-negative, got {score}"
+        );
+    }
+
+    /// Adequacy regression: pin the LOWER bound of
+    /// `apply_scoring_pipeline`'s `embedding_score.clamp(0.0, 1.0)`.
+    ///
+    /// No existing test feeds a negative base (cosine) into the pipeline, so
+    /// loosening the floor (`clamp(0.0, 1.0)` → `clamp(-1.0, 1.0)`) survived.
+    /// The floor is documented: a negative base must not contaminate the name
+    /// blend, where the downstream `.max(0.0)` would then silently delete a
+    /// good name-only match. Here the embedding is opposite the query (cosine
+    /// ≈ -1.0) but the name matches exactly. Real code clamps base to 0.0, so
+    /// the name signal survives (score = name_score = 1.0). The mutant keeps
+    /// base = -1.0, blends to `(1-1)*(-1) + 1*1 = 1.0`... so we drop the name
+    /// weight below 1.0 to expose the contamination: with name_boost = 0.5 and
+    /// floored base 0.0 → blend = 0.5*0 + 0.5*1 = 0.5 (survives); with the
+    /// mutant base -1.0 → 0.5*(-1) + 0.5*1 = 0.0, then note `.max(0.0)` floors
+    /// it and the threshold gate drops it (→ None).
+    #[test]
+    fn test_pipeline_clamps_negative_base_floor() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(-1.0); // cosine ≈ -1.0
+        let note_index = NoteBoost::Borrowed(NoteBoostIndex::new(&[]));
+        let matcher = NameMatcher::new("parseConfig");
+
+        let filter = SearchFilter {
+            name_boost: 0.5,
+            query_text: "parseConfig".to_string(),
+            ..Default::default()
+        };
+        let ctx = ScoringContext {
+            query: &query,
+            filter: &filter,
+            name_matcher: Some(&matcher),
+            glob_matcher: None,
+            note_index: &note_index,
+            threshold: 0.25, // floored blend (0.5) clears it; contaminated (0.0) does not
+        };
+
+        // Exact name match → name_score = 1.0. With base floored to 0.0:
+        // blend = (1-0.5)*0 + 0.5*1 = 0.5, survives the threshold.
+        let score = score_candidate(&emb, Some("parseConfig"), "src/a.rs", &ctx);
+        let got = score.expect(
+            "a negative-cosine but exact-name-match candidate must survive — \
+             the base clamp floor (0.0) protects the name signal",
+        );
+        let cfg = ScoringConfig::DEFAULT;
+        let expected = 0.5 * cfg.name_exact; // 0.5
+        assert!(
+            (got - expected).abs() < 1e-5,
+            "floored base → blend equals {expected}, got {got}"
         );
     }
 
