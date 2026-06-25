@@ -122,6 +122,10 @@ pub(crate) fn build_scout_output(
     let mut output = serde_json::to_value(result)?;
     if let Some(cmap) = content_map {
         crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
+    } else {
+        // No --tokens: signature is still relayed on every chunk, so scan it for
+        // injection_flags even though no content body was packed (scan == relayed).
+        crate::cli::commands::scan_chunk_injection_flags_into_json(&mut output);
     }
     // Scout only queries the project store, so every chunk is the default
     // "user-code" — emitted as absence under the skip-when-default trust-signal
