@@ -1704,7 +1704,10 @@ async fn search_legs_forwards_daemon_legs_response() {
     let dir = TempDir::new().expect("tempdir");
     let socket = dir.path().join("daemon.sock");
 
-    // The fake daemon returns a minimal three-leg payload as the `output`.
+    // The fake daemon emits the REAL wire shape: the socket-layer `output` is
+    // the dispatch ENVELOPE (`{"data": <payload>, "error": null, "version": N,
+    // "_meta": …}`), not the bare payload. The handler must peel `data` —
+    // wrapping the payload in the envelope is what exercises that peel.
     let legs_payload = serde_json::json!({
         "query": "parse config",
         "legs": {
@@ -1714,7 +1717,13 @@ async fn search_legs_forwards_daemon_legs_response() {
         },
         "results": [{"chunk_id": "A", "file": "src/lib.rs", "name": "parse_config", "line_start": 1, "line_end": 5}]
     });
-    let daemon_response = serde_json::json!({"status": "ok", "output": legs_payload});
+    let envelope = serde_json::json!({
+        "data": legs_payload,
+        "error": null,
+        "version": 1,
+        "_meta": {"stale_origins": []}
+    });
+    let daemon_response = serde_json::json!({"status": "ok", "output": envelope});
 
     let handle = spawn_fake_daemon(socket.clone(), daemon_response);
     // Give the listener a moment to bind before the request connects.
@@ -1739,9 +1748,22 @@ async fn search_legs_forwards_daemon_legs_response() {
     let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse body JSON");
 
-    // The handler forwards the daemon's `output` verbatim — the three legs are
-    // present at the top level of the response body.
+    // The handler PEELS the dispatch envelope's `data` — the clean
+    // `{query, legs, results}` payload is at the top level of the response body
+    // (no `data`/`error`/`version`/`_meta` envelope keys leak through).
     assert_eq!(body["query"], "parse config");
+    assert!(
+        body.get("data").is_none(),
+        "envelope `data` key must not leak"
+    );
+    assert!(
+        body.get("error").is_none(),
+        "envelope `error` key must not leak"
+    );
+    assert!(
+        body.get("version").is_none(),
+        "envelope `version` key must not leak"
+    );
     assert!(body["legs"]["dense"].is_array(), "dense leg forwarded");
     assert!(body["legs"]["sparse"].is_array(), "sparse leg forwarded");
     assert!(body["legs"]["fused"].is_array(), "fused leg forwarded");
@@ -1759,6 +1781,59 @@ async fn search_legs_forwards_daemon_legs_response() {
     assert_eq!(args[0], "parse config");
     assert!(args.contains(&"--limit".to_string()) && args.contains(&"5".to_string()));
     assert!(args.contains(&"--splade-alpha".to_string()) && args.contains(&"0.4".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_legs_envelope_error_surfaces_as_500() {
+    // A daemon that ran the verb but whose handler failed returns
+    // `status: "ok"` at the socket layer with a non-null `error` *inside* the
+    // dispatch envelope (and a null `data`). The peel must surface that error
+    // as a 500 rather than handing the frontend a 200 with null data.
+    let dir = TempDir::new().expect("tempdir");
+    let socket = dir.path().join("daemon.sock");
+
+    let envelope = serde_json::json!({
+        "data": null,
+        "error": {"code": "internal", "message": "splade index not loaded"},
+        "version": 1
+    });
+    let daemon_response = serde_json::json!({"status": "ok", "output": envelope});
+
+    let handle = spawn_fake_daemon(socket.clone(), daemon_response);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let fixture = fixture_state_with_socket(socket);
+    let state = fixture.state();
+    let app = test_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search_legs?q=parse+config&k=5")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "non-null envelope error must surface as 500, not a 200 with null data"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body JSON");
+    // The error body is the serve `ErrorBody` shape, NOT a 200 legs payload.
+    assert_eq!(body["error"], "internal", "got: {body}");
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("splade index not loaded")),
+        "daemon error message must reach the detail; got: {body}"
+    );
+
+    let _ = handle.join();
 }
 
 // ===== per-launch auth token integration tests =====

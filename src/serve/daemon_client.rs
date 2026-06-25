@@ -17,14 +17,22 @@ use std::path::Path;
 
 use super::error::ServeError;
 
-/// Forward a `search-legs` query to the retrieval daemon and return its parsed
-/// `output` JSON (the [`crate::cli::commands`]-built legs payload).
+/// Forward a `search-legs` query to the retrieval daemon and return the clean
+/// handler payload (`{query, legs, results}`).
+///
+/// The daemon's socket-layer `output` is the dispatch ENVELOPE
+/// (`{"data": <payload>, "error": null, "version": N, "_meta": …}`), not the
+/// payload itself. This function peels it (via the shared
+/// [`crate::daemon_translate::unwrap_dispatch_payload`]) so the web surface
+/// returns the same clean shape as `/api/search` — the caller can `Json`-wrap
+/// it directly.
 ///
 /// Returns [`ServeError::ServiceUnavailable`] when the socket is absent or the
 /// daemon is unresponsive — the caller renders that as a 503 with the
 /// "mechanism mode requires `cqs watch --serve`" hint rather than silently
 /// falling back to a degraded surface. A daemon error response (status != ok)
-/// surfaces as [`ServeError::Internal`].
+/// or a non-null `error` inside the dispatch envelope surfaces as
+/// [`ServeError::Internal`].
 ///
 /// `args` are the argv tokens after the verb (e.g. `["my query", "--limit",
 /// "5"]`). This function builds the request frame, runs the round-trip on the
@@ -108,10 +116,22 @@ pub(crate) fn query_search_legs(
         .map_err(|e| ServeError::Internal(format!("daemon response parse failed: {e}")))?;
 
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("ok") => resp
-            .get("output")
-            .cloned()
-            .ok_or_else(|| ServeError::Internal("daemon ok response missing 'output'".to_string())),
+        Some("ok") => {
+            // The socket-layer `output` is the daemon DISPATCH ENVELOPE
+            // (`{"data": <payload>, "error": null, "version": N, "_meta": …}`),
+            // not the handler payload. Peel it via the shared helper so this
+            // surface matches the rest of the codebase (and `/api/search`):
+            // a non-null envelope `error` surfaces as an error rather than
+            // returning null `data`; otherwise the inner `{query, legs,
+            // results}` payload is returned clean.
+            let output = resp.get("output").ok_or_else(|| {
+                ServeError::Internal("daemon ok response missing 'output'".to_string())
+            })?;
+            crate::daemon_translate::unwrap_dispatch_payload(output, "search-legs").map_err(|e| {
+                tracing::warn!(detail = %e, "search-legs: dispatch envelope carried an error");
+                ServeError::Internal(format!("daemon error: {e}"))
+            })
+        }
         Some(other) => {
             // The daemon ran but the command failed (bad filter flag, embedder
             // error, …). Surface the daemon's message when present.
