@@ -28,7 +28,7 @@ pub(crate) use impact::{
 // re-export in `commands/mod.rs`; production routes through `impact_overlay`.
 #[cfg(test)]
 pub(crate) use impact::impact_core;
-pub(crate) use impact_diff::cmd_impact_diff;
+pub(crate) use impact_diff::{cmd_impact_diff, ImpactDiffArgs as ImpactDiffCoreArgs};
 pub(crate) use test_map::{
     build_test_map_output, cmd_test_map, test_map_core, test_map_cross_core, test_map_max_nodes,
     TestMapArgs as TestMapCoreArgs,

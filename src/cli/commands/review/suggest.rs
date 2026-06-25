@@ -31,10 +31,15 @@ pub(crate) struct SuggestOutput {
 
 /// Input for [`suggest_core`]. The core only computes the read-only suggestion
 /// set; the `--apply` side-effect (write notes + reindex) needs a writable
-/// store and is adapter-owned (CLI only), so it is not a core input. The struct
-/// exists to match the established `*Args` shape and can grow Deserialize-able
-/// fields without a signature change (MCP-ready).
-#[derive(Debug, Default, serde::Deserialize)]
+/// store and is adapter-owned (CLI only), so it is NOT a core input — it is
+/// WITHHELD by absence (the zero-field core), exactly how `cqs_index` withholds
+/// `--force`. So the MCP `cqs_suggest` tool advertises an empty `properties`
+/// object (like `cqs_stats` / `cqs_health`) and `--apply` is unreachable over
+/// the wire. The daemon JSON-args path (`cqs_suggest`) deserializes this as a
+/// shape pre-check, then drops it and forces `args::SuggestArgs { apply: false }`.
+/// Input-only: derives `Deserialize` + `JsonSchema`, never `Serialize` — the
+/// command's JSON OUTPUT is the separate `SuggestOutput`.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub(crate) struct SuggestArgs {}
 
 /// Surface-agnostic core for `cqs suggest`. Detects note-worthy patterns and

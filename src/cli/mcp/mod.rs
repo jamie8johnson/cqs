@@ -148,11 +148,11 @@ mod tests {
     ///
     /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
     /// equal the daemon's JSON-args-capable read command set MINUS the withheld
-    /// set — 26 read tools (the zero-arg `stats`/`health`, the Phase-2
-    /// `where`/`related`/`stale`, the Phase-3 overlay-capable `task`, and the
-    /// read-only `notes`), zero mutation delta. Fails if a JSON-args command is
-    /// added/removed without updating the MCP surface, or if a withheld command
-    /// leaks into `tools/list`.
+    /// set — 28 read tools (the zero-arg `stats`/`health`, the Phase-2
+    /// `where`/`related`/`stale`, the Phase-3 overlay-capable `task`, the
+    /// read-only `notes`, and the Phase-4 `suggest`/`impact-diff`), zero mutation
+    /// delta. Fails if a JSON-args command is added/removed without updating the
+    /// MCP surface, or if a withheld command leaks into `tools/list`.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn tools_list_matches_json_args_registry() {
@@ -164,18 +164,18 @@ mod tests {
             "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
              withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
         );
-        // The flag-off read surface = exactly 26 read tools.
+        // The flag-off read surface = exactly 28 read tools.
         assert_eq!(
             exposed.len(),
-            26,
-            "flag-off tools/list must expose 26 tools"
+            28,
+            "flag-off tools/list must expose 28 tools"
         );
     }
 
     /// Flag-gating guard: the mutation tools are present IFF
     /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
     /// read set PLUS exactly the three notes mutators AND the fire-and-forget
-    /// `index` (30 total).
+    /// `index` (32 total).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn mutation_tools_present_iff_flag_set() {
@@ -207,7 +207,7 @@ mod tests {
                 "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
                  and the index queue tool"
             );
-            assert_eq!(on.len(), 30, "flag-on tools/list must expose 30 tools");
+            assert_eq!(on.len(), 32, "flag-on tools/list must expose 32 tools");
         }
     }
 

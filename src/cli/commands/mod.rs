@@ -81,7 +81,7 @@ pub(crate) use graph::{
     callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
     impact_cross_core, impact_overlay, test_map_core, test_map_cross_core, test_map_max_nodes,
     trace_core, trace_cross_core, trace_max_nodes, CalleesArgs, CallersCoreArgs, DepsCoreArgs,
-    ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    ImpactCoreArgs, ImpactDiffCoreArgs, TestMapCoreArgs, TraceCoreArgs,
 };
 // The no-overlay callers/callees/impact cores. Production dispatch routes through
 // the `*_overlay` variants above (Part B); these plain entry points are consumed
