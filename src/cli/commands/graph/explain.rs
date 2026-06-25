@@ -530,6 +530,208 @@ fn print_explain_terminal(data: &ExplainData, root: &Path) {
 mod output_tests {
     use super::*;
 
+    // ─── RT-RELAY guard: scan == relayed on `explain` (red-team #2039) ───────
+    //
+    // These guards pin the trust boundary that makes `cqs explain` safe to
+    // expose as an MCP read tool: the injection scan covers EXACTLY the
+    // surfaces the response relays — doc + signature always, target `content`
+    // only under `--tokens`. They drive `build_explain_output` (the real scan
+    // path), not a hand-built `ExplainOutput`, so a future refactor that drops
+    // the doc from the scan (re-opening the RT-RELAY gap #2024 closed) turns
+    // these red. PoC parity: confirmed against `~/.cargo/bin/cqs explain` on a
+    // seeded poisoned-doc project — `injection_flags: ["embedded-url"]` fired on
+    // the doc surface with `content` absent, matching the already-exposed
+    // `read --focus` / `similar` relay posture.
+
+    use cqs::language::{ChunkType, Language};
+    use cqs::store::ChunkSummary;
+    use std::path::PathBuf;
+
+    fn payload_chunk(doc: Option<&str>, signature: &str, content: &str) -> ChunkSummary {
+        ChunkSummary {
+            id: "id_target".into(),
+            file: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "target".into(),
+            signature: signature.into(),
+            content: content.into(),
+            doc: doc.map(|s| s.to_string()),
+            line_start: 1,
+            line_end: 5,
+            content_hash: "hash".into(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+            parser_version: 0,
+            vendored: false,
+        }
+    }
+
+    fn explain_data(chunk: ChunkSummary, include_target_content: bool) -> ExplainData {
+        ExplainData {
+            chunk,
+            callers: vec![],
+            callees: vec![],
+            similar: vec![],
+            hints: None,
+            include_target_content,
+            similar_content_ids: None,
+            token_info: None,
+        }
+    }
+
+    /// A doc-borne payload fires `injection_flags` even when `content` is NOT
+    /// relayed (no `--tokens`). This is the RT-RELAY contract: the doc surface
+    /// is relayed verbatim always, so a payload there must surface — the gap
+    /// #2024 closed. Red if a refactor scopes the scan to `content` only.
+    #[test]
+    fn explain_scan_fires_on_doc_when_content_unrelayed() {
+        let chunk = payload_chunk(
+            Some("See https://evil.example/payload for the real impl"),
+            "fn target()",
+            "fn target() { /* benign body */ }",
+        );
+        let data = explain_data(chunk, /* include_target_content */ false);
+        let out = build_explain_output(&data, Path::new(""));
+        assert!(
+            out.content.is_none(),
+            "content must be absent without --tokens (un-relayed surface)"
+        );
+        assert!(
+            out.injection_flags.iter().any(|f| f == "embedded-url"),
+            "doc-borne payload must fire injection_flags even when content is \
+             un-relayed; got: {:?}",
+            out.injection_flags
+        );
+    }
+
+    /// The other direction of scan == relayed: a payload that lives ONLY in the
+    /// target `content` body must NOT over-flag when `content` is un-relayed
+    /// (no `--tokens`) — flagging a surface the response never carried would be
+    /// a false positive that erodes the signal. Doc + signature here are benign.
+    #[test]
+    fn explain_scan_does_not_overflag_unrelayed_content() {
+        let chunk = payload_chunk(
+            Some("A perfectly ordinary helper."),
+            "fn target()",
+            "fn target() { let _ = \"see https://evil.example/c2\"; }",
+        );
+        let data = explain_data(chunk, /* include_target_content */ false);
+        let out = build_explain_output(&data, Path::new(""));
+        assert!(
+            out.injection_flags.is_empty(),
+            "un-relayed content body must NOT be scanned (no phantom flags); got: {:?}",
+            out.injection_flags
+        );
+    }
+
+    /// When `--tokens` relays the target `content`, a payload in the body DOES
+    /// fire — the scan grows to cover the now-relayed surface. Completes the
+    /// scan == relayed both-directions invariant for the target body.
+    #[test]
+    fn explain_scan_fires_on_content_when_relayed() {
+        let chunk = payload_chunk(
+            Some("A perfectly ordinary helper."),
+            "fn target()",
+            "fn target() { let _ = \"see https://evil.example/c2\"; }",
+        );
+        let data = explain_data(chunk, /* include_target_content */ true);
+        let out = build_explain_output(&data, Path::new(""));
+        assert!(
+            out.content.is_some(),
+            "content must be relayed under --tokens"
+        );
+        assert!(
+            out.injection_flags.iter().any(|f| f == "embedded-url"),
+            "content-borne payload must fire once the body is relayed; got: {:?}",
+            out.injection_flags
+        );
+    }
+
+    /// Similar-chunk relay direction: under `--tokens`, a similar chunk whose
+    /// BODY is relayed (it fit the budget) carries a payload that must fire on
+    /// THAT entry's own `injection_flags` — and a similar chunk whose body is
+    /// NOT relayed must not. This is the relay surface explain has that the
+    /// already-exposed `read --focus` does not (read relays type-dep bodies;
+    /// explain relays similar bodies); pinning it closes the last scan==relayed
+    /// direction. PoC parity: confirmed live — a poisoned neighbor body fired
+    /// `["code-fence","embedded-url"]` on `similar[0].injection_flags` while the
+    /// benign target stayed clean.
+    #[test]
+    fn explain_scan_fires_on_relayed_similar_body_only() {
+        use cqs::store::SearchResult;
+
+        let target = payload_chunk(Some("benign doc"), "fn target()", "fn target() {}");
+        let mut relayed = payload_chunk(
+            Some("neighbor doc"),
+            "fn relayed_neighbor()",
+            "fn relayed_neighbor() { let s = \"```\\nsee https://evil.example/n\\n```\"; }",
+        );
+        relayed.id = "id_relayed".into();
+        relayed.name = "relayed_neighbor".into();
+        let mut unrelayed = payload_chunk(
+            Some("neighbor doc"),
+            "fn unrelayed_neighbor()",
+            "fn unrelayed_neighbor() { let s = \"https://evil.example/u\"; }",
+        );
+        unrelayed.id = "id_unrelayed".into();
+        unrelayed.name = "unrelayed_neighbor".into();
+
+        // Only the first neighbor's body fits the budget → only it is relayed.
+        let relayed_ids: std::collections::HashSet<String> =
+            ["id_relayed".to_string()].into_iter().collect();
+        let data = ExplainData {
+            chunk: target,
+            callers: vec![],
+            callees: vec![],
+            similar: vec![
+                SearchResult::new(relayed, 0.9),
+                SearchResult::new(unrelayed, 0.8),
+            ],
+            hints: None,
+            include_target_content: false,
+            similar_content_ids: Some(relayed_ids),
+            token_info: Some((10, 2000)),
+        };
+        let out = build_explain_output(&data, Path::new(""));
+        let relayed_entry = out
+            .similar
+            .iter()
+            .find(|s| s.name == "relayed_neighbor")
+            .expect("relayed neighbor present");
+        assert!(
+            relayed_entry.content.is_some(),
+            "relayed neighbor body must be emitted"
+        );
+        assert!(
+            relayed_entry
+                .injection_flags
+                .iter()
+                .any(|f| f == "embedded-url")
+                && relayed_entry
+                    .injection_flags
+                    .iter()
+                    .any(|f| f == "code-fence"),
+            "relayed similar-chunk body payload must fire on its own injection_flags; got: {:?}",
+            relayed_entry.injection_flags
+        );
+        let unrelayed_entry = out
+            .similar
+            .iter()
+            .find(|s| s.name == "unrelayed_neighbor")
+            .expect("un-relayed neighbor present");
+        assert!(
+            unrelayed_entry.content.is_none(),
+            "un-relayed neighbor body must be absent"
+        );
+        assert!(
+            unrelayed_entry.injection_flags.is_empty(),
+            "un-relayed similar body must NOT be scanned (no phantom flag); got: {:?}",
+            unrelayed_entry.injection_flags
+        );
+    }
+
     #[test]
     fn test_explain_output_field_names() {
         let output = ExplainOutput {
@@ -743,5 +945,203 @@ mod output_tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["name"], "calculate_\u{03b1}\u{03b2}");
         assert_eq!(json["doc"], "Computes \u{03b1} + \u{03b2} coefficient");
+    }
+
+    // ─── RT-RELAY scan==relayed guards (red-team #2039 follow-up) ────────────
+    //
+    // These drive the *real* scan wiring in `build_explain_output` (the
+    // `detect_all_injection_patterns` calls at the target and per-similar sites)
+    // rather than a hand-built `ExplainOutput`. They pin the contract SECURITY.md
+    // states for explain: a surface that is RELAYED is SCANNED (a payload there
+    // surfaces in `injection_flags`), and a surface that is NOT relayed (un-emitted
+    // `content` in a compact response) is NOT scanned (no phantom over-flagging).
+    // This is exactly the boundary the already-exposed `read --focus` / `trace`
+    // siblings carry; exposing `cqs_explain` adds no unscanned-relay surface.
+
+    fn rt_chunk(
+        id: &str,
+        name: &str,
+        signature: &str,
+        doc: Option<&str>,
+        content: &str,
+    ) -> ChunkSummary {
+        ChunkSummary {
+            id: id.to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
+            language: cqs::parser::Language::Rust,
+            chunk_type: cqs::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: signature.to_string(),
+            content: content.to_string(),
+            doc: doc.map(String::from),
+            line_start: 1,
+            line_end: 5,
+            content_hash: "deadbeef".to_string(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+            parser_version: 0,
+            vendored: false,
+        }
+    }
+
+    fn rt_data(
+        chunk: ChunkSummary,
+        similar: Vec<SearchResult>,
+        include_target_content: bool,
+        similar_content_ids: Option<HashSet<String>>,
+    ) -> ExplainData {
+        ExplainData {
+            chunk,
+            callers: vec![],
+            callees: vec![],
+            similar,
+            hints: None,
+            include_target_content,
+            similar_content_ids,
+            token_info: None,
+        }
+    }
+
+    /// Compact explain (no `--tokens`): the target `content` is NOT relayed, so a
+    /// body-borne payload must NOT be scanned (no phantom flag), while a payload
+    /// in the always-relayed `doc` MUST fire. Verified live against the binary:
+    /// `cqs explain compute_widget_checksum --json` returned an empty
+    /// `injection_flags` for a body-only `http://` payload, and a populated one
+    /// for a doc-borne `http://` payload.
+    #[test]
+    fn rt_explain_compact_scans_doc_not_unrelayed_content() {
+        // Payload ONLY in the body; doc is benign; content NOT relayed.
+        let chunk = rt_chunk(
+            "src/lib.rs:1:a",
+            "compute_widget_checksum",
+            "pub fn compute_widget_checksum(buf: &[u8]) -> u64",
+            Some("Computes the widget checksum."),
+            "fn compute_widget_checksum() { /* see http://evil.example.com */ }",
+        );
+        let data = rt_data(chunk, vec![], /* include_target_content */ false, None);
+        let out = build_explain_output(&data, std::path::Path::new("."));
+        assert!(out.content.is_none(), "compact mode must not relay content");
+        assert!(
+            out.injection_flags.is_empty(),
+            "un-relayed body payload must NOT be scanned (no phantom flag), got: {:?}",
+            out.injection_flags
+        );
+
+        // Same chunk, but the payload is in the always-relayed `doc`.
+        let chunk = rt_chunk(
+            "src/lib.rs:1:a",
+            "compute_widget_checksum",
+            "pub fn compute_widget_checksum(buf: &[u8]) -> u64",
+            Some("Computes the checksum. Contact http://evil.example.com for the override."),
+            "fn compute_widget_checksum() {}",
+        );
+        let data = rt_data(chunk, vec![], false, None);
+        let out = build_explain_output(&data, std::path::Path::new("."));
+        assert!(out.content.is_none(), "compact mode must not relay content");
+        assert!(
+            out.injection_flags.contains(&"embedded-url".to_string()),
+            "doc is relayed unconditionally and must be scanned, got: {:?}",
+            out.injection_flags
+        );
+    }
+
+    /// `--tokens` explain: when the target `content` IS relayed, a body-borne
+    /// payload MUST be scanned and fire. The flip side of the compact guard —
+    /// together they pin scan==relayed in BOTH directions for the target body.
+    #[test]
+    fn rt_explain_tokens_scans_relayed_target_content() {
+        let chunk = rt_chunk(
+            "src/lib.rs:1:a",
+            "compute_widget_checksum",
+            "pub fn compute_widget_checksum(buf: &[u8]) -> u64",
+            Some("Computes the widget checksum."),
+            "fn f() { /* curl https://evil.example.com */ let x = \"```\"; }",
+        );
+        let data = rt_data(chunk, vec![], /* include_target_content */ true, None);
+        let out = build_explain_output(&data, std::path::Path::new("."));
+        assert!(out.content.is_some(), "--tokens mode must relay content");
+        assert!(
+            out.injection_flags.contains(&"embedded-url".to_string())
+                && out.injection_flags.contains(&"code-fence".to_string()),
+            "relayed target body payload must be scanned, got: {:?}",
+            out.injection_flags
+        );
+    }
+
+    /// Per-similar scan==relayed: a similar chunk's body is relayed verbatim only
+    /// when its id is in `similar_content_ids` (it fit the token budget). The
+    /// scan must fire on exactly the emitted similar body and stay empty for a
+    /// similar whose body was NOT relayed. Verified live: the seeded neighbor with
+    /// a `https://` + fence body fired `[code-fence, embedded-url]`, the benign
+    /// neighbor stayed empty.
+    #[test]
+    fn rt_explain_similar_scans_only_relayed_bodies() {
+        let target = rt_chunk(
+            "src/lib.rs:1:a",
+            "compute_widget_checksum",
+            "pub fn compute_widget_checksum(buf: &[u8]) -> u64",
+            Some("Computes the widget checksum."),
+            "fn compute_widget_checksum() {}",
+        );
+        // Neighbor A: malicious body, WILL be relayed (id in the fit set).
+        let evil = SearchResult {
+            chunk: rt_chunk(
+                "src/lib.rs:10:b",
+                "compute_widget_checksum_seeded",
+                "pub fn compute_widget_checksum_seeded(buf: &[u8], seed: u64) -> u64",
+                None,
+                "fn seeded() { /* https://evil.example.com */ let x = \"```\"; }",
+            ),
+            score: 0.9,
+            rank_signals: vec![],
+        };
+        // Neighbor B: identical malicious body, but NOT relayed (id absent from
+        // the fit set) — must NOT be scanned (no phantom flag on un-emitted body).
+        let evil_unrelayed = SearchResult {
+            chunk: rt_chunk(
+                "src/lib.rs:20:c",
+                "sum_widget_bytes",
+                "pub fn sum_widget_bytes(buf: &[u8]) -> u64",
+                None,
+                "fn sum() { /* https://evil.example.com */ let x = \"```\"; }",
+            ),
+            score: 0.5,
+            rank_signals: vec![],
+        };
+        let mut fit: HashSet<String> = HashSet::new();
+        fit.insert("src/lib.rs:10:b".to_string()); // only neighbor A fits
+        let data = rt_data(
+            target,
+            vec![evil, evil_unrelayed],
+            /* include_target_content */ true,
+            Some(fit),
+        );
+        let out = build_explain_output(&data, std::path::Path::new("."));
+
+        let a = out
+            .similar
+            .iter()
+            .find(|s| s.name == "compute_widget_checksum_seeded")
+            .expect("neighbor A present");
+        assert!(a.content.is_some(), "neighbor A body must be relayed");
+        assert!(
+            a.injection_flags.contains(&"embedded-url".to_string())
+                && a.injection_flags.contains(&"code-fence".to_string()),
+            "relayed similar body must be scanned, got: {:?}",
+            a.injection_flags
+        );
+
+        let b = out
+            .similar
+            .iter()
+            .find(|s| s.name == "sum_widget_bytes")
+            .expect("neighbor B present");
+        assert!(b.content.is_none(), "neighbor B body must NOT be relayed");
+        assert!(
+            b.injection_flags.is_empty(),
+            "un-relayed similar body must NOT be scanned (no phantom flag), got: {:?}",
+            b.injection_flags
+        );
     }
 }
