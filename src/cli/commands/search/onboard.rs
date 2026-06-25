@@ -82,6 +82,11 @@ pub(crate) fn onboard_core(
             crate::cli::commands::fetch_and_pack_content(store, embedder, &named_items, budget);
         crate::cli::commands::inject_content_into_onboard_json(&mut output, &content_map, &result);
         crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
+    } else {
+        // OnboardEntry.content is serialized verbatim on every entry regardless of
+        // --tokens, so scan the relayed signature + content for injection_flags
+        // even when no packing ran (scan == relayed).
+        crate::cli::commands::scan_chunk_injection_flags_into_json(&mut output);
     }
 
     // Onboard only queries the project store, so every chunk is the default
