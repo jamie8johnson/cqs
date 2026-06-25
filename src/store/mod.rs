@@ -1749,6 +1749,36 @@ impl<Mode> Store<Mode> {
             Ok(())
         })
     }
+
+    /// Best-effort, non-blocking WAL drain: `PRAGMA wal_checkpoint(PASSIVE)`,
+    /// bounded by a short timeout, with every failure mode swallowed.
+    ///
+    /// PASSIVE never acquires SQLite's EXCLUSIVE lock — it checkpoints only the
+    /// frames no other connection is still reading and returns immediately
+    /// rather than waiting — so it cannot stall against a live `cqs watch`
+    /// daemon the way TRUNCATE can. Used before staging a sequential file copy
+    /// of the DB for the UMAP projection: it pushes buffered committed pages
+    /// from the WAL into the main file so the copy is more complete, but the
+    /// copy also captures the `-wal`/`-shm` sidecars, so a partial (or skipped)
+    /// drain is harmless — the copy's WAL replay recovers the committed state
+    /// regardless. Hence every error/timeout is a `debug!`, never fatal.
+    pub fn checkpoint_passive_best_effort(&self) {
+        let _span = tracing::debug_span!("store_checkpoint_passive").entered();
+        self.rt.block_on(async {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(&self.pool),
+            )
+            .await;
+            match result {
+                Ok(Ok(_)) => tracing::debug!("WAL checkpoint (PASSIVE) completed"),
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "PASSIVE checkpoint failed (non-fatal)")
+                }
+                Err(_) => tracing::debug!("PASSIVE checkpoint timed out (non-fatal)"),
+            }
+        });
+    }
 }
 
 /// Split a SQL script into individual statements, honoring `CREATE TRIGGER
