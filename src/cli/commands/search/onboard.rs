@@ -84,8 +84,10 @@ pub(crate) fn onboard_core(
         crate::cli::commands::inject_token_info(&mut output, Some((used, budget)));
     }
 
-    // Onboard only queries the project store — every chunk is user-code.
-    crate::cli::commands::tag_user_code_trust_level(&mut output);
+    // Onboard only queries the project store, so every chunk is the default
+    // "user-code" — emitted as absence under the skip-when-default trust-signal
+    // convention (a non-default value would have to come from a reference store,
+    // which onboard never fans into). No injection needed.
     Ok(output)
 }
 

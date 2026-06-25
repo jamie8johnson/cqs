@@ -123,8 +123,10 @@ pub(crate) fn build_scout_output(
     if let Some(cmap) = content_map {
         crate::cli::commands::inject_content_into_scout_json(&mut output, cmap);
     }
-    // Scout only queries the project store — every chunk is user-code.
-    crate::cli::commands::tag_user_code_trust_level(&mut output);
+    // Scout only queries the project store, so every chunk is the default
+    // "user-code" — emitted as absence under the skip-when-default trust-signal
+    // convention (a non-default value would have to come from a reference store,
+    // which scout never fans into). No injection needed.
     crate::cli::commands::inject_token_info(&mut output, token_info);
     Ok(output)
 }
@@ -502,5 +504,56 @@ mod tests {
 
         assert_eq!(json_val["token_count"], 0);
         assert_eq!(json_val["token_budget"], 0);
+    }
+
+    /// Skip-when-default trust signals: scout queries only the project store,
+    /// so every chunk is the default "user-code" — emitted as *absence* of the
+    /// `trust_level` key (and absence of `injection_flags`), matching the
+    /// per-chunk search shape, `read`'s focused output, and SECURITY.md's
+    /// trust-signal contract. A non-default value never reaches scout (no
+    /// reference-store fan-in), so the field is always absent here.
+    #[test]
+    fn scout_output_skips_default_trust_signals() {
+        use cqs::language::ChunkType;
+        use cqs::{ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary};
+        use std::path::PathBuf;
+
+        let result = ScoutResult {
+            file_groups: vec![FileGroup {
+                file: PathBuf::from("src/lib.rs"),
+                relevance_score: 0.9,
+                chunks: vec![ScoutChunk {
+                    name: "process".to_string(),
+                    chunk_type: ChunkType::Function,
+                    signature: "fn process()".to_string(),
+                    line_start: 10,
+                    role: ChunkRole::ModifyTarget,
+                    caller_count: 2,
+                    test_count: 1,
+                    search_score: 0.8,
+                    rank_signals: Vec::new(),
+                }],
+                is_stale: false,
+            }],
+            relevant_notes: Vec::new(),
+            summary: ScoutSummary {
+                total_files: 1,
+                total_functions: 1,
+                untested_count: 0,
+                stale_count: 0,
+            },
+        };
+
+        let output = super::build_scout_output(&result, None, None).expect("build_scout_output");
+        let chunk = &output["file_groups"][0]["chunks"][0];
+        assert_eq!(chunk["name"], "process");
+        assert!(
+            chunk.get("trust_level").is_none(),
+            "user-code chunk must omit trust_level (skip-when-default), got: {output}"
+        );
+        assert!(
+            chunk.get("injection_flags").is_none(),
+            "scout chunk with no fired heuristic must omit injection_flags, got: {output}"
+        );
     }
 }

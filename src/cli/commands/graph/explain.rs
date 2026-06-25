@@ -225,17 +225,27 @@ pub(crate) struct ExplainOutput {
     pub token_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
-    /// Every chunk-returning JSON output carries a trust_level. `cqs explain`
-    /// reads from the project store; a vendored target downgrades to
-    /// "vendored-code", everything else is "user-code". SECURITY.md contract.
+    /// `cqs explain` reads from the project store; a vendored target downgrades
+    /// to "vendored-code", everything else is the default "user-code".
+    /// Skip-when-default (absence means "user-code"), per the SECURITY.md
+    /// trust-signal contract and the per-chunk search shape.
+    #[serde(skip_serializing_if = "is_user_code")]
     pub trust_level: &'static str,
     /// Per-chunk injection-heuristic flags scanned over exactly the relayed
     /// surfaces: `doc` and `signature` always, `content` only when it is
     /// emitted (`--tokens`). A doc-borne payload must surface here, not just a
     /// content-borne one; an un-relayed surface must not, so the flags never
-    /// over-report on text the response did not carry. Empty `Vec<String>`
-    /// reflects "no heuristics fired".
+    /// over-report on text the response did not carry. Skip-when-empty (no
+    /// heuristic fired — the common case), matching the search/read carry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub injection_flags: Vec<String>,
+}
+
+/// `serde` skip predicate: a `"user-code"` trust level is the default and is
+/// omitted from the wire shape, matching the per-chunk search skip-when-default
+/// rule and `read`'s `FocusedReadJsonOutput`.
+fn is_user_code(level: &&'static str) -> bool {
+    *level == "user-code"
 }
 
 /// Build typed explain output from explain data.
@@ -550,6 +560,52 @@ mod output_tests {
         assert!(json.get("hints").is_none());
         assert!(json.get("token_count").is_none());
         assert!(json.get("token_budget").is_none());
+        // Skip-when-default trust signals: user-code + no fired heuristic omit
+        // both keys (absence means the default), matching the search/read shape.
+        assert!(
+            json.get("trust_level").is_none(),
+            "user-code explain omits trust_level (skip-when-default), got: {json}"
+        );
+        assert!(
+            json.get("injection_flags").is_none(),
+            "benign explain omits injection_flags (skip-when-empty), got: {json}"
+        );
+    }
+
+    /// Non-default trust signals serialize: a vendored target emits
+    /// `trust_level: "vendored-code"` and a fired heuristic emits a populated
+    /// `injection_flags` array. Pins the other half of skip-when-default.
+    #[test]
+    fn test_explain_output_emits_nondefault_trust_signals() {
+        let output = ExplainOutput {
+            name: "vendored_fn".into(),
+            file: "vendor/lib.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            chunk_type: "function".into(),
+            language: "rust".into(),
+            signature: "fn vendored_fn()".into(),
+            doc: None,
+            content: None,
+            callers: vec![],
+            callees: vec![],
+            similar: vec![],
+            hints: None,
+            token_count: None,
+            token_budget: None,
+            trust_level: "vendored-code",
+            injection_flags: vec!["embedded-url".into()],
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(
+            json["trust_level"], "vendored-code",
+            "non-default trust_level must serialize"
+        );
+        let flags = json["injection_flags"]
+            .as_array()
+            .expect("non-empty injection_flags must serialize as an array");
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0], "embedded-url");
     }
 
     #[test]
