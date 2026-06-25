@@ -6,6 +6,38 @@ use std::path::Path;
 
 use anyhow::Result;
 
+// ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
+
+/// Input for the `related` co-occurrence query — the request-shaped knobs both
+/// the CLI (`cmd_related`) and the MCP `cqs_related` tool deserialize into. The
+/// store and root come from the adapter; these are the request settings.
+///
+/// Input-only: it derives `Deserialize` + `JsonSchema` for the wire, never
+/// `Serialize`. The command's JSON OUTPUT is the separate `RelatedOutput`, so
+/// adding these derives cannot change the output wire shape.
+///
+/// `#[serde(default)]` so a wire caller can supply just `name` and inherit the
+/// production default (`limit` mirrors clap's `LimitArg`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct RelatedArgs {
+    /// Function name or `file:function`.
+    pub name: String,
+    /// Per-category cap on related entries (clamped to `RELATED_LIMIT_MAX` in
+    /// the adapter).
+    pub limit: usize,
+}
+
+impl Default for RelatedArgs {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            // Mirrors clap `LimitArg` default (5).
+            limit: crate::cli::args::DEFAULT_LIMIT,
+        }
+    }
+}
+
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// A single related-function entry in the JSON output.
@@ -147,6 +179,19 @@ mod tests {
             line,
             overlap_count: overlap,
         }
+    }
+
+    /// The core deserializes from a wire object and applies serde defaults for
+    /// an omitted `limit` (MCP supplies only `name`).
+    #[test]
+    fn related_args_deserialize_applies_defaults() {
+        let only_name: RelatedArgs = serde_json::from_str(r#"{"name":"foo"}"#).unwrap();
+        assert_eq!(only_name.name, "foo");
+        assert_eq!(only_name.limit, crate::cli::args::DEFAULT_LIMIT);
+        let full: RelatedArgs = serde_json::from_str(r#"{"name":"bar","limit":7}"#).unwrap();
+        assert_eq!(full.limit, 7);
+        // Empty object is valid (name defaults to empty).
+        let _empty: RelatedArgs = serde_json::from_str("{}").unwrap();
     }
 
     #[test]

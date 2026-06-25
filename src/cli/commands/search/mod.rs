@@ -4,11 +4,11 @@ pub(crate) mod gather;
 mod neighbors;
 pub(crate) mod onboard;
 pub(crate) mod query;
-mod related;
+pub(crate) mod related;
 pub(crate) mod scout;
 pub(crate) mod search_ctx;
 pub(crate) mod similar;
-mod where_cmd;
+pub(crate) mod where_cmd;
 
 pub(crate) use gather::{build_gather_output, cmd_gather, GatherContext};
 pub(crate) use neighbors::cmd_neighbors;

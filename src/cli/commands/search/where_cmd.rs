@@ -8,6 +8,38 @@ use anyhow::Result;
 
 use cqs::suggest_placement;
 
+// ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
+
+/// Input for the `where` placement query — the request-shaped knobs both the
+/// CLI (`cmd_where`) and the MCP `cqs_where` tool deserialize into. The store,
+/// embedder, and root come from the adapter; these are the request settings.
+///
+/// Input-only: it derives `Deserialize` + `JsonSchema` for the wire, never
+/// `Serialize`. The command's JSON OUTPUT is the separate `WhereOutput`, so
+/// adding these derives cannot change the output wire shape.
+///
+/// `#[serde(default)]` so a wire caller can supply just `description` and
+/// inherit the production default (`limit` mirrors clap's `LimitArg`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct WhereArgs {
+    /// Natural-language description of the code to add.
+    pub description: String,
+    /// Cap on placement suggestions (clamped to `PLACEMENT_LIMIT_CAP` in the
+    /// adapter).
+    pub limit: usize,
+}
+
+impl Default for WhereArgs {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            // Mirrors clap `LimitArg` default (5).
+            limit: crate::cli::args::DEFAULT_LIMIT,
+        }
+    }
+}
+
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// Patterns detected in a suggested file.
@@ -161,6 +193,19 @@ mod tests {
                 has_inline_tests: true,
             },
         }
+    }
+
+    /// The core deserializes from a wire object and applies serde defaults for
+    /// an omitted `limit` (MCP supplies only `description`).
+    #[test]
+    fn where_args_deserialize_applies_defaults() {
+        let only_desc: WhereArgs = serde_json::from_str(r#"{"description":"add X"}"#).unwrap();
+        assert_eq!(only_desc.description, "add X");
+        assert_eq!(only_desc.limit, crate::cli::args::DEFAULT_LIMIT);
+        let full: WhereArgs = serde_json::from_str(r#"{"description":"add Y","limit":3}"#).unwrap();
+        assert_eq!(full.limit, 3);
+        // Empty object is valid (description defaults to empty).
+        let _empty: WhereArgs = serde_json::from_str("{}").unwrap();
     }
 
     #[test]

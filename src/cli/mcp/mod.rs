@@ -148,10 +148,10 @@ mod tests {
     ///
     /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
     /// equal the daemon's JSON-args-capable read command set MINUS the withheld
-    /// set — 21 read tools (the original 19 plus the zero-arg `stats`/`health`),
-    /// zero mutation delta. Fails if a JSON-args command is added/removed
-    /// without updating the MCP surface, or if a withheld command leaks into
-    /// `tools/list`.
+    /// set — 24 read tools (the zero-arg `stats`/`health` plus the Phase-2
+    /// `where`/`related`/`stale`), zero mutation delta. Fails if a JSON-args
+    /// command is added/removed without updating the MCP surface, or if a
+    /// withheld command leaks into `tools/list`.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn tools_list_matches_json_args_registry() {
@@ -163,18 +163,18 @@ mod tests {
             "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
              withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
         );
-        // The flag-off read surface = exactly 21 read tools.
+        // The flag-off read surface = exactly 24 read tools.
         assert_eq!(
             exposed.len(),
-            21,
-            "flag-off tools/list must expose 21 tools"
+            24,
+            "flag-off tools/list must expose 24 tools"
         );
     }
 
     /// Flag-gating guard: the mutation tools are present IFF
     /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
     /// read set PLUS exactly the three notes mutators AND the fire-and-forget
-    /// `index` (25 total).
+    /// `index` (28 total).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn mutation_tools_present_iff_flag_set() {
@@ -206,7 +206,7 @@ mod tests {
                 "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
                  and the index queue tool"
             );
-            assert_eq!(on.len(), 25, "flag-on tools/list must expose 25 tools");
+            assert_eq!(on.len(), 28, "flag-on tools/list must expose 28 tools");
         }
     }
 
