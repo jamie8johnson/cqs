@@ -194,8 +194,10 @@ pub(in crate::cli::batch) fn dispatch_review(
     cqs::worktree_overlay::clear_overlay_meta();
 
     // Thin adapter over the shared `review_overlay` — same schema + budgeting as
-    // the CLI JSON surface. Adapter owns diff I/O (git only, no stdin).
-    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    // the CLI JSON surface. Adapter owns diff I/O (git only, no stdin). The diff
+    // runs in the served project (`ctx.root`), NOT the daemon's launch cwd, so a
+    // daemon serving a project from elsewhere reviews the right tree.
+    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
     // Resolve the worktree overlay (Part B PR3): merges the direct-callers
     // section. `None` ⇒ parent-truth (the default).
     let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
@@ -238,8 +240,9 @@ pub(in crate::cli::batch) fn dispatch_ci(
 
     // Thin adapter over the shared `ci_overlay` — same schema + budgeting as the
     // CLI JSON surface. Gate failure is reported in the JSON (no exit) because
-    // the batch session must continue. Adapter owns diff I/O (git only).
-    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    // the batch session must continue. Adapter owns diff I/O (git only). The diff
+    // runs in the served project (`ctx.root`), NOT the daemon's launch cwd.
+    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
     // Resolve the worktree overlay: merges BOTH the embedded review's
     // direct-callers section and the dead_in_diff set. `None` ⇒ parent-truth.
     let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
