@@ -318,6 +318,21 @@ pub(crate) async fn search_legs(
         }
     };
 
+    search_legs_dispatch(state, socket, params).await
+}
+
+/// The daemon round-trip half of [`search_legs`], split out so the unix-only
+/// daemon-client path can be cfg-gated independently of the request validation
+/// above. The daemon client speaks a Unix domain socket (`std::os::unix::net`),
+/// so on non-unix this whole path compiles out and returns the same 503 the
+/// daemon-down path returns — there is no daemon to reach until the named-pipe
+/// Windows transport exists.
+#[cfg(unix)]
+async fn search_legs_dispatch(
+    state: AppState,
+    socket: std::sync::Arc<std::path::PathBuf>,
+    params: SearchLegsQuery,
+) -> Result<Json<serde_json::Value>, ServeError> {
     // Build the daemon argv: the verb is supplied by the client; these are the
     // tokens after it. Clamp `k` to the same bound the name-search handler uses.
     let k = params.k.clamp(1, 200);
@@ -347,6 +362,22 @@ pub(crate) async fn search_legs(
 
     tracing::info!("serve::search_legs forwarded to daemon");
     Ok(Json(output))
+}
+
+/// Non-unix stand-in for [`search_legs_dispatch`]: the retrieval daemon is
+/// reached over a Unix domain socket, which does not exist on this platform, so
+/// mechanism mode is structurally unavailable and the endpoint returns a clean
+/// 503 rather than failing to compile.
+#[cfg(not(unix))]
+async fn search_legs_dispatch(
+    _state: AppState,
+    _socket: std::sync::Arc<std::path::PathBuf>,
+    _params: SearchLegsQuery,
+) -> Result<Json<serde_json::Value>, ServeError> {
+    Err(ServeError::ServiceUnavailable(
+        "mechanism mode requires the retrieval daemon over a unix socket; not available on this platform"
+            .to_string(),
+    ))
 }
 
 /// `GET /api/hierarchy/{id}?direction={callers|callees}&depth=N`

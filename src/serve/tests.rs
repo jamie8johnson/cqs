@@ -1617,8 +1617,13 @@ async fn host_allowlist_rejects_missing_host_header() {
 // client of the retrieval daemon socket. These pin: (1) a clean 503 with the
 // "requires `cqs watch --serve`" hint when the daemon is absent, and (2) that
 // a present daemon's three-leg response is forwarded verbatim.
+//
+// The fake daemon is a Unix domain socket (`std::os::unix::net`), so this whole
+// block is unix-only — the daemon client compiles out on non-unix, where the
+// endpoint 503s instead of forwarding.
 
 /// A `Fixture` whose `AppState.daemon_socket` points at `socket`.
+#[cfg(unix)]
 fn fixture_state_with_socket(socket: std::path::PathBuf) -> Fixture {
     let mut fixture = fixture_state();
     let mut state = fixture.state.take().expect("fixture state");
@@ -1630,6 +1635,7 @@ fn fixture_state_with_socket(socket: std::path::PathBuf) -> Fixture {
 /// Spawn a one-shot fake daemon on `socket`: accept a single connection, read
 /// the request line, hand it to `responder`, and write the response line back.
 /// Returns the join handle (carrying the parsed request for assertions).
+#[cfg(unix)]
 fn spawn_fake_daemon(
     socket: std::path::PathBuf,
     response: serde_json::Value,
@@ -1651,6 +1657,7 @@ fn spawn_fake_daemon(
     })
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn search_legs_503_when_no_daemon_socket() {
     let fixture = fixture_state(); // daemon_socket: None
@@ -1677,6 +1684,7 @@ async fn search_legs_503_when_no_daemon_socket() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn search_legs_503_when_socket_path_absent() {
     let dir = TempDir::new().expect("tempdir");
@@ -1699,6 +1707,7 @@ async fn search_legs_503_when_socket_path_absent() {
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn search_legs_forwards_daemon_legs_response() {
     let dir = TempDir::new().expect("tempdir");
@@ -1783,6 +1792,7 @@ async fn search_legs_forwards_daemon_legs_response() {
     assert!(args.contains(&"--splade-alpha".to_string()) && args.contains(&"0.4".to_string()));
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn search_legs_envelope_error_surfaces_as_500() {
     // A daemon that ran the verb but whose handler failed returns

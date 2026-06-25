@@ -40,6 +40,10 @@ use crate::store::{ReadOnly, Store};
 
 mod assets;
 mod auth;
+// The daemon client speaks a Unix domain socket (`std::os::unix::net`); the
+// Windows named-pipe transport for the retrieval daemon is not yet implemented,
+// so this module compiles out on non-unix and `/api/search_legs` 503s there.
+#[cfg(unix)]
 mod daemon_client;
 mod data;
 mod error;
