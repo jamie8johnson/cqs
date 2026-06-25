@@ -47,9 +47,9 @@ use serde::de::DeserializeOwned;
 
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
-    GatherArgs, ImpactArgs, ImpactDiffArgs, LimitArg, NotesListArgs, OnboardArgs, OverlayArgs,
-    PlanArgs, ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs,
-    SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
+    ExplainArgs, GatherArgs, ImpactArgs, ImpactDiffArgs, LimitArg, NotesListArgs, OnboardArgs,
+    OverlayArgs, PlanArgs, ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs,
+    StaleArgs, SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
 };
 use crate::cli::definitions::{GateThreshold, OutputArgs, OutputFormat, TextJsonArgs};
 
@@ -65,6 +65,7 @@ use crate::cli::commands::blame::BlameArgs as BlameCore;
 use crate::cli::commands::context::ContextArgs as ContextCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
+use crate::cli::commands::explain::ExplainArgs as ExplainCore;
 use crate::cli::commands::review::suggest::SuggestArgs as SuggestCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
@@ -175,6 +176,7 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "impact",
     "test-map",
     "trace",
+    "explain",
     "blame",
     "context",
     "diff",
@@ -225,8 +227,8 @@ pub(crate) fn is_json_args_capable(command: &str) -> bool {
 /// `commands::dispatch` the argv path uses.
 ///
 /// An unknown command, or a command that has no Phase-0 core struct (and so is
-/// argv-only — `explain`, `context`, the zero-arg infra commands, …), returns an
-/// error rather than dispatching.
+/// argv-only — `search-legs`, `reconcile`, the daemon-control commands, …),
+/// returns an error rather than dispatching.
 pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> Result<BatchCmd> {
     let _span = tracing::info_span!("json_args_build_cmd", command).entered();
 
@@ -330,6 +332,20 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             BatchCmd::Trace {
                 args: trace_args_from_core(c)?,
                 output: output_text(),
+            }
+        }
+        // `explain` (the read-only `cqs_explain` function-card tool). The flat
+        // wire core exposes `name` (required) + the optional `limit` / `tokens`
+        // budget; it is projected onto the clap-side `ExplainArgs` (which flattens
+        // the shared `LimitArg`) for dispatch. The JSON OUTPUT is the separate
+        // `ExplainOutput`, unchanged by this input-only core. `dispatch_explain`
+        // reads the store + cached vector index only — read-only, like the argv
+        // path.
+        "explain" => {
+            let c: ExplainCore = parse_core(command, arguments)?;
+            BatchCmd::Explain {
+                args: explain_args_from_core(c),
+                output: text_json(),
             }
         }
         "blame" => {
@@ -824,6 +840,18 @@ fn plan_args_from_core(c: PlanCore) -> PlanArgs {
     }
 }
 
+/// Project the flat `cqs_explain` wire core onto the clap-side `ExplainArgs`
+/// (which flattens the shared `LimitArg`). All three fields round-trip; the
+/// flat `limit` is re-wrapped into `LimitArg`. No flag is withheld — explain has
+/// no write/stdin surface.
+fn explain_args_from_core(c: ExplainCore) -> ExplainArgs {
+    ExplainArgs {
+        name: c.name,
+        tokens: c.tokens,
+        limit_arg: LimitArg { limit: c.limit },
+    }
+}
+
 fn where_args_from_core(c: WhereCore) -> WhereArgs {
     WhereArgs {
         description: c.description,
@@ -1186,6 +1214,40 @@ mod tests {
         }
     }
 
+    /// `explain` (the read-only `cqs_explain` function-card tool) parity: a
+    /// JSON-args request is byte-identical to the equivalent argv form, across
+    /// the default `limit` (`{"name": ...}` ↔ bare `cqs explain <fn>`) and an
+    /// explicit cap (`{"name": ..., "limit": 3}` ↔ `-n 3`). Run WITHOUT `tokens`
+    /// so the path is embedder-free (`dispatch_explain` skips `ctx.embedder()?`);
+    /// the function-card relay-scan under `--tokens` is pinned by the explain.rs
+    /// RT-RELAY guards. Proves the flat wire core projects onto the SAME
+    /// `dispatch_explain` (and `ExplainArgs` shape) the argv path uses, and that
+    /// an omitted `limit` inherits the clap default (5) on both surfaces.
+    #[test]
+    fn parity_explain_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+        let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+            (vec!["caller_fn"], json!({"name": "caller_fn"})),
+            (
+                vec!["caller_fn", "-n", "3"],
+                json!({"name": "caller_fn", "limit": 3}),
+            ),
+        ];
+        for (argv, arguments) in cases {
+            let (v_argv, v_json) = run_both(&ctx, "explain", &argv, arguments.clone());
+            // Happy path: explain of a resolvable target carries `data`, not an
+            // `error` (guards against a false-equal where both surfaces fail).
+            assert!(
+                v_argv.get("data").is_some_and(|d| !d.is_null()),
+                "argv path for `explain {arguments}` should return data, got: {v_argv}"
+            );
+            assert_eq!(
+                v_argv, v_json,
+                "JSON-args output must equal argv output for `explain` {arguments}\nargv:  {v_argv}\njson:  {v_json}"
+            );
+        }
+    }
+
     /// Read-only withhold (the §1.3 by-absence guard for Phase 4): a JSON-args
     /// `suggest` request CANNOT trigger `--apply` — the zero-field core exposes no
     /// `apply` knob, and the arm forces `SuggestArgs { apply: false }`, so the
@@ -1322,9 +1384,10 @@ mod tests {
     /// error on the JSON-args path rather than dispatching or panicking.
     #[test]
     fn argv_only_command_rejected_on_json_path() {
-        // `explain` is argv-only. (`where`/`related`/`stale` gained Phase-2 cores;
-        // `notes-*` mutations have a gated core — covered by the tests below.)
-        let err = build_batch_cmd("explain", &json!({"name": "x"}));
+        // `search-legs` is argv-only (no Phase-0 core). (`explain` gained a
+        // Phase-4 core; `where`/`related`/`stale` gained Phase-2 cores; `notes-*`
+        // mutations have a gated core — covered by the tests below.)
+        let err = build_batch_cmd("search-legs", &json!({"query": "x"}));
         assert!(
             err.is_err(),
             "an argv-only command must be rejected on the JSON-args path"
@@ -1978,10 +2041,11 @@ mod tests {
         //    capable — the catch-all bites, and they are absent from the list.
         //    (`stats` / `health` are Phase-1 zero-arg read tools,
         //    `where` / `related` / `stale` are Phase-2 read tools, `task` is the
-        //    Phase-3 overlay-capable brief tool, and `notes` is the read-only
-        //    notes-list tool — all capable now — so they are deliberately
-        //    excluded from this not-capable spread.)
-        for cmd in ["explain", "ping", "nonexistent_cmd"] {
+        //    Phase-3 overlay-capable brief tool, `notes` is the read-only
+        //    notes-list tool, and `explain` is the Phase-4 function-card tool —
+        //    all capable now — so they are deliberately excluded from this
+        //    not-capable spread.)
+        for cmd in ["search-legs", "ping", "nonexistent_cmd"] {
             assert!(
                 !is_json_args_capable(cmd),
                 "`{cmd}` is argv-only/unknown but build_batch_cmd treats it as JSON-args-capable"
