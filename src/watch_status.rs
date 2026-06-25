@@ -301,6 +301,34 @@ pub fn shared_reconcile_signal() -> SharedReconcileSignal {
     Arc::new(AtomicBool::new(false))
 }
 
+/// One-shot "a note write landed in `docs/notes.toml` — reindex notes" signal,
+/// the notes-table sibling of [`SharedReconcileSignal`].
+///
+/// The daemon notes-mutation handlers (`dispatch_notes_add` / `update` /
+/// `remove`) write the file under the lock, then flip this to `true`. The watch
+/// loop swaps it back to `false` on its next tick and drains the note reindex —
+/// the same flush path an inotify event on the notes file triggers.
+///
+/// Exists because inotify on `docs/notes.toml` is unreliable on the WSL
+/// `/mnt/c` (Windows NTFS / 9P) deployment: a successfully-written note could
+/// otherwise be NEVER indexed, leaving the index diverged from the file
+/// indefinitely. Driving the reindex off this explicit writer signal — rather
+/// than off a filesystem event that may never arrive — closes that gap.
+///
+/// Atomic, not RwLock-guarded, for the same reason as the reconcile signal: a
+/// single one-shot bit, drained by exactly one consumer (the watch loop's
+/// `swap(false, AcqRel)`), where coalescing two writes into one reindex walk is
+/// correct because the notes reindex is idempotent.
+pub type SharedNotesSignal = Arc<AtomicBool>;
+
+/// Build the canonical pending-notes-signal handle, initialised to `false`
+/// (no note write pending). The watch loop and the daemon thread each keep an
+/// `Arc` clone; flipping it to `true` from any thread races safely with the
+/// loop's `swap`.
+pub fn shared_notes_signal() -> SharedNotesSignal {
+    Arc::new(AtomicBool::new(false))
+}
+
 /// Event-driven freshness notifier: a single server-side park-and-wake
 /// rather than a client-side poll loop.
 ///

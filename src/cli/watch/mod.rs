@@ -406,6 +406,35 @@ fn resolve_debounce(
 /// just recv timeouts — because a continuous stream of events arriving
 /// faster than the recv timeout never reaches the timeout arm at all;
 /// only the max-latency condition can fire there.
+/// Drain the daemon's one-shot pending-notes signal into the watch state.
+///
+/// Swaps the shared `AtomicBool` to `false`; if it WAS set (a notes-mutation
+/// handler flipped it after writing `docs/notes.toml`), maps it onto
+/// `state.pending_notes` and arms the debounce clocks exactly as the inotify
+/// branch does, so the next [`flush_due`] fires the note reindex. Returns
+/// `true` when a pending write was drained.
+///
+/// This is the data-safety bridge: it makes the note reindex fire off the
+/// writer's explicit signal rather than off an inotify event, which is
+/// unreliable for that path on the WSL `/mnt/c` deployment. Coalesces with an
+/// inotify event that did arrive (both set `pending_notes`; one reindex drains
+/// it).
+fn drain_pending_notes_signal(
+    signal: &std::sync::atomic::AtomicBool,
+    state: &mut WatchState,
+) -> bool {
+    if signal.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        state.pending_notes = true;
+        state.last_event = std::time::Instant::now();
+        if state.first_pending_event.is_none() {
+            state.first_pending_event = Some(state.last_event);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 fn flush_due(state: &WatchState, debounce: &DebounceConfig) -> bool {
     if state.pending_files.is_empty() && !state.pending_notes {
         return false;
@@ -846,6 +875,15 @@ pub fn cmd_watch(
     let reconcile_signal_handle: cqs::watch_status::SharedReconcileSignal =
         cqs::watch_status::shared_reconcile_signal();
 
+    // Cross-thread one-shot pending-notes signal, the notes-table sibling of
+    // `reconcile_signal_handle`. The daemon's notes-mutation handlers flip it to
+    // `true` after writing `docs/notes.toml`; this loop swaps it back to `false`
+    // and drains the note reindex. Drives the notes reindex off the writer's
+    // explicit signal rather than an inotify event the WSL `/mnt/c` deployment
+    // may never deliver.
+    let pending_notes_signal_handle: cqs::watch_status::SharedNotesSignal =
+        cqs::watch_status::shared_notes_signal();
+
     // Cross-thread event-driven freshness notifier. Watch loop's
     // `publish_watch_snapshot` calls `set_fresh` every cycle; the daemon's
     // `wait_fresh` handler parks on `wait_until_fresh`. Single round-trip,
@@ -912,6 +950,9 @@ pub fn cmd_watch(
             let daemon_watch_snapshot = Arc::clone(&watch_snapshot_handle);
             // Clone the reconcile-signal Arc too.
             let daemon_reconcile_signal = Arc::clone(&reconcile_signal_handle);
+            // Clone the pending-notes-signal Arc so the notes-mutation handlers
+            // flip a flag this loop drains.
+            let daemon_pending_notes_signal = Arc::clone(&pending_notes_signal_handle);
             // Clone the freshness notifier so the daemon's `wait_fresh`
             // handler shares the same notifier the watch loop publishes
             // through.
@@ -929,6 +970,7 @@ pub fn cmd_watch(
                 daemon_runtime,
                 daemon_watch_snapshot,
                 daemon_reconcile_signal,
+                daemon_pending_notes_signal,
                 daemon_fresh_notifier,
                 daemon_in_flight,
             );
@@ -1736,6 +1778,17 @@ pub fn cmd_watch(
                      Hint: Restart 'cqs watch' to resume monitoring."
                 );
             }
+        }
+
+        // Drain the daemon's pending-notes signal on every loop iteration —
+        // independent of which `recv_timeout` arm fired. A notes-mutation
+        // handler (`dispatch_notes_add` / `update` / `remove`) flips it after
+        // writing `docs/notes.toml`; the helper maps it onto `pending_notes` so
+        // the note reindex fires through the same flush path an inotify event
+        // would, WITHOUT depending on inotify (unreliable for that path on WSL
+        // `/mnt/c`).
+        if drain_pending_notes_signal(&pending_notes_signal_handle, &mut state) {
+            tracing::info!("Daemon notes-mutation signal drained — note reindex queued");
         }
 
         // Pre-drain decision. Evaluated on every loop iteration —

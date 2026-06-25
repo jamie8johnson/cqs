@@ -159,6 +159,36 @@ impl From<ErrorCode> for &'static str {
     }
 }
 
+/// A handler validation error whose message is SAFE to surface to a client
+/// verbatim. [`redact_error`] downcasts to this and emits its `message`
+/// unchanged with the carried [`ErrorCode`], instead of collapsing it to an
+/// opaque chain-id like every other unknown error class.
+///
+/// Use this only for messages that carry no path, query text, or DB internals —
+/// the redaction default exists precisely because most error text is unsafe.
+/// The motivating case is a slot-mismatch rejection (`cqs_index` asked to
+/// reindex a slot the daemon does not serve): the served-slot NAME must reach
+/// the caller for the rejection to be actionable, and a slot name is safe to
+/// disclose.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct ClientFacingError {
+    /// The wire-format error code surfaced alongside the message.
+    pub code: ErrorCode,
+    /// The verbatim, redaction-exempt client-facing message.
+    pub message: String,
+}
+
+impl ClientFacingError {
+    /// Construct a client-facing validation error with the given code.
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
 /// Standard error code taxonomy as `&'static str` constants. Each constant
 /// delegates to [`ErrorCode::as_str`] so the wire-format strings live in
 /// exactly one place.
@@ -773,6 +803,15 @@ pub fn redact_error(err: &anyhow::Error) -> (ErrorCode, String) {
         );
     }
 
+    // Client-facing validation errors carry a message the handler already
+    // vetted as safe to disclose (e.g. a served-slot name). Surface it verbatim
+    // with the carried code rather than redacting it to a chain-id — the whole
+    // point of the type is that the message must reach the caller to be
+    // actionable.
+    if let Some(cf) = root.downcast_ref::<ClientFacingError>() {
+        return (cf.code, cf.message.clone());
+    }
+
     // IO errors: the Display form is safe (kind + os error message), but
     // the surrounding anyhow context may carry the path. Return the root
     // io::Error display only.
@@ -1221,6 +1260,50 @@ mod tests {
         let _wrapped = wrap_value(&payload);
         assert_eq!(payload["big"][0], 0);
         assert_eq!(payload["big"][99], 99);
+    }
+
+    // A ClientFacingError is surfaced VERBATIM (with its carried code), not
+    // redacted to a chain-id — the slot-mismatch rejection relies on the served
+    // slot name reaching the caller. Distinct from the unknown-root default,
+    // which redacts.
+    #[test]
+    fn redact_error_client_facing_surfaces_message_verbatim() {
+        let err: anyhow::Error = ClientFacingError::new(
+            ErrorCode::InvalidInput,
+            "slot 'other' is not the slot this daemon serves ('served')",
+        )
+        .into();
+        let (code, msg) = redact_error(&err);
+        assert_eq!(
+            code,
+            ErrorCode::InvalidInput,
+            "the carried code is preserved"
+        );
+        assert!(
+            msg.contains("served") && msg.contains("other"),
+            "the client-facing message must surface verbatim, got: {msg}"
+        );
+        assert!(
+            !msg.contains("err-"),
+            "a client-facing error must NOT be redacted to a chain-id, got: {msg}"
+        );
+    }
+
+    // A ClientFacingError surfaces verbatim even when wrapped in extra anyhow
+    // context — `redact_error` walks to the chain root to find it.
+    #[test]
+    fn redact_error_client_facing_surfaces_through_context() {
+        let err: anyhow::Error = anyhow::Error::from(ClientFacingError::new(
+            ErrorCode::NotFound,
+            "no such slot 'x'",
+        ))
+        .context("while queueing index");
+        let (code, msg) = redact_error(&err);
+        assert_eq!(code, ErrorCode::NotFound);
+        assert!(
+            msg.contains("no such slot 'x'"),
+            "the root client-facing message must surface, got: {msg}"
+        );
     }
 
     // redact_error returns a stable code+chain-id pair for unknown error

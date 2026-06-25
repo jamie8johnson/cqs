@@ -2472,6 +2472,58 @@ fn flush_due_notes_only_pending_flushes() {
 }
 
 #[test]
+fn drain_pending_notes_signal_set_arms_pending_notes_and_flush() {
+    // DATA-SAFETY: a daemon notes-mutation handler flips the shared signal after
+    // writing docs/notes.toml. The loop's drain must map it onto pending_notes,
+    // arm the burst clock, and (after a quiet gap) make flush_due fire — driving
+    // the note reindex off the writer's signal, NOT off inotify (unreliable on
+    // WSL /mnt/c). Without this the written note would never be indexed.
+    use std::sync::atomic::AtomicBool;
+    let mut state = test_watch_state();
+    state.pending_notes = false;
+    state.first_pending_event = None;
+
+    let signal = AtomicBool::new(true);
+    let drained = drain_pending_notes_signal(&signal, &mut state);
+    assert!(drained, "a set signal must report a drained write");
+    assert!(
+        state.pending_notes,
+        "the drain must map the signal onto pending_notes"
+    );
+    assert!(
+        state.first_pending_event.is_some(),
+        "the drain must arm the burst clock so the max-latency cap can fire"
+    );
+    // The signal is one-shot: a second drain with no new write is a no-op.
+    assert!(
+        !drain_pending_notes_signal(&signal, &mut state),
+        "the signal must be cleared after one drain (one-shot)"
+    );
+
+    // After a quiet gap, the notes-only pending state flushes.
+    state.last_event = backdate(600);
+    assert!(
+        flush_due(&state, &dbc(500, 3000)),
+        "drained notes signal must reach a flush once the quiet gap elapses"
+    );
+}
+
+#[test]
+fn drain_pending_notes_signal_unset_is_a_noop() {
+    use std::sync::atomic::AtomicBool;
+    let mut state = test_watch_state();
+    state.pending_notes = false;
+    state.first_pending_event = None;
+    let signal = AtomicBool::new(false);
+    assert!(!drain_pending_notes_signal(&signal, &mut state));
+    assert!(
+        !state.pending_notes,
+        "an unset signal must not spuriously queue a note reindex"
+    );
+    assert!(state.first_pending_event.is_none());
+}
+
+#[test]
 fn collect_events_arms_burst_clock_once_per_burst() {
     // `first_pending_event` is sticky: the first accepted event arms
     // it, later events in the same burst leave it untouched (only

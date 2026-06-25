@@ -692,6 +692,14 @@ pub enum DaemonRpcError {
     /// handler-level error. The `message` is the daemon's own description.
     #[error("daemon error: {0}")]
     DaemonError(String),
+    /// The daemon's response filled the bridge read cap before a newline
+    /// arrived. The payload is valid but larger than the relay buffer, so it
+    /// would parse as garbage if forwarded — distinct from [`Self::BadResponse`]
+    /// so the caller can advise raising `CQS_DAEMON_MAX_RESPONSE_BYTES` (or
+    /// narrowing the query) rather than chasing a version-skew parse failure.
+    /// The `message` names the resolved cap and the override env var.
+    #[error("daemon response too large: {0}")]
+    ResponseTooLarge(String),
 }
 
 #[cfg(unix)]
@@ -824,9 +832,16 @@ fn daemon_request<T: serde::de::DeserializeOwned>(
 /// (`{"data":...}`), and to carry the envelope `_meta` through. Peeling would
 /// collapse both into a bare payload and discard `_meta`.
 ///
-/// Uses a 1 MiB response cap and the shared [`resolve_daemon_timeout_ms`]
-/// timeout because tool responses (search, gather, task) are far larger than
-/// the small ping/status RPCs the typed helper serves.
+/// Sizes its read cap from [`crate::limits::max_daemon_response_bytes`]
+/// — the same env-overridable resolver the CLI daemon-forward path uses — so
+/// the bridge is never narrower than the CLI it fronts: a valid `gather`/
+/// `search`/`scout` payload the daemon would deliver to the CLI is delivered
+/// to MCP too. Hitting the cap yields a distinct
+/// [`DaemonRpcError::ResponseTooLarge`] naming the limit and the
+/// `CQS_DAEMON_MAX_RESPONSE_BYTES` override, not an opaque parse failure.
+/// Uses the shared [`resolve_daemon_timeout_ms`] timeout because tool
+/// responses (search, gather, task) are far larger than the small ping/status
+/// RPCs the typed helper serves.
 ///
 /// Returns a typed [`DaemonRpcError`] on a transport/parse failure — the
 /// bridge maps `SocketMissing`/`Transport`/`DaemonError`/`BadResponse` to the
@@ -849,6 +864,11 @@ pub fn daemon_json_args_request(
     .entered();
 
     if !sock_path.exists() {
+        tracing::warn!(
+            stage = "socket_missing",
+            command,
+            "daemon json-args request failed: socket does not exist"
+        );
         return Err(DaemonRpcError::SocketMissing(format!(
             "no daemon running (socket {} does not exist)",
             sock_path.display()
@@ -886,15 +906,38 @@ pub fn daemon_json_args_request(
         DaemonRpcError::Transport(format!("flush failed: {e}"))
     })?;
 
-    // 1 MiB read cap — tool responses (search/gather/task) are materially
-    // larger than the few-KB ping/status payloads, but still bounded against a
-    // buggy daemon. Mirrors the MCP request-line cap.
-    let mut reader = std::io::BufReader::new(&stream).take(1024 * 1024);
+    // Response read cap, sized from the shared env-overridable resolver the CLI
+    // daemon-forward path uses (default 16 MiB). The request-line cap and this
+    // response cap are independent limits: the former bounds the inbound
+    // arguments frame, this bounds the outbound payload the bridge buffers.
+    // Sizing from the shared resolver keeps the bridge no narrower than the CLI
+    // it fronts — a valid gather/search/scout payload that reaches the CLI
+    // reaches MCP too.
+    let max_response = crate::limits::max_daemon_response_bytes();
+    let mut reader = std::io::BufReader::new(&stream).take(max_response);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line).map_err(|e| {
+    let bytes_read = reader.read_line(&mut response_line).map_err(|e| {
         tracing::warn!(stage = "read", error = %e, command, "daemon json-args request failed");
         DaemonRpcError::Transport(format!("read response failed: {e}"))
     })?;
+
+    // A full buffer with no terminating newline means the payload was truncated
+    // at the cap. Forwarding it would parse as garbage; surface a distinct error
+    // naming the limit and the override knob so a large-but-valid result is not
+    // mistaken for a malformed daemon response.
+    if bytes_read as u64 == max_response {
+        let cap_mib = max_response / 1024 / 1024;
+        tracing::warn!(
+            stage = "read",
+            bytes = bytes_read,
+            cap_mib,
+            command,
+            "daemon json-args response exceeded read cap"
+        );
+        return Err(DaemonRpcError::ResponseTooLarge(format!(
+            "response exceeded {cap_mib} MiB — raise CQS_DAEMON_MAX_RESPONSE_BYTES or narrow the query"
+        )));
+    }
 
     let envelope: serde_json::Value = serde_json::from_str(response_line.trim()).map_err(|e| {
         tracing::warn!(stage = "parse", error = %e, command, "daemon json-args request failed");
@@ -1352,6 +1395,13 @@ pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWai
         Err(DaemonRpcError::DaemonError(msg)) => {
             tracing::warn!(error = %msg, "wait_for_fresh: daemon-side error");
             FreshnessWait::Transport(msg)
+        }
+        Err(DaemonRpcError::ResponseTooLarge(msg)) => {
+            // The small status/reconcile payloads this path reads cannot
+            // realistically fill the cap; treat an over-cap response as an
+            // unusable daemon answer.
+            tracing::warn!(error = %msg, "wait_for_fresh: daemon response exceeded read cap");
+            FreshnessWait::BadResponse(msg)
         }
     }
 }
@@ -2557,6 +2607,111 @@ mod tests {
             }
             other => panic!("expected BadResponse naming the non-string message, got: {other:?}",),
         }
+    }
+
+    /// The MCP relay's response read is sized from
+    /// `CQS_DAEMON_MAX_RESPONSE_BYTES` (default 16 MiB) — NOT a hardcoded 1 MiB.
+    /// When a valid-but-large response fills the cap before a newline arrives,
+    /// the relay returns a DISTINCT `ResponseTooLarge` naming the limit and the
+    /// override env var, instead of an opaque `BadResponse` parse failure that
+    /// would make MCP strictly narrower than the CLI it fronts.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_response_cap_env)]
+    fn json_args_response_over_cap_is_distinct_too_large_error() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        // Tiny cap so a small mock payload exceeds it. The override resolver
+        // rejects 0 and garbage, so a positive small value is honored.
+        std::env::set_var("CQS_DAEMON_MAX_RESPONSE_BYTES", "64");
+
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            // Write WELL over the 64-byte cap with NO terminating newline before
+            // the cap, so `read_line` fills the buffer and stops at the cap.
+            let big = "x".repeat(4096);
+            write!(stream, "{{\"status\":\"ok\",\"output\":\"{big}\"}}").unwrap();
+            stream.flush().unwrap();
+            // Hold the connection open briefly so the reader hits the cap rather
+            // than EOF.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+
+        let result = daemon_json_args_request(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+        std::env::remove_var("CQS_DAEMON_MAX_RESPONSE_BYTES");
+
+        match result {
+            Err(DaemonRpcError::ResponseTooLarge(msg)) => {
+                assert!(
+                    msg.contains("CQS_DAEMON_MAX_RESPONSE_BYTES"),
+                    "the too-large error must name the override env var, got: {msg}"
+                );
+                assert!(
+                    msg.contains("MiB"),
+                    "the too-large error must name the limit, got: {msg}"
+                );
+            }
+            other => panic!("expected ResponseTooLarge on an over-cap response, got: {other:?}"),
+        }
+    }
+
+    /// A normal, under-cap response is NOT misclassified as too-large: the
+    /// distinct error fires only when the buffer actually fills.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_response_cap_env)]
+    fn json_args_response_under_cap_is_not_too_large() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        // Default cap (no override) is 16 MiB — a small payload is well under.
+        std::env::remove_var("CQS_DAEMON_MAX_RESPONSE_BYTES");
+
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, r#"{{"status":"ok","output":{{"data":[]}}}}"#).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_json_args_request(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+
+        // A normal small response succeeds (returns the full envelope), and in
+        // no case is it classified as ResponseTooLarge.
+        assert!(
+            !matches!(result, Err(DaemonRpcError::ResponseTooLarge(_))),
+            "an under-cap response must never be classified too-large, got: {result:?}"
+        );
+        assert!(
+            result.is_ok(),
+            "a well-formed under-cap response must parse"
+        );
     }
 
     // ── socket parent-dir hardening ───────────────────────────────────

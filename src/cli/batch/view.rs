@@ -648,6 +648,12 @@ pub(crate) struct BatchView {
     /// daemon's behalf; the watch loop swaps it back to `false` and runs an
     /// immediate reconcile pass.
     pub(super) reconcile_signal: cqs::watch_status::SharedReconcileSignal,
+    /// Shared one-shot pending-notes signal. Cloned the same way as
+    /// `reconcile_signal`. The notes-mutation handlers flip this to `true` after
+    /// writing `docs/notes.toml`; the watch loop swaps it back and drains the
+    /// note reindex — independent of an inotify event that may never arrive on
+    /// the WSL `/mnt/c` deployment.
+    pub(super) pending_notes_signal: cqs::watch_status::SharedNotesSignal,
     /// Shared event-driven freshness notifier. Cloned the same way;
     /// `dispatch_wait_fresh` parks on this until the watch loop publishes a
     /// Fresh transition or the caller's deadline runs out.
@@ -1447,6 +1453,22 @@ impl BatchView {
             .unwrap_or_else(|p| (*p.into_inner()).clone())
     }
 
+    /// Name of the slot the daemon is currently serving, as published by the
+    /// watch loop into the shared snapshot. `None` before the loop has ticked
+    /// once (ramp-up window) or outside `cqs watch --serve` (one-shot batch,
+    /// where the loop never runs). Reads through the shared snapshot lock and
+    /// holds it only long enough to clone the small name out.
+    ///
+    /// The `cqs_index` daemon handler reads this to detect — and refuse — a
+    /// request to reindex a slot the daemon does not serve, instead of silently
+    /// reconciling the served slot while reporting success.
+    pub fn served_slot(&self) -> Option<String> {
+        self.watch_snapshot
+            .read()
+            .map(|guard| guard.active_slot.clone())
+            .unwrap_or_else(|p| p.into_inner().active_slot.clone())
+    }
+
     /// Flip the shared one-shot reconcile flag. Returns `true` if the flag was
     /// already pending (caller can dedupe in log lines), `false` if this call
     /// set it. Either way the watch loop runs the reconcile on its next 100 ms
@@ -1457,6 +1479,21 @@ impl BatchView {
     /// the bit is visible to the loop when it observes the flip.
     pub fn request_reconcile(&self) -> bool {
         self.reconcile_signal
+            .swap(true, std::sync::atomic::Ordering::Release)
+    }
+
+    /// Flip the shared one-shot pending-notes flag. Returns `true` if the flag
+    /// was already pending (caller can dedupe in log lines), `false` if this
+    /// call set it. Either way the watch loop drains the note reindex on its
+    /// next tick. Called by the notes-mutation handlers after the
+    /// `docs/notes.toml` write so the reindex does not depend on an inotify
+    /// event that is unreliable on the WSL `/mnt/c` deployment.
+    ///
+    /// `Release` ordering mirrors [`Self::request_reconcile`]: the watch loop's
+    /// matching `swap` uses `AcqRel`, so the file write the handler completed
+    /// before flipping the bit is visible to the loop when it observes the flip.
+    pub fn request_notes_reindex(&self) -> bool {
+        self.pending_notes_signal
             .swap(true, std::sync::atomic::Ordering::Release)
     }
 

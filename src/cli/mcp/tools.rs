@@ -595,6 +595,15 @@ fn relay_and_classify(cqs_dir: &Path, command: &str, arguments: &Value) -> CallO
                 format!("cqs daemon returned a malformed response: {msg}"),
             );
         }
+        Err(DaemonRpcError::ResponseTooLarge(msg)) => {
+            // The result was valid but exceeded the relay read cap. Surface the
+            // limit verbatim so the agent can raise the cap or narrow the query
+            // instead of reading it as a malformed-response failure.
+            return CallOutcome::ProtocolError(
+                lifecycle::INTERNAL_ERROR,
+                format!("cqs daemon {msg}"),
+            );
+        }
     };
 
     // The success envelope is `{"status":"ok","output":<dispatch>}`. Peel the

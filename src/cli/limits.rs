@@ -204,13 +204,15 @@ pub(crate) fn read_max_file_size() -> u64 {
 
 // ============ daemon response cap ============
 
-/// Default 16 MiB cap on the daemon-to-CLI response buffer. Larger payloads
-/// force the CLI to fall back to direct (non-daemon) execution.
-pub(crate) const MAX_DAEMON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
-
 /// Resolve the daemon response cap honoring `CQS_DAEMON_MAX_RESPONSE_BYTES`.
+///
+/// Delegates to the library-level [`cqs::limits::max_daemon_response_bytes`] so
+/// the CLI daemon-forward path and the MCP relay
+/// (`daemon_translate::daemon_json_args_request`) read ONE source of truth — the
+/// relay can never end up with a smaller cap than the CLI it fronts. Larger
+/// payloads force the CLI to fall back to direct (non-daemon) execution.
 pub(crate) fn max_daemon_response_bytes() -> u64 {
-    parse_env_u64("CQS_DAEMON_MAX_RESPONSE_BYTES", MAX_DAEMON_RESPONSE_BYTES)
+    cqs::limits::max_daemon_response_bytes()
 }
 
 // ============ daemon periodic GC cadence ============
