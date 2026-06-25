@@ -2946,6 +2946,22 @@ struct Wrapper<T> {
                 1
             )
             .is_empty());
+            // Non-Rust language whose text DOES contain the word `serde` AND a
+            // callback-shaped attribute must STILL be ignored: the language
+            // guard, not the cheap `contains("serde")` fast-path, is what keeps
+            // the regex off non-Rust text. The case above omits `serde`, so it
+            // only exercises the substring fast-path; this one pins the language
+            // half of the `language != Rust || !contains("serde")` guard.
+            assert!(
+                extract_serde_callback_calls(
+                    r#"# serde-style config
+opts = {deserialize_with = "some_fn"}"#,
+                    Language::Python,
+                    1
+                )
+                .is_empty(),
+                "a non-Rust source mentioning serde must not produce serde edges"
+            );
         }
 
         /// End-to-end through `parse_file_relationships`: the carrying struct
