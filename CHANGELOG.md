@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.49.0] - 2026-06-24
+
+v1.48.0 16-category audit fix cycle. A full audit (16 parallel category auditors → per-category adversarial verification → triage) produced 36 verified findings consolidating to 19 rows; all P1–P3 and two of three P4 are fixed here across PRs #2038–#2042, weighted to the v1.48.0 MCP/parse/RT-RELAY churn. The scoring path is byte-identical to v1.48.0 — retrieval is unchanged. Triage in `docs/audit-triage.md`, findings in `docs/audit-findings.md`.
+
+### Security
+
+- **RT-RELAY honest-relay completion across every doc/signature/body-relaying command (#2039).** #2024 scanned `context`/`explain` doc+signature; the audit found the relay still leaked unscanned, false-clean surfaces: `explain --tokens` similar-chunk bodies, `read --focus` type-dependency bodies, `trace` hop signatures, and the kind-fallback definition signatures. All now carry `injection_flags`. The contract is now **scan == relayed, both directions** — and the dual: `explain`/`context` full-mode no longer over-flags un-emitted `content` it never relayed. The `leading-directive` heuristic was widened to anywhere-`contains` then corrected to **line-start anchoring** (a code-review catch — anywhere-matching fired on ~180 repo doc comments containing mid-sentence "instead of", degrading the flag to noise); it now flags an imperative directive on its own line even behind a benign first line, without firing on the same words mid-sentence in prose.
+- **Parser depth rail made bidirectional / non-defeatable (#2040).** `parser_max_walk_depth()` was unclamped while its paired `parser_stack_size()` was clamped — raising `CQS_PARSER_MAX_WALK_DEPTH` past what the floor (1 MiB) stack holds re-opened the uncatchable-SIGSEGV DoS the rail prevents (`panic = abort`). The depth is now clamped to `[1, 800]`: an override can only *lower* the rail; a raised value clamps back to the calibrated-safe 800 with a warn.
+
+### Fixed
+
+- **Two agent-facing docs-lies on the live MCP surface (#2042).** The README MCP tool list was fabricated — it named nonexistent tools (incl. the two deliberately-withheld `cqs_context`/`cqs_explain`) and omitted real ones, so an agent calls phantoms and gets METHOD_NOT_FOUND. The `cqs_index` tool description steered the agent to poll completion with `cqs_wait_fresh`/`cqs_status`, neither a registered tool. Both fixed and pinned with guard tests (README list == `tool_table()`; every `cqs_*` token in any description names a real tool).
+- **MCP relay response cap was a hardcoded 1 MiB (#2041)** — 16× below the daemon's own 16 MiB output cap, ignored `CQS_DAEMON_MAX_RESPONSE_BYTES`, and silently truncated large valid `gather`/`search`/`scout` results into a misleading "malformed response" error (MCP strictly narrower than the CLI it fronts). Now sizes the read from the same env-overridable resolver the CLI uses (one source of truth), and returns a distinct `ResponseTooLarge` naming the cap + env knob on overflow.
+- **Daemon/MCP `cqs_index` silently reindexed the wrong slot (#2041).** A non-active `slot` argument was read only for the span, then the daemon reconciled whatever slot it was bound to while returning `{status:queued}` — an undetectable wrong-slot lie. Now refuses a mismatched slot with a client-facing error naming the served slot, and echoes `served_slot` on success.
+- **Daemon/MCP notes-write could leave the index permanently diverged on WSL (#2041, data-safety).** The deferred notes reindex relied on inotify only — never reconcile — so on the documented WSL `/mnt/c` primary deployment (where inotify is unreliable) a successfully-written note could be silently never indexed. Added `SharedNotesSignal`: the mutation handlers flip it after the file write, the watch loop drains it every tick into the flush path, independent of inotify. Also makes `cqs_index` a reliable escape hatch.
+- **MCP overlay params were accepted on the wire but absent from the advertised inputSchema (#2042)** — contradicting the "schema == wire" invariant. `overlay`/`no_overlay`/`overlay_root` are now injected into every overlay-capable tool's inputSchema, pinned by a presence-iff-consumed test.
+- **MCP bridge could OOM on a no-newline line (#2042).** Each stdin line was read unbounded before the post-hoc 1 MiB check — a multi-GB no-newline line exhausted the long-lived bridge first. Now a bounded `take(MAX+1)` read with resync, matching the daemon socket reader.
+- **`cqs mcp` was not actually unix-gated despite an in-code claim (#2042)** — on the Windows target it advertised the full tool set but every `tools/call` returned INTERNAL_ERROR. `serve_stdio` now fails fast on non-unix; the false comment is corrected.
+- **MCP precheck accepted `max_depth` the daemon range-rejects (#2042)**; `validate_arguments` now applies the daemon's `1..=50` bound pre-relay. **`cqs_test_map`/`cqs_trace` advertised a settable `max_nodes` the daemon dropped (#2038)** — removed from the schema. **`classify_output` masked daemon failures** — an unrecognized envelope carrying an `error` key now maps to `isError:true` (#2042).
+
+### Changed
+
+- **MCP per-call overhead reduced (#2042):** `success_result` no longer double-embeds the payload (moves it into `structuredContent`, size-gates the text mirror); `tools/list` caches its schema snapshots in `LazyLock` instead of regenerating per call; `tools/call` now records the tool name on its span and emits a per-request completion event.
+- **MCP command-enumeration drift partially closed (#2038):** the hand-mirrored JSON-args capability list is now derived from a single `JSON_ARGS_CAPABLE_COMMANDS` source with an exhaustiveness test; the remaining per-command type-map unification is tracked as #2043.
+
 ## [1.48.0] - 2026-06-24
 
 MCP server re-introduction (Phases 0–2), RT-PARSE security hardening, RT-RELAY injection scanning, and a notes groom.
@@ -3848,6 +3873,8 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[1.49.0]: https://github.com/jamie8johnson/cqs/compare/v1.48.0...v1.49.0
+[1.48.0]: https://github.com/jamie8johnson/cqs/compare/v1.47.0...v1.48.0
 [1.47.0]: https://github.com/jamie8johnson/cqs/compare/v1.46.1...v1.47.0
 [1.46.1]: https://github.com/jamie8johnson/cqs/compare/v1.46.0...v1.46.1
 [1.46.0]: https://github.com/jamie8johnson/cqs/compare/v1.45.0...v1.46.0
