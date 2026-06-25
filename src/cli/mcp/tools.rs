@@ -180,14 +180,17 @@ fn schema_with_overlay<T: schemars::JsonSchema>() -> Value {
 // `cli::batch::json_args`, so the schema source and the daemon deserialize
 // target are provably the same type.
 use crate::cli::args::ReadArgs;
+use crate::cli::args::StaleArgs as StaleCore;
 use crate::cli::commands::blame::BlameArgs as BlameCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
 use crate::cli::commands::search::query::QueryArgs;
+use crate::cli::commands::search::related::RelatedArgs as RelatedCore;
 use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
+use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
     DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
@@ -377,6 +380,36 @@ fn read_tools() -> &'static [ToolDef] {
                 "Read a project file with cqs notes injected (or, with focus, just one function \
                  plus its type dependencies).",
             input_schema: schema::<ReadArgs>,
+            annotations: ToolAnnotations::READ,
+        },
+        // Simple read tools (MCP Phase 2). Flat cores, no overlay tri-state.
+        ToolDef {
+            name: "cqs_where",
+            command: "where",
+            description:
+                "Suggest where to add new code described in natural language: ranked file \
+                 placements with insertion line, nearby function, and the local patterns \
+                 (imports, error handling, naming, visibility) of each candidate.",
+            input_schema: schema::<WhereCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_related",
+            command: "related",
+            description:
+                "Functions related to a named one by co-occurrence: shared callers, shared \
+                 callees, and shared custom types, each ranked by overlap count.",
+            input_schema: schema::<RelatedCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_stale",
+            command: "stale",
+            description:
+                "Index freshness: which indexed files have changed (stale) or been deleted \
+                 (missing) since the last index, plus the total indexed count. Use count_only \
+                 for just the counts.",
+            input_schema: schema::<StaleCore>,
             annotations: ToolAnnotations::READ,
         },
         // Zero-arg read tools (MCP Phase 1). Both take no input — their cores
@@ -722,6 +755,10 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "review" => check::<ReviewCore>(arguments),
         "plan" => check::<PlanCore>(arguments),
         "read" => check::<ReadArgs>(arguments),
+        // Phase-2 simple read tools — flat cores, shape check only.
+        "where" => check::<WhereCore>(arguments),
+        "related" => check::<RelatedCore>(arguments),
+        "stale" => check::<StaleCore>(arguments),
         // Zero-arg read tools (Phase 1). The core has no advertised properties,
         // so the shape check just rejects a non-object / wrong-typed `arguments`.
         "stats" => check::<StatsCore>(arguments),

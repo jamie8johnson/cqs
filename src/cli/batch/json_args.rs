@@ -47,8 +47,8 @@ use serde::de::DeserializeOwned;
 
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
-    GatherArgs, ImpactArgs, LimitArg, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs, ReviewArgs,
-    ScoutArgs, SearchArgs, SimilarArgs, TestMapArgs, TraceArgs,
+    GatherArgs, ImpactArgs, LimitArg, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs, RelatedArgs,
+    ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TestMapArgs, TraceArgs, WhereArgs,
 };
 use crate::cli::definitions::{GateThreshold, OutputArgs, OutputFormat, TextJsonArgs};
 
@@ -67,8 +67,10 @@ use crate::cli::commands::drift::DriftArgs as DriftCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
 use crate::cli::commands::search::query::QueryArgs;
+use crate::cli::commands::search::related::RelatedArgs as RelatedCore;
 use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
+use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
     DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
@@ -178,6 +180,9 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "review",
     "plan",
     "read",
+    "where",
+    "related",
+    "stale",
     "stats",
     "health",
     "notes-add",
@@ -366,6 +371,37 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             // deserialize target and the variant field are the same struct.
             let c: ReadArgs = parse_core(command, arguments)?;
             BatchCmd::Read {
+                args: c,
+                output: text_json(),
+            }
+        }
+        // ─── MCP Phase 2: simple read tools ────────────────────────────────────
+        //
+        // `where` / `related` / `stale` carry a flat core (no overlay tri-state,
+        // no gating). Each output is a separate `Serialize` struct
+        // (`WhereOutput` / `RelatedOutput` / `StaleOutput`), so the input core is
+        // input-only — the JSON OUTPUT is byte-unchanged by these arms.
+        "where" => {
+            let c: WhereCore = parse_core(command, arguments)?;
+            BatchCmd::Where {
+                args: where_args_from_core(c),
+                output: text_json(),
+            }
+        }
+        "related" => {
+            let c: RelatedCore = parse_core(command, arguments)?;
+            BatchCmd::Related {
+                args: related_args_from_core(c),
+                output: text_json(),
+            }
+        }
+        // `stale`'s wire knob is the render flag `count_only`, which lives on the
+        // clap-side `args::StaleArgs` (the compute core is parameterless). That
+        // struct IS the deserialize target here, mirroring `read`'s `ReadArgs` —
+        // so the variant field and the schema source are the same type.
+        "stale" => {
+            let c: StaleArgs = parse_core(command, arguments)?;
+            BatchCmd::Stale {
                 args: c,
                 output: text_json(),
             }
@@ -698,6 +734,20 @@ fn plan_args_from_core(c: PlanCore) -> PlanArgs {
     }
 }
 
+fn where_args_from_core(c: WhereCore) -> WhereArgs {
+    WhereArgs {
+        description: c.description,
+        limit_arg: LimitArg { limit: c.limit },
+    }
+}
+
+fn related_args_from_core(c: RelatedCore) -> RelatedArgs {
+    RelatedArgs {
+        name: c.name,
+        limit_arg: LimitArg { limit: c.limit },
+    }
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -827,6 +877,11 @@ mod tests {
             ),
             ("context", vec!["src/lib.rs"], json!({"path": "src/lib.rs"})),
             ("read", vec!["src/lib.rs"], json!({"path": "src/lib.rs"})),
+            // Phase-2 read tools: `related` (co-occurrence, embedder-free) and
+            // `stale` (mtime diff). `where` needs an embedder, so its parity is
+            // pinned separately (`parity_where_json_args_equals_argv`).
+            ("related", vec!["caller_fn"], json!({"name": "caller_fn"})),
+            ("stale", vec![], json!({})),
             // Zero-arg read tools: the JSON `{}` must produce the same envelope
             // as the bare argv form (the handler ignores any input).
             ("stats", vec![], json!({})),
@@ -869,6 +924,14 @@ mod tests {
                 vec!["--include-pub", "--min-confidence", "high"],
                 json!({"include_pub": true, "min_confidence": "high"}),
             ),
+            (
+                "related",
+                vec!["caller_fn", "--limit", "2"],
+                json!({"name": "caller_fn", "limit": 2}),
+            ),
+            // `stale --count-only` projects to the 3-field count subset on both
+            // surfaces — guards that `count_only` rides the wire core.
+            ("stale", vec!["--count-only"], json!({"count_only": true})),
         ];
         for (command, argv, arguments) in cases {
             let (v_argv, v_json) = run_both(&ctx, command, &argv, arguments);
@@ -877,6 +940,26 @@ mod tests {
                 "JSON-args output must equal argv output for `{command}` with explicit fields\nargv:  {v_argv}\njson:  {v_json}"
             );
         }
+    }
+
+    /// `where` parity: it needs an embedder (`suggest_placement`), which the
+    /// embedder-free seed corpus lacks, so both paths return the SAME error
+    /// envelope — the assertion is value-equality of the two envelopes, proving
+    /// the JSON-args path routes through the same `dispatch_where` the argv path
+    /// uses (whether it errors or succeeds, the two surfaces agree).
+    #[test]
+    fn parity_where_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+        let (v_argv, v_json) = run_both(
+            &ctx,
+            "where",
+            &["add a new parser"],
+            json!({"description": "add a new parser"}),
+        );
+        assert_eq!(
+            v_argv, v_json,
+            "JSON-args output must equal argv output for `where`\nargv:  {v_argv}\njson:  {v_json}"
+        );
     }
 
     /// A missing optional field deserializes via `#[serde(default)]` — an empty
@@ -964,9 +1047,9 @@ mod tests {
     /// error on the JSON-args path rather than dispatching or panicking.
     #[test]
     fn argv_only_command_rejected_on_json_path() {
-        // `where` / `explain` are argv-only. (`notes-*` mutations now have a
-        // gated core — covered by the MCP Phase-2a tests below.)
-        let err = build_batch_cmd("where", &json!({"description": "x"}));
+        // `explain` is argv-only. (`where`/`related`/`stale` gained Phase-2 cores;
+        // `notes-*` mutations have a gated core — covered by the tests below.)
+        let err = build_batch_cmd("explain", &json!({"name": "x"}));
         assert!(
             err.is_err(),
             "an argv-only command must be rejected on the JSON-args path"
@@ -1552,16 +1635,11 @@ mod tests {
 
         // 2. A representative spread of argv-only / unknown commands is NOT
         //    capable — the catch-all bites, and they are absent from the list.
-        //    (`stats` / `health` ARE capable now — Phase-1 zero-arg read tools —
-        //    so they are deliberately excluded from this not-capable spread.)
-        for cmd in [
-            "where",
-            "explain",
-            "notes",
-            "task",
-            "ping",
-            "nonexistent_cmd",
-        ] {
+        //    (`stats` / `health` are Phase-1 zero-arg read tools and
+        //    `where` / `related` / `stale` are Phase-2 read tools — all capable
+        //    now — so they are deliberately excluded from this not-capable
+        //    spread.)
+        for cmd in ["explain", "notes", "task", "ping", "nonexistent_cmd"] {
             assert!(
                 !is_json_args_capable(cmd),
                 "`{cmd}` is argv-only/unknown but build_batch_cmd treats it as JSON-args-capable"

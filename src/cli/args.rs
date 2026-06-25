@@ -647,7 +647,17 @@ pub(crate) struct ReadArgs {
 }
 
 /// Arguments shared between CLI `stale` and batch `stale`.
-#[derive(Args, Debug, Clone)]
+///
+/// Also the surface-agnostic core that the daemon JSON-args path (`cqs_stale`)
+/// deserializes directly — `count_only` is the lone request knob, read off the
+/// wire and projected by `dispatch_stale` (the compute core
+/// `commands::index::StaleArgs` stays parameterless). Input-only: it derives
+/// `Deserialize` + `JsonSchema`, never `Serialize`. The command's JSON OUTPUT
+/// is the separate `StaleOutput`, so these derives cannot change the output
+/// wire shape. `#[serde(default)]` lets a wire caller omit `count_only` and
+/// inherit the clap default (`false`).
+#[derive(Args, Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub(crate) struct StaleArgs {
     /// Show counts only, skip file list
     #[arg(long)]
