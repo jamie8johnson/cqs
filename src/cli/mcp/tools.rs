@@ -106,12 +106,24 @@ pub struct ToolDef {
 /// Render the schema for a core `T` as a `serde_json::Value`. schemars 1.x
 /// `schema_for!` produces a 2020-12 schema; `serde(default)` cores yield no
 /// `required` array (every param optional on the wire).
+///
+/// A core with zero schema-visible fields (an empty struct, or one whose only
+/// field is `#[schemars(skip)]`) renders WITHOUT a `properties` key. Every tool
+/// row is required to carry a `properties` object (the well-formedness +
+/// overlay-honesty guards assert it), so a missing `properties` is normalized
+/// to an empty `{}` here — the one chokepoint all core schemas flow through, so
+/// any future zero-arg tool inherits the guarantee.
 fn schema<T: schemars::JsonSchema>() -> Value {
-    serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| {
+    let mut s = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| {
         // schemars schema serialization is infallible in practice; fall back to
         // a minimal object so a hypothetical failure can't poison tools/list.
         serde_json::json!({"type": "object", "properties": {}})
-    })
+    });
+    if let Some(obj) = s.as_object_mut() {
+        obj.entry("properties")
+            .or_insert_with(|| Value::Object(Default::default()));
+    }
+    s
 }
 
 /// The worktree-overlay tri-state keys the daemon's `overlay_from_args` reads
@@ -178,8 +190,8 @@ use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, ImpactCoreArgs, PlanArgs as PlanCore, ReviewArgs as ReviewCore, TestMapCoreArgs,
-    TraceCoreArgs,
+    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
+    ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs, TraceCoreArgs,
 };
 
 /// The composed tool table for `tools/list` — the Phase-1 read tools, plus the
@@ -365,6 +377,28 @@ fn read_tools() -> &'static [ToolDef] {
                 "Read a project file with cqs notes injected (or, with focus, just one function \
                  plus its type dependencies).",
             input_schema: schema::<ReadArgs>,
+            annotations: ToolAnnotations::READ,
+        },
+        // Zero-arg read tools (MCP Phase 1). Both take no input — their cores
+        // advertise an empty `properties` object — and both build their core via
+        // `*Args::default()` on every surface, so there is no knob to expose.
+        ToolDef {
+            name: "cqs_stats",
+            command: "stats",
+            description:
+                "Index statistics: chunk/file/note counts, call-graph and type-graph totals, \
+                 per-language and per-type breakdowns, model, schema version, and freshness \
+                 (stale/missing files). The one-call snapshot of what's indexed.",
+            input_schema: schema::<StatsCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_health",
+            command: "health",
+            description:
+                "Codebase quality snapshot: dead-code count, staleness, hotspots (most-called \
+                 functions), and untested functions. The pre-work health check.",
+            input_schema: schema::<HealthCore>,
             annotations: ToolAnnotations::READ,
         },
     ]
@@ -688,6 +722,10 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "review" => check::<ReviewCore>(arguments),
         "plan" => check::<PlanCore>(arguments),
         "read" => check::<ReadArgs>(arguments),
+        // Zero-arg read tools (Phase 1). The core has no advertised properties,
+        // so the shape check just rejects a non-object / wrong-typed `arguments`.
+        "stats" => check::<StatsCore>(arguments),
+        "health" => check::<HealthCore>(arguments),
         // Phase-2a gated notes mutators. Only reachable when the mutation tools
         // are in the table (flag on), since `find_tool` gates on the same flag —
         // but the pre-check arm is unconditional so a flag-on call shape-checks.

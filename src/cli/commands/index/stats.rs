@@ -221,7 +221,18 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
 
 /// Input for [`stats_core`]. `cqs stats` takes no positional or flag input
 /// beyond the freshness toggle — both CLI and daemon want the same numbers.
+///
+/// Both the CLI (`cmd_stats`) and the daemon (`dispatch_stats`) build this via
+/// `StatsArgs::default()`; neither surface accepts user input for it. So the
+/// MCP `inputSchema` advertises ZERO properties (`include_staleness` is
+/// `#[schemars(skip)]`), matching the fact that the daemon honors no field —
+/// advertising the knob would be a schema-vs-wire lie (the `max_nodes`-style
+/// inert-field pattern). `#[serde(default)]` keeps a wire `{}` deserializing,
+/// and serde still tolerates an inert `include_staleness` key without erroring.
+/// INPUT-only (no `Serialize` derive); the output type is the separate
+/// `StatsOutput`, so the schema derive cannot alter the JSON output shape.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub(crate) struct StatsArgs {
     /// When `true`, walk the filesystem and populate `stale_files` /
     /// `missing_files`. Both surfaces set this; it is an Arg (not hardcoded)
@@ -229,6 +240,7 @@ pub(crate) struct StatsArgs {
     /// walk. `created_at` and `hnsw_vectors` are populated unconditionally —
     /// they are cheap metadata reads, not a filesystem scan.
     #[serde(default = "default_true")]
+    #[schemars(skip)]
     pub include_staleness: bool,
 }
 

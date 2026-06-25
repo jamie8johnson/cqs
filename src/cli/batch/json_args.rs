@@ -71,8 +71,8 @@ use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, ImpactCoreArgs, PlanArgs as PlanCore, ReviewArgs as ReviewCore, TestMapCoreArgs,
-    TraceCoreArgs,
+    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
+    ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs, TraceCoreArgs,
 };
 
 /// Default `TextJsonArgs` for a JSON-args-built variant. The daemon always
@@ -178,6 +178,8 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "review",
     "plan",
     "read",
+    "stats",
+    "health",
     "notes-add",
     "notes-update",
     "notes-remove",
@@ -365,6 +367,29 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             let c: ReadArgs = parse_core(command, arguments)?;
             BatchCmd::Read {
                 args: c,
+                output: text_json(),
+            }
+        }
+        // ─── MCP Phase 1: zero-arg read tools ──────────────────────────────────
+        //
+        // `stats` / `health` are ctx-only `BatchCmd` variants — the handler takes
+        // no `args` payload and builds the core via `*Args::default()`. So the
+        // core deserialize here is a SHAPE pre-check only: it proves the
+        // `arguments` object is well-typed (and rejects a non-object / wrong-typed
+        // value as a clean error), then is dropped. The variant carries only
+        // `output`, mirroring the argv path (`stats` / `health` accept no flags
+        // on either surface). Zero input fields → zero serde-output risk: neither
+        // core derives `Serialize`, and the command outputs the separate
+        // `StatsOutput` / `HealthReport`.
+        "stats" => {
+            let _shape_check: StatsCore = parse_core(command, arguments)?;
+            BatchCmd::Stats {
+                output: text_json(),
+            }
+        }
+        "health" => {
+            let _shape_check: HealthCore = parse_core(command, arguments)?;
+            BatchCmd::Health {
                 output: text_json(),
             }
         }
@@ -802,6 +827,10 @@ mod tests {
             ),
             ("context", vec!["src/lib.rs"], json!({"path": "src/lib.rs"})),
             ("read", vec!["src/lib.rs"], json!({"path": "src/lib.rs"})),
+            // Zero-arg read tools: the JSON `{}` must produce the same envelope
+            // as the bare argv form (the handler ignores any input).
+            ("stats", vec![], json!({})),
+            ("health", vec![], json!({})),
         ];
         for (command, argv, arguments) in cases {
             let (v_argv, v_json) = run_both(&ctx, command, &argv, arguments);
@@ -1523,12 +1552,14 @@ mod tests {
 
         // 2. A representative spread of argv-only / unknown commands is NOT
         //    capable — the catch-all bites, and they are absent from the list.
+        //    (`stats` / `health` ARE capable now — Phase-1 zero-arg read tools —
+        //    so they are deliberately excluded from this not-capable spread.)
         for cmd in [
             "where",
             "explain",
             "notes",
-            "health",
             "task",
+            "ping",
             "nonexistent_cmd",
         ] {
             assert!(
