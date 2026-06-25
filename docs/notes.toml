@@ -1840,3 +1840,23 @@ mentions = [
     "src/cli/mcp/tools.rs",
     "Store",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Daemon code that reads process cwd (std::env::current_dir / find_project_root() at call time) instead of the served-project root (ctx.root from BatchContext/BatchView) is a latent mis-attribution bug class: correct only because cqs-watch.service sets WorkingDirectory=the project, but wrong for a daemon launched elsewhere or a future multi-project daemon. Found+fixed twice in the v1.49.0 idle loop: kind_fallbacks telemetry recorder (#2026) and review run_git_diff (#2035). When auditing a daemon path, check whether it resolves its target from ctx.root or from process cwd — the latter is the smell."
+mentions = [
+    "graph/mod.rs",
+    "batch/handlers/analysis.rs",
+    "run_git_diff",
+    "record_kind_fallback",
+    "BatchContext",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Deriving cross-surface enumeration guards from a SINGLE source of truth pays off concretely: #2038 made JSON_ARGS_CAPABLE_COMMANDS the canonical MCP command list with the registry/README/exhaustiveness guards derived from it. When #2021 phase-1/2 added stats/health/where/related/stale tools, they AUTO-ENROLLED in all guards with zero manual count drift — adding a JSON_ARGS_CAPABLE_COMMANDS entry + a build_batch_cmd arm is the whole wiring. This is the antithesis of the four-hand-mirrored-enumeration debt #2043 tracks."
+mentions = [
+    "json_args.rs",
+    "JSON_ARGS_CAPABLE_COMMANDS",
+    "mcp/mod.rs",
+]
