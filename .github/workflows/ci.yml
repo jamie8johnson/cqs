@@ -71,6 +71,11 @@ jobs:
         run: |
           git diff HEAD^1 HEAD -- '*.rs' \
             | python3 scripts/check_comment_provenance.py
+      - name: Daemon request-path cwd check
+        # Whole-tree invariant (not diff-based): daemon request handlers must
+        # resolve their filesystem target from the served-project root in
+        # BatchContext, never from process cwd. Runs on push and PR.
+        run: python3 scripts/check_daemon_cwd.py
 
   msrv:
     runs-on: ubuntu-latest
