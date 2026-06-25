@@ -914,18 +914,23 @@ pub fn daemon_json_args_request(
     // it fronts — a valid gather/search/scout payload that reaches the CLI
     // reaches MCP too.
     let max_response = crate::limits::max_daemon_response_bytes();
-    let mut reader = std::io::BufReader::new(&stream).take(max_response);
+    // Read one byte past the cap so the cap-hit test is `> max_response`, not
+    // `== max_response`: a valid payload that is exactly `max_response` bytes
+    // (its terminating newline included) must be accepted, not mistaken for a
+    // truncated one. Only reading past the cap means the payload genuinely
+    // exceeded the limit.
+    let mut reader = std::io::BufReader::new(&stream).take(max_response.saturating_add(1));
     let mut response_line = String::new();
     let bytes_read = reader.read_line(&mut response_line).map_err(|e| {
         tracing::warn!(stage = "read", error = %e, command, "daemon json-args request failed");
         DaemonRpcError::Transport(format!("read response failed: {e}"))
     })?;
 
-    // A full buffer with no terminating newline means the payload was truncated
-    // at the cap. Forwarding it would parse as garbage; surface a distinct error
-    // naming the limit and the override knob so a large-but-valid result is not
-    // mistaken for a malformed daemon response.
-    if bytes_read as u64 == max_response {
+    // Reading more than the cap means the payload was truncated mid-line.
+    // Forwarding it would parse as garbage; surface a distinct error naming the
+    // limit and the override knob so a large-but-valid result is not mistaken
+    // for a malformed daemon response.
+    if bytes_read as u64 > max_response {
         let cap_mib = max_response / 1024 / 1024;
         tracing::warn!(
             stage = "read",
@@ -2711,6 +2716,66 @@ mod tests {
         assert!(
             result.is_ok(),
             "a well-formed under-cap response must parse"
+        );
+    }
+
+    /// Boundary: a valid response that is EXACTLY the cap in bytes (its
+    /// terminating newline included) is accepted, not mistaken for a truncated
+    /// one. The cap-hit test reads one byte past the cap and fires only on
+    /// `> cap`, so an exact-cap line (which `read_line` returns as `cap` bytes,
+    /// newline and all) parses cleanly. Under the prior `== cap` test this
+    /// false-tripped `ResponseTooLarge`.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_response_cap_env)]
+    fn json_args_response_exactly_at_cap_is_accepted() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        let cap: usize = 512;
+        std::env::set_var("CQS_DAEMON_MAX_RESPONSE_BYTES", cap.to_string());
+
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            // A valid envelope padded so the line + its trailing newline is
+            // EXACTLY `cap` bytes. `writeln!` adds the newline, so the pre-newline
+            // line must be `cap - 1` bytes.
+            let wrapper = r#"{"status":"ok","output":{"d":""}}"#;
+            let pad = cap - 1 - wrapper.len();
+            let big = "x".repeat(pad);
+            let line = format!(r#"{{"status":"ok","output":{{"d":"{big}"}}}}"#);
+            assert_eq!(
+                line.len(),
+                cap - 1,
+                "line must be exactly cap-1 pre-newline"
+            );
+            writeln!(stream, "{line}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = daemon_json_args_request(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+        std::env::remove_var("CQS_DAEMON_MAX_RESPONSE_BYTES");
+
+        assert!(
+            !matches!(result, Err(DaemonRpcError::ResponseTooLarge(_))),
+            "an exactly-at-cap valid response must NOT be classified too-large, got: {result:?}"
+        );
+        assert!(
+            result.is_ok(),
+            "an exactly-at-cap well-formed response must parse, got: {result:?}"
         );
     }
 
