@@ -47,9 +47,9 @@ use serde::de::DeserializeOwned;
 
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
-    GatherArgs, ImpactArgs, LimitArg, NotesListArgs, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs,
-    RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TaskArgs, TestMapArgs,
-    TraceArgs, WhereArgs,
+    GatherArgs, ImpactArgs, ImpactDiffArgs, LimitArg, NotesListArgs, OnboardArgs, OverlayArgs,
+    PlanArgs, ReadArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs,
+    SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WhereArgs,
 };
 use crate::cli::definitions::{GateThreshold, OutputArgs, OutputFormat, TextJsonArgs};
 
@@ -65,6 +65,7 @@ use crate::cli::commands::blame::BlameArgs as BlameCore;
 use crate::cli::commands::context::ContextArgs as ContextCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
+use crate::cli::commands::review::suggest::SuggestArgs as SuggestCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
 use crate::cli::commands::search::query::QueryArgs;
@@ -75,8 +76,9 @@ use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
-    ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs, TraceCoreArgs,
+    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, ImpactDiffCoreArgs,
+    PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs,
+    TraceCoreArgs,
 };
 
 /// Default `TextJsonArgs` for a JSON-args-built variant. The daemon always
@@ -185,6 +187,8 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "where",
     "related",
     "stale",
+    "suggest",
+    "impact-diff",
     "task",
     "notes",
     "stats",
@@ -438,6 +442,37 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
                 output: text_json(),
             }
         }
+        // ─── MCP Phase 4: suggest + impact-diff read tools ─────────────────────
+        //
+        // Both carry a write/stdin flag WITHHELD from the wire so the tool stays
+        // read-only (the `cqs_index` --force pattern):
+        //
+        // `suggest`'s only clap field is `--apply` (writes notes + reindexes —
+        // needs a writable store). The wire core (`SuggestCore`) has ZERO fields,
+        // so it deserializes as a SHAPE pre-check only (like `stats`/`health`),
+        // then is dropped; the arm forces `SuggestArgs { apply: false }`. With
+        // apply false, `dispatch_suggest` routes through the read-only
+        // `suggest_core` and never bails — the destructive half is unreachable.
+        "suggest" => {
+            let _shape_check: SuggestCore = parse_core(command, arguments)?;
+            BatchCmd::Suggest {
+                args: SuggestArgs { apply: false },
+                output: text_json(),
+            }
+        }
+        // `impact-diff` exposes ONLY `base` (the git ref); the wire core omits
+        // `--stdin` (the daemon has no agent stdin), so the arm forces
+        // `stdin: false`. `dispatch_impact_diff` ignores `stdin` anyway (it always
+        // reads via `run_git_diff`), so the read-only diff+impact compute is the
+        // only reachable behavior. The JSON OUTPUT is the separate
+        // `diff_impact_to_json` shape, unchanged by this input-only core.
+        "impact-diff" => {
+            let c: ImpactDiffCoreArgs = parse_core(command, arguments)?;
+            BatchCmd::ImpactDiff {
+                args: impact_diff_args_from_core(c),
+                output: text_json(),
+            }
+        }
         // ─── MCP Phase 1: zero-arg read tools ──────────────────────────────────
         //
         // `stats` / `health` are ctx-only `BatchCmd` variants — the handler takes
@@ -657,6 +692,16 @@ fn impact_args_from_core(c: ImpactCoreArgs, overlay: OverlayArgs) -> ImpactArgs 
         cross_project: false,
         limit_arg: LimitArg { limit: c.limit },
         overlay,
+    }
+}
+
+/// Build the argv-side `ImpactDiffArgs` from the wire core. `stdin` is WITHHELD
+/// from the wire (the daemon has no agent stdin), so it is forced `false` — the
+/// same by-absence withhold as `cqs_index`'s `--force`. Only `base` round-trips.
+fn impact_diff_args_from_core(c: ImpactDiffCoreArgs) -> ImpactDiffArgs {
+    ImpactDiffArgs {
+        base: c.base,
+        stdin: false,
     }
 }
 
@@ -1095,6 +1140,100 @@ mod tests {
                 v_argv, v_json,
                 "JSON-args output must equal argv output for `notes` {argv:?}\nargv:  {v_argv}\njson:  {v_json}"
             );
+        }
+    }
+
+    /// `suggest` (the read-only `cqs_suggest` tool) parity: a JSON-args request
+    /// with an empty `arguments` object must produce an envelope byte-identical
+    /// to the bare argv `suggest` (no `--apply`). `suggest` is embedder-free
+    /// (note-pattern detection over the store + root), so the seed corpus drives
+    /// it to a real `data` envelope. Proves the zero-field core routes through the
+    /// SAME `dispatch_suggest` the argv path uses.
+    #[test]
+    fn parity_suggest_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+        let (v_argv, v_json) = run_both(&ctx, "suggest", &[], json!({}));
+        assert!(
+            v_argv.get("data").is_some_and(|d| !d.is_null()),
+            "argv path for `suggest` should return data, got: {v_argv}"
+        );
+        assert_eq!(
+            v_argv, v_json,
+            "JSON-args output must equal argv output for `suggest`\nargv:  {v_argv}\njson:  {v_json}"
+        );
+    }
+
+    /// `impact-diff` (the read-only `cqs_impact_diff` tool) parity: a JSON-args
+    /// request matches the equivalent argv form across the working-tree default
+    /// (`{}`) and an explicit `base`. The seed corpus is not a git repo, so
+    /// `run_git_diff` yields no diff and both surfaces return the SAME
+    /// empty-diff envelope — the assertion is value-equality, proving the
+    /// `base`-only core routes through the same `dispatch_impact_diff` the argv
+    /// path uses (whether the diff is empty or populated, the two surfaces agree).
+    #[test]
+    fn parity_impact_diff_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+        let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+            (vec![], json!({})),
+            (vec!["--base", "HEAD~1"], json!({"base": "HEAD~1"})),
+        ];
+        for (argv, arguments) in cases {
+            let (v_argv, v_json) = run_both(&ctx, "impact-diff", &argv, arguments.clone());
+            assert_eq!(
+                v_argv, v_json,
+                "JSON-args output must equal argv output for `impact-diff` {arguments}\nargv:  {v_argv}\njson:  {v_json}"
+            );
+        }
+    }
+
+    /// Read-only withhold (the §1.3 by-absence guard for Phase 4): a JSON-args
+    /// `suggest` request CANNOT trigger `--apply` — the zero-field core exposes no
+    /// `apply` knob, and the arm forces `SuggestArgs { apply: false }`, so the
+    /// built `BatchCmd::Suggest` always carries `apply == false` regardless of
+    /// what the wire object claims. (`dispatch_suggest` bails when `apply` is true;
+    /// this proves that branch is unreachable from the wire.)
+    #[test]
+    fn suggest_json_args_cannot_apply() {
+        // Even an `arguments` object that smuggles `apply: true` (an extra,
+        // non-core key the zero-field core ignores) builds an `apply == false`
+        // command — the write half is unreachable over the wire.
+        for arguments in [json!({}), json!({"apply": true})] {
+            let cmd = build_batch_cmd("suggest", &arguments)
+                .expect("suggest must build from any wire object");
+            match cmd {
+                BatchCmd::Suggest { args, .. } => assert!(
+                    !args.apply,
+                    "JSON-args suggest must force apply=false (the write half is withheld), \
+                     got apply=true for arguments {arguments}"
+                ),
+                other => panic!("expected BatchCmd::Suggest, got {other:?}"),
+            }
+        }
+    }
+
+    /// Read-only withhold: a JSON-args `impact-diff` request CANNOT read stdin —
+    /// the `base`-only core exposes no `stdin` knob, and the arm forces
+    /// `stdin: false`, so the built `BatchCmd::ImpactDiff` always carries
+    /// `stdin == false` while `base` round-trips.
+    #[test]
+    fn impact_diff_json_args_cannot_read_stdin() {
+        // A wire object that smuggles `stdin: true` still builds `stdin == false`;
+        // `base` round-trips.
+        let cmd = build_batch_cmd("impact-diff", &json!({"base": "HEAD~1", "stdin": true}))
+            .expect("impact-diff must build");
+        match cmd {
+            BatchCmd::ImpactDiff { args, .. } => {
+                assert!(
+                    !args.stdin,
+                    "JSON-args impact-diff must force stdin=false (the stdin read is withheld)"
+                );
+                assert_eq!(
+                    args.base.as_deref(),
+                    Some("HEAD~1"),
+                    "base must round-trip from the wire core"
+                );
+            }
+            other => panic!("expected BatchCmd::ImpactDiff, got {other:?}"),
         }
     }
 

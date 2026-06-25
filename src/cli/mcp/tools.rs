@@ -2,8 +2,8 @@
 //!
 //! ## The tool surface (D1, D4b)
 //!
-//! The exposed tools are exactly the daemon's JSON-args-capable commands (the
-//! 20 with a Phase-0 `schemars::JsonSchema` core, per
+//! The exposed tools are exactly the daemon's JSON-args-capable commands (those
+//! with a Phase-0 `schemars::JsonSchema` core, per
 //! `cli::batch::json_args::build_batch_cmd`) MINUS the withheld set
 //! (`context`, `explain` — their relay carries UNSCANNED doc/signature content,
 //! RT-RELAY doc/signature gap; D4b). `explain` is not JSON-args-capable in the
@@ -185,6 +185,7 @@ use crate::cli::args::StaleArgs as StaleCore;
 use crate::cli::commands::blame::BlameArgs as BlameCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
+use crate::cli::commands::review::suggest::SuggestArgs as SuggestCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
 use crate::cli::commands::search::query::QueryArgs;
@@ -195,8 +196,9 @@ use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
-    ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs, TraceCoreArgs,
+    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, ImpactDiffCoreArgs,
+    PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs,
+    TraceCoreArgs,
 };
 
 /// The composed tool table for `tools/list` — the Phase-1 read tools, plus the
@@ -434,6 +436,31 @@ fn read_tools() -> &'static [ToolDef] {
                  ranking): filter to warnings (negative) or patterns (positive), or by kind tag. \
                  Read-only. Set check to flag mentions whose files or symbols are stale.",
             input_schema: schema::<NotesListCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        // Phase-4 read tools (suggest + impact-diff). Each withholds a
+        // write/stdin flag by absence so the tool stays read-only.
+        ToolDef {
+            name: "cqs_suggest",
+            command: "suggest",
+            // Zero-field core (the `--apply` write flag is withheld by absence),
+            // so the schema advertises an empty `properties` object like
+            // `cqs_stats` / `cqs_health`.
+            description:
+                "Auto-suggest note-worthy patterns in the codebase (warnings/observations that bias \
+                 search ranking), as a read-only dry run — the entries are returned, NOT written. \
+                 No input.",
+            input_schema: schema::<SuggestCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_impact_diff",
+            command: "impact-diff",
+            description:
+                "Blast radius of a git diff: the functions changed by a working-tree diff (or a \
+                 base-ref diff when base is set), plus their affected callers and the tests to \
+                 re-run.",
+            input_schema: schema::<ImpactDiffCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         // Zero-arg read tools (MCP Phase 1). Both take no input — their cores
@@ -785,6 +812,10 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "related" => check::<RelatedCore>(arguments),
         "stale" => check::<StaleCore>(arguments),
         "notes" => check::<NotesListCore>(arguments),
+        // Phase-4 read tools — `suggest` has a zero-field core (shape check only,
+        // `--apply` withheld); `impact-diff` exposes `base` (`--stdin` withheld).
+        "suggest" => check::<SuggestCore>(arguments),
+        "impact-diff" => check::<ImpactDiffCoreArgs>(arguments),
         // Zero-arg read tools (Phase 1). The core has no advertised properties,
         // so the shape check just rejects a non-object / wrong-typed `arguments`.
         "stats" => check::<StatsCore>(arguments),
@@ -1205,6 +1236,10 @@ mod tests {
         // the underscore-strip fallback (`notes-list`) — the multi-word MCP name
         // resolves through the `name`/`command` columns.
         assert_eq!(mcp_name_to_command("cqs_notes_list"), "notes");
+        // Phase-4: `cqs_suggest` → `suggest`; `cqs_impact_diff` → `impact-diff`
+        // (the underscore→hyphen mapping, like `cqs_test_map` → `test-map`).
+        assert_eq!(mcp_name_to_command("cqs_suggest"), "suggest");
+        assert_eq!(mcp_name_to_command("cqs_impact_diff"), "impact-diff");
     }
 
     /// Collect `cqs_<ident>` tokens from `text`, in order.

@@ -7,6 +7,22 @@ use cqs::{
     analyze_diff_impact, diff_impact_empty_json, diff_impact_to_json, map_hunks_to_functions,
 };
 
+/// Surface-agnostic core input for `cqs impact-diff` — the daemon JSON-args
+/// path (`cqs_impact_diff`) deserializes this directly. Exposes ONLY `base`
+/// (the git ref to diff against). The CLI's `--stdin` (read the diff from
+/// stdin) is WITHHELD by absence: the daemon has no agent stdin, so the
+/// JSON-args adapter forces `stdin: false`, mirroring how `cqs_index` withholds
+/// `--force`. Input-only: derives `Deserialize` + `JsonSchema`, never
+/// `Serialize` — the command's JSON OUTPUT is the separate `diff_impact_to_json`
+/// shape, so this core cannot change the output wire contract. `#[serde(default)]`
+/// lets a wire caller omit `base` and inherit the working-tree default (`None`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct ImpactDiffArgs {
+    /// Git ref to diff against (default: unstaged working-tree changes).
+    pub base: Option<String>,
+}
+
 pub(crate) fn cmd_impact_diff(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     base: Option<&str>,
