@@ -13,7 +13,12 @@
 //!   precedent. The lone hyphenated command `test-map` becomes `cqs_test_map`.
 //! - Advertises an `inputSchema` generated from its Phase-0 core via
 //!   `schemars::schema_for!` — the SAME struct the daemon deserializes the
-//!   relayed `arguments` into, so the schema and the wire contract cannot drift.
+//!   relayed `arguments` into. For an overlay-capable command the three
+//!   worktree-overlay tri-state keys (`overlay` / `no_overlay` / `overlay_root`)
+//!   are read off the raw wire object by the daemon's `overlay_from_args` rather
+//!   than off the core struct, so they are injected into the advertised schema
+//!   explicitly (`schema_with_overlay`) — keeping schema and wire contract from
+//!   drifting on those keys too.
 //! - Is annotated `readOnly` (every P1 tool is a read).
 //!
 //! ## tools/call (Blocker #1, #5; D4c)
@@ -109,6 +114,56 @@ fn schema<T: schemars::JsonSchema>() -> Value {
     })
 }
 
+/// The worktree-overlay tri-state keys the daemon's `overlay_from_args` reads
+/// off the raw wire object (NOT off the core struct), for an overlay-capable
+/// command. Kept here as the single source the schema injection and the
+/// schema-honesty test both reference, so adding/removing a key updates both.
+const OVERLAY_KEYS: [&str; 3] = ["overlay", "no_overlay", "overlay_root"];
+
+/// The advertised JSON-Schema property for one [`OVERLAY_KEYS`] entry. Keyed by
+/// the const so the injected property set and the key list cannot drift.
+fn overlay_property_schema(key: &str) -> Value {
+    match key {
+        "overlay" => serde_json::json!({
+            "type": "boolean",
+            "description": "Force the worktree overlay ON (reflect this checkout's edits)."
+        }),
+        "no_overlay" => serde_json::json!({
+            "type": "boolean",
+            "description": "Force the worktree overlay OFF (use the parent index as-is)."
+        }),
+        "overlay_root" => serde_json::json!({
+            "type": "string",
+            "description": "Overlay-root path override (routed through the daemon's \
+                            overlay-root validation gate)."
+        }),
+        // Unreachable: `OVERLAY_KEYS` is the closed set this is called over.
+        _ => serde_json::json!({ "description": "worktree-overlay control key" }),
+    }
+}
+
+/// Like [`schema`], but for an overlay-capable command: inject the three
+/// worktree-overlay tri-state properties ([`OVERLAY_KEYS`]) into the schema's
+/// `properties` object so the advertised `inputSchema` declares every key the
+/// daemon will read off the wire. Without this the daemon accepts `overlay`/
+/// `no_overlay`/`overlay_root` (via `overlay_from_args`) while the schema hides
+/// them — a schema-vs-wire drift. The keys are wire-optional (no `required`
+/// entry), so a caller that omits them gets the default behavior.
+fn schema_with_overlay<T: schemars::JsonSchema>() -> Value {
+    let mut s = schema::<T>();
+    if let Some(obj) = s.as_object_mut() {
+        let props = obj
+            .entry("properties")
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(props) = props.as_object_mut() {
+            for key in OVERLAY_KEYS {
+                props.insert(key.to_string(), overlay_property_schema(key));
+            }
+        }
+    }
+    s
+}
+
 // Core struct aliases — identical import paths to
 // `cli::batch::json_args`, so the schema source and the daemon deserialize
 // target are provably the same type.
@@ -153,7 +208,7 @@ fn read_tools() -> &'static [ToolDef] {
                 "Semantic code search (hybrid RRF). Find functions/methods by concept, not just \
                  name — e.g. 'retry with exponential backoff' finds retry logic regardless of \
                  naming. Use name_only for fast 'where is X defined?' lookups.",
-            input_schema: schema::<QueryArgs>,
+            input_schema: schema_with_overlay::<QueryArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -162,7 +217,7 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Assemble context: a seed semantic search expanded along the call graph (BFS). \
                  Returns the seed hits plus their callers/callees up to a depth.",
-            input_schema: schema::<GatherCore>,
+            input_schema: schema_with_overlay::<GatherCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -171,7 +226,7 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Investigation brief for a task: search + callers + tests + staleness + notes in \
                  one call. The first step before implementing.",
-            input_schema: schema::<ScoutCore>,
+            input_schema: schema_with_overlay::<ScoutCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -198,14 +253,14 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Who calls this function? Direct callers from the call graph, each tagged with an \
                  edge_kind (call / serde_callback / macro_heuristic / fn_pointer / doc_reference).",
-            input_schema: schema::<CallersCoreArgs>,
+            input_schema: schema_with_overlay::<CallersCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_callees",
             command: "callees",
             description: "What does this function call? Its direct callees from the call graph.",
-            input_schema: schema::<CalleesCore>,
+            input_schema: schema_with_overlay::<CalleesCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -222,7 +277,7 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Blast radius of changing a function: callers, transitively-affected functions, \
                  and the tests that cover them. The pre-edit safety check.",
-            input_schema: schema::<ImpactCoreArgs>,
+            input_schema: schema_with_overlay::<ImpactCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -273,7 +328,7 @@ fn read_tools() -> &'static [ToolDef] {
             description: "Find dead code (zero callers), each carrying a verdict (test-only / \
                  low-confidence-live / known-gap / dead) — only `dead` is a confident absence \
                  claim.",
-            input_schema: schema::<DeadCore>,
+            input_schema: schema_with_overlay::<DeadCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -282,7 +337,7 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Bundled pre-merge review for the current diff: review + dead-code gate, with a \
                  pass/fail verdict.",
-            input_schema: schema::<CiCore>,
+            input_schema: schema_with_overlay::<CiCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -291,7 +346,7 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Risk-ranked review of the current diff: which changed functions have the most \
                  callers / least test coverage.",
-            input_schema: schema::<ReviewCore>,
+            input_schema: schema_with_overlay::<ReviewCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -386,9 +441,10 @@ fn mutation_tools() -> &'static [ToolDef] {
             description:
                 "Queue a reindex of the active slot (fire-and-forget): returns immediately with \
                  {queued:true, reindex_deferred:true}; the watch loop performs the rebuild on its \
-                 next tick — it does NOT block on the build. Poll completion with cqs_wait_fresh \
-                 (or cqs_status). Non-destructive: rebuilds from the source tree (the full-rebuild \
-                 `--force` variant is withheld).",
+                 next tick — it does NOT block on the build. To check freshness, re-run a read \
+                 tool (e.g. cqs_search) and inspect its `_meta.stale_origins`: an empty list \
+                 means the index has caught up. Non-destructive: rebuilds from the source tree \
+                 (the full-rebuild `--force` variant is withheld).",
             input_schema: schema::<IndexCore>,
             annotations: ToolAnnotations {
                 read_only: false,
@@ -427,9 +483,27 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
 
 /// Build the `tools/list` result: `{tools: [{name, description, inputSchema,
 /// annotations}, ...]}`.
+///
+/// The rendered `tools` array is memoized per flag-state in a `LazyLock`
+/// ([`READ_TOOLS_JSON`] / [`READ_PLUS_MUTATION_TOOLS_JSON`]) — `tools/list` is
+/// hot, and re-running every tool's `schema_for!` per call (the only non-trivial
+/// cost here) is pure waste because the schemas are static. Each snapshot is
+/// post-overlay-injection (it renders the `ToolDef.input_schema` fn pointers,
+/// which already produce the overlay-augmented schemas for overlay-capable
+/// tools). The flag chooses the snapshot but never re-renders.
 pub fn list() -> Value {
-    let tools: Vec<Value> = tool_table()
-        .iter()
+    let tools = if crate::cli::mcp::mutations_enabled() {
+        &*READ_PLUS_MUTATION_TOOLS_JSON
+    } else {
+        &*READ_TOOLS_JSON
+    };
+    serde_json::json!({ "tools": tools })
+}
+
+/// Render a tool slice into the `tools/list` array shape. Called once per
+/// snapshot inside the `LazyLock` initializers below.
+fn render_tools(defs: &[ToolDef]) -> Vec<Value> {
+    defs.iter()
         .map(|t| {
             serde_json::json!({
                 "name": t.name,
@@ -441,9 +515,21 @@ pub fn list() -> Value {
                 "annotations": t.annotations.to_json()
             })
         })
-        .collect();
-    serde_json::json!({ "tools": tools })
+        .collect()
 }
+
+/// Memoized `tools/list` array for the flag-OFF (read-only) surface.
+static READ_TOOLS_JSON: std::sync::LazyLock<Vec<Value>> =
+    std::sync::LazyLock::new(|| render_tools(read_tools()));
+
+/// Memoized `tools/list` array for the flag-ON surface (read tools + the gated
+/// mutators), in `tool_table` order.
+static READ_PLUS_MUTATION_TOOLS_JSON: std::sync::LazyLock<Vec<Value>> =
+    std::sync::LazyLock::new(|| {
+        let mut v = render_tools(read_tools());
+        v.extend(render_tools(mutation_tools()));
+        v
+    });
 
 /// The outcome of a `tools/call`: either a `CallToolResult` value (the JSON-RPC
 /// `result`, which may itself carry `isError:true` for a handler error) or a
@@ -456,7 +542,11 @@ pub enum CallOutcome {
 /// Handle a `tools/call` request. `cqs_dir` is the resolved `.cqs` directory
 /// whose daemon socket the bridge relays to.
 pub fn call(cqs_dir: &Path, params: Option<Value>) -> CallOutcome {
-    let _span = tracing::info_span!("mcp_tools_call").entered();
+    // The tool name is recorded onto the span once resolved (declared Empty up
+    // front so the field exists from span creation), and every exit path emits a
+    // completion event so a call's outcome is observable from the trace alone.
+    let span = tracing::info_span!("mcp_tools_call", tool = tracing::field::Empty);
+    let _entered = span.enter();
 
     let params = match params {
         Some(p) => p,
@@ -478,13 +568,15 @@ pub fn call(cqs_dir: &Path, params: Option<Value>) -> CallOutcome {
             )
         }
     };
+    span.record("tool", name);
     let tool = match find_tool(name) {
         Some(t) => t,
         None => {
+            tracing::warn!(tool = name, "MCP tools/call: unknown tool");
             return CallOutcome::ProtocolError(
                 lifecycle::METHOD_NOT_FOUND,
                 format!("unknown tool: {name}"),
-            )
+            );
         }
     };
 
@@ -505,19 +597,67 @@ pub fn call(cqs_dir: &Path, params: Option<Value>) -> CallOutcome {
     //    message than the daemon's redacted echo. The daemon re-deserializes
     //    authoritatively (it is the validation boundary, not this check).
     if let Err(e) = validate_arguments(tool.command, &arguments) {
+        tracing::warn!(tool = name, error = %e, "MCP tools/call: argument pre-check rejected");
         return CallOutcome::ProtocolError(
             lifecycle::INVALID_PARAMS,
             format!("invalid arguments for {name}: {e}"),
         );
     }
 
-    // 4. relay as the Lane 1 JSON-args frame, then classify the envelope.
-    relay_and_classify(cqs_dir, tool.command, &arguments)
+    // 4. relay as the Lane 1 JSON-args frame, then classify the envelope. Emit
+    //    one completion event carrying the tool name: info on a successful
+    //    CallToolResult, warn on a handler error (isError:true) or a protocol
+    //    error — so a call's outcome is visible without re-deriving it.
+    let outcome = relay_and_classify(cqs_dir, tool.command, &arguments);
+    match &outcome {
+        CallOutcome::Result(result) => {
+            let is_error = result.get("isError").and_then(|v| v.as_bool()) == Some(true);
+            if is_error {
+                tracing::warn!(
+                    tool = name,
+                    "MCP tools/call complete: handler error (isError)"
+                );
+            } else {
+                tracing::info!(tool = name, "MCP tools/call complete: ok");
+            }
+        }
+        CallOutcome::ProtocolError(code, _) => {
+            tracing::warn!(tool = name, code, "MCP tools/call complete: protocol error");
+        }
+    }
+    outcome
 }
 
-/// Deserialize-check `arguments` against the command's Phase-0 core. Returns
-/// `Ok(())` if the object is shape-valid. Mirrors the type set in
-/// `build_batch_cmd` so the pre-check accepts exactly what the daemon will.
+/// The `max_depth` range the daemon enforces for `test-map` / `trace`: their
+/// argv `--depth` is a clap-bounded `u16` (1..=50), and the JSON-args adapter
+/// (`test_map_args_from_core` / `trace_args_from_core`) re-applies the SAME
+/// `u16::try_from(..).filter(|d| (1..=50).contains(d))` gate before dispatch. A
+/// precheck that only deserialized the `usize` core would pass a value the
+/// daemon then range-rejects — so the precheck must apply the same bound to
+/// reject it pre-relay (with a clearer message than the daemon's redacted echo).
+fn validate_max_depth(arguments: &Value) -> Result<(), String> {
+    if let Some(v) = arguments.get("max_depth") {
+        // Only validate a value that is actually present and integral. A
+        // non-integer or out-of-range value is caught by the shape check first
+        // for the type, but the range is the daemon's, so re-check it here.
+        let n = v
+            .as_u64()
+            .ok_or_else(|| "max_depth must be a non-negative integer".to_string())?;
+        let in_range = u16::try_from(n).is_ok_and(|d| (1..=50).contains(&d));
+        if !in_range {
+            return Err(format!("max_depth must be in 1..=50, got {n}"));
+        }
+    }
+    Ok(())
+}
+
+/// Deserialize-check `arguments` against the command's Phase-0 core, then apply
+/// the daemon's non-serde range gates (e.g. the `test-map` / `trace`
+/// `max_depth` 1..=50 bound enforced in the JSON-args adapter). Returns `Ok(())`
+/// when the object is both shape-valid AND within the bounds the daemon will
+/// enforce — so a value the daemon would range-reject is rejected pre-relay. The
+/// daemon re-deserializes and re-validates authoritatively (it is the boundary,
+/// not this check); this pre-check exists to surface a clearer message earlier.
 fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
     fn check<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
         serde_json::from_value::<T>(arguments.clone())
@@ -534,8 +674,12 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "callees" => check::<CalleesCore>(arguments),
         "deps" => check::<DepsCoreArgs>(arguments),
         "impact" => check::<ImpactCoreArgs>(arguments),
-        "test-map" => check::<TestMapCoreArgs>(arguments),
-        "trace" => check::<TraceCoreArgs>(arguments),
+        // `test-map` / `trace` carry a `max_depth` the daemon range-gates (1..=50)
+        // in the JSON-args adapter — re-apply that bound after the shape check.
+        "test-map" => {
+            check::<TestMapCoreArgs>(arguments).and_then(|()| validate_max_depth(arguments))
+        }
+        "trace" => check::<TraceCoreArgs>(arguments).and_then(|()| validate_max_depth(arguments)),
         "blame" => check::<BlameCore>(arguments),
         "diff" => check::<DiffCore>(arguments),
         "drift" => check::<DriftCore>(arguments),
@@ -622,7 +766,9 @@ fn relay_and_classify(cqs_dir: &Path, command: &str, arguments: &Value) -> CallO
 }
 
 /// Non-unix stub: the daemon socket is unix-only, so the bridge has no
-/// transport. (The `cqs mcp` subcommand is itself unix-gated at the CLI layer.)
+/// transport. On a non-unix target `serve_stdio` fails fast before the stdin
+/// loop, so this path is not reached in practice; it exists to keep the module
+/// compiling on non-unix targets.
 #[cfg(not(unix))]
 fn relay_and_classify(_cqs_dir: &Path, _command: &str, _arguments: &Value) -> CallOutcome {
     CallOutcome::ProtocolError(
@@ -649,53 +795,86 @@ fn classify_output(output: &Value) -> Value {
             })
         }
         // Success → structuredContent + content[text] mirror + _meta hoist.
-        Some(SlimEnvelope::Data { payload, meta }) => success_result(payload, meta),
-        // Not a recognized slim envelope — pass the raw output through as
-        // structuredContent so a non-standard handler shape still reaches the
-        // client rather than being dropped.
-        None => success_result(output, None),
+        Some(SlimEnvelope::Data { payload, meta }) => {
+            success_result(payload.clone(), meta.cloned())
+        }
+        // Not a recognized slim envelope. If the unrecognized shape carries an
+        // `error` key it is almost certainly a daemon failure the slim matcher
+        // didn't recognize (e.g. an extra sibling key, or both data+error) —
+        // surface it as isError:true rather than masking a failure as success.
+        // A genuinely error-free non-standard shape passes through as success.
+        None if output.get("error").is_some() => {
+            tracing::warn!(
+                "MCP tool unrecognized envelope carrying an `error` key mapped to isError:true"
+            );
+            let mut result = success_result(output.clone(), None);
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("isError".to_string(), Value::Bool(true));
+            }
+            result
+        }
+        None => success_result(output.clone(), None),
     }
 }
 
-/// Build a successful `CallToolResult` from the dispatch `data` payload and the
-/// optional envelope `_meta` (Blocker #5, D4c).
-fn success_result(payload: &Value, meta: Option<&Value>) -> Value {
+/// Max byte length of the inlined `content[text]` mirror. Above this the text is
+/// a short summary; the full payload always remains in `structuredContent`. The
+/// mirror exists only for clients that don't read `structuredContent`, so it is
+/// not worth doubling a large payload's bytes on the per-call hot path.
+const MAX_TEXT_MIRROR_BYTES: usize = 4 * 1024;
+
+/// JSON-serialize `value` for the `content[text]` mirror, size-gated: the full
+/// text when it fits under [`MAX_TEXT_MIRROR_BYTES`], a short summary otherwise
+/// (the full data is always in `structuredContent`, so the mirror can be terse).
+fn text_mirror(value: &Value) -> String {
+    let full = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
+    if full.len() <= MAX_TEXT_MIRROR_BYTES {
+        full
+    } else {
+        format!(
+            "[{} bytes elided — read structuredContent for the full payload]",
+            full.len()
+        )
+    }
+}
+
+/// Build a successful `CallToolResult` from the dispatch `data` payload (moved
+/// into `structuredContent`) and the optional envelope `_meta` (Blocker #5,
+/// D4c). The `content[text]` mirror is derived from the same value and
+/// size-gated ([`text_mirror`]) so a large payload is not embedded twice on the
+/// hot path.
+fn success_result(payload: Value, meta: Option<Value>) -> Value {
     // D4c: empty-with-candidates → isError:true so the model retries with a
     // candidate. Genuinely-empty / no-candidate / dead-verdict → empty-but-ok.
-    if is_empty_with_candidates(payload) {
-        let text = serde_json::to_string(payload)
-            .unwrap_or_else(|_| "no exact match; candidates available".to_string());
-        return serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": format!("no exact match — retry with one of the candidates: {text}")
-            }],
-            "structuredContent": payload,
-            "isError": true
-        });
-    }
+    let is_candidates = is_empty_with_candidates(&payload);
+    // Build the text mirror FROM the value before moving it into the result.
+    let text = if is_candidates {
+        format!(
+            "no exact match — retry with one of the candidates: {}",
+            text_mirror(&payload)
+        )
+    } else {
+        text_mirror(&payload)
+    };
 
-    // The text mirror is the JSON-stringified data, for clients that don't read
-    // structuredContent. Per-result signals (rank_signals/trust_level) live
-    // inside `payload`, so structuredContent carries them automatically
-    // (Blocker #5) — only the envelope-level _meta is hoisted separately.
-    let text = serde_json::to_string(payload).unwrap_or_else(|_| "<unserializable>".to_string());
-    let mut result = serde_json::json!({
-        "content": [{ "type": "text", "text": text }],
-        "structuredContent": payload,
-        "isError": false
-    });
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "content".to_string(),
+        serde_json::json!([{ "type": "text", "text": text }]),
+    );
+    // MOVE the payload into structuredContent — no clone. Per-result signals
+    // (rank_signals/trust_level) live inside it, so they ride through
+    // automatically (Blocker #5); only the envelope-level _meta is hoisted.
+    obj.insert("structuredContent".to_string(), payload);
+    obj.insert("isError".to_string(), Value::Bool(is_candidates));
     if let Some(m) = meta {
         if !m.is_null() {
             // Hoist the envelope _meta (stale_origins / worktree_overlay /
-            // worktree_stale) — NOT the per-result signals (those ride in
-            // structuredContent). See Blocker #5.
-            if let Some(obj) = result.as_object_mut() {
-                obj.insert("_meta".to_string(), m.clone());
-            }
+            // worktree_stale). See Blocker #5.
+            obj.insert("_meta".to_string(), m);
         }
     }
-    result
+    Value::Object(obj)
 }
 
 /// D4c shape probe: a result that is "empty BUT carries candidates" — an
@@ -855,11 +1034,175 @@ mod tests {
         assert_eq!(result.get("isError").and_then(|v| v.as_bool()), Some(false));
     }
 
+    /// Masking guard (robustness): an UNRECOGNIZED (non-slim) envelope that
+    /// nonetheless carries an `error` key must map to isError:true, not be masked
+    /// as a false success. The slim matcher returns `None` here (an extra sibling
+    /// key beyond data/error/_meta makes it non-slim), so the error-key check in
+    /// `classify_output` is what catches the daemon failure.
+    #[test]
+    fn unrecognized_envelope_with_error_key_is_error() {
+        // Extra sibling key `status` makes this non-slim, but it still carries an
+        // `error` — a daemon failure that must NOT read as success.
+        let output = serde_json::json!({
+            "error": { "code": "boom", "message": "something failed" },
+            "status": "weird"
+        });
+        let result = classify_output(&output);
+        assert_eq!(
+            result.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "an unrecognized envelope carrying `error` must be isError:true: {result}"
+        );
+        // The full unrecognized output still reaches the client via
+        // structuredContent (nothing dropped).
+        assert!(result.get("structuredContent").is_some());
+    }
+
+    /// Contrast: an unrecognized (non-slim) envelope with NO `error` key passes
+    /// through as a success — a non-standard but error-free handler shape still
+    /// reaches the client.
+    #[test]
+    fn unrecognized_envelope_without_error_is_ok() {
+        let output = serde_json::json!({ "weird": { "shape": true }, "extra": 1 });
+        let result = classify_output(&output);
+        assert_eq!(result.get("isError").and_then(|v| v.as_bool()), Some(false));
+        assert!(result.get("structuredContent").is_some());
+    }
+
+    /// The large-payload text mirror is size-gated: a payload over the cap keeps
+    /// the full data in structuredContent but elides the inlined text mirror.
+    #[test]
+    fn large_payload_text_mirror_is_size_gated() {
+        let big: String = "x".repeat(MAX_TEXT_MIRROR_BYTES + 100);
+        let output = serde_json::json!({ "data": { "blob": big } });
+        let result = classify_output(&output);
+        assert_eq!(result.get("isError").and_then(|v| v.as_bool()), Some(false));
+        // structuredContent carries the full payload.
+        let structured = result.get("structuredContent").expect("structuredContent");
+        assert!(structured.get("blob").is_some());
+        // The text mirror is the elision summary, not the full blob.
+        let text = result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap();
+        assert!(
+            text.contains("elided") && text.len() < MAX_TEXT_MIRROR_BYTES,
+            "oversized payload must produce an elided text mirror, got {} bytes",
+            text.len()
+        );
+    }
+
     #[test]
     fn mcp_name_round_trips_to_command() {
         assert_eq!(mcp_name_to_command("cqs_test_map"), "test-map");
         assert_eq!(mcp_name_to_command("cqs_search"), "search");
         assert_eq!(mcp_name_to_command("cqs_callers"), "callers");
+    }
+
+    /// Collect `cqs_<ident>` tokens from `text`, in order.
+    fn cqs_tokens(text: &str) -> Vec<String> {
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some(rel) = text[i..].find("cqs_") {
+            let start = i + rel;
+            let mut end = start + "cqs_".len();
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            out.push(text[start..end].to_string());
+            i = end;
+        }
+        out
+    }
+
+    /// Description honesty (docs-lie): every `cqs_*` tool token mentioned in ANY
+    /// tool description must name a tool that actually exists in `tool_table()` —
+    /// a description must not steer the agent at a tool that resolves to
+    /// METHOD_NOT_FOUND. Runs with the mutation flag ON so the mutator-tool
+    /// descriptions (and the full name set) are both in scope. Serial-gated on
+    /// the shared env group.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn descriptions_reference_only_real_tools() {
+        let prior = std::env::var(crate::cli::mcp::MUTATIONS_ENV).ok();
+        std::env::set_var(crate::cli::mcp::MUTATIONS_ENV, "1");
+
+        let table = tool_table();
+        let known: std::collections::BTreeSet<&str> = table.iter().map(|t| t.name).collect();
+        for t in &table {
+            for token in cqs_tokens(t.description) {
+                assert!(
+                    known.contains(token.as_str()),
+                    "tool `{}` description references `{token}`, which is not a registered tool \
+                     (would resolve to METHOD_NOT_FOUND); known tools: {:?}",
+                    t.name,
+                    known
+                );
+            }
+        }
+
+        match prior {
+            Some(p) => std::env::set_var(crate::cli::mcp::MUTATIONS_ENV, p),
+            None => std::env::remove_var(crate::cli::mcp::MUTATIONS_ENV),
+        }
+    }
+
+    /// The MCP tool names whose daemon command consumes the worktree-overlay
+    /// tri-state via `overlay_from_args` (search/gather/scout/callers/callees/
+    /// impact/dead/ci/review). The list mirrors the `overlay_from_args(arguments)`
+    /// call sites in `json_args::build_batch_cmd`.
+    const OVERLAY_CAPABLE_TOOLS: [&str; 9] = [
+        "cqs_search",
+        "cqs_gather",
+        "cqs_scout",
+        "cqs_callers",
+        "cqs_callees",
+        "cqs_impact",
+        "cqs_dead",
+        "cqs_ci",
+        "cqs_review",
+    ];
+
+    /// Schema honesty (schema≠wire): every overlay key the daemon's
+    /// `overlay_from_args` reads off the wire must be a declared property of the
+    /// overlay-capable tool's advertised `inputSchema` — otherwise the daemon
+    /// accepts a knob the schema hides. Conversely, a NON-overlay tool must NOT
+    /// advertise the overlay keys (the daemon ignores them for it, so offering
+    /// them would mislead). Pins the schema injection to the daemon's consumption.
+    #[test]
+    fn overlay_keys_declared_iff_command_consumes_them() {
+        let overlay: std::collections::BTreeSet<&str> = OVERLAY_CAPABLE_TOOLS.into_iter().collect();
+        for def in read_tools() {
+            let schema = (def.input_schema)();
+            let props = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .unwrap_or_else(|| panic!("`{}` schema must carry properties", def.name));
+            if overlay.contains(def.name) {
+                for key in OVERLAY_KEYS {
+                    assert!(
+                        props.contains_key(key),
+                        "overlay-capable `{}` inputSchema must declare overlay key `{key}`; \
+                         got properties: {:?}",
+                        def.name,
+                        props.keys().collect::<Vec<_>>()
+                    );
+                }
+            } else {
+                for key in OVERLAY_KEYS {
+                    assert!(
+                        !props.contains_key(key),
+                        "non-overlay `{}` inputSchema must NOT declare overlay key `{key}` \
+                         (the daemon ignores it for this command)",
+                        def.name
+                    );
+                }
+            }
+        }
     }
 
     /// Schema honesty: the `cqs_trace` / `cqs_test_map` `inputSchema` must NOT
@@ -917,5 +1260,47 @@ mod tests {
             CallOutcome::ProtocolError(code, _) => assert_eq!(code, lifecycle::INVALID_PARAMS),
             CallOutcome::Result(_) => panic!("expected invalid-params for malformed arguments"),
         }
+    }
+
+    /// Precheck-vs-daemon parity: a `max_depth` the daemon range-rejects
+    /// (1..=50) is rejected by the pre-check too, before any socket round-trip —
+    /// the pre-check accepts exactly what the daemon will. An in-range value
+    /// passes the pre-check (and only then relays).
+    #[test]
+    fn out_of_range_max_depth_is_invalid_params() {
+        for tool in ["cqs_trace", "cqs_test_map"] {
+            // 999 is shape-valid (a usize) but outside the daemon's 1..=50 gate.
+            let args = if tool == "cqs_trace" {
+                serde_json::json!({ "source": "a", "target": "b", "max_depth": 999 })
+            } else {
+                serde_json::json!({ "name": "a", "max_depth": 999 })
+            };
+            let outcome = call(
+                Path::new("/nonexistent/.cqs"),
+                Some(serde_json::json!({ "name": tool, "arguments": args })),
+            );
+            match outcome {
+                CallOutcome::ProtocolError(code, msg) => {
+                    assert_eq!(
+                        code,
+                        lifecycle::INVALID_PARAMS,
+                        "out-of-range max_depth must be -32602 for {tool}: {msg}"
+                    );
+                    assert!(
+                        msg.contains("1..=50"),
+                        "the rejection must name the daemon's range for {tool}: {msg}"
+                    );
+                }
+                CallOutcome::Result(_) => {
+                    panic!("expected invalid-params for out-of-range max_depth on {tool}")
+                }
+            }
+        }
+        // A zero is also out of range (the lower bound is 1).
+        assert!(validate_max_depth(&serde_json::json!({ "max_depth": 0 })).is_err());
+        // An in-range value passes the pre-check's range gate.
+        assert!(validate_max_depth(&serde_json::json!({ "max_depth": 5 })).is_ok());
+        // Absent max_depth is fine (the daemon defaults it).
+        assert!(validate_max_depth(&serde_json::json!({ "name": "a" })).is_ok());
     }
 }
