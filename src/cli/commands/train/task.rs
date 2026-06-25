@@ -5,6 +5,48 @@ use colored::Colorize;
 
 use cqs::{task, Embedder};
 
+// ─── Args (surface-agnostic, MCP-ready) ─────────────────────────────────────
+
+/// Input for the `task` implementation-brief query — the request-shaped knobs
+/// both the CLI (`cmd_task`) and the MCP `cqs_task` tool deserialize into. The
+/// store, embedder, root, call graph, and test chunks come from the adapter;
+/// these are the request settings the daemon (`dispatch_task`) consumes:
+/// `description`, `limit`, `tokens`. The worktree-overlay tri-state rides
+/// alongside on the wire (read separately by `overlay_from_args`), and the
+/// CLI-only `brief` render flag stays on the clap-side `args::TaskArgs` — the
+/// daemon emits only the non-brief JSON projection.
+///
+/// Input-only: it derives `Deserialize` + `JsonSchema` for the wire, never
+/// `Serialize`. The command's JSON OUTPUT is the separate `task_json_core`
+/// projection (`TaskBriefOutput` / the budgeted scout structs), so adding these
+/// derives cannot change the output wire shape.
+///
+/// `#[serde(default)]` so a wire caller can supply just `description` and
+/// inherit the production defaults (`limit` mirrors clap's `LimitArg`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub(crate) struct TaskArgs {
+    /// Task description to build the implementation brief for.
+    pub description: String,
+    /// Max file placements to return (clamped to `PLACEMENT_LIMIT_CAP` in the
+    /// adapter).
+    pub limit: usize,
+    /// Token budget — when set, waterfalls chunk content across the brief's
+    /// sections within the budget.
+    pub tokens: Option<usize>,
+}
+
+impl Default for TaskArgs {
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            // Mirrors clap `LimitArg` default (5).
+            limit: crate::cli::args::DEFAULT_LIMIT,
+            tokens: None,
+        }
+    }
+}
+
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// Brief task output: files to touch, placements, at-risk functions, tests.

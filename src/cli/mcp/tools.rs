@@ -191,6 +191,7 @@ use crate::cli::commands::search::related::RelatedArgs as RelatedCore;
 use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
 use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
+use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
     DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
@@ -242,6 +243,18 @@ fn read_tools() -> &'static [ToolDef] {
                 "Investigation brief for a task: search + callers + tests + staleness + notes in \
                  one call. The first step before implementing.",
             input_schema: schema_with_overlay::<ScoutCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        // Overlay-capable (seed-overlay): the daemon overlays the scout seed from
+        // an eligible worktree, so the schema injects the overlay tri-state keys.
+        ToolDef {
+            name: "cqs_task",
+            command: "task",
+            description:
+                "Full implementation brief for a task description: scout seed + gathered context \
+                 + impact (who breaks) + placement (where to add) + test coverage, in one call. \
+                 Set tokens to budget the brief across sections.",
+            input_schema: schema_with_overlay::<TaskCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -735,6 +748,7 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "search" => check::<QueryArgs>(arguments),
         "gather" => check::<GatherCore>(arguments),
         "scout" => check::<ScoutCore>(arguments),
+        "task" => check::<TaskCore>(arguments),
         "onboard" => check::<OnboardCore>(arguments),
         "similar" => check::<SimilarCore>(arguments),
         "callers" => check::<CallersCoreArgs>(arguments),
@@ -1227,13 +1241,14 @@ mod tests {
     }
 
     /// The MCP tool names whose daemon command consumes the worktree-overlay
-    /// tri-state via `overlay_from_args` (search/gather/scout/callers/callees/
-    /// impact/dead/ci/review). The list mirrors the `overlay_from_args(arguments)`
-    /// call sites in `json_args::build_batch_cmd`.
-    const OVERLAY_CAPABLE_TOOLS: [&str; 9] = [
+    /// tri-state via `overlay_from_args` (search/gather/scout/task/callers/
+    /// callees/impact/dead/ci/review). The list mirrors the
+    /// `overlay_from_args(arguments)` call sites in `json_args::build_batch_cmd`.
+    const OVERLAY_CAPABLE_TOOLS: [&str; 10] = [
         "cqs_search",
         "cqs_gather",
         "cqs_scout",
+        "cqs_task",
         "cqs_callers",
         "cqs_callees",
         "cqs_impact",

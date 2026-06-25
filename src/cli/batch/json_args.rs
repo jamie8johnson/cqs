@@ -48,7 +48,8 @@ use serde::de::DeserializeOwned;
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
     GatherArgs, ImpactArgs, LimitArg, OnboardArgs, OverlayArgs, PlanArgs, ReadArgs, RelatedArgs,
-    ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TestMapArgs, TraceArgs, WhereArgs,
+    ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs, StaleArgs, TaskArgs, TestMapArgs, TraceArgs,
+    WhereArgs,
 };
 use crate::cli::definitions::{GateThreshold, OutputArgs, OutputFormat, TextJsonArgs};
 
@@ -71,6 +72,7 @@ use crate::cli::commands::search::related::RelatedArgs as RelatedCore;
 use crate::cli::commands::search::scout::ScoutArgs as ScoutCore;
 use crate::cli::commands::search::similar::SimilarArgs as SimilarCore;
 use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
+use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
     DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, PlanArgs as PlanCore,
@@ -183,6 +185,7 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "where",
     "related",
     "stale",
+    "task",
     "stats",
     "health",
     "notes-add",
@@ -241,6 +244,20 @@ pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             let c: ScoutCore = parse_core(command, arguments)?;
             BatchCmd::Scout {
                 args: scout_args_from_core(c, overlay_from_args(arguments)),
+                output: text_json(),
+            }
+        }
+        // `task` is overlay-capable: its handler (`dispatch_task`) overlays the
+        // scout SEED via `resolve_seed_overlay`, so the wire overlay tri-state
+        // rides alongside the core and is stamped onto the argv-side `TaskArgs`
+        // by `overlay_from_args` (the same path scout uses). The CLI-only `brief`
+        // render flag is defaulted here — the daemon emits only the non-brief
+        // `task_json_core` projection. Output is a separate `Serialize` struct,
+        // so the input core stays input-only.
+        "task" => {
+            let c: TaskCore = parse_core(command, arguments)?;
+            BatchCmd::Task {
+                args: task_args_from_core(c, overlay_from_args(arguments)),
                 output: text_json(),
             }
         }
@@ -554,6 +571,19 @@ fn scout_args_from_core(c: ScoutCore, overlay: OverlayArgs) -> ScoutArgs {
         search_limit: c.search_limit,
         search_threshold: c.search_threshold,
         min_gap_ratio: c.min_gap_ratio,
+        overlay,
+    }
+}
+
+/// Build the argv-side `TaskArgs` from the wire core plus the overlay tri-state.
+/// `brief` is CLI-only (the daemon never renders the compact brief — it emits
+/// the `task_json_core` projection), so it is defaulted to `false` here.
+fn task_args_from_core(c: TaskCore, overlay: OverlayArgs) -> TaskArgs {
+    TaskArgs {
+        description: c.description,
+        limit_arg: LimitArg { limit: c.limit },
+        tokens: c.tokens,
+        brief: false,
         overlay,
     }
 }
@@ -959,6 +989,28 @@ mod tests {
         assert_eq!(
             v_argv, v_json,
             "JSON-args output must equal argv output for `where`\nargv:  {v_argv}\njson:  {v_json}"
+        );
+    }
+
+    /// `task` parity: like `where`, the brief needs an embedder (the scout seed
+    /// search), which the embedder-free seed corpus lacks, so both surfaces
+    /// return the SAME error envelope. The assertion is value-equality of the
+    /// two envelopes — it proves the JSON-args path routes through the same
+    /// `dispatch_task` the argv path uses (whether it errors or succeeds, the
+    /// two surfaces agree). Covers the overlay-capable converter
+    /// (`task_args_from_core`) and the wire core round-trip.
+    #[test]
+    fn parity_task_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+        let (v_argv, v_json) = run_both(
+            &ctx,
+            "task",
+            &["add a new parser", "--limit", "3"],
+            json!({"description": "add a new parser", "limit": 3}),
+        );
+        assert_eq!(
+            v_argv, v_json,
+            "JSON-args output must equal argv output for `task`\nargv:  {v_argv}\njson:  {v_json}"
         );
     }
 
@@ -1635,11 +1687,11 @@ mod tests {
 
         // 2. A representative spread of argv-only / unknown commands is NOT
         //    capable — the catch-all bites, and they are absent from the list.
-        //    (`stats` / `health` are Phase-1 zero-arg read tools and
-        //    `where` / `related` / `stale` are Phase-2 read tools — all capable
-        //    now — so they are deliberately excluded from this not-capable
-        //    spread.)
-        for cmd in ["explain", "notes", "task", "ping", "nonexistent_cmd"] {
+        //    (`stats` / `health` are Phase-1 zero-arg read tools,
+        //    `where` / `related` / `stale` are Phase-2 read tools, and `task`
+        //    is the Phase-3 overlay-capable brief tool — all capable now — so
+        //    they are deliberately excluded from this not-capable spread.)
+        for cmd in ["explain", "notes", "ping", "nonexistent_cmd"] {
             assert!(
                 !is_json_args_capable(cmd),
                 "`{cmd}` is argv-only/unknown but build_batch_cmd treats it as JSON-args-capable"
