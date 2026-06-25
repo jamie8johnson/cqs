@@ -208,6 +208,13 @@ impl Bridge {
         self.stdin.flush().expect("flush child stdin");
     }
 
+    /// Write raw bytes straight to the child stdin (no framing, no trailing
+    /// newline) — used to feed an oversized no-newline blob.
+    fn send_raw_bytes(&mut self, bytes: &[u8]) {
+        self.stdin.write_all(bytes).expect("write raw bytes");
+        self.stdin.flush().expect("flush raw bytes");
+    }
+
     /// Read one response line, parsed as JSON. Panics on EOF / timeout.
     fn recv(&mut self) -> Value {
         let mut line = String::new();
@@ -618,6 +625,83 @@ fn gated_notes_tools_absent_without_flag() {
             .and_then(|c| c.as_i64()),
         Some(-32601),
         "notes_add must be unknown (-32601) without the flag: {r}"
+    );
+}
+
+/// Resource bound: a >1 MiB stdin line with NO newline must NOT OOM the
+/// long-lived bridge. The bounded reader caps the per-line read at 1 MiB + 1,
+/// so the bridge responds with a clean PARSE_ERROR (request too large) rather
+/// than buffering the whole blob. Driven through the child; no daemon needed
+/// (the request never reaches relay). Pins item 10's bounded-read fix.
+#[test]
+fn oversized_no_newline_line_is_bounded_parse_error() {
+    let (_dir, root, _cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    // 2 MiB of 'x' followed by a newline — the line body exceeds the 1 MiB cap.
+    // The bounded reader stops at cap+1 bytes (well before the newline), fires
+    // the oversized branch, then drains the rest of the line to the newline so
+    // the next request starts on a clean boundary.
+    let mut blob = vec![b'x'; 2 * 1024 * 1024];
+    blob.push(b'\n');
+    bridge.send_raw_bytes(&blob);
+
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64()),
+        Some(-32700),
+        "an oversized line must be a -32700 parse error: {r}"
+    );
+    let msg = r
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("too large"),
+        "the error must say the request is too large: {msg}"
+    );
+
+    // The bridge is still ALIVE after the oversized line — a normal request
+    // still gets a response (it didn't OOM or wedge).
+    bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"ping","params":{}}));
+    let pong = bridge.recv();
+    assert_eq!(
+        pong.get("id").and_then(|v| v.as_u64()),
+        Some(2),
+        "bridge must survive the oversized line and keep serving: {pong}"
+    );
+}
+
+/// JSON-RPC `ping` keepalive: a client may send `ping` to keep the session
+/// warm. The bridge replies with an empty-object result echoing the id (it is
+/// the JSON-RPC utility method, distinct from the `cqs ping` daemon command).
+/// Pins bridge.rs's `ping` arm. No daemon needed.
+#[test]
+fn ping_keepalive_returns_empty_result() {
+    let (_dir, root, _cqs_dir) = make_project();
+    let socket_dir = root.clone();
+    let mut bridge = Bridge::spawn(&root, &socket_dir);
+    bridge.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    let _ = bridge.recv();
+
+    bridge.send(&json!({"jsonrpc":"2.0","id":42,"method":"ping","params":{}}));
+    let r = bridge.recv();
+    assert_eq!(
+        r.get("id").and_then(|v| v.as_u64()),
+        Some(42),
+        "ping must echo the request id: {r}"
+    );
+    assert!(r.get("error").is_none(), "ping must not be an error: {r}");
+    assert_eq!(
+        r.get("result"),
+        Some(&json!({})),
+        "ping result must be an empty object: {r}"
     );
 }
 

@@ -438,4 +438,69 @@ mod tests {
             }
         }
     }
+
+    /// The read-tool MCP names in registry order, with the mutation flag OFF
+    /// (so `tool_table` returns exactly the read surface). The single source of
+    /// truth the README list must mirror.
+    fn read_tool_names_in_order() -> Vec<&'static str> {
+        let _guard = MutationsEnvGuard::set(false);
+        tools::tool_table().iter().map(|t| t.name).collect()
+    }
+
+    /// Extract the `cqs_*` tokens from the README's "Default (read-only)" tool
+    /// bullet, in document order. Reads the README at the crate root via
+    /// `CARGO_MANIFEST_DIR` so the test runs from any working directory.
+    fn readme_read_tool_names() -> Vec<String> {
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("read README.md");
+        let full_line = readme
+            .lines()
+            .find(|l| l.contains("Default (read-only)"))
+            .expect("README must carry a `Default (read-only)` MCP tool bullet");
+        // The tool list is the prose BEFORE the parenthetical withheld-tools
+        // note, which is introduced by a sentence boundary `. (` (the label
+        // `(read-only)` earlier on the line uses no preceding `. `). Cut there so
+        // the withheld names are not parsed as listed tools.
+        let line = full_line.split(". (").next().unwrap_or(full_line);
+        // Collect `cqs_<ident>` tokens (backtick-wrapped). A token is `cqs_` plus
+        // ASCII identifier chars; stop at the first non-ident byte so a trailing
+        // backtick / comma / period is excluded. Skip the bare `cqs_` prefix
+        // token (the literal "`cqs_`-prefixed" phrase) — a real tool name has at
+        // least one char after the underscore.
+        let mut names = Vec::new();
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while let Some(rel) = line[i..].find("cqs_") {
+            let start = i + rel;
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            let token = &line[start..end];
+            if token.len() > "cqs_".len() {
+                names.push(token.to_string());
+            }
+            i = end;
+        }
+        names
+    }
+
+    /// README-parity guard (docs-lie): the README's "Default (read-only)" MCP
+    /// tool list must equal the `tool_table()` read-tool names, in registry
+    /// order. Pins the doc against the registry so a tool added/renamed/removed
+    /// in `read_tools` (or a withheld tool leaking into the prose) fails here
+    /// rather than shipping a fabricated list. Mirrors the registry-parity guard
+    /// above, but against the README rather than the JSON-args registry.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn readme_read_tool_list_matches_registry() {
+        let registry = read_tool_names_in_order();
+        let readme = readme_read_tool_names();
+        let registry_owned: Vec<String> = registry.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            readme, registry_owned,
+            "README `Default (read-only)` MCP tool list must equal the `tool_table()` read \
+             tools in registry order.\nREADME: {readme:?}\nregistry: {registry_owned:?}"
+        );
+    }
 }

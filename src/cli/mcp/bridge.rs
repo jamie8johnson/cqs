@@ -16,7 +16,7 @@
 //! subscriber in `main.rs`). The 1 MiB request-line cap is reused from the old
 //! transport.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 
 use anyhow::Result;
@@ -32,67 +32,126 @@ const MAX_LINE_LENGTH: usize = 1_048_576;
 /// Reads JSON-RPC requests from stdin and writes responses to stdout until EOF.
 /// Returns `Ok(())` on clean EOF; an `Err` only on an unrecoverable stdout I/O
 /// failure (a broken pipe to the client).
+///
+/// Fails fast on a non-unix target: the bridge's only transport is the daemon's
+/// unix socket, so it cannot serve a single `tools/call` off-unix. Refusing up
+/// front beats advertising a tool set whose every call returns INTERNAL_ERROR.
 pub fn serve_stdio(cqs_dir: &Path) -> Result<()> {
     let _span = tracing::info_span!("mcp_serve_stdio", cqs_dir = %cqs_dir.display()).entered();
-    tracing::info!("cqs MCP bridge starting (stdio ↔ daemon socket)");
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    #[cfg(not(unix))]
+    {
+        let _ = cqs_dir;
+        anyhow::bail!(
+            "the cqs MCP bridge requires a unix daemon socket and is not supported on this platform"
+        );
+    }
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                // A stdin read error ends the session — the client's pipe is
-                // gone. Nothing to respond to.
-                tracing::info!(error = %e, "stdin closed; MCP bridge exiting");
-                break;
-            }
-        };
+    #[cfg(unix)]
+    {
+        tracing::info!("cqs MCP bridge starting (stdio ↔ daemon socket)");
 
-        // Oversized line → parse error, no id (we can't trust the contents).
-        if line.len() > MAX_LINE_LENGTH {
-            let resp = lifecycle::error(
-                None,
-                lifecycle::PARSE_ERROR,
-                format!(
-                    "request too large: {} bytes (max {MAX_LINE_LENGTH})",
-                    line.len()
-                ),
-            );
-            write_response(&mut stdout, &resp)?;
-            continue;
-        }
+        let stdin = std::io::stdin();
+        let mut reader = stdin.lock();
+        let mut stdout = std::io::stdout();
 
-        if line.trim().is_empty() {
-            continue;
-        }
+        // Read each request with a per-line byte cap applied BEFORE the line is
+        // fully buffered: wrap a fresh `.take(MAX_LINE_LENGTH + 1)` per iteration
+        // (the budget resets each line; the underlying BufReader keeps its
+        // buffered bytes) and `read_until(b'\n')` into a reused buffer. A
+        // no-newline multi-GB line therefore stops at the cap+1 byte instead of
+        // OOMing the long-lived bridge. The `> MAX` length check stays as a
+        // backstop (mirrors the daemon socket reader).
+        let mut buf: Vec<u8> = Vec::with_capacity(8192);
+        loop {
+            buf.clear();
+            let n = match (&mut reader)
+                .take(MAX_LINE_LENGTH as u64 + 1)
+                .read_until(b'\n', &mut buf)
+            {
+                Ok(0) => break, // EOF.
+                Ok(n) => n,
+                Err(e) => {
+                    // A stdin read error ends the session — the client's pipe is
+                    // gone. Nothing to respond to.
+                    tracing::info!(error = %e, "stdin closed; MCP bridge exiting");
+                    break;
+                }
+            };
 
-        let request: JsonRpcRequest = match serde_json::from_str(&line) {
-            Ok(req) => req,
-            Err(e) => {
-                let resp =
-                    lifecycle::error(None, lifecycle::PARSE_ERROR, format!("parse error: {e}"));
+            // Oversized line → parse error, no id (we can't trust the contents).
+            // The `.take` cap bounds memory; this length check classifies it. A
+            // line that exactly fills the cap with no newline also trips here.
+            if n > MAX_LINE_LENGTH || (buf.len() > MAX_LINE_LENGTH) {
+                // Drain the rest of the oversized line so the NEXT iteration
+                // starts at a fresh message boundary rather than mid-line.
+                drain_to_newline(&mut reader);
+                let resp = lifecycle::error(
+                    None,
+                    lifecycle::PARSE_ERROR,
+                    format!("request too large: {n} bytes (max {MAX_LINE_LENGTH})"),
+                );
                 write_response(&mut stdout, &resp)?;
                 continue;
             }
-        };
 
-        let response = route(cqs_dir, request);
+            // Decode as UTF-8; a non-UTF-8 line is a parse error.
+            let line = match std::str::from_utf8(&buf) {
+                Ok(s) => s,
+                Err(e) => {
+                    let resp = lifecycle::error(
+                        None,
+                        lifecycle::PARSE_ERROR,
+                        format!("parse error: invalid UTF-8 ({e})"),
+                    );
+                    write_response(&mut stdout, &resp)?;
+                    continue;
+                }
+            };
 
-        // Notifications (no id, null result) get NO response line.
-        if response.id.is_none()
-            && response.error.is_none()
-            && response.result.as_ref().is_some_and(|v| v.is_null())
-        {
-            continue;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let request: JsonRpcRequest = match serde_json::from_str(line) {
+                Ok(req) => req,
+                Err(e) => {
+                    let resp =
+                        lifecycle::error(None, lifecycle::PARSE_ERROR, format!("parse error: {e}"));
+                    write_response(&mut stdout, &resp)?;
+                    continue;
+                }
+            };
+
+            let response = route(cqs_dir, request);
+
+            // Notifications (no id, null result) get NO response line.
+            if response.id.is_none()
+                && response.error.is_none()
+                && response.result.as_ref().is_some_and(|v| v.is_null())
+            {
+                continue;
+            }
+
+            write_response(&mut stdout, &response)?;
         }
 
-        write_response(&mut stdout, &response)?;
+        tracing::info!("MCP bridge stdin EOF; exiting");
+        Ok(())
     }
+}
 
-    tracing::info!("MCP bridge stdin EOF; exiting");
-    Ok(())
+/// Discard up to one newline's worth of bytes after an oversized line, so the
+/// next `read_until` resumes on a clean message boundary. Memory-bounded by a
+/// `.take(MAX_LINE_LENGTH)` cap: a no-newline continuation longer than the cap
+/// is left for the next loop iteration to re-classify as oversized — bytes are
+/// never accumulated past the cap, so the long-lived bridge cannot OOM.
+#[cfg(unix)]
+fn drain_to_newline<R: BufRead>(reader: &mut R) {
+    let mut sink = Vec::new();
+    let _ = reader
+        .take(MAX_LINE_LENGTH as u64)
+        .read_until(b'\n', &mut sink);
 }
 
 /// Route one parsed request by method.
