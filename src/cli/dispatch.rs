@@ -261,6 +261,16 @@ fn run_with_dispatch(
     // short-circuits to `OutputFormat::Json` regardless of `--format`. The
     // exact wiring lives per-shim in `commands/dispatch_shims.rs`.
     use crate::cli::definitions::{dispatch_group_a, dispatch_group_b};
+
+    // Install the kind-fallback origin for the inline (CLI-direct, non-daemon)
+    // dispatch. A graph core that fires a fallback deeper in this synchronous
+    // call attributes it to `telem_cmd` (the top-level command the user
+    // invoked — the same name `log_command` recorded above) and to this
+    // project's `.cqs` dir, instead of to the core's own sub-op name. The
+    // daemon-forward branch returned before reaching here, so it never
+    // double-installs (the daemon sets its own origin at `commands::dispatch`).
+    let _fallback_origin = telemetry::enter_fallback_origin(telem_cmd, project_cqs_dir);
+
     if let std::ops::ControlFlow::Break(result) = dispatch_group_a(&cli, project_cqs_dir) {
         return result;
     }

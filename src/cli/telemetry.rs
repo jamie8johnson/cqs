@@ -17,9 +17,10 @@
 //!
 //! Local file only. No network calls. Auto-archives at 10 MB.
 
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Maximum telemetry file size before auto-archiving (10 MB).
 const MAX_TELEMETRY_BYTES: u64 = 10 * 1024 * 1024;
@@ -322,6 +323,70 @@ pub fn log_routed(
     append_telemetry(cqs_dir, &entry, timestamp);
 }
 
+/// The top-level command + served-project dir a kind-fallback should be
+/// attributed to, captured at the dispatch boundary and read back when a
+/// graph core fires a fallback deeper in the call stack.
+///
+/// Two fields, two bugs closed:
+/// - `command` is the user-facing command the agent actually invoked
+///   (`scout` / `gather` / `impact` / `callers` / …), known at dispatch and
+///   the same name `log_command` records. Tagging the fallback with it makes
+///   `kind_fallbacks[cmd]` comparable to `commands[cmd]` — the rate is now
+///   per user-invocation. The graph core's own sub-operation label rides
+///   alongside as `fallback_from`, so the sub-op detail survives without
+///   becoming the (incomparable) bucket key.
+/// - `cqs_dir` is the request's served project, carried from `BatchContext`
+///   on the daemon path. The recorder used to re-derive it from the running
+///   process cwd, which mis-attributes every fallback to the wrong project
+///   when the daemon's cwd is not the served project.
+pub(crate) struct FallbackOrigin {
+    pub command: String,
+    pub cqs_dir: PathBuf,
+}
+
+thread_local! {
+    /// Per-thread current fallback origin. `None` outside a dispatch (or on a
+    /// path that never set it — see the recorder's cwd fallback). Graph cores
+    /// run synchronously on the dispatch thread, so the value a guard installs
+    /// at the boundary is the one a fallback deeper in the same call reads.
+    static FALLBACK_ORIGIN: RefCell<Option<FallbackOrigin>> = const { RefCell::new(None) };
+}
+
+/// RAII guard that installs a [`FallbackOrigin`] for the duration of a
+/// dispatch and restores the previous value on drop. Restore-on-drop (rather
+/// than clear-on-drop) keeps nesting correct — a command that internally
+/// dispatches a sub-command pops back to the outer origin instead of losing
+/// it. Set this at the single dispatch chokepoint on each surface.
+pub(crate) struct FallbackOriginGuard {
+    prev: Option<FallbackOrigin>,
+}
+
+impl Drop for FallbackOriginGuard {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        FALLBACK_ORIGIN.with(|cell| {
+            *cell.borrow_mut() = prev;
+        });
+    }
+}
+
+/// Install the top-level command + served-project dir for the current
+/// dispatch. Hold the returned guard across the command's execution; the
+/// graph cores read it when they fire a fallback.
+pub(crate) fn enter_fallback_origin(command: &str, cqs_dir: &Path) -> FallbackOriginGuard {
+    let origin = FallbackOrigin {
+        command: command.to_string(),
+        cqs_dir: cqs_dir.to_path_buf(),
+    };
+    let prev = FALLBACK_ORIGIN.with(|cell| cell.borrow_mut().replace(origin));
+    FallbackOriginGuard { prev }
+}
+
+/// Run `f` with the current thread's fallback origin (if any) borrowed.
+pub(crate) fn with_fallback_origin<R>(f: impl FnOnce(Option<&FallbackOrigin>) -> R) -> R {
+    FALLBACK_ORIGIN.with(|cell| f(cell.borrow().as_ref()))
+}
+
 /// Log a kind-fallback fire to the telemetry file.
 ///
 /// A graph command (`callers`, `impact`, `deps`, `test-map`, `trace`, …)
@@ -332,18 +397,25 @@ pub fn log_routed(
 /// into a per-command fallback rate so the standing question — do agents
 /// still bounce between commands — has data behind it.
 ///
-/// Schema: `{event: "kind_fallback", cmd, kind, name, definitions, ts}`.
-/// `cmd` is the firing command (the fallback's `fallback_from`); `kind` is
-/// the routing label (`const` / `type` / `module` / `ambiguous`); `name`
-/// is redacted by default (it can carry symbol names worth keeping out of
-/// the plaintext journal — same `CQS_TELEMETRY_REDACT_QUERY` opt-out as
-/// search queries). Both surfaces (CLI direct and daemon dispatch) route
-/// through the same command cores, so a single call site here covers both.
+/// Schema: `{event: "kind_fallback", cmd, fallback_from, kind, name,
+/// definitions, ts}`. `cmd` is the top-level user-facing command the agent
+/// invoked (the [`FallbackOrigin`] captured at dispatch) so the count buckets
+/// the same way `log_command` does; `fallback_from` is the graph core's own
+/// sub-operation label (`callers` / `impact` / …) preserved for detail. An
+/// aggregating command (`scout` / `gather` / …) that fans out to several
+/// graph cores attributes every fallback it triggers to itself, not to the
+/// internal sub-ops the agent never invoked directly. `kind` is the routing
+/// label (`const` / `type` / `module` / `ambiguous`); `name` is redacted by
+/// default (it can carry symbol names worth keeping out of the plaintext
+/// journal — same `CQS_TELEMETRY_REDACT_QUERY` opt-out as search queries).
+/// Both surfaces (CLI direct and daemon dispatch) route through the same
+/// command cores, so a single call site here covers both.
 ///
 /// Activation rules and write semantics mirror [`log_command`].
 pub fn log_kind_fallback(
     cqs_dir: &Path,
     command: &str,
+    fallback_from: &str,
     kind: &str,
     name: &str,
     definitions: usize,
@@ -358,6 +430,7 @@ pub fn log_kind_fallback(
         "ts": timestamp,
         "event": "kind_fallback",
         "cmd": command,
+        "fallback_from": fallback_from,
         "kind": kind,
         "name": name_field,
         "definitions": definitions,
@@ -585,14 +658,21 @@ mod tests {
         // Default redaction on: the name must be hashed, not plaintext.
         std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
 
-        log_kind_fallback(cqs_dir, "callers", "const", "MAX_RETRIES", 1);
+        // Top-level command (`scout`) distinct from the firing sub-op
+        // (`callers`): the event records both so the count buckets by the
+        // user-facing command while preserving the sub-op detail.
+        log_kind_fallback(cqs_dir, "scout", "callers", "const", "MAX_RETRIES", 1);
 
         std::env::remove_var("CQS_TELEMETRY");
 
         let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
         let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
         assert_eq!(r["event"], "kind_fallback");
-        assert_eq!(r["cmd"], "callers");
+        assert_eq!(r["cmd"], "scout", "cmd is the top-level command");
+        assert_eq!(
+            r["fallback_from"], "callers",
+            "fallback_from preserves the firing sub-op"
+        );
         assert_eq!(r["kind"], "const");
         assert_eq!(r["definitions"], 1);
         // Redacted: the raw symbol name must not appear; the field is an
@@ -600,6 +680,39 @@ mod tests {
         let name = r["name"].as_str().unwrap();
         assert_ne!(name, "MAX_RETRIES", "name must be redacted by default");
         assert_eq!(name.len(), 8, "redacted name is an 8-char hash prefix");
+    }
+
+    #[test]
+    fn fallback_origin_guard_sets_and_restores() {
+        // Outside any guard, no origin is installed.
+        with_fallback_origin(|o| assert!(o.is_none()));
+
+        {
+            let _g = enter_fallback_origin("scout", Path::new("/tmp/proj/.cqs"));
+            with_fallback_origin(|o| {
+                let o = o.expect("origin installed");
+                assert_eq!(o.command, "scout");
+                assert_eq!(o.cqs_dir, Path::new("/tmp/proj/.cqs"));
+            });
+
+            // Nesting: a sub-command's guard shadows, then restores the outer.
+            {
+                let _g2 = enter_fallback_origin("callers", Path::new("/tmp/other/.cqs"));
+                with_fallback_origin(|o| {
+                    assert_eq!(o.expect("inner origin").command, "callers");
+                });
+            }
+            with_fallback_origin(|o| {
+                assert_eq!(
+                    o.expect("outer origin restored").command,
+                    "scout",
+                    "inner guard drop must restore the outer origin, not clear it"
+                );
+            });
+        }
+
+        // After the outer guard drops, the origin is cleared again.
+        with_fallback_origin(|o| assert!(o.is_none()));
     }
 
     #[test]
