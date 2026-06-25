@@ -661,6 +661,51 @@ mod tests {
         assert_eq!(names, vec!["a", "b"]);
     }
 
+    /// Coverage guard for `BoundedScoreHeap::would_accept` — the cheap
+    /// pre-flight `SpladeIndex::search_with_filter` uses to gate id-cloning
+    /// while scoring ~18k candidates per query. No test in this module routed
+    /// through it, so the at-capacity branch (`heap.len() < capacity` and
+    /// `!score.total_cmp(worst).is_lt()`) was unconstrained: mutating
+    /// `<`→`<=` (accepts when full) or dropping the `!` (inverts the
+    /// keep/drop decision) both survived. A wrong `would_accept` either drops
+    /// a top-k chunk that should have been scored (false negative → recall
+    /// loss) or wastes work (false positive). Pin both the below-capacity and
+    /// at-capacity contracts.
+    #[test]
+    fn would_accept_below_and_at_capacity() {
+        // Below capacity: anything finite is accepted; non-finite rejected.
+        let mut heap = BoundedScoreHeap::new(2);
+        assert!(heap.would_accept(0.1), "empty heap has space");
+        heap.push("a".to_string(), 0.5);
+        assert!(heap.would_accept(-1.0), "1/2 full still has space");
+        assert!(!heap.would_accept(f32::NAN), "non-finite always rejected");
+
+        // Fill to capacity with worst = 0.5 (ids a,b).
+        heap.push("b".to_string(), 0.9);
+        // Now at capacity (2/2), worst score is 0.5.
+        // Strictly-better score is accepted (would evict the 0.5 entry).
+        assert!(
+            heap.would_accept(0.7),
+            "score above the worst must be accepted when full"
+        );
+        // Strictly-worse score is rejected (kills `!is_lt()` -> `is_lt()`).
+        assert!(
+            !heap.would_accept(0.1),
+            "score below the worst must be rejected when full"
+        );
+        // Tied-with-worst is permissively accepted (push applies the full
+        // id comparator) — and this also kills `<` -> `<=` indirectly, since
+        // the at-capacity branch must run at all.
+        assert!(
+            heap.would_accept(0.5),
+            "score tied with the worst is permissively accepted when full"
+        );
+
+        // Capacity-zero heap accepts nothing.
+        let zero = BoundedScoreHeap::new(0);
+        assert!(!zero.would_accept(1.0), "capacity-0 heap accepts nothing");
+    }
+
     // ===== parent_boost tests =====
 
     /// Constructs a test SearchResult with minimal required fields populated.
