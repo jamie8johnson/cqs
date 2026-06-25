@@ -29,6 +29,40 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::SqlitePool;
 
 use super::helpers::StoreError;
+use super::Store;
+
+impl<Mode> Store<Mode> {
+    /// Take a transactionally-consistent, single-file snapshot of this store's
+    /// database into `dst`, reusing the same `VACUUM INTO` path the
+    /// migration backup uses (no torn-page window under a concurrent daemon
+    /// writer; no `-wal`/`-shm` sidecars on the output).
+    ///
+    /// Sync wrapper over the async [`vacuum_into`] primitive, driven on the
+    /// store's own runtime. `dst` must be on a filesystem with space for the
+    /// full DB; the caller is responsible for cleaning it up (e.g. via a
+    /// `TempPath`). Used by the UMAP projection to stage the embedding read
+    /// onto fast local disk when the live index sits on a slow mmap fs (WSL
+    /// 9P / NFS / SMB), where random-page SQLite reads collapse.
+    ///
+    /// A `wal_checkpoint(FULL)` runs first to bound WAL growth before the
+    /// snapshot read transaction; snapshot consistency itself comes from
+    /// VACUUM INTO's read transaction, not the checkpoint.
+    pub fn snapshot_to(&self, dst: &Path) -> Result<(), StoreError> {
+        let _span = tracing::info_span!("store_snapshot_to").entered();
+        self.block_on(async {
+            if let Err(e) = sqlx::query("PRAGMA wal_checkpoint(FULL)")
+                .execute(&self.pool)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "wal_checkpoint before snapshot failed (non-fatal)"
+                );
+            }
+            vacuum_into(&self.pool, dst).await
+        })
+    }
+}
 
 /// Env var that controls whether a failed migration-time DB backup is a hard
 /// error (default) or a warn-and-continue.
@@ -469,7 +503,40 @@ fn sidecar_path(db: &Path, ext: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::ModelInfo;
     use std::assert_matches;
+
+    /// `Store::snapshot_to` produces a single-file, integrity-clean snapshot
+    /// (no `-wal`/`-shm` sidecars) that re-opens as a valid DB carrying the
+    /// source's metadata. Pins the public snapshot primitive the UMAP slow-fs
+    /// staging path relies on, through the `Store` method (the `vacuum_into`
+    /// tests below cover the async primitive directly).
+    #[test]
+    fn store_snapshot_to_produces_consistent_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .init(&ModelInfo::new("test/model", 8))
+            .expect("init store");
+
+        let snapshot = dir.path().join("snapshot.db");
+        store.snapshot_to(&snapshot).expect("snapshot must succeed");
+
+        assert!(snapshot.exists(), "snapshot file must exist");
+        assert!(
+            !sidecar_path(&snapshot, "-wal").exists(),
+            "snapshot must not carry a -wal sidecar"
+        );
+        assert!(
+            !sidecar_path(&snapshot, "-shm").exists(),
+            "snapshot must not carry a -shm sidecar"
+        );
+
+        // The snapshot re-opens and reports the source's model/dim.
+        let reopened = Store::open(&snapshot).expect("snapshot must re-open");
+        assert_eq!(reopened.dim(), 8, "snapshot must preserve the source dim");
+    }
 
     /// `keep_backups()` returns the compiled default when unset, the env
     /// value when set (including `0`, which is a valid "prune all" choice),
