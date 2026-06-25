@@ -22,6 +22,12 @@
         <button type="button" data-color="type" class="active">type</button>
         <button type="button" data-color="language">language</button>
       </div>
+      <div id="cluster-mech" class="btn-group" role="group" aria-label="mechanism mode">
+        <span class="btn-group-label">mechanism</span>
+        <input id="mech-query" type="text" placeholder="query → dense→+SPLADE→fused" autocomplete="off"
+               title="Step through how SPLADE fusion changes the ranking, overlaid on the dense-cosine UMAP plane">
+        <button type="button" id="mech-run" title="run the dense / +SPLADE / fused step-through">trace</button>
+      </div>
     </div>
     <div id="hierarchy-controls" class="hierarchy-controls" style="display:none;" aria-label="hierarchy controls">
       <div id="hierarchy-direction" class="btn-group" role="group" aria-label="direction">

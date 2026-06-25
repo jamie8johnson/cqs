@@ -168,3 +168,95 @@ main {
 
 .hint { color: #888; font-size: 13px; }
 .error { color: #c33; font-size: 13px; padding: 8px; background: #fee; border-radius: 4px; }
+
+/* ── Cluster mechanism mode (query-anchored SPLADE↔dense step-through) ── */
+
+/* The mechanism query control rides inside #cluster-controls. The .btn-group
+   shell is shared with color/hierarchy; here it wraps an input + trace btn. */
+#cluster-mech { overflow: visible; }
+#cluster-mech #mech-query {
+  border: none;
+  padding: 5px 8px;
+  font-size: 12px;
+  width: 230px;
+  outline: none;
+}
+#cluster-mech #mech-run {
+  background: #4a86e8;
+  color: #fff;
+  border: none;
+  border-left: 1px solid #d0d0d0;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#cluster-mech #mech-run:hover { background: #3a76d8; }
+
+/* The mechanism side panel floats over the cluster canvas (the cluster view
+   appends it into #cy, which is position:relative). It carries the honest
+   per-leg numbers — the mechanism is read here, not encoded in node color. */
+.mech-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 340px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: rgba(20, 26, 38, 0.94);
+  color: #d8dee9;
+  border: 1px solid #2a3550;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  z-index: 20;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+.mech-panel code { background: rgba(255, 255, 255, 0.08); color: #e8edf5; padding: 1px 4px; border-radius: 3px; }
+.mech-panel .error { color: #ff9a9a; background: rgba(120, 30, 30, 0.4); }
+
+.mech-panel-head { border-bottom: 1px solid #2a3550; padding-bottom: 8px; margin-bottom: 8px; }
+.mech-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #fff; }
+
+.mech-steptabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.mech-btn {
+  background: #2a3550;
+  color: #cdd6e6;
+  border: 1px solid #3a4870;
+  border-radius: 3px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mech-btn:hover:not(:disabled) { background: #36456b; }
+.mech-btn:disabled { opacity: 0.4; cursor: default; }
+.mech-btn.mech-clear { margin-left: auto; background: transparent; border-color: #555f78; color: #98a4bd; }
+.mech-stepname { font-size: 11px; color: #9aa6bf; }
+
+.mech-legend { display: flex; gap: 12px; font-size: 11px; color: #9aa6bf; margin-bottom: 6px; }
+.mech-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.mech-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+.mech-note { font-size: 10.5px; line-height: 1.45; color: #8591ab; }
+
+.mech-rows { margin-top: 8px; }
+.mech-row {
+  padding: 6px 6px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+}
+.mech-row:hover { background: rgba(255, 255, 255, 0.08); border-color: #3a4870; }
+.mech-row-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.mech-name { font-weight: 600; color: #e8edf5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mech-offview { font-size: 10px; color: #c9a04a; border: 1px solid #6b5a2a; border-radius: 3px; padding: 0 3px; }
+.mech-loc { font-size: 10.5px; color: #8591ab; margin-bottom: 3px; }
+.mech-loc code { background: transparent; padding: 0; color: #8591ab; }
+.mech-legs { display: flex; flex-direction: column; gap: 1px; }
+.mech-leg { font-size: 11px; color: #b8c2d8; font-variant-numeric: tabular-nums; }
+
+.mech-status { color: #9aa6bf; font-size: 12px; padding: 4px 0; line-height: 1.4; }
+.mech-status.error { color: #ff9a9a; }

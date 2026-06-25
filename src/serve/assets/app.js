@@ -24,6 +24,8 @@
   const $depthGroup = document.getElementById("hierarchy-depth");
   const $clusterControls = document.getElementById("cluster-controls");
   const $colorGroup = document.getElementById("cluster-color");
+  const $mechQuery = document.getElementById("mech-query");
+  const $mechRun = document.getElementById("mech-run");
 
   // --- View registry ---
   const VIEWS = {
@@ -306,6 +308,17 @@
     }
   }
 
+  // Drive the cluster view's query-anchored mechanism step-through. Only the
+  // cluster view implements `runMechanism`; for any other view this is a no-op.
+  function runMechanism() {
+    if (!$mechQuery) return;
+    const q = $mechQuery.value.trim();
+    if (currentView && typeof currentView.runMechanism === "function") {
+      setStatus(q ? `mechanism: ${q}` : "");
+      currentView.runMechanism(q);
+    }
+  }
+
   async function loadChunkDetail(id) {
     $sidebar.innerHTML = `<p class="hint">loading…</p>`;
     try {
@@ -452,6 +465,18 @@
         const v = btn.getAttribute("data-color");
         if (v) setClusterColor(v);
       });
+    });
+  }
+  // Cluster mechanism mode: trace button + Enter in the query input.
+  if ($mechRun) {
+    $mechRun.addEventListener("click", () => runMechanism());
+  }
+  if ($mechQuery) {
+    $mechQuery.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        runMechanism();
+      }
     });
   }
   $search.addEventListener("input", onSearchInput);
