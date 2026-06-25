@@ -1498,6 +1498,72 @@ mod tests {
         );
     }
 
+    /// Ramp-up window: BEFORE the watch loop has published its first snapshot,
+    /// `served_slot()` is `None`. A slot-qualified `cqs_index` request that names
+    /// a slot the daemon does NOT serve must STILL be refused (fail-closed) — not
+    /// accepted as a `queued: true` success against whatever slot the daemon will
+    /// turn out to serve.
+    ///
+    /// The socket binds and answers light reads (`status`, `ping`) for ~10-15s
+    /// before the first snapshot publishes `active_slot`. During that window the
+    /// inner `if let Some(served)` mismatch guard is skipped, so a wrong-slot
+    /// request returns `status: queued, queued: true` while the daemon will
+    /// silently reconcile its own served slot — a success-shaped response for a
+    /// request that was not honored. An autonomous caller reading `queued: true`
+    /// reasonably concludes its requested slot was queued; the `served_slot: null`
+    /// echo is ambiguous, not a refusal.
+    ///
+    /// This is the structural blind spot the existing slot tests miss: every
+    /// other fixture plants `active_slot = Some(..)` first, so none exercises the
+    /// `None` ramp-up state. The fix is to fail closed — refuse a slot-qualified
+    /// reindex while the served slot is unknown — so the boundary holds from the
+    /// moment the socket accepts requests, not only after the first tick.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn index_slot_qualified_refused_during_rampup_when_served_slot_unknown() {
+        use std::sync::atomic::Ordering;
+        let _guard = MutEnvGuard::set(true);
+        let (_dir, ctx) = seed_ctx();
+        let view = ctx.build_view(None);
+
+        // The watch snapshot at its INITIAL state: `active_slot: None`. This is
+        // the live ramp-up window — the socket is up and answering, but the loop
+        // has not yet published the served slot. Do NOT overwrite it with a
+        // planted slot (unlike the warm-state tests), so `served_slot()` is None.
+        view.test_overwrite_watch_snapshot(cqs::watch_status::WatchSnapshot::unknown());
+        assert!(
+            view.served_slot().is_none(),
+            "precondition: served_slot must be None in the ramp-up window"
+        );
+
+        let mut out = Vec::new();
+        dispatch_via_view_json(
+            &view,
+            "index",
+            &json!({"slot": "attacker-chosen"}),
+            &mut out,
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("JSON");
+
+        // The boundary: a slot-qualified request whose slot cannot be confirmed
+        // against the served slot must be refused, not reported as queued.
+        assert!(
+            v.get("error").is_some_and(|e| !e.is_null()),
+            "a slot-qualified index during ramp-up (served slot unknown) must be \
+             refused, not reported as a queued success, got: {v}"
+        );
+        assert!(
+            v.get("data").is_none_or(|d| d.is_null()),
+            "a refused ramp-up index must NOT return a queued data payload, got: {v}"
+        );
+        // And it must not have flipped the reconcile signal — no reindex queued
+        // for an unconfirmable slot.
+        assert!(
+            !ctx.reconcile_signal.load(Ordering::Acquire),
+            "a refused ramp-up index must NOT queue a reconcile"
+        );
+    }
+
     /// A `slot` that MATCHES the served slot proceeds to a normal queued
     /// success and echoes `served_slot` so the caller can confirm the target.
     #[test]
