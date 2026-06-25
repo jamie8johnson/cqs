@@ -2779,6 +2779,105 @@ mod tests {
         );
     }
 
+    /// Property (cap boundary): for a generated total line length `L` (the
+    /// newline included) and a fixed cap `C`, the daemon-response read accepts
+    /// the line iff `L <= C` and rejects with `ResponseTooLarge` iff `L > C`.
+    ///
+    /// The fixed `json_args_response_exactly_at_cap_is_accepted` example pins ONE
+    /// point (`L == C`). This sweeps `L` across `[C-3, C+3]` — the exact window
+    /// where the prior `== cap` test mis-fired (it rejected `L == C`, the very
+    /// case a valid full-cap payload occupies). A regression to a `>= cap` or
+    /// `== cap` check falsifies at `L == C`; an off-by-one in the `take(C+1)`
+    /// budget falsifies at `L == C+1`.
+    ///
+    /// Each case sends a JSON envelope padded to exactly `L` bytes including the
+    /// trailing newline, so the only variable is length-vs-cap, never validity.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_response_cap_env)]
+    fn prop_cap_accepts_iff_len_le_cap() {
+        use proptest::prelude::*;
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        // Fixed cap; the wrapper below is well under it so padding always has room.
+        const CAP: usize = 512;
+        // A valid envelope whose `d` field absorbs the padding. Pre-newline this
+        // is `WRAPPER.len() + pad` bytes; `writeln!` adds 1 for the newline, so
+        // the total line length is `WRAPPER.len() + pad + 1`.
+        const WRAPPER: &str = r#"{"status":"ok","output":{"d":""}}"#;
+
+        // One round-trip for a target TOTAL line length `total` (newline incl.).
+        // Returns the classification: true = accepted (Ok), false = rejected
+        // (ResponseTooLarge). Any other error is a test-harness fault → panic.
+        fn run_one(cap: usize, total: usize) -> bool {
+            let dir = tempfile::tempdir().unwrap();
+            let cqs_dir = dir.path().join(".cqs");
+            std::fs::create_dir_all(&cqs_dir).unwrap();
+            std::env::set_var("CQS_DAEMON_MAX_RESPONSE_BYTES", cap.to_string());
+            set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+            let sock_path = daemon_socket_path(&cqs_dir);
+            let listener = UnixListener::bind(&sock_path).unwrap();
+
+            // Pre-newline length = total - 1; pad the `d` field to hit it exactly.
+            let pre_newline = total - 1;
+            let pad = pre_newline - WRAPPER.len();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut req = String::new();
+                let _ = BufReader::new(&stream).read_line(&mut req);
+                let big = "x".repeat(pad);
+                let line = format!(r#"{{"status":"ok","output":{{"d":"{big}"}}}}"#);
+                assert_eq!(
+                    line.len(),
+                    pre_newline,
+                    "padding math: line must be total-1"
+                );
+                // `writeln!` appends the newline → on-wire line is `total` bytes.
+                // For an OVER-cap payload the client reads only `cap + 1` bytes
+                // then returns `ResponseTooLarge` and drops the stream, so this
+                // write can hit a broken pipe — that is the expected shape, not a
+                // harness fault. Ignore write/flush errors; the assertion is about
+                // the CLIENT's classification, not a clean server-side write.
+                let _ = writeln!(stream, "{line}");
+                let _ = stream.flush();
+            });
+
+            let result = daemon_json_args_request(&cqs_dir, "search", &serde_json::json!({}));
+            let _ = handle.join();
+            let _ = std::fs::remove_file(&sock_path);
+            set_socket_dir_override_for_test(None);
+            std::env::remove_var("CQS_DAEMON_MAX_RESPONSE_BYTES");
+
+            match result {
+                Ok(_) => true,
+                Err(DaemonRpcError::ResponseTooLarge(_)) => false,
+                Err(other) => panic!("unexpected error for total={total} cap={cap}: {other:?}"),
+            }
+        }
+
+        // Sweep the boundary window [CAP-3, CAP+3]. Lower bound stays above the
+        // wrapper length so padding is non-negative.
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strat = (CAP - 3)..=(CAP + 3);
+        runner
+            .run(&strat, |total| {
+                let accepted = run_one(CAP, total);
+                let expected = total <= CAP;
+                prop_assert_eq!(
+                    accepted,
+                    expected,
+                    "len={} cap={}: accepted={} but len<=cap is {}",
+                    total,
+                    CAP,
+                    accepted,
+                    expected
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
     // ── socket parent-dir hardening ───────────────────────────────────
 
     /// Creating a fresh socket parent dir produces an empty 0o700 directory.

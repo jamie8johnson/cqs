@@ -1740,4 +1740,224 @@ mod tests {
         )
         .is_err());
     }
+
+    // ── proptest: json-args ↔ argv two-path equivalence over a generated input
+    //    space ──────────────────────────────────────────────────────────────
+    //
+    // The `parity_json_args_equals_argv` / `_with_explicit_fields` guards above
+    // are FIXED examples. These properties generate arbitrary VALID field
+    // combinations (the space between those examples) and assert the JSON-args
+    // dispatch envelope is byte-for-byte equal to the argv dispatch envelope for
+    // the same logical request. A falsifier is a real cross-surface divergence —
+    // a field the converter drops, a name-map (`include_types`↔`type_impact`,
+    // `count_only`) that diverges only at some value, or a clamp (`--limit`
+    // 1..=100) applied on one surface but not the other.
+    //
+    // Each case builds argv and JSON from the SAME generated values, so the two
+    // paths are wired to identical logical inputs by construction; the only way
+    // they differ is a converter/parse asymmetry. The seed corpus is
+    // embedder-free, so `where` is excluded (covered by its own example guard).
+    mod proptest_parity {
+        use super::*;
+        use proptest::prelude::*;
+
+        // limit spans the documented 1..=100 core clamp AND past it (to 200),
+        // so a clamp applied on one surface but not the other falsifies.
+        fn limit_strategy() -> impl Strategy<Value = usize> {
+            1usize..=200
+        }
+
+        // The four argv-expressible edge-kind provenance strings, plus None.
+        fn edge_kind_strategy() -> impl Strategy<Value = Option<&'static str>> {
+            prop_oneof![
+                Just(None),
+                Just(Some("call")),
+                Just(Some("serde_callback")),
+                Just(Some("macro_heuristic")),
+                Just(Some("fn_pointer")),
+            ]
+        }
+
+        // depth in [1,50]: test-map/trace clamp to 1..=50, impact does not —
+        // kept in range so every command accepts it on both surfaces and we test
+        // the value round-trip, not the rejection (rejection is pinned elsewhere).
+        fn depth_strategy() -> impl Strategy<Value = usize> {
+            1usize..=50
+        }
+
+        // Run both surfaces for a generated case; panic with a self-describing
+        // message (naming the inputs and both envelopes) on divergence. A panic
+        // inside `proptest!` is a falsification — proptest catches it and shrinks.
+        fn assert_parity(
+            ctx: &crate::cli::batch::BatchContext,
+            command: &str,
+            argv: &[String],
+            arguments: serde_json::Value,
+        ) {
+            let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+            let (v_argv, v_json) = run_both(ctx, command, &argv_refs, arguments.clone());
+            assert!(
+                v_argv == v_json,
+                "json-args ↔ argv DIVERGED for `{command}`\n  argv flags: {argv:?}\n  json args:  {arguments}\n  argv out:   {v_argv}\n  json out:   {v_json}"
+            );
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 96,
+                ..ProptestConfig::default()
+            })]
+
+            // callers / callees: name fixed to the seeded edge endpoints (so the
+            // result carries real data, not a uniform empty set), limit + edge_kind
+            // generated. The converter maps `edge_kind` enum → string and `limit`
+            // straight through; a clamp asymmetry at limit>100 or a kind-string
+            // drift falsifies.
+            #[test]
+            fn callers_callees_parity(
+                limit in limit_strategy(),
+                edge_kind in edge_kind_strategy(),
+            ) {
+                let (_dir, ctx) = seed_ctx();
+                for (command, name) in [("callers", "callee_fn"), ("callees", "caller_fn")] {
+                    let mut argv = vec![name.to_string(), "--limit".into(), limit.to_string()];
+                    let mut args = serde_json::Map::new();
+                    args.insert("name".into(), json!(name));
+                    args.insert("limit".into(), json!(limit));
+                    if let Some(k) = edge_kind {
+                        argv.push("--edge-kind".into());
+                        argv.push(k.to_string());
+                        args.insert("edge_kind".into(), json!(k));
+                    }
+                    assert_parity(&ctx, command, &argv, serde_json::Value::Object(args));
+                }
+            }
+
+            // impact: depth + limit + the two boolean flags. `--type-impact` is the
+            // argv name; the JSON core field is `include_types` (a deliberate
+            // cross-name) — if the converter ever swaps or drops it, the envelopes
+            // diverge for the `true` value but not the `false` value, which only a
+            // generated both-values run catches.
+            #[test]
+            fn impact_parity(
+                limit in limit_strategy(),
+                depth in depth_strategy(),
+                suggest_tests in any::<bool>(),
+                include_types in any::<bool>(),
+            ) {
+                let (_dir, ctx) = seed_ctx();
+                let mut argv = vec![
+                    "callee_fn".to_string(),
+                    "--depth".into(), depth.to_string(),
+                    "--limit".into(), limit.to_string(),
+                ];
+                if suggest_tests { argv.push("--suggest-tests".into()); }
+                if include_types { argv.push("--type-impact".into()); }
+                let args = json!({
+                    "name": "callee_fn",
+                    "depth": depth,
+                    "limit": limit,
+                    "suggest_tests": suggest_tests,
+                    "include_types": include_types,
+                });
+                assert_parity(&ctx, "impact", &argv, args);
+            }
+
+            // dead: include_pub + min_confidence + verdict, all three on/off and
+            // across every enum variant. The converter re-stringifies the verdict
+            // and confidence enums; a variant that maps to a different string on
+            // one surface falsifies.
+            #[test]
+            fn dead_parity(
+                include_pub in any::<bool>(),
+                min_conf in prop_oneof![Just("low"), Just("medium"), Just("high")],
+                verdict in prop_oneof![
+                    Just(None),
+                    Just(Some("test-only")),
+                    Just(Some("low-confidence-live")),
+                    Just(Some("known-gap")),
+                    Just(Some("dead")),
+                    Just(Some("unclassified")),
+                ],
+            ) {
+                let (_dir, ctx) = seed_ctx();
+                let mut argv = vec!["--min-confidence".to_string(), min_conf.to_string()];
+                let mut args = serde_json::Map::new();
+                args.insert("min_confidence".into(), json!(min_conf));
+                if include_pub {
+                    argv.push("--include-pub".into());
+                    args.insert("include_pub".into(), json!(true));
+                }
+                if let Some(v) = verdict {
+                    argv.push("--verdict".into());
+                    argv.push(v.to_string());
+                    args.insert("verdict".into(), json!(v));
+                }
+                assert_parity(&ctx, "dead", &argv, serde_json::Value::Object(args));
+            }
+
+            // deps: reverse flag + limit. The `reverse` bool selects a DIFFERENT
+            // output shape (`{name,types,count}` vs forward), so a drop of the flag
+            // on one surface changes the entire envelope.
+            #[test]
+            fn deps_parity(
+                limit in limit_strategy(),
+                reverse in any::<bool>(),
+            ) {
+                let (_dir, ctx) = seed_ctx();
+                let mut argv = vec!["caller_fn".to_string(), "--limit".into(), limit.to_string()];
+                let mut args = serde_json::Map::new();
+                args.insert("name".into(), json!("caller_fn"));
+                args.insert("limit".into(), json!(limit));
+                if reverse {
+                    argv.push("--reverse".into());
+                    args.insert("reverse".into(), json!(true));
+                }
+                assert_parity(&ctx, "deps", &argv, serde_json::Value::Object(args));
+            }
+
+            // test-map: depth (clamped 1..=50, generated in range) + limit. The
+            // converter `u16::try_from`s the depth; an in-range value must round-
+            // trip identically on both surfaces.
+            #[test]
+            fn test_map_parity(
+                limit in limit_strategy(),
+                depth in depth_strategy(),
+            ) {
+                let (_dir, ctx) = seed_ctx();
+                let argv = vec![
+                    "callee_fn".to_string(),
+                    "--depth".into(), depth.to_string(),
+                    "--limit".into(), limit.to_string(),
+                ];
+                let args = json!({"name": "callee_fn", "max_depth": depth, "limit": limit});
+                assert_parity(&ctx, "test-map", &argv, args);
+            }
+
+            // related: limit only. Co-occurrence is embedder-free over the seeded
+            // edge, so the envelope is real data.
+            #[test]
+            fn related_parity(limit in limit_strategy()) {
+                let (_dir, ctx) = seed_ctx();
+                let argv = vec!["caller_fn".to_string(), "--limit".into(), limit.to_string()];
+                let args = json!({"name": "caller_fn", "limit": limit});
+                assert_parity(&ctx, "related", &argv, args);
+            }
+
+            // stale: the `count_only` adapter-side render flag projects to a
+            // 3-field count subset. Generated on/off pins that the projection
+            // happens identically on both surfaces.
+            #[test]
+            fn stale_parity(count_only in any::<bool>()) {
+                let (_dir, ctx) = seed_ctx();
+                let mut argv: Vec<String> = vec![];
+                let mut args = serde_json::Map::new();
+                if count_only {
+                    argv.push("--count-only".into());
+                    args.insert("count_only".into(), json!(true));
+                }
+                assert_parity(&ctx, "stale", &argv, serde_json::Value::Object(args));
+            }
+        }
+    }
 }
