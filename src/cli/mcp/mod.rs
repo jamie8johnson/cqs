@@ -107,13 +107,15 @@ mod tests {
             ["notes-add", "notes-update", "notes-remove", "index"]
                 .into_iter()
                 .collect();
-        // The withheld set: the P1 doc/signature relay surfaces (`context`,
-        // `explain`) PLUS the destructive mutators that are withheld by absence
-        // — naming them here makes the guard ENFORCE the withhold (a future
-        // hand that adds `cqs_gc` to the table fails this test).
+        // The withheld set: the doc/signature relay surface `context` (held back
+        // pending its own scan==relayed audit) PLUS the destructive mutators that
+        // are withheld by absence — naming them here makes the guard ENFORCE the
+        // withhold (a future hand that adds `cqs_gc` to the table fails this
+        // test). `explain` is NO LONGER withheld — its relay is fully
+        // injection-scanned (the explain.rs RT-RELAY guards pin scan==relayed), so
+        // it is an exposed read tool.
         let withheld: std::collections::BTreeSet<&str> = [
             "context",
-            "explain",
             "gc",
             "slot-remove",
             "index-force",
@@ -148,11 +150,12 @@ mod tests {
     ///
     /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
     /// equal the daemon's JSON-args-capable read command set MINUS the withheld
-    /// set — 28 read tools (the zero-arg `stats`/`health`, the Phase-2
+    /// set — 29 read tools (the zero-arg `stats`/`health`, the Phase-2
     /// `where`/`related`/`stale`, the Phase-3 overlay-capable `task`, the
-    /// read-only `notes`, and the Phase-4 `suggest`/`impact-diff`), zero mutation
-    /// delta. Fails if a JSON-args command is added/removed without updating the
-    /// MCP surface, or if a withheld command leaks into `tools/list`.
+    /// read-only `notes`, the Phase-4 `suggest`/`impact-diff`, and the
+    /// fully-scanned function-card `explain`), zero mutation delta. Fails if a
+    /// JSON-args command is added/removed without updating the MCP surface, or if
+    /// a withheld command leaks into `tools/list`.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn tools_list_matches_json_args_registry() {
@@ -164,18 +167,18 @@ mod tests {
             "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
              withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
         );
-        // The flag-off read surface = exactly 28 read tools.
+        // The flag-off read surface = exactly 29 read tools.
         assert_eq!(
             exposed.len(),
-            28,
-            "flag-off tools/list must expose 28 tools"
+            29,
+            "flag-off tools/list must expose 29 tools"
         );
     }
 
     /// Flag-gating guard: the mutation tools are present IFF
     /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
     /// read set PLUS exactly the three notes mutators AND the fire-and-forget
-    /// `index` (32 total).
+    /// `index` (33 total).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn mutation_tools_present_iff_flag_set() {
@@ -207,7 +210,7 @@ mod tests {
                 "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
                  and the index queue tool"
             );
-            assert_eq!(on.len(), 32, "flag-on tools/list must expose 32 tools");
+            assert_eq!(on.len(), 33, "flag-on tools/list must expose 33 tools");
         }
     }
 
@@ -382,8 +385,9 @@ mod tests {
         assert_eq!(hint(&index, "openWorldHint"), Some(false));
     }
 
-    /// `context`/`explain` must be ABSENT from the exposed surface (D4b),
-    /// regardless of the mutation flag.
+    /// `context` must be ABSENT from the exposed surface (still withheld pending
+    /// its own scan==relayed audit), regardless of the mutation flag — while
+    /// `explain` (its relay now fully scanned) must be PRESENT.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn withheld_tools_absent() {
@@ -395,8 +399,8 @@ mod tests {
                 "cqs_context must be withheld from tools/list (flag={on})"
             );
             assert!(
-                !names.contains(&"cqs_explain"),
-                "cqs_explain must be withheld from tools/list (flag={on})"
+                names.contains(&"cqs_explain"),
+                "cqs_explain must be exposed in tools/list (flag={on})"
             );
         }
     }

@@ -15,6 +15,42 @@ use cqs::{compute_hints, rel_display, FunctionHints, HnswIndex, SearchFilter};
 use super::callers::{CalleeEntry, CallerEntry};
 use crate::cli::staleness;
 
+// ─── Wire core (MCP-ready, input-only) ──────────────────────────────────────
+
+/// Surface-agnostic request core for `cqs explain` — the struct the daemon
+/// JSON-args path (`cqs_explain`) deserializes the relayed `arguments` into,
+/// then projects onto the clap-side [`crate::cli::args::ExplainArgs`] for
+/// dispatch. Distinct from that clap struct because the clap one flattens the
+/// shared `LimitArg` (not `Deserialize`/`JsonSchema`); this flat core mirrors
+/// the `WhereArgs` / `PlanArgs` wire-core precedent.
+///
+/// Input-only: it derives `Deserialize` + `JsonSchema` for the wire, never
+/// `Serialize`. The command's JSON OUTPUT is the separate [`ExplainOutput`], so
+/// adding these derives cannot change the output wire shape. `name` is the lone
+/// required field (the target to explain); `limit` defaults to the clap
+/// `LimitArg` default and `tokens` is optional, so a wire caller can supply just
+/// `name`.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+pub(crate) struct ExplainArgs {
+    /// Function name or `file:function` to explain.
+    pub name: String,
+    /// Cap on the callers / callees / similar lists in the function card
+    /// (clamped to `GRAPH_LIMIT_CAP` in the adapter). Defaults to 5, matching
+    /// the CLI `-n` default.
+    #[serde(default = "default_explain_limit")]
+    pub limit: usize,
+    /// Maximum token budget. When set, relevant source bodies (the target plus
+    /// each similar chunk that fits) are packed within the budget.
+    #[serde(default)]
+    pub tokens: Option<usize>,
+}
+
+/// Default for [`ExplainArgs::limit`] — mirrors the clap `LimitArg` default (5),
+/// so an omitted `limit` over the wire matches `cqs explain <fn>` with no `-n`.
+fn default_explain_limit() -> usize {
+    crate::cli::args::DEFAULT_LIMIT
+}
+
 // ─── Shared core ────────────────────────────────────────────────────────────
 
 /// All data needed to render an explain card (JSON or terminal).
