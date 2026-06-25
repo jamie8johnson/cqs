@@ -1029,4 +1029,45 @@ mod tests {
         assert_eq!(parser_max_walk_depth(), PARSER_MAX_WALK_DEPTH);
         std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
     }
+
+    /// Property (depth clamp invariant): for ANY value of
+    /// `CQS_PARSER_MAX_WALK_DEPTH` — a digit string, signed, whitespace-wrapped,
+    /// hex, unicode, empty, or a u64 that overflows usize — the resolved depth
+    /// is ALWAYS within `[1, PARSER_MAX_WALK_DEPTH_CEIL]`. The four examples
+    /// above pin five points (unset / 200 / 1_000_000 / "not_a_number" / "0");
+    /// this generates the env-string space between them (negatives, leading
+    /// zeros, " 5 ", "0x1F", `u64::MAX`-ish, unicode digits, "") and asserts the
+    /// rail never opens above the stack-safe ceiling nor collapses to a
+    /// suppress-all `0`. A regression that forgot the clamp on some parse path,
+    /// or let a value parse to `0` through, falsifies.
+    #[test]
+    #[serial]
+    fn prop_parser_max_walk_depth_always_in_range() {
+        use proptest::prelude::*;
+
+        // A spread covering: pure digit strings (incl. overflow), signed,
+        // whitespace-padded, hex-ish, empty, and arbitrary unicode noise.
+        let value = prop_oneof![
+            "[0-9]{1,25}",
+            "[+-]?[0-9]{1,12}",
+            r"\s*[0-9]{1,6}\s*",
+            "0x[0-9a-fA-F]{1,8}",
+            Just(String::new()),
+            "\\PC{0,12}",
+        ];
+
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        runner
+            .run(&value, |s| {
+                std::env::set_var("CQS_PARSER_MAX_WALK_DEPTH", &s);
+                let d = parser_max_walk_depth();
+                std::env::remove_var("CQS_PARSER_MAX_WALK_DEPTH");
+                prop_assert!(
+                    (1..=PARSER_MAX_WALK_DEPTH_CEIL).contains(&d),
+                    "env={s:?} → depth={d}, outside [1, {PARSER_MAX_WALK_DEPTH_CEIL}]"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
 }

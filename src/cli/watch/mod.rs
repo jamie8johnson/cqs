@@ -119,6 +119,13 @@ mod daemon;
 #[cfg(all(cqs_loom, test))]
 mod reconcile_interleaving_model;
 
+// Loom model of the daemon notes-mutation signal vs the watch-loop drain (the
+// inotify-independent note-reindex protocol). Gated to `--cfg cqs_loom` test
+// builds; absent from a normal build. Pins NO-LOST-REINDEX: a committed note
+// write is always reflected in the index under every drain/write interleaving.
+#[cfg(all(cqs_loom, test))]
+mod notes_signal_interleaving_model;
+
 /// Immutable references shared across the watch loop.
 ///
 /// Does not include `Store` because it is re-opened each cycle.

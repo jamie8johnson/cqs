@@ -2613,6 +2613,29 @@ fn caller() {
             );
         }
 
+        /// The macro EDGE pass must emit NOTHING for source that contains no
+        /// macro `token_tree` at all. The whole heuristic is gated on
+        /// `in_token_tree` — outside a token-tree the ordinary call query owns
+        /// the edges, and re-emitting them here would double-count and mislabel
+        /// real calls / fn names as `MacroHeuristic`. The other macro tests all
+        /// feed sources that DO contain a macro, so they never exercise the gate
+        /// being load-bearing; they assert which names appear, never that a
+        /// non-macro identifier (a fn definition name, a plain callee) is
+        /// suppressed. This fixture has two same-file fns and a plain call but
+        /// zero macros, so the macro pass must return an empty edge set.
+        #[test]
+        fn test_macro_pass_emits_nothing_without_token_tree() {
+            // `outer` and `inner` are both in `known_fns`; `inner()` is a plain
+            // `call_expression`, not a macro arg. With the `in_token_tree` gate
+            // defeated, the known-fn names would leak as macro-heuristic edges.
+            let macro_only = macro_edges_for("fn inner() {}\nfn outer() { inner(); }\n");
+            assert!(
+                macro_only.is_empty(),
+                "macro pass must emit no edges when the source has no macro \
+                 token_tree, got: {macro_only:?}"
+            );
+        }
+
         /// Regression: a plain (non-macro) call still emits exactly ONE edge —
         /// the macro heuristic must not double-count real `call_expression`s.
         #[test]
@@ -2931,6 +2954,64 @@ struct Wrapper<T> {
             );
         }
 
+        /// The emitted `line_number` must point at the source row carrying the
+        /// `#[serde(... = "fn")]` attribute, not just be non-zero. The line is
+        /// computed by counting NEWLINE bytes before the capture; a walk that
+        /// counted the wrong bytes (or dropped the `line_offset`) would still
+        /// produce a correctly-NAMED edge with a wrong location, which every
+        /// other serde test tolerates because they assert only `callee_name`.
+        /// Two callbacks on different rows pin both the per-attribute newline
+        /// count AND the `line_offset` addition.
+        #[test]
+        fn test_extract_serde_callback_calls_line_numbers() {
+            // Row layout (1-indexed within this slice, before line_offset):
+            //   1: (empty)
+            //   2: #[derive(serde::Deserialize)]
+            //   3: struct Config {
+            //   4:     #[serde(default = "first_cb")]
+            //   5:     a: u32,
+            //   6:     #[serde(serialize_with = "second_cb")]
+            //   7:     b: u32,
+            //   8: }
+            let source = "\n\
+#[derive(serde::Deserialize)]\n\
+struct Config {\n    \
+#[serde(default = \"first_cb\")]\n    \
+a: u32,\n    \
+#[serde(serialize_with = \"second_cb\")]\n    \
+b: u32,\n\
+}\n";
+            // line_offset = 10 → absolute line = 10 + (newlines before match).
+            let calls = extract_serde_callback_calls(source, Language::Rust, 10);
+            let first = calls
+                .iter()
+                .find(|c| c.callee_name == "first_cb")
+                .expect("first_cb edge");
+            let second = calls
+                .iter()
+                .find(|c| c.callee_name == "second_cb")
+                .expect("second_cb edge");
+            // `first_cb` capture sits on slice row 4 → 3 newlines precede it →
+            // 10 + 3 = 13. `second_cb` on slice row 6 → 5 newlines → 10 + 5 = 15.
+            assert_eq!(
+                first.line_number, 13,
+                "first_cb attribute must report absolute line 13, got {}",
+                first.line_number
+            );
+            assert_eq!(
+                second.line_number, 15,
+                "second_cb attribute must report absolute line 15, got {}",
+                second.line_number
+            );
+            // The two callbacks are two source rows apart: a constant or a
+            // wrong-byte-count line computation cannot satisfy both at once.
+            assert_eq!(
+                second.line_number - first.line_number,
+                2,
+                "the two callbacks are two source rows apart"
+            );
+        }
+
         /// No `serde` substring → fast no-op (and non-Rust languages skip).
         #[test]
         fn test_extract_serde_callback_calls_noop_paths() {
@@ -2946,6 +3027,22 @@ struct Wrapper<T> {
                 1
             )
             .is_empty());
+            // Non-Rust language whose text DOES contain the word `serde` AND a
+            // callback-shaped attribute must STILL be ignored: the language
+            // guard, not the cheap `contains("serde")` fast-path, is what keeps
+            // the regex off non-Rust text. The case above omits `serde`, so it
+            // only exercises the substring fast-path; this one pins the language
+            // half of the `language != Rust || !contains("serde")` guard.
+            assert!(
+                extract_serde_callback_calls(
+                    r#"# serde-style config
+opts = {deserialize_with = "some_fn"}"#,
+                    Language::Python,
+                    1
+                )
+                .is_empty(),
+                "a non-Rust source mentioning serde must not produce serde edges"
+            );
         }
 
         /// End-to-end through `parse_file_relationships`: the carrying struct
