@@ -595,11 +595,19 @@ pub(crate) fn read_stdin() -> anyhow::Result<String> {
     Ok(buf)
 }
 
-/// Run `git diff` and return the output. Validates `base` ref to prevent argument injection.
-pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
+/// Run `git diff` in `cwd` and return the output. Validates `base` ref to
+/// prevent argument injection.
+///
+/// `cwd` is the resolved project root (`ctx.root`), not the running process's
+/// cwd. Threading it explicitly keeps the diff attributed to the served project
+/// regardless of where the binary (CLI invocation or long-lived daemon) was
+/// launched: a daemon launched from a different directory than the project it
+/// serves would otherwise diff the wrong tree.
+pub(crate) fn run_git_diff(base: Option<&str>, cwd: &std::path::Path) -> anyhow::Result<String> {
     let _span = tracing::info_span!("run_git_diff").entered();
 
     let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(cwd);
     cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
         // Strict ref validation matching git's own `check-ref-format` rules.
@@ -1137,10 +1145,12 @@ mod tests {
         assert_eq!(used, 30);
     }
 
-    // run_git_diff rejects base refs starting with '-' (flag injection)
+    // run_git_diff rejects base refs starting with '-' (flag injection).
+    // The ref validation fires before the git invocation, so the cwd is
+    // irrelevant to these rejection tests — pass the current dir.
     #[test]
     fn test_run_git_diff_rejects_dash_prefix() {
-        let result = run_git_diff(Some("--exec=whoami"));
+        let result = run_git_diff(Some("--exec=whoami"), std::path::Path::new("."));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1153,7 +1163,7 @@ mod tests {
     // run_git_diff rejects base refs containing null bytes
     #[test]
     fn test_run_git_diff_rejects_null_bytes() {
-        let result = run_git_diff(Some("main\0--exec=whoami"));
+        let result = run_git_diff(Some("main\0--exec=whoami"), std::path::Path::new("."));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1167,7 +1177,7 @@ mod tests {
     #[test]
     fn test_run_git_diff_rejects_newlines_and_tabs() {
         for bad in ["main\nrm -rf /", "main\rfoo", "main\tfoo"] {
-            let result = run_git_diff(Some(bad));
+            let result = run_git_diff(Some(bad), std::path::Path::new("."));
             assert!(result.is_err(), "ref `{bad:?}` must be rejected");
             let err = result.unwrap_err().to_string();
             assert!(
@@ -1181,7 +1191,7 @@ mod tests {
     #[test]
     fn test_run_git_diff_rejects_oversize_ref() {
         let big = "a".repeat(256);
-        let result = run_git_diff(Some(&big));
+        let result = run_git_diff(Some(&big), std::path::Path::new("."));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1193,7 +1203,7 @@ mod tests {
     // run_git_diff rejects empty ref
     #[test]
     fn test_run_git_diff_rejects_empty_ref() {
-        let result = run_git_diff(Some(""));
+        let result = run_git_diff(Some(""), std::path::Path::new("."));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(

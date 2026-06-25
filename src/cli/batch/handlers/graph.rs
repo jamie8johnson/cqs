@@ -480,7 +480,8 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     let base = args.base.as_deref();
     let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
 
-    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    // Diff runs in the served project (`ctx.root`), NOT the daemon's launch cwd.
+    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
     let hunks = cqs::parse_unified_diff(&diff_text);
 
     if hunks.is_empty() {
@@ -2336,7 +2337,22 @@ mod tests {
         edges: &[(&str, &str, u32, &str)],
     ) -> (TempDir, crate::cli::batch::BatchContext) {
         let dir = TempDir::new().expect("tempdir");
-        let cqs_dir = dir.path().join(".cqs");
+        let ctx = parent_store_in(dir.path(), chunks, edges);
+        (dir, ctx)
+    }
+
+    /// Seed a parent store under `base/.cqs` and return a read-only context
+    /// whose `root` is `base`. Used by `parent_store_with` (own temp dir) and
+    /// by the review/ci git-repo tests, which build the store INSIDE the temp
+    /// git repo so `ctx.root` == the repo — letting `run_git_diff` resolve the
+    /// served-project dir from `ctx.root` instead of the process cwd, so the
+    /// tests neither chdir nor share a cwd serializer.
+    fn parent_store_in(
+        base: &Path,
+        chunks: &[(&str, &str)],
+        edges: &[(&str, &str, u32, &str)],
+    ) -> crate::cli::batch::BatchContext {
+        let cqs_dir = base.join(".cqs");
         std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
@@ -2379,8 +2395,7 @@ mod tests {
                     .expect("upsert parent edge");
             }
         }
-        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
-        (dir, ctx)
+        create_test_context(&cqs_dir).expect("create_test_context")
     }
 
     /// Extract caller names from a serialized `callers_overlay` output. The
@@ -3633,16 +3648,17 @@ mod tests {
     // ─── daemon-path marker honesty: review (end-to-end via dispatch_review) ─────
     //
     // `dispatch_review` acquires its diff from `run_git_diff`, which runs `git
-    // diff` in the PROCESS cwd. These tests build a temp git repo (committed
-    // baseline + an uncommitted edit to `src/lib.rs`), chdir into it under a lock
-    // (cwd is process-global), inject the overlay via `set_test_overlay_override`,
-    // and assert the marker is `"callers-only"` ONLY on a genuine direct-callers
-    // merge — ABSENT on an unrelated dirty file and on an empty diff. The absent
-    // cases are RED under a naive `overlay.is_some()` gate (the overlay is active
-    // and non-trivial in every case), so they pin the participation-gated marker.
-
-    /// Serializes the cwd-mutating `dispatch_review` tests (cwd is process-wide).
-    static REVIEW_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // diff` in the SERVED-PROJECT dir (`ctx.root`), not the process cwd. These
+    // tests build a temp git repo (committed baseline + an uncommitted edit to
+    // `src/lib.rs`), seed the store INSIDE the repo so `ctx.root` == the repo,
+    // inject the overlay via `set_test_overlay_override`, and assert the marker
+    // is `"callers-only"` ONLY on a genuine direct-callers merge — ABSENT on an
+    // unrelated dirty file and on an empty diff. The absent cases are RED under a
+    // naive `overlay.is_some()` gate (the overlay is active and non-trivial in
+    // every case), so they pin the participation-gated marker.
+    //
+    // No process-global chdir: the diff dir rides `ctx.root`, so these run safely
+    // in parallel with any cwd-reading test — there is no shared cwd to race.
 
     /// Build a temp git repo whose `src/lib.rs` has a committed baseline and an
     /// uncommitted one-line edit at line 1, so `git diff` (no base) yields a hunk
@@ -3688,9 +3704,11 @@ mod tests {
     /// "callers-only"` (NOT "full": tests + risk-scoring stay parent-truth).
     #[test]
     fn dispatch_review_genuine_merge_carries_callers_only_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
-        let (_dir, ctx) = parent_store_with(
+        // Store lives INSIDE the repo → `ctx.root` == repo, so `run_git_diff`
+        // diffs the repo without any chdir.
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
@@ -3700,12 +3718,9 @@ mod tests {
             &["src/edited.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result =
-            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_review");
+        let json =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
+                .expect("dispatch_review");
         assert_eq!(
             overlay_graph_marker(&json),
             Some("callers-only"),
@@ -3718,9 +3733,9 @@ mod tests {
     /// participation → marker ABSENT. RED under a naive `overlay.is_some()` gate.
     #[test]
     fn dispatch_review_unrelated_delta_no_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
-        let (_dir, ctx) = parent_store_with(
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
             &[("the_caller", "src/stable.rs", 1, "target")],
         );
@@ -3731,12 +3746,9 @@ mod tests {
             &["src/unrelated.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result =
-            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_review");
+        let json =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
+                .expect("dispatch_review");
         assert_eq!(
             overlay_graph_marker(&json),
             None,
@@ -3750,10 +3762,10 @@ mod tests {
     /// `overlay.is_some()` gate.
     #[test]
     fn dispatch_review_empty_diff_no_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
         // The store has NO chunk at src/lib.rs, so the diff maps no function.
-        let (_dir, ctx) = parent_store_with(
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
@@ -3763,12 +3775,9 @@ mod tests {
             &["src/edited.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result =
-            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_review");
+        let json =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
+                .expect("dispatch_review");
         assert_eq!(
             overlay_graph_marker(&json),
             None,
@@ -4036,14 +4045,16 @@ mod tests {
 
     // ─── daemon-path marker honesty: ci (end-to-end via dispatch_ci) ─────────────
     //
-    // `dispatch_ci` acquires its diff from `run_git_diff` in the PROCESS cwd. These
-    // tests reuse `temp_git_repo_with_lib_edit` (committed baseline + uncommitted
-    // edit to src/lib.rs), chdir under `REVIEW_CWD_LOCK` (cwd is process-global),
-    // inject the overlay via `set_test_overlay_override`, and assert the COMPOSITE
-    // marker is `"callers-only"` (NEVER "full") ONLY on a genuine merge — ABSENT on
-    // an unrelated dirty file and on an empty diff. The absent cases are RED under a
+    // `dispatch_ci` acquires its diff from `run_git_diff` in the SERVED-PROJECT dir
+    // (`ctx.root`), not the process cwd. These tests reuse
+    // `temp_git_repo_with_lib_edit` (committed baseline + uncommitted edit to
+    // src/lib.rs), seed the store INSIDE the repo so `ctx.root` == the repo, inject
+    // the overlay via `set_test_overlay_override`, and assert the COMPOSITE marker
+    // is `"callers-only"` (NEVER "full") ONLY on a genuine merge — ABSENT on an
+    // unrelated dirty file and on an empty diff. The absent cases are RED under a
     // naive `overlay.is_some()` gate (the overlay is active and non-trivial in every
-    // case), so they pin the participation-gated marker.
+    // case), so they pin the participation-gated marker. No process-global chdir,
+    // so these run safely in parallel with any cwd-reading test.
 
     /// Wire `args::CiArgs` with default (inactive) overlay flags — the overlay is
     /// injected via `set_test_overlay_override`, not the wire flags.
@@ -4063,9 +4074,9 @@ mod tests {
     /// component bounds the claim).
     #[test]
     fn dispatch_ci_genuine_merge_carries_callers_only_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
-        let (_dir, ctx) = parent_store_with(
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
@@ -4075,11 +4086,8 @@ mod tests {
             &["src/edited.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_ci");
+        let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
+            .expect("dispatch_ci");
         assert_eq!(
             overlay_graph_marker(&json),
             Some("callers-only"),
@@ -4093,9 +4101,9 @@ mod tests {
     /// `overlay.is_some()` gate.
     #[test]
     fn dispatch_ci_unrelated_delta_no_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
-        let (_dir, ctx) = parent_store_with(
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
             &[("the_caller", "src/stable.rs", 1, "target")],
         );
@@ -4105,11 +4113,8 @@ mod tests {
             &["src/unrelated.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_ci");
+        let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
+            .expect("dispatch_ci");
         assert_eq!(
             overlay_graph_marker(&json),
             None,
@@ -4123,10 +4128,10 @@ mod tests {
     /// `overlay.is_some()` gate.
     #[test]
     fn dispatch_ci_empty_diff_no_marker() {
-        let _cwd = REVIEW_CWD_LOCK.lock().unwrap();
         let repo = temp_git_repo_with_lib_edit();
         // The store has NO chunk at src/lib.rs, so the diff maps no function.
-        let (_dir, ctx) = parent_store_with(
+        let ctx = parent_store_in(
+            repo.path(),
             &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
@@ -4136,11 +4141,8 @@ mod tests {
             &["src/edited.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
-        let original = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(repo.path()).expect("chdir repo");
-        let result = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args());
-        std::env::set_current_dir(&original).expect("restore cwd");
-        let json = result.expect("dispatch_ci");
+        let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
+            .expect("dispatch_ci");
         assert_eq!(
             overlay_graph_marker(&json),
             None,

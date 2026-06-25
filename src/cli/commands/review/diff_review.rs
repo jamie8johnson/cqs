@@ -157,7 +157,7 @@ pub(crate) fn cmd_review(
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base)?
+        crate::cli::commands::run_git_diff(base, root)?
     };
 
     if json {

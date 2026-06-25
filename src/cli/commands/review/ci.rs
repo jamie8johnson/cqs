@@ -130,7 +130,7 @@ pub(crate) fn cmd_ci(
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base)?
+        crate::cli::commands::run_git_diff(base, root)?
     };
 
     // The gate `passed` flag drives the process exit code below, so both
