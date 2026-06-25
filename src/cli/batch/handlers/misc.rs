@@ -290,10 +290,17 @@ pub(in crate::cli::batch) fn dispatch_notes_remove(
 /// silently reconcile the served slot while reporting `queued` (a wrong-slot
 /// reindex the caller cannot detect across the interop boundary), this handler
 /// REFUSES the mismatch with a client-facing error naming the served slot. A
-/// matching or omitted `slot` proceeds. When the served slot is not yet known
-/// (the watch loop hasn't published a snapshot — daemon ramp-up), the queue
-/// still fires but the response echoes `served_slot: null` so the caller can see
-/// the target was not verified.
+/// matching or omitted `slot` proceeds.
+///
+/// Invariant: a `queued` reindex response always carries a CONFIRMED
+/// `served_slot`; a slot-qualified request whose target cannot be confirmed
+/// fails CLOSED. When the served slot is not yet known (the watch loop hasn't
+/// published a snapshot — daemon ramp-up), a slot-qualified request cannot be
+/// verified against the served slot, so it is REFUSED rather than queued — the
+/// reconcile path can only target the served slot, and reporting `queued` for an
+/// unconfirmed slot would be the same undetectable wrong-slot lie the `Some`
+/// branch refusal prevents. Only the no-slot path queues during ramp-up (there
+/// is no slot to confirm — it reconciles the active slot).
 ///
 /// Reachable only when `build_batch_cmd` constructed `BatchCmd::Index`, which is
 /// gated behind `CQS_MCP_ENABLE_MUTATIONS` (the operator opt-in). The
@@ -311,14 +318,17 @@ pub(in crate::cli::batch) fn dispatch_index(
 
     let served_slot = ctx.served_slot();
 
-    // Refuse a request that names a slot the daemon does not serve. Failing
-    // loud beats a silent wrong-slot reindex: the reconcile path cannot target
-    // a non-served slot, so honoring the request is impossible — reporting
-    // success while reindexing a different slot would be an undetectable lie to
-    // an autonomous caller.
+    // Refuse a slot-qualified request that cannot be CONFIRMED against the slot
+    // the daemon serves. Failing loud beats a silent wrong-slot reindex: the
+    // reconcile path cannot target a non-served slot, so honoring the request is
+    // impossible — reporting success while reindexing a different (or unknown)
+    // slot would be an undetectable lie to an autonomous caller. The match is
+    // exhaustive on `served_slot` so the ramp-up window (`None`) fails closed too:
+    // a slot-qualified request always confirms its target before queueing.
     if let Some(requested) = args.slot.as_deref() {
-        if let Some(served) = served_slot.as_deref() {
-            if requested != served {
+        match served_slot.as_deref() {
+            Some(served) if requested == served => { /* confirmed — proceed to queue below */ }
+            Some(served) => {
                 tracing::warn!(
                     requested,
                     served,
@@ -330,6 +340,25 @@ pub(in crate::cli::batch) fn dispatch_index(
                         "slot '{requested}' is not the slot this daemon serves ('{served}'); \
                          the daemon reconciles only its served slot — restart `cqs watch --serve` \
                          bound to '{requested}', or omit `slot` to reindex the served slot"
+                    ),
+                )
+                .into());
+            }
+            None => {
+                // Ramp-up: the watch loop has not yet published the served slot,
+                // so a slot-qualified request cannot be confirmed. Fail closed
+                // rather than queue against an unverified slot.
+                tracing::warn!(
+                    requested,
+                    "cqs_index slot unconfirmed — refusing a slot-qualified reindex during daemon ramp-up (served slot not yet published)"
+                );
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    format!(
+                        "the daemon has not yet published its served slot (still in its ramp-up \
+                         window), so a request for slot '{requested}' cannot be verified — retry \
+                         once the daemon has published its served slot, or omit `slot` to reindex \
+                         the active slot"
                     ),
                 )
                 .into());
@@ -349,7 +378,11 @@ pub(in crate::cli::batch) fn dispatch_index(
     // that an earlier reconcile request was still un-drained (the watch loop
     // coalesces them into one walk). `served_slot` echoes the slot the queued
     // reconcile actually targets so the caller can confirm the substitution did
-    // not occur (it carries `null` only during the daemon's ramp-up window).
+    // not occur. It carries `null` only for the no-slot path during ramp-up
+    // (omitting `slot` reconciles the active slot, which needs no confirmation);
+    // a slot-QUALIFIED request that reaches this point has already confirmed its
+    // target against a published served slot, so a `queued` response from a
+    // slot-qualified request always carries a non-null, confirmed `served_slot`.
     Ok(serde_json::json!({
         "status": "queued",
         "queued": true,
