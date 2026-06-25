@@ -633,12 +633,23 @@ pub(crate) fn read_stdin() -> anyhow::Result<String> {
 /// regardless of where the binary (CLI invocation or long-lived daemon) was
 /// launched: a daemon launched from a different directory than the project it
 /// serves would otherwise diff the wrong tree.
+///
+/// `--relative` is load-bearing for the frame invariant: the diff consumer
+/// (`analyze_diff_impact*`) matches the `+++ b/<path>` paths against index chunk
+/// paths, which are stored relative to `ctx.root`. Without `--relative`, git
+/// emits paths relative to the git toplevel; when `ctx.root` is a subdirectory
+/// of the repo those paths carry the subdir prefix and match nothing in the
+/// index — a silent false "no impact". With `cwd == ctx.root`, `--relative`
+/// (no `=path` argument, so it resolves to the process cwd that `current_dir`
+/// set) emits `ctx.root`-relative paths, aligning the diff frame with the index
+/// frame. It also scopes the diff to paths under `cwd`, which is correct: only
+/// the served project's tree, not sibling subtrees of a larger monorepo.
 pub(crate) fn run_git_diff(base: Option<&str>, cwd: &std::path::Path) -> anyhow::Result<String> {
     let _span = tracing::info_span!("run_git_diff").entered();
 
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(cwd);
-    cmd.args(["--no-pager", "diff", "--no-color"]);
+    cmd.args(["--no-pager", "diff", "--no-color", "--relative"]);
     if let Some(b) = base {
         // Strict ref validation matching git's own `check-ref-format` rules.
         // Reject leading `-` (option-injection), any of `\0\n\r\t` (newlines
@@ -1239,6 +1250,65 @@ mod tests {
         assert!(
             err.contains("must be 1..=255 chars"),
             "empty ref rejection wrong: {err}"
+        );
+    }
+
+    // Frame invariant: when the served root is a SUBDIRECTORY of the git repo,
+    // the diff paths must come out relative to that root (the index frame), not
+    // relative to the git toplevel. Without `--relative`, git emits
+    // `sub/src/foo.rs`; the index has `src/foo.rs`, so changed files match
+    // nothing — a silent false "no impact". `--relative` (run with cwd == root)
+    // strips the subdir prefix, so `+++ b/src/foo.rs` aligns with the index.
+    // RED without `--relative` (path carries the `sub/` prefix), GREEN with it.
+    #[test]
+    fn test_run_git_diff_paths_relative_to_subdir_root() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path();
+
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(repo)
+                .args(args)
+                .output()
+                .expect("git invocation");
+            assert!(
+                status.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t.t"]);
+        git(&["config", "user.name", "t"]);
+
+        // The served root is `repo/sub`; the changed file lives at
+        // `repo/sub/src/foo.rs` => `src/foo.rs` in the root frame.
+        let sub = repo.join("sub");
+        let src = sub.join("src");
+        std::fs::create_dir_all(&src).expect("create sub/src");
+        let foo = src.join("foo.rs");
+        std::fs::write(&foo, "fn foo() {}\n").expect("write foo");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+
+        // Modify the committed file so the diff is non-empty.
+        std::fs::write(&foo, "fn foo() { let _x = 1; }\n").expect("modify foo");
+
+        let diff = run_git_diff(None, &sub).expect("run_git_diff on subdir root");
+
+        // The path in the diff header must be root-relative (`src/foo.rs`), not
+        // toplevel-relative (`sub/src/foo.rs`).
+        assert!(
+            diff.contains("+++ b/src/foo.rs"),
+            "diff path must be root-relative (`src/foo.rs`); got:\n{diff}"
+        );
+        assert!(
+            !diff.contains("+++ b/sub/src/foo.rs"),
+            "diff path must NOT carry the `sub/` toplevel prefix; got:\n{diff}"
         );
     }
 
