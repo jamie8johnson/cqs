@@ -357,7 +357,7 @@ cqs mcp
 ```
 
 **Tool surface**:
-- **Default (read-only)**: 25 `cqs_`-prefixed tools — `cqs_search`, `cqs_gather`, `cqs_scout`, `cqs_task`, `cqs_onboard`, `cqs_similar`, `cqs_callers`, `cqs_callees`, `cqs_deps`, `cqs_impact`, `cqs_test_map`, `cqs_trace`, `cqs_blame`, `cqs_diff`, `cqs_drift`, `cqs_dead`, `cqs_ci`, `cqs_review`, `cqs_plan`, `cqs_read`, `cqs_where`, `cqs_related`, `cqs_stale`, `cqs_stats`, `cqs_health`. (`cqs_context`/`cqs_explain` are deliberately withheld — their relay would carry unscanned doc/signature content.)
+- **Default (read-only)**: 26 `cqs_`-prefixed tools — `cqs_search`, `cqs_gather`, `cqs_scout`, `cqs_task`, `cqs_onboard`, `cqs_similar`, `cqs_callers`, `cqs_callees`, `cqs_deps`, `cqs_impact`, `cqs_test_map`, `cqs_trace`, `cqs_blame`, `cqs_diff`, `cqs_drift`, `cqs_dead`, `cqs_ci`, `cqs_review`, `cqs_plan`, `cqs_read`, `cqs_where`, `cqs_related`, `cqs_stale`, `cqs_notes_list`, `cqs_stats`, `cqs_health`. (`cqs_context`/`cqs_explain` are deliberately withheld — their relay would carry unscanned doc/signature content.)
 - **Opt-in mutations** (`CQS_MCP_ENABLE_MUTATIONS=1`): adds 4 mutating tools — `cqs_notes_add`, `cqs_notes_update`, `cqs_notes_remove`, `cqs_index`. Notes mutations write `docs/notes.toml` (the watch loop reindexes); `cqs_index` queues a non-blocking reconcile. Neither writes the daemon's in-memory Store directly.
 - **Permanently withheld**: the destructive set (`gc`, `slot remove`, `index --force`, `model swap`, `cache clear`) is never exposed, regardless of flag value.
 

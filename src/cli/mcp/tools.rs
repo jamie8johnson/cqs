@@ -179,6 +179,7 @@ fn schema_with_overlay<T: schemars::JsonSchema>() -> Value {
 // Core struct aliases — identical import paths to
 // `cli::batch::json_args`, so the schema source and the daemon deserialize
 // target are provably the same type.
+use crate::cli::args::NotesListArgs as NotesListCore;
 use crate::cli::args::ReadArgs;
 use crate::cli::args::StaleArgs as StaleCore;
 use crate::cli::commands::blame::BlameArgs as BlameCore;
@@ -423,6 +424,16 @@ fn read_tools() -> &'static [ToolDef] {
                  (missing) since the last index, plus the total indexed count. Use count_only \
                  for just the counts.",
             input_schema: schema::<StaleCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_notes_list",
+            command: "notes",
+            description:
+                "List project notes/observations (sentiment-tagged context that biases search \
+                 ranking): filter to warnings (negative) or patterns (positive), or by kind tag. \
+                 Read-only. Set check to flag mentions whose files or symbols are stale.",
+            input_schema: schema::<NotesListCore>,
             annotations: ToolAnnotations::READ,
         },
         // Zero-arg read tools (MCP Phase 1). Both take no input — their cores
@@ -773,6 +784,7 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         "where" => check::<WhereCore>(arguments),
         "related" => check::<RelatedCore>(arguments),
         "stale" => check::<StaleCore>(arguments),
+        "notes" => check::<NotesListCore>(arguments),
         // Zero-arg read tools (Phase 1). The core has no advertised properties,
         // so the shape check just rejects a non-object / wrong-typed `arguments`.
         "stats" => check::<StatsCore>(arguments),
@@ -1189,6 +1201,10 @@ mod tests {
         assert_eq!(mcp_name_to_command("cqs_test_map"), "test-map");
         assert_eq!(mcp_name_to_command("cqs_search"), "search");
         assert_eq!(mcp_name_to_command("cqs_callers"), "callers");
+        // `cqs_notes_list` maps to the bare verb `notes` via the table, NOT to
+        // the underscore-strip fallback (`notes-list`) — the multi-word MCP name
+        // resolves through the `name`/`command` columns.
+        assert_eq!(mcp_name_to_command("cqs_notes_list"), "notes");
     }
 
     /// Collect `cqs_<ident>` tokens from `text`, in order.
