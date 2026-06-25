@@ -36,6 +36,65 @@ pub(crate) struct IndexSummaryOutput {
     pub total_type_edges: usize,
 }
 
+/// Run the UMAP projection on the daemon-delegation path.
+///
+/// When `cqs index` (without `--force`) finds a live daemon, it delegates the
+/// reconcile and returns early — before the main build's projection step. The
+/// daemon's reconcile does not run the projection, so `--umap` would be a
+/// silent no-op whenever the (normally always-on) daemon is up. This runs the
+/// projection CLI-side against the active slot's store on that path.
+///
+/// Returns `Some(rows_projected)` when the projection ran (even `Some(0)` for a
+/// graceful skip such as no-Python), or `None` when `umap_flag` is unset or the
+/// slot store could not be opened. A projection failure is logged but never
+/// fatal — the daemon still keeps the index fresh.
+///
+/// Factored out of the inline delegation branch so the "project even when
+/// delegating" decision is unit-testable without a live daemon: the decision is
+/// purely `umap_flag`, and the projection runs against a real store at
+/// `index_path`.
+fn project_umap_on_delegation(umap_flag: bool, index_path: &Path, quiet: bool) -> Option<usize> {
+    if !umap_flag {
+        return None;
+    }
+    // The daemon holds only a shared HNSW lock, so a ReadWrite open for the
+    // coord write-back succeeds, and the UMAP UPDATE is safe to run
+    // concurrently with the daemon reconcile (SQLite serializes the writers
+    // under WAL; a chunk deleted mid-update just no-ops its UPDATE).
+    match Store::open(index_path) {
+        Ok(slot_store) => {
+            if !quiet {
+                println!("Running UMAP projection...");
+            }
+            match super::umap::run_umap_projection(&slot_store, index_path, quiet) {
+                Ok(updated) => {
+                    if !quiet && updated > 0 {
+                        println!("  UMAP: {updated} chunks projected to 2D");
+                    }
+                    Some(updated)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "UMAP projection failed — cluster view will be unavailable");
+                    if !quiet {
+                        eprintln!("  Warning: UMAP projection failed ({e}); cluster view skipped");
+                    }
+                    Some(0)
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, path = %index_path.display(), "UMAP projection skipped — could not open slot store");
+            if !quiet {
+                eprintln!(
+                    "  Warning: UMAP projection skipped (could not open {}): {e}",
+                    index_path.display()
+                );
+            }
+            None
+        }
+    }
+}
+
 /// Index codebase files for semantic search
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
@@ -281,12 +340,23 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                                     "Use `cqs index --force` (after stopping the daemon) to fully rebuild from scratch."
                                 );
                             }
+                            // `--umap` is a CLI-side projection pass the daemon's
+                            // reconcile does NOT run. Without this the flag is a
+                            // silent no-op whenever the (normally always-on)
+                            // daemon is up, because the delegation returns before
+                            // the projection at the end of the main build path.
+                            // Run it here against the active slot's store
+                            // regardless of which delegation branch was taken.
+                            let umap_updated =
+                                project_umap_on_delegation(umap_flag, &index_path, cli.quiet);
+
                             if cli.json || args.json {
                                 let env = serde_json::json!({
                                     "data": {
                                         "daemon_reconcile_queued": true,
                                         "was_pending": resp.was_pending,
                                         "socket": sock_path.display().to_string(),
+                                        "umap_projected": umap_updated,
                                     },
                                     "version": 1,
                                     "error": null,
@@ -1027,7 +1097,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         if !cli.quiet {
             println!("Running UMAP projection...");
         }
-        match super::umap::run_umap_projection(&store, cli.quiet) {
+        match super::umap::run_umap_projection(&store, &index_path, cli.quiet) {
             Ok(updated) => {
                 if !cli.quiet && updated > 0 {
                     println!("  UMAP: {updated} chunks projected to 2D");
@@ -2036,6 +2106,64 @@ mentions = []
         assert!(
             msg.contains("--force"),
             "error must point at --force as the recovery path: {msg}"
+        );
+    }
+
+    // ===== project_umap_on_delegation =====
+    //
+    // The daemon-delegation path returns early, before the main build's
+    // projection step. These pin that `--umap` still drives the projection on
+    // that path (BUG: it was a silent no-op whenever the daemon was up). A live
+    // daemon is impractical in a unit test, so the testable unit is the
+    // factored helper: the decision to project is purely `umap_flag`.
+
+    /// `--umap` unset on the delegation path must NOT run the projection.
+    #[test]
+    fn project_umap_on_delegation_skips_when_flag_unset() {
+        let (_tmp, cqs_dir) = seed_store(3, 16);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let updated = project_umap_on_delegation(false, &index_path, true);
+        assert_eq!(
+            updated, None,
+            "umap_flag=false must skip the projection entirely on the delegation path"
+        );
+    }
+
+    /// `--umap` set on the delegation path must REACH the projection against
+    /// the active slot's store — the regression being guarded is that the
+    /// delegation early-return dropped the projection entirely whenever the
+    /// daemon was up. Reaching the projection yields `Some(_)`; a dropped
+    /// projection would be `None` (the unset-flag shape).
+    ///
+    /// PATH is pointed at an empty dir so the projection takes the instant
+    /// graceful no-Python skip (`Ok(0)` → `Some(0)`) rather than shelling out
+    /// to umap-learn — that keeps the test fast and deterministic while still
+    /// proving control reaches `run_umap_projection`. `#[serial]` because it
+    /// mutates the process-global PATH.
+    #[test]
+    #[serial_test::serial]
+    fn project_umap_on_delegation_runs_when_flag_set() {
+        let (_tmp, cqs_dir) = seed_store(3, 16);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let saved_path = std::env::var_os("PATH");
+        let empty_dir = TempDir::new().expect("empty PATH dir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        let updated = project_umap_on_delegation(true, &index_path, true);
+
+        // Restore PATH before asserting so a panic can't leak it into the suite.
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert_eq!(
+            updated,
+            Some(0),
+            "umap_flag=true must reach the projection on the delegation path \
+             (here Some(0) via the no-Python graceful skip); None would mean the \
+             projection was dropped before the early return — the silent-no-op regression"
         );
     }
 }
