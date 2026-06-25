@@ -1,6 +1,14 @@
 # Roadmap
 
-## Current: v1.48.0 (cut 2026-06-24, crates.io + GitHub Release)
+## Current: v1.49.0 (cut 2026-06-24, crates.io + GitHub Release)
+
+Minor — **v1.48.0 16-category audit fix cycle.** A full audit (16 parallel category auditors → per-category adversarial verification → triage, all opus) produced 36 verified findings → 19 rows; **all P1–P3 + 2 of 3 P4 fixed** across PRs #2038–#2042. Scoring path **byte-identical** to v1.48.0 — retrieval unchanged (recall carried: 72.0% R@5 / 47.2% R@1 / 87.2% R@20).
+- **Security:** RT-RELAY honest-relay completion (#2039) — `explain --tokens` / `read --focus` / `trace` / kind-fallback signatures now scanned; **scan == relayed, both directions**; `leading-directive` corrected to line-start anchoring after a review caught an "instead of" false-positive explosion. Parser depth rail made non-defeatable (#2040) — `CQS_PARSER_MAX_WALK_DEPTH` clamped `[1,800]`, only-lowerable.
+- **Data-safety (#2041):** the daemon/MCP notes-write reindex was inotify-only → a note could be silently never indexed on WSL `/mnt/c`; fixed with `SharedNotesSignal` (writer flips, watch loop drains every tick, inotify-independent). Plus the relay 1 MiB cap → env-overridable resolver and the `cqs_index` wrong-slot lie → client-facing error.
+- **MCP surface (#2042):** two agent-facing docs-lies (fabricated README tool list + phantom `cqs_wait_fresh`/`cqs_status` in the `cqs_index` description) fixed + guard-tested; overlay-schema honesty; bounded bridge read; serve_stdio non-unix fail-fast; perf/obs.
+- **Remaining:** #2043 (`*Args`/four-hand-mirrored-enumeration architecture — the carried-forward row was mis-attributed to #1459, which is actually API-ergonomics; corrected), #2044 (cap-boundary nit). Triage: `docs/audit-triage.md` (19 rows resolved).
+
+## v1.48.0 (cut 2026-06-24, crates.io + GitHub Release)
 
 Minor — **MCP server re-introduction** (`cqs mcp`, removed in v0.10.0, now riding the command cores; ~10× smaller than the old in-process server). Scoring path **byte-identical** to v1.47.0 (recall carried: 72.0% R@5 / 47.2% R@1 / 87.2% R@20; the session's index growth to 17.2k chunks is corpus churn, not a scoring change).
 - **MCP (Phases 0→2):** Phase 0 schemars `JsonSchema` on the command cores as the inputSchema source (#2019); Phase 1 a stdio↔daemon-socket bridge — daemon JSON-args path (#2023) + the `cqs mcp` bridge, 19 read-only `cqs_*` tools (#2029); Phase 2 gated mutating tools — `cqs_notes_add/update/remove` + `cqs_index` fire-and-forget behind opt-in `CQS_MCP_ENABLE_MUTATIONS`, destructive set withheld **by absence**, daemon `Store` stays read-only (#2033/#2034). Decision ledgers in `docs/plans/2026-06-2{3,4}-mcp-phase{1,2}-*.md`.
