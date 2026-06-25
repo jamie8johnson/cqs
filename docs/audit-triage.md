@@ -1,138 +1,73 @@
-# Audit Triage (v1.46.1)
+# Audit Triage (v1.48.0)
 
-Audit date: 2026-06-15
-Source: `docs/audit-findings.md` (22 raw findings → 19 triaged rows after dedup/cluster).
-Prior cycle: `docs/audit-triage-v1.42.0.md` (P1+P2 COMPLETE; this cycle deduped against it — no new finding re-states a closed v1.42/v1.40 item).
+**Resolution (2026-06-25): all 19 rows resolved.** P1–P3 + two of three P4 fixed across PRs #2038–#2042 (per-row Status below). The lone remaining P4 (the `*Args`/enumeration architecture call) is filed as #2043; the carried-forward #1512 (WSL UNC dead branch) stays open. Released in v1.49.0.
 
-## Reconciliation — 2026-06-17 (post-v1.47.0)
+Audit date: 2026-06-24. Surface under audit: the re-introduced **MCP bridge** (Phase 1/2a/2b, PRs #2019/#2029/#2033/#2034) riding the Phase-0 cores, plus the RT-RELAY injection-scan family (#2024) and the parser walk-depth/stack rails (#2031).
 
-All 19 rows verified against current `main` (a 4-agent parallel pass; line numbers in the tables are v1.46.1-era and have drifted — rows were re-located by symbol). Outcome: **15 fixed** (statuses flipped to their landing PR), **3 tracked** by open issues, **1 fixed this pass**.
-
-- **Fixed (status flipped):** DOC-1/2/3 (#1989), PERF-1/2/3 (#1993), RM-3 / TC-HAP-2 / OB-1 / API-2 (#1995), TC-ADV-1 (#1996/#2000), EXT-1 / TC-HAP-3 (#2000), EH-1 (#2002). TC-HAP-1 was a **non-finding** (adversarial verify found Direction A *is* tested by `dead_overlay_worktree_*`).
-- **Tracked (still open, by design):** RM-V1.46.1-1 → #1987 (deferred real unwind isolation), CQ-V1.46.1-1 → #1990 (detection guards landed in #2003; the parse-path collapse is the open architecture decision), PB-V1.46.1-1 → #1992 (Windows dead-code cross-build sweep).
-- **Fixed this pass:** RM-V1.46.1-2 — daemon `in_flight` counter converted to an RAII `InFlightGuard` so a panicking handler can't leak a concurrency slot (was a bare post-call `fetch_sub`, skipped on unwind; moot under `panic = "abort"` but live in debug/test and under any unwind build). Tests assert the guard decrements on both normal drop and panic unwind.
-
-The per-row Status column below now reflects this; `grep '| open |'` returns 0.
-
-## Disposition outcome — CLOSED 2026-06-15
-
-All auto-fix rows landed; all issue rows filed. The per-tier tables below are the original synthesis (statuses there read "open"); this section is the source of truth for what shipped.
-
-- **Verified fixes landed:** DOC-1/2/3 → #1989 · PERF-1/2/3 → #1993 (PERF-2 also disabled redundant SPLADE tokenizer padding to keep `encode_batch` parse-identical) · RM-3, OB-1, API-2, TC-HAP-2, TC-HAP-3 → #1995.
-- **Daemon panic cluster (RM-1 + RM-2):** B-stopgap (dead `catch_unwind` removed) → #1986 · regression-fence guard (zero panic-tokens on the request path) → #1988 · the deeper real-isolation decision + RM-2 in_flight RAII → issue #1987. Severity re-scoped to LOW after a 4-auditor attack (live PoC: 18 crafted requests survived; `entry_point` is already RwLock-protected; no request-reachable panic).
-- **Issue-routed findings:** CQ-1 (test-only parse-path divergence) → #1990 · EH-1 (fingerprint ZERO32 sentinel) → #1991 · PB-1 (platform_cfg_sweep gap) → #1992.
-- **Residuals filed:** TC-ADV-1 (parse_l5x_all zero test coverage; auto-fix spec failed verify) → #1996 · SPLADE batch-vs-serial parity-test tolerance (surfaced landing PERF-2; pre-existing GPU nondeterminism) → #1994.
-- **Non-finding:** TC-HAP-1 — the adversarial verify caught its premise as FALSE (`apply_dead_overlay` Direction A *is* tested via `dead_overlay_worktree_*`); dropped, not fixed.
-- **Trivial-defer:** EXT-1 — drop the "extensible" docstring claim on `cqs dead`'s compile-time allowlists; a rider on the next `dead.rs` touch (not worth a standalone PR/issue).
-- **Already-tracked:** API-1 → #1459 · PB-2 → #1512.
-
-Workflow note: this cycle ran via the new `.claude/workflows/audit.js` (discovery → synthesize → disposition) + a 4-auditor refinement attack on the panic decision; triage review + landing stayed in the main loop.
-
-Tier-refinement notes (overrides vs the auditors' deterministic proposed_tier):
-- **DOC-V1.46.1-1 / DOC-V1.46.1-2 promoted P3→P2.** Both are docs lies about live agent-facing config knobs (`CQS_CACHE_MAX_BYTES`, `CQS_CONVERT_WEBHELP_BYTES` — nonexistent vars an agent would set and get a silent no-op). The docs-lying-is-P1 rule treats a doc that promises behavior the code doesn't deliver as a correctness bug; at medium impact that lands P2. The fix is still mechanical (delete/replace a README row) → auto-fix.
-- **CQ-V1.46.1-1 promoted P4→P3.** medium/medium is not "hard"; and it is the structural root behind OB-V1.46.1-1 and TC-ADV-V1.46.1-1 (same `parse_file_relationships*` test-only path) — the v1.46.0-class structural fault behind #1958/#1955. Fix is an architecture call (collapse vs delegate vs factor) → issue, not auto-fix.
-- **EXT-V1.46.1-1 kept P3 but routed auto-fix on option (b) only** (drop the "extensible" docstring lie — itself a small docs-lying fix); the `[dead]` config-section alternative is the issue path.
-- Findings with an existing GitHub issue (API-V1.46.1-1 → #1459, PB-V1.46.1-2 → #1512) stay **P4 (tracked)** — no NEW standalone slice large enough to break out, though the `include_types`/`type_impact` rename + `deny_unknown_fields` is a clean sub-slice if #1459 wants one.
-- Route-by-fix-nature: the two high-impact RM/TC rows split — TC-HAP-V1.46.1-1 (add a test, mechanical+verifiable) is auto-fix even at P2; RM-V1.46.1-1 (panic-policy decision) is issue even at P2.
+**Summary.** 32 verified findings consolidate to **19 triaged rows** after dedup (the 1 MiB relay-cap defect was reported 4×; the `cqs_index` slot silent-no-op 4×; the hand-mirrored MCP command enumeration 3×; the `success_result` payload-copy 3×; the parser depth/stack asymmetry 2×; the `cqs_wait_fresh`/`cqs_status` phantom-tool description 2×). The cycle's two genuine **P1**s are the agent-facing docs-lies — the README MCP tool list names 7 nonexistent tools (incl. the 2 *deliberately-withheld* `cqs_context`/`cqs_explain`) while omitting 7 real ones, and the `cqs_index` tool description steers the agent to poll with two phantom tools — both cheap one-line/registry fixes on the most action-relevant surface. The headline **P2**s are two genuine defects on the new boundary: the MCP relay's hardcoded 1 MiB read cap sits 16× under the daemon's own 16 MiB output cap, ignores `CQS_DAEMON_MAX_RESPONSE_BYTES`, and *silently truncates* large-but-valid `gather`/`search` results into a misleading "malformed response" error (MCP strictly narrower than the CLI it fronts); and the daemon/MCP **notes-write path's deferred reindex is inotify-only — never reconcile — so on the documented WSL `/mnt/c` primary deployment a successfully-written note can be silently never indexed**, the index diverging from the file indefinitely after the daemon reports success. Both are high-severity but medium-difficulty. A cluster of P2/P3 RT-RELAY gaps (explain `--tokens` similar-chunk bodies, `read --focus` type-dep bodies, the `leading-directive` char-0 detector blind spot) relay attacker-controllable content with a clean `injection_flags`, breaking the SECURITY.md per-chunk honest-relay contract. The structural root behind the schema/wire and four-hand-mirrored-enumeration drift is the same parallel-`*Args`-layers-with-no-exhaustiveness-guard class re-filed as **#2043** (the prior #1459 attribution was wrong — #1459 is the unrelated API-ergonomics issue) — carried forward, still real, and now manifesting on the MCP surface. P3 collects easy observability/precheck/clamp gaps; P4 holds the unbounded-stdin-read DoS rail (high severity but bounded by `panic`-context and a known fix pattern), the MCP-on-Windows half-broken integration, and the systemic-duplication architecture call.
 
 ## Summary by Priority
 
 | Priority | Count | Definition |
 |----------|-------|------------|
-| P1 | 0 | Easy + high impact (or lying docs) — fix first |
-| P2 | 4 | Medium + high impact, or docs-lying — fix in batch |
-| P3 | 11 | Easy + low/med impact — fix if time |
-| P4 | 6 | Hard / low impact / already-tracked — issue or inline |
+| P1 | 2 | Easy + high impact (agent-facing docs-lies on the live MCP surface) — fix first |
+| P2 | 6 | Medium + high impact (or docs-lying / security-contract) — fix in batch |
+| P3 | 8 | Easy + low/med impact — fix if time |
+| P4 | 3 | Hard / low impact / already-tracked — issue or inline |
 
-New v1.46.1 findings: 21 triaged rows (from 22 raw; 2 merged into 1, on issue #1459). Routes: auto-fix 14, issue 5, tracked 2, inline 0, drop 0.
+## P1 — easy + high impact (or docs-lying)
 
-## P1 — easy + high impact
+| Priority | Category | Title | Location | Difficulty | Suggested fix | Status |
+|----------|----------|-------|----------|------------|---------------|--------|
+| P1 | documentation | README MCP tool list is fabricated — names 7 nonexistent tools (incl. the 2 explicitly-*withheld* `cqs_context`/`cqs_explain`) and omits 7 real ones; an agent calls phantoms and gets METHOD_NOT_FOUND, never discovers `cqs_similar`/`cqs_ci`/`cqs_plan` | README.md:360 vs src/cli/mcp/tools.rs:149-313, mod.rs:110-112 (withheld) | easy | Replace the list with the real registry order from `tool_table()` read names; add a doc-sync guard test asserting `README list == tool_table() read names`, mirroring the existing name-parity test in `mcp/mod.rs` | ✅ #2042 |
+| P1 | documentation/api-design | `cqs_index` tool description tells the agent to poll completion with `cqs_wait_fresh` / `cqs_status` — neither is a registered MCP tool; a fire-and-forget mutator steers the agent to a METHOD_NOT_FOUND dead-end at the exact moment it must wait for the rebuild (merged: documentation + api-design dups) | src/cli/mcp/tools.rs:386-390 | easy | Drop the phantom references; reword to a mechanism that exists (out-of-band `cqs status`/`cqs wait-fresh`, or re-run a read tool and check `_meta.stale_origins`), or expose a real `cqs_status` read tool and reference its actual name. Add a guard test asserting every `cqs_*` name in any tool description exists in `tool_table()` | ✅ #2042 |
 
-(none this cycle)
+## P2 — medium + high impact (or docs-lying / security-contract)
 
-## P2 — medium + high impact (or docs-lying)
-
-| ID | Finding | Location | Route | Status |
-|----|---------|----------|-------|--------|
-| RM-V1.46.1-1 | Daemon dispatch `catch_unwind` is dead under `panic = "abort"` — a dispatch panic aborts the warmed daemon (drops ~600MB caches; remote restart/DoS primitive) | src/cli/watch/socket.rs:257-330 × Cargo.toml:355 | issue | tracked #1987 |
-| TC-HAP-V1.46.1-1 | `apply_dead_overlay` Direction A (parent-dead → live resurrection) untested at every layer — high-visibility false-positive surface in dead/ci/review under overlay | src/store/calls/dead_code.rs:1022-1031 | auto-fix | ✅ non-finding (Dir-A tested) |
-| DOC-V1.46.1-1 | README documents fictional `CQS_CACHE_MAX_BYTES` with inverted behavior; real knob is `CQS_CACHE_MAX_SIZE` (auto-evicts) — silent no-op for an agent bounding cache growth | README.md:938 | auto-fix | ✅ fixed #1989 |
-| DOC-V1.46.1-2 | README documents nonexistent `CQS_CONVERT_WEBHELP_BYTES`; merged-output cap is a hardcoded 50 MB const — silent no-op | README.md:803 vs src/convert/webhelp.rs:118 | auto-fix | ✅ fixed #1989 |
+| Priority | Category | Title | Location | Difficulty | Suggested fix | Status |
+|----------|----------|-------|----------|------------|---------------|--------|
+| P2 | scaling-limits/robustness | MCP relay response read-cap is a hardcoded 1 MiB — 16× below the daemon's own 16 MiB output cap, ignores `CQS_DAEMON_MAX_RESPONSE_BYTES`, and *silently truncates* large valid `gather`/`search`/`scout` results into a misleading "daemon returned a malformed response" error (MCP strictly narrower than the CLI it fronts) (merged: robustness + error-handling + scaling-limits dups, all `daemon_translate.rs:892`) | src/daemon_translate.rs:889-902 × src/cli/limits.rs:209-214 × src/cli/mcp/tools.rs:591-596 | medium | Size the reader from `max_daemon_response_bytes()` (the env-overridable resolver `dispatch.rs:736` uses) instead of `1024*1024`; capture `bytes_read` and when `== cap` return a distinct `DaemonRpcError` ("response exceeded N MiB — set CQS_DAEMON_MAX_RESPONSE_BYTES / narrow the query") instead of an opaque parse failure; fix the `:889-891` comment (request-line and response caps are independent) | ✅ #2041 |
+| P2 | data-safety | Daemon/MCP notes-write deferred reindex relies on inotify only — never reconcile — so on the documented WSL `/mnt/c` primary deployment a successfully-written note can be silently never indexed; the index diverges from the file indefinitely after the daemon reports success (CLI path is safe — reindexes inline) | src/cli/commands/io/notes.rs:345-368 ; src/cli/batch/handlers/misc.rs:209-244 ; src/cli/watch/events.rs:80 ; src/cli/watch/mod.rs:1808-1811 ; src/cli/watch/reconcile.rs (zero notes refs) | medium | Drive notes reindex independent of inotify: flip a shared pending-notes signal that the watch loop drains each tick, OR extend `run_daemon_reconcile` to compare the notes-table content digest (`store/notes.rs:320`) against `docs/notes.toml`, OR have the on-demand reconcile branch (`mod.rs:1422`) also set `state.pending_notes` so `cqs_index` is a reliable escape hatch. Add an integration test: write notes via `dispatch_notes_add` with inotify suppressed, drive a reconcile tick, assert the note is queryable | ✅ #2041 (SharedNotesSignal, inotify-independent) |
+| P2 | data-safety | MCP `cqs_index` silently ignores a non-active `slot`, returning `{status:queued}` while reindexing a *different* slot — an undetectable correctness lie across the interop boundary to an autonomous agent (merged: 2× data-safety + error-handling + code-quality dups) | src/cli/batch/handlers/misc.rs:267-292 × src/cli/commands/index/index_args.rs:39-46 × src/cli/batch/view.rs:1458 (request_reconcile takes no slot) × src/cli/mcp/tools.rs:382-401 | easy | In `dispatch_index`, when `args.slot` is `Some` and differs from the served slot, either return a slim `{error:{...}}` envelope naming the served slot (→ `isError:true`) OR echo `served_slot`/`slot_ignored:true` so the caller can detect the substitution. Plumb the served-slot name from `ctx` (no accessor today). Add a test that a mismatched-slot request does not return a bare queued success | ✅ #2041 |
+| P2 | api-design | Worktree-overlay params (`overlay`/`no_overlay`/`overlay_root`) are accepted on the wire (top-level, `overlay_from_args`) but absent from the advertised inputSchema — contradicting the module-doc "schema==wire cannot drift" invariant; inconsistent across siblings (`cqs_search` lists `overlay` only, `cqs_callers`/`impact`/`dead` list none) — same wire capability, three advertised surfaces | src/cli/mcp/tools.rs:14-16 (false claim) vs src/cli/batch/json_args.rs:116-138,155,194,221,270 | medium | Define a shared `OverlayArgs` (Deserialize + JsonSchema) and `#[serde(flatten)]` it into every overlay-capable Phase-0 core (search/callers/callees/impact/dead/scout/gather/ci/review), reading from the core instead of `overlay_from_args` (collapses the two read paths); OR inject the three properties into each tool's inputSchema after `schema_for!` and correct the `:14-16` doc. Add a test: every key `overlay_from_args` reads is a declared property of the tool's inputSchema. (Same root class as #1459) | ✅ #2042 |
+| P2 | security | RT-RELAY gap: `cqs explain --tokens` relays similar-chunk body content verbatim with no injection scan and no per-entry `injection_flags`; an indirect-injection payload in a sibling function body reaches the agent unflagged, violating the SECURITY.md per-chunk honest-relay contract | src/cli/commands/graph/explain.rs:266-308 (SimilarEntry), :183-190 (struct) | easy | Add `injection_flags: Vec<String>` to `SimilarEntry`, populate via `detect_all_injection_patterns` over each relayed similar chunk's content (skip-when-empty), mirroring `search`/`read`/`context --full` | ✅ #2039 |
+| P2 | test-coverage-adversarial / security | RT-RELAY `leading-directive` detector fires only at char-0 (`head_trim.starts_with`) while `code-fence`/`embedded-url` use `contains` — a doc-borne payload behind a benign first line is silently unflagged; the relay test never drives the `leading-directive` family and no mid-text directive is tested anywhere | src/llm/validation.rs:158-184 (detector) + tests/cli_doc_injection_relay_test.rs:35-36 (fixture) | easy | Change `leading-directive` to scan anywhere in the body (or at any line start), matching `contains`; add an RT-RELAY relay case whose POISONED_DOC places a directive after a benign first line and asserts a `leading-directive` flag; add a `detect_all_injection_patterns` unit test for a mid-text directive | ✅ #2039 (line-start anchoring, not anywhere — FP fix) |
 
 ## P3 — easy + low/med impact
 
-| ID | Finding | Location | Route | Status |
-|----|---------|----------|-------|--------|
-| PERF-V1.46.1-1 | `embed_batch` deep-clones every chunk string per batch (`texts.to_vec()`); comment wrongly claims it's unavoidable — embed/index hot path | src/embedder/core.rs:1006-1011 | auto-fix | ✅ fixed #1993 |
-| PERF-V1.46.1-2 | SPLADE `encode_batch` tokenizes serially in a `map()` loop, forgoing the tokenizer's rayon parallel batch — production index-build path | src/splade/mod.rs:799-808 | auto-fix | ✅ fixed #1993 |
-| PERF-V1.46.1-3 | `CallGraph::edge_meta` allocates two `Arc<str>` per lookup in cross-project caller/callee rendering | src/store/helpers/types.rs:568-573 | auto-fix | ✅ fixed #1993 |
-| DOC-V1.46.1-3 | README documents wrong default for `CQS_BUSY_TIMEOUT_MS` (5000); actual fallback is 30000 (6× under-estimate of the lock-wait window) | README.md:777 vs src/store/mod.rs:1075 | auto-fix | ✅ fixed #1989 |
-| RM-V1.46.1-3 | Overlay `discover_delta` builds full records/masked_origins/parse_set BEFORE the size cap rejects — the DoS rail is post-hoc, doesn't bound peak memory of the function it guards | src/worktree_overlay.rs:809-868 | auto-fix | ✅ fixed #1995 |
-| TC-HAP-V1.46.1-2 | `distinct_callees_from_origins` has no direct test for multi-origin / dedup / empty / path-normalization behavior (feeds Direction-B candidate set) | src/store/calls/query.rs:684 | auto-fix | ✅ fixed #1995 |
-| TC-ADV-V1.46.1-1 | `parse_l5x_all` call-graph + type-ref extraction has zero test coverage, incl. over malformed/error-recovered ST | src/parser/l5x.rs:590-613 | auto-fix | ✅ fixed #1996/#2000 |
-| OB-V1.46.1-1 | InvalidData (non-UTF8) silent-skip in `parse_file_relationships_with_candidates` diverges from the two sibling parse sites that warn (sweep straggler) | src/parser/calls.rs:1284-1285 | auto-fix | ✅ fixed #1995 |
-| CQ-V1.46.1-1 | Test-only parallel call/type-extraction path (`parse_file_relationships_with_candidates`) diverges from the production index path — the #1958/#1955 structural fault class; two live divergences remain | src/parser/calls.rs:1258-1569 vs src/parser/mod.rs:478-568 | issue | tracked #1990 (guards #2003) |
-| API-V1.46.1-2 | `SearchArgs` duplicates the three overlay fields inline instead of flattening the shared `OverlayArgs` (copies already drifting) | src/cli/args.rs:257-284 vs :103-129 | auto-fix | ✅ fixed #1995 |
-| EXT-V1.46.1-1 | `cqs dead` known-gap allowlists are compile-time consts despite a docstring claiming "extensible" — docstring lie (option b) + optional `[dead]` config (option a) | src/cli/commands/review/dead.rs:98,:110-113,:144-176 | auto-fix | ✅ fixed #2000 |
+| Priority | Category | Title | Location | Difficulty | Suggested fix | Status |
+|----------|----------|-------|----------|------------|---------------|--------|
+| P3 | security | RT-RELAY gap: `cqs read --focus` relays type-dependency chunk bodies verbatim but scans only the focus chunk for injection — a payload in a depended-on struct/enum/trait reaches the agent with a clean `injection_flags` | src/cli/commands/io/read.rs:310-346 | easy | Run `detect_all_injection_patterns` over the union of focus + every appended type-dep chunk's content; match the `context --full` `scan_chunk_injection_flags` pattern | ✅ #2039 |
+| P3 | security | `cqs trace` relays function signatures verbatim with no injection scan or `injection_flags` field — the lone signature-relaying command that omits the scan `context --compact` performs on the identical surface | src/cli/commands/graph/trace.rs:61-69 (TraceHop), :140-161 | easy | Add `injection_flags` to `TraceHop`, populate via `detect_all_injection_patterns(&signature)` (skip-when-empty), mirroring `context --compact` (context.rs:185) | ✅ #2039 |
+| P3 | algorithm-correctness | `explain`/`context` full-mode injection scan reads un-relayed `content`, over-flagging a response that never carried it — diverges from the documented "scan only relayed surfaces" contract the compact path implements correctly | src/cli/commands/graph/explain.rs:302-308 ; src/cli/commands/io/context.rs:378-415 | easy | Make scan text track what is actually emitted: include content only when `include_target_content` (explain) / the chunk is in `content_set` (context full); update the two doc comments | ✅ #2039 |
+| P3 | code-quality | `cqs_test_map`/`cqs_trace` advertise a settable `max_nodes` in their inputSchema, but the daemon JSON-args converters drop it and re-resolve the env default — the documented OOM-guard knob is a silent no-op over the wire; parity tests never set it so the guard is structurally blind | src/cli/batch/json_args.rs:490-522 ; cores test_map.rs:42-43 / trace.rs:43-44 ; handlers graph.rs:366,383,433 | easy | Either thread `c.max_nodes` through `dispatch_test_map`/`dispatch_trace` (env value as serde default fallback), OR add `#[schemars(skip)]` to both cores' `max_nodes` to drop it from the schema; add a json_args test that sets `max_nodes` and asserts it reaches the core | ✅ #2038 (`#[schemars(skip)]` on both cores + schema-omits test) |
+| P3 | scaling-limits / algorithm-correctness | `parser_max_walk_depth()` is unclamped while its paired `parser_stack_size()` is clamped — raising `CQS_PARSER_MAX_WALK_DEPTH` re-opens the stack-overflow SIGSEGV the rail prevents (`panic=abort` → uncatchable); enforcement is one-directional despite the "load-bearing-by-design invariant" doc (merged: scaling-limits + algorithm-correctness dups) | src/limits.rs:87-88 (unclamped) vs :115-122 (clamped) | easy | Make the coupling bidirectional: derive `parser_stack_size`'s floor from the resolved depth, OR clamp `parser_max_walk_depth` to what the stack accommodates (switch to `parse_env_usize_clamped` with a documented MAX), emitting a warn when clamped; add a clamp test mirroring `parser_stack_size_below_floor_clamps_to_min` | ✅ #2040 (800 ceiling, clamp-down+warn) |
+| P3 | algorithm-correctness | MCP precheck `validate_arguments` accepts `max_depth` values (e.g. 999) the daemon then range-rejects (1..=50), contradicting its "accepts exactly what the daemon will" comment — needless round-trip + a less-specific error | src/cli/mcp/tools.rs:517-558 vs src/cli/batch/json_args.rs:490-512 | easy | Route the precheck through the same range validation (share a `validate_max_depth` helper / call the from_core converters), OR move the 1..=50 bound onto the core type as a deserialize-time validator so one deserialize is authoritative on both sides; soften the comment until boundaries match | ✅ #2042 |
+| P3 | performance | MCP `success_result` embeds every tool payload twice (JSON-string text mirror + cloned `structuredContent`) and the bridge serializes the whole thing again — a 3-pass / double-on-the-wire copy of up-to-1 MiB results on the per-call hot path (merged: performance + 2× resource-management dups) | src/cli/mcp/tools.rs:656-665, 672-677 | easy | Size-gate the text mirror (full under ~4 KiB, summary above) and build it from the already-inserted `structuredContent` value; change the signature to take `payload: Value` and move it into `structuredContent` rather than cloning. Apply to both the success and empty-with-candidates branches | ✅ #2042 |
+| P3 | observability | MCP bridge logs nothing per `tools/call` — the bare `mcp_tools_call` span never records the tool name and emits no completion event, so the agent-facing subprocess stderr has no per-request trace (daemon side logs status+latency+command by contrast) | src/cli/mcp/tools.rs:458 + src/cli/mcp/bridge.rs:99-119 | easy | Declare `tool = tracing::field::Empty` on the span, `span.record("tool", name)` after resolving it, emit one completion event per call (info on success; the existing warn carrying the tool name on handler-error); optional `debug!(method)` in `route` | ✅ #2042 |
 
-## P4 — hard / low impact / already-tracked
+## P4 — hard / low impact / already-tracked (issue, or inline-fix trivial)
 
-| ID | Finding | Location | Route | Status |
-|----|---------|----------|-------|--------|
-| RM-V1.46.1-2 | Daemon `in_flight` slot decremented post-call, not via RAII — leaks a slot on panic outside the inner catch_unwind (moot under abort, live the moment panic policy → unwind; live now in debug/test) | src/cli/watch/daemon.rs:246-247 | issue | ✅ fixed (daemon RAII, this PR) |
-| API-V1.46.1-1 | Two parallel `*Args` layers (clap wire vs core) with no exhaustiveness guard; `include_types`/`type_impact` name-mismatch is the live deserialization symptom (merged: includes the systemic copy-function duplication) | src/cli/commands/graph/impact.rs:42 vs src/cli/args.rs:341 | tracked | open (#1459) |
-| EH-V1.46.1-1 | Overlay `fingerprint()` collapses transient read errors to the deletion sentinel (ZERO32) — risks a stale-overlay cache hit, silent; needs design call (distinct sentinel vs return Result) | src/worktree_overlay.rs:978-981 | issue | ✅ fixed #2002 |
-| PB-V1.46.1-1 | `platform_cfg_sweep_test` guards only the unsized-binding shape, not the dead-code-on-a-sibling-target shape that also broke v1.46.0 (the other 2 of 3 cross-build breaks) | tests/platform_cfg_sweep_test.rs | issue | tracked #1992 |
-| PB-V1.46.1-2 | `is_wsl_drvfs_path` `cfg!(windows)` UNC branch is effectively dead — forward-slash literals vs backslash Windows paths; coarse-fs falls to ZERO on a native-Windows WSL-UNC share | src/config.rs:136-140 | tracked | open (#1512) |
-| TC-HAP-V1.46.1-3 | Dart body-inclusive `canonical_hash` (the `extra`-node comment-stripping path, #1970) is untested — a regression silently changes Dart chunk ids on comment-only edits, defeating embedding-cache reuse (injectivity surface, #1947) | src/parser/chunk.rs:178-192 | auto-fix | ✅ fixed #2000 |
+| Priority | Category | Title | Location | Difficulty | Suggested fix | Status |
+|----------|----------|-------|----------|------------|---------------|--------|
+| P4 | resource-management | MCP bridge reads each stdin line unbounded before the 1 MiB cap (post-hoc `line.len() > MAX` check) — a no-newline multi-GB line OOMs the long-lived bridge before the check fires; the sibling daemon socket does the bounded `.take(cap+1)` read correctly (high severity, but a known fix pattern + new instance of the RM-V1.46.1-3/#1995 class) | src/cli/mcp/bridge.rs:42-65 | easy | Replace `stdin.lock().lines()` with a manual `read_line`/`read_until` over a reader wrapped in `.take(MAX_LINE_LENGTH+1)`, keeping the post-read `len > MAX` check as a backstop; add a regression test feeding >1 MiB no-newline input asserting bounded peak alloc / clean PARSE_ERROR. **Routes to issue or a fast fix-PR despite P4-by-impact-today** | ✅ #2042 (bounded read + test) |
+| P4 | platform-behavior | `cqs mcp` is NOT unix-gated despite an in-code claim that it is — on the Windows release target it advertises the full tool set but every `tools/call` hits the non-unix stub and returns INTERNAL_ERROR; the false "unix-gated at the CLI layer" comment is itself a docs-lie | src/cli/mcp/tools.rs:614-622 vs src/cli/definitions.rs:510-511, dispatch_shims.rs:233-244, cqs-macros/src/lib.rs:340-345 | easy | Either add `#[cfg(unix)]` to the `Mcp` variant (macro forwards it → clean "unknown command" on Windows), OR make `serve_stdio` fail fast on non-unix and return an empty/marked `tools/list`; delete/correct the `:614-615` comment either way | ✅ #2042 (serve_stdio fail-fast) |
+| P4 | extensibility / code-quality | MCP command surface is four hand-mirrored enumerations (`build_batch_cmd` dispatch, `read_tools`/`mutation_tools` schema table, `validate_arguments` precheck, `expected_read_commands` guard with hardcoded 19/23) — no derived source of truth; the name-only parity guard pins neither the per-command core *type* across the three type-maps nor `validate_arguments` completeness against the table (merged: 2× code-quality + extensibility + validate_arguments-completeness-unguarded). Same parallel-`*Args`-layers root as the carried-forward #1459 | src/cli/mcp/mod.rs:99-125,162,202 vs json_args.rs:151-347 vs tools.rs:146-403,520-558 | medium | Drive schema/validate/dispatch from one `(name, schema_fn, check_fn, build_fn)` table (const slice or macro); add a guard asserting (a) the type used by `validate_arguments` matches what `build_batch_cmd` deserializes per command, and (b) every `tool_table()` command has a matching `validate_arguments` arm; drop the hardcoded 19/23 for `expected.len()`. **Architecture call → issue; attach to #1459** | #2043 (filed — see note) |
 
-> Note: RM-V1.46.1-2 is listed P4 by impact-today (moot under release abort) but its fix is trivial (RAII guard) and it becomes live under any unwind build — it should land in the SAME PR as RM-V1.46.1-1 if that PR chooses option (a) unwind, since unwind makes the leak real. Treat as a rider on RM-V1.46.1-1's panic-policy decision.
+### Folded into P3 rows (logged, no separate row)
 
-## Overrides log (proposed_tier → assigned)
+The following low-severity observability/test-gap findings are real but ride existing rows or are sub-1-test riders — listed for completeness, not separately tiered:
 
-| ID | proposed | assigned | reason |
-|----|----------|----------|--------|
-| DOC-V1.46.1-1 | P3 | P2 | docs-lying about a live agent-facing config knob (silent no-op) |
-| DOC-V1.46.1-2 | P3 | P2 | same — nonexistent override var, silent no-op |
-| CQ-V1.46.1-1 | P4 | P3 | medium/medium ≠ hard; structural root of OB + TC-ADV rows; the #1958/#1955 fault class |
-| (all others) | — | = | proposed_tier accepted |
+- `daemon_json_args_request` `SocketMissing` arm has no `tracing::warn!` (lone N-1 sweep straggler; the bridge's most common failure logged nowhere) — `src/daemon_translate.rs:851-856`. **Rider on the P3 MCP-observability row** (one-line warn).
+- Notes-mutation daemon handlers log no info on the successful write (span exists, outcome invisible; no parity with `dispatch_index`) — `src/cli/batch/handlers/misc.rs:209-244`. **Rider on the P3 MCP-observability row** (body-free `info!` carrying `core.status`/`core.sentiment`, not the note text).
+- `tools/list` regenerates all ~19–23 inputSchemas via `schema_for!` per call instead of caching a static set — `src/cli/mcp/tools.rs:429-444`. **Rider on the P3 `success_result` perf row** (LazyLock the two snapshots; pure waste, per-session bound).
+- MCP `tools/call` deserializes/re-walks the arguments object three times across the bridge+daemon round-trip (defensive precheck clone + daemon `parse_core` clone + `overlay_from_args` re-walk) — `tools.rs:522`, `json_args.rs:105,116`. **Rider on the P3 `success_result` perf row** (borrowing deserializer / share one parse).
+- SECURITY.md attributes RT-RELAY scanning to #2033/#2034 instead of the real #2024 (transcription error vs CHANGELOG.md:27) — `SECURITY.md:84`. **Trivial inline fix** (change the citation; lands in any docs PR).
+- MCP bridge 1 MiB oversized-line cap has no test (`bridge.rs:54-65`); `classify_output` non-slim-envelope fall-through (reports daemon output as `isError:false`, untested — masks a daemon failure on a non-standard shape) (`tools.rs:644-647`); JSON-RPC `ping` keepalive arm untested (`bridge.rs:112`). **Three one-test riders** — fold into the P4 unbounded-stdin-read PR's test backfill (same `tests/cli_mcp_bridge_test.rs` file); the `classify_output` masking case is the most load-bearing (force the safer `isError:true` choice for an unrecognized envelope carrying an `error` key).
 
-## Dedup / cluster merges
+## Carried forward (prior triage, still open)
 
-- **API-V1.46.1-1** merges the auditors' two API rows — `include_types`/`type_impact` name divergence (the live symptom) AND the systemic "two parallel `*Args` layers, no exhaustiveness guard" (the root). Both carry existing_issue #1459; one tracked row.
-- **OB-V1.46.1-1** + **CQ-V1.46.1-1** share the same root file (`parse_file_relationships_with_candidates`, the test-only parse path). Kept as two rows because the fixes differ (one-line warn vs path-collapse architecture) and route differently (auto-fix vs issue), but the warn should land in whichever PR touches that path. **TC-ADV-V1.46.1-1** also orbits this family (L5X ST extraction) — same structural neighborhood, independent fix.
-- The three README env-var rows (cache / webhelp / busy-timeout) stay separate (distinct vars, distinct files/lines, distinct fixes) but land in ONE docs PR.
-
-## Suggested fix clustering (for the implementation session)
-
-- **Daemon panic-survival cluster (P2 + rider):** RM-V1.46.1-1 (decide panic policy) + RM-V1.46.1-2 (RAII slot guard — required if option (a) unwind is chosen). One issue, one PR.
-- **Docs sweep (P2/P3, one PR):** DOC-V1.46.1-1, DOC-V1.46.1-2, DOC-V1.46.1-3, + EXT-V1.46.1-1's docstring-drop half.
-- **Tokenizer hot-path perf (P3, one PR):** PERF-V1.46.1-1 (embed_batch) + PERF-V1.46.1-2 (SPLADE encode_batch) — both "use the batch tokenizer API, drop the per-item/per-body clone".
-- **Dead-overlay test backfill (P2/P3, one PR):** TC-HAP-V1.46.1-1 (Direction A resurrection) + TC-HAP-V1.46.1-2 (distinct_callees_from_origins) — same fixture surface (worktree_overlay_build.rs / store_calls).
-- **Parse-path consolidation (P3, issue):** CQ-V1.46.1-1 (collapse) carries OB-V1.46.1-1 (warn) as a rider; TC-ADV-V1.46.1-1 (L5X tests) can land alongside.
-- **Cross-build guard (P4, issue):** PB-V1.46.1-1 — pairs with the project's `cargo check --target <sibling>` discipline; consider a scratch clippy job.
-
----
-
-# Carried forward from v1.42.0 (still open)
-
-⚠️ **Full carry-forward reconciliation against all PRs merged since v1.42.0 is the orchestrator's to confirm.** The v1.42.0 triage records P1+P2 COMPLETE (2026-06-11) and the great majority of its P3/P4/CF rows are marked ✅ across PRs #1738-#1799. Below are the survivors after spot-grepping the ambiguous ones against current main (2026-06-15); treat as a starting point, not an audited-complete list.
-
-## CF-P2 — carried forward, P2-grade
-
-| ID(s) | Finding | Location | Status |
-|-------|---------|----------|--------|
-| (none confirmed open) | All ten v1.42 CF-P2 rows show ✅ in the archived triage (PRs #1766/#1769/#1770/#1773/#1792/#1799); PB-V1.40-9 refuted (production runs WAL on v9fs daily). | — | orchestrator to confirm |
-
-## CF-P3 — carried forward, P3-grade
-
-| ID(s) | Finding | Location | Status |
-|-------|---------|----------|--------|
-| EH-V1.40-7 | `lookup_by_name` empty-string short-circuit undocumented — one doc line, fold into next query.rs touch (closed-with-decision in v1.42 triage; the doc line is cheap to land on any query.rs PR) | src/store/.../query.rs | CF-P3 (trivial rider) |
-
-## Standing deferrals (decision, not tables)
-
-Carried by explicit decision from the v1.42.0 triage — re-listed only for visibility:
-- DS-V1.40-7 / EXT-V1.40-4 — sentiment CHECK constraint / Sentiment enum: schema-migration cost > benefit, single user. **Deferred.**
-- P4 umbrellas still tracked on GitHub: **#1463** (4 remaining design items), **#1459** (project/ref verb consolidation — API-V1.46.1-1 attaches here), **#1512** (Windows daemon FS detection — PB-V1.46.1-2 attaches here), **#1573** (dead-code tiers 3a/3b/4: EXT-V1.40-3/7, PERF-V1.40-10).
-- SHL-V1.40-3 (next perf cycle), SHL-V1.40-6 (#1453 successor) — deferred by cadence.
+| ID | Finding | Location | Status |
+|----|---------|----------|--------|
+| API-V1.46.1-1 → **#2043** | Two parallel `*Args` layers (clap wire vs Phase-0 core) with no exhaustiveness guard — now also the MCP four-hand-mirrored-enumeration (P4) + overlay-schema-drift rows. **#2038 partially mitigated** (derived `JSON_ARGS_CAPABLE_COMMANDS` single-source + name exhaustiveness test); the per-command *type*-map unification across schema/validate/build remains. **Re-filed as #2043** — the prior `#1459` attribution was wrong (#1459 is the unrelated API-ergonomics issue: project/ref/index + trait shape) | src/cli/commands/graph/impact.rs vs src/cli/args.rs (+ MCP `tools.rs`/`json_args.rs`) | open (#2043) |
+| PB-V1.46.1-2 / #1512 | `is_wsl_drvfs_path` `cfg!(windows)` UNC branch is effectively dead — forward-slash literals vs backslash Windows paths; coarse-fs falls to ZERO on a native-Windows WSL-UNC share | src/config.rs:136-140 | open (#1512) |
