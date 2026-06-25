@@ -8,8 +8,9 @@ use super::BatchView;
 use crate::cli::args::{
     BlameArgs, CallersArgs, CiArgs, ContextArgs, DeadArgs, DepsArgs, DiffArgs, DriftArgs,
     ExplainArgs, GatherArgs, ImpactArgs, ImpactDiffArgs, NotesListArgs, OnboardArgs, PlanArgs,
-    ReadArgs, ReconcileArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SimilarArgs,
-    StaleArgs, SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WaitFreshArgs, WhereArgs,
+    ReadArgs, ReconcileArgs, RelatedArgs, ReviewArgs, ScoutArgs, SearchArgs, SearchLegsArgs,
+    SimilarArgs, StaleArgs, SuggestArgs, TaskArgs, TestMapArgs, TraceArgs, WaitFreshArgs,
+    WhereArgs,
 };
 use crate::cli::definitions::{OutputArgs, TextJsonArgs};
 
@@ -51,6 +52,14 @@ pub(crate) enum BatchCmd {
     Search {
         #[command(flatten)]
         args: SearchArgs,
+        #[command(flatten)]
+        #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
+        output: TextJsonArgs,
+    },
+    /// SPLADE-fusion inspector: the three pre-fusion legs (dense / sparse / fused)
+    SearchLegs {
+        #[command(flatten)]
+        args: SearchLegsArgs,
         #[command(flatten)]
         #[allow(dead_code, reason = "Task #8: --json accepted for CLI parity")]
         output: TextJsonArgs,
@@ -450,6 +459,7 @@ macro_rules! for_each_batch_cmd {
 
                 // Not pipeable — queries, paths, git refs.
                 (Search,     dispatch_search,       "search",      false)
+                (SearchLegs, dispatch_search_legs,  "search-legs", false)
                 (Gather,     dispatch_gather,       "gather",      false)
                 (Trace,      dispatch_trace,        "trace",       false)
                 (Dead,       dispatch_dead,         "dead",        false)

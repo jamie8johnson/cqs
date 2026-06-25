@@ -273,6 +273,48 @@ impl SearchArgs {
     }
 }
 
+/// Arguments for the `search-legs` SPLADE-fusion inspector verb.
+///
+/// Surfaces the three pre-fusion retrieval legs (dense cosine, sparse SPLADE,
+/// fused) for a query. A focused subset of [`SearchArgs`] — only the knobs that
+/// shape the retrieval pool the legs describe (query, `k`, the filter knobs, and
+/// the SPLADE α). SPLADE is forced on by the adapter, so there is no `--splade`
+/// flag here.
+#[derive(Args, Debug, Clone)]
+pub(crate) struct SearchLegsArgs {
+    /// Search query (quote multi-word queries)
+    pub query: String,
+
+    /// Shared `--limit` arg via `LimitArg` flatten (the `k` of the legs view).
+    #[command(flatten)]
+    pub limit_arg: LimitArg,
+
+    /// Min similarity threshold
+    #[arg(short = 't', long, default_value = "0.3", value_parser = parse_finite_f32)]
+    pub threshold: f32,
+
+    /// Filter by language
+    #[arg(short = 'l', long)]
+    pub lang: Option<String>,
+
+    /// Include only these chunk types in results (e.g., function, struct)
+    #[arg(long, alias = "chunk-type")]
+    pub include_type: Option<Vec<String>>,
+
+    /// Exclude these chunk types from results
+    #[arg(long)]
+    pub exclude_type: Option<Vec<String>>,
+
+    /// Filter by path pattern (glob)
+    #[arg(short = 'p', long)]
+    pub path: Option<String>,
+
+    /// SPLADE fusion weight α (None = per-category router). 1.0 = pure cosine,
+    /// 0.0 = pure sparse.
+    #[arg(long, value_parser = parse_finite_f32)]
+    pub splade_alpha: Option<f32>,
+}
+
 /// Arguments shared between CLI `gather` and batch `gather`.
 #[derive(Args, Debug, Clone)]
 pub(crate) struct GatherArgs {

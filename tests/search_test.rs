@@ -531,6 +531,287 @@ fn search_hybrid_records_sparse_signal() {
     );
 }
 
+// ===== search_hybrid_legs: the SPLADE-fusion inspector =====
+//
+// `search_hybrid_legs` surfaces the three pre-fusion legs (dense cosine, sparse
+// SPLADE, fused) WITHOUT changing the fused result. These pin: (1) the
+// production hot path is byte-identical with legs on vs off, (2) the captured
+// fused leg equals the production fused ranking, (3) the dense leg carries raw
+// cosine and the sparse leg carries BOTH min-max and raw dot, and (4)
+// `present_in_pool` is false for a leg-exclusive chunk.
+
+/// Build a corpus where the dense and sparse retrieval pools deliberately
+/// DIFFER, so the union carries a dense-only chunk and a sparse-only chunk.
+///
+/// Dense pool (MockIndex): chunks A, B with distinct cosines.
+/// Sparse pool (SPLADE):   chunks B, C.
+/// Union:                  A (dense-only), B (both), C (sparse-only).
+fn legs_corpus() -> (
+    TestStore,
+    Vec<String>,
+    cqs::splade::index::SpladeIndex,
+    cqs::splade::SparseVector,
+    MockIndex,
+    Embedding,
+) {
+    use cqs::splade::index::SpladeIndex;
+
+    let store = TestStore::new();
+    let a = test_chunk("legsDenseOnly", "fn legsDenseOnly() { a }");
+    let b = test_chunk("legsBoth", "fn legsBoth() { b }");
+    let c = test_chunk("legsSparseOnly", "fn legsSparseOnly() { c }");
+    let ids = insert_chunks(&store, &[a, b, c], 1.0);
+
+    // Dense pool: A and B only (C is NOT returned by the dense index).
+    let mock = MockIndex::new(vec![
+        IndexResult {
+            id: ids[0].clone(),
+            score: 0.92,
+        },
+        IndexResult {
+            id: ids[1].clone(),
+            score: 0.61,
+        },
+    ]);
+
+    // Sparse pool: B and C only (A is NOT in the SPLADE index). Token 1 is the
+    // query token; B's weight (0.8) > C's (0.5), so B outranks C in the sparse
+    // leg and its raw dot is the larger value.
+    let splade_index = SpladeIndex::build(vec![
+        (ids[1].clone(), vec![(1, 0.8)]),
+        (ids[2].clone(), vec![(1, 0.5)]),
+    ]);
+    let sparse_query: cqs::splade::SparseVector = vec![(1, 1.0)];
+
+    let query = mock_embedding(1.0);
+    (store, ids, splade_index, sparse_query, mock, query)
+}
+
+fn legs_filter() -> SearchFilter {
+    let mut f = SearchFilter::default();
+    f.enable_splade = true;
+    f.splade_alpha = 0.5;
+    f
+}
+
+/// The production hot path is byte-identical: `search_hybrid` (legs off) and the
+/// results returned by `search_hybrid_legs` (legs on) agree bit-for-bit on
+/// id order and score. Leg capture is a pure side channel.
+#[test]
+fn search_hybrid_legs_production_result_byte_identical() {
+    let (store, _ids, splade_index, sparse_query, mock, query) = legs_corpus();
+    let filter = legs_filter();
+
+    let off = store
+        .search_hybrid(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    let (on, legs) = store
+        .search_hybrid_legs(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+
+    assert_eq!(off.len(), on.len(), "legs-on changed the result count");
+    for (a, b) in off.iter().zip(on.iter()) {
+        assert_eq!(a.chunk.id, b.chunk.id, "legs-on changed the result order");
+        assert_eq!(
+            a.score.to_bits(),
+            b.score.to_bits(),
+            "legs-on changed the score bits for {}",
+            a.chunk.id
+        );
+    }
+    assert!(legs.is_some(), "fusion ran, so legs must be present");
+}
+
+/// The captured `fused` leg equals the production fused ranking for the same
+/// query: `legs.fused` (in rank order) is the same id sequence the result list
+/// is built from. (The result list re-sorts via the scoring pipeline, but with
+/// no notes/boosts the fused order is the final order, so they coincide.)
+#[test]
+fn search_hybrid_legs_fused_leg_matches_production_ranking() {
+    let (store, _ids, splade_index, sparse_query, mock, query) = legs_corpus();
+    let filter = legs_filter();
+
+    let (results, legs) = store
+        .search_hybrid_legs(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    let legs = legs.expect("fusion ran");
+
+    // The fused leg ranks are 1..=N and strictly increasing in array order.
+    for (i, e) in legs.fused.iter().enumerate() {
+        assert_eq!(
+            e.rank,
+            i + 1,
+            "fused leg rank must be 1-indexed array position"
+        );
+    }
+    // Fused scores are non-increasing (sorted descending by fusion).
+    for w in legs.fused.windows(2) {
+        assert!(
+            w[0].fused_score >= w[1].fused_score,
+            "fused leg must be sorted by descending score"
+        );
+    }
+    // The result list (no boosts) is exactly the fused leg's id order.
+    let result_ids: Vec<&str> = results.iter().map(|r| r.chunk.id.as_str()).collect();
+    let fused_ids: Vec<&str> = legs.fused.iter().map(|e| e.chunk_id.as_str()).collect();
+    assert_eq!(
+        result_ids, fused_ids,
+        "fused leg order must equal the production result order"
+    );
+}
+
+/// The dense leg carries raw cosine (the index scores) and the sparse leg
+/// carries BOTH the min-max-normalized value and the raw SPLADE dot.
+#[test]
+fn search_hybrid_legs_dense_raw_cosine_sparse_minmax_and_raw_dot() {
+    let (store, ids, splade_index, sparse_query, mock, query) = legs_corpus();
+    let filter = legs_filter();
+
+    let (_results, legs) = store
+        .search_hybrid_legs(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    let legs = legs.expect("fusion ran");
+
+    // Dense leg: A=0.92, B=0.61 are the raw cosines we configured.
+    let dense_of = |id: &str| legs.dense.iter().find(|e| e.chunk_id == id).unwrap();
+    assert_eq!(dense_of(&ids[0]).raw_cosine, 0.92, "A dense raw cosine");
+    assert_eq!(dense_of(&ids[1]).raw_cosine, 0.61, "B dense raw cosine");
+
+    // Sparse leg: raw dot = query_weight(1.0) * doc_weight. B=0.8, C=0.5.
+    // max_sparse = 0.8, so minmax(B) = 1.0 and minmax(C) = 0.5/0.8 = 0.625.
+    let sparse_of = |id: &str| legs.sparse.iter().find(|e| e.chunk_id == id).unwrap();
+    assert!(
+        (sparse_of(&ids[1]).raw_splade_dot - 0.8).abs() < 1e-6,
+        "B raw SPLADE dot"
+    );
+    assert!(
+        (sparse_of(&ids[2]).raw_splade_dot - 0.5).abs() < 1e-6,
+        "C raw SPLADE dot"
+    );
+    assert!(
+        (sparse_of(&ids[1]).minmax_score - 1.0).abs() < 1e-6,
+        "B min-max (the per-query max)"
+    );
+    assert!(
+        (sparse_of(&ids[2]).minmax_score - 0.625).abs() < 1e-6,
+        "C min-max = 0.5/0.8"
+    );
+    // The min-max value differs from the raw dot — both are surfaced.
+    assert_ne!(
+        sparse_of(&ids[2]).minmax_score,
+        sparse_of(&ids[2]).raw_splade_dot,
+        "min-max and raw dot must be distinct values on the leg"
+    );
+}
+
+/// `present_in_pool` is false for a leg-exclusive chunk, and the injected score
+/// for an absent chunk is 0.0 (distinguishing "ranked low" from "not retrieved").
+#[test]
+fn search_hybrid_legs_present_in_pool_flags_leg_exclusive_chunks() {
+    let (store, ids, splade_index, sparse_query, mock, query) = legs_corpus();
+    let filter = legs_filter();
+
+    let (_results, legs) = store
+        .search_hybrid_legs(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    let legs = legs.expect("fusion ran");
+
+    let dense_of = |id: &str| legs.dense.iter().find(|e| e.chunk_id == id).unwrap();
+    let sparse_of = |id: &str| legs.sparse.iter().find(|e| e.chunk_id == id).unwrap();
+
+    // A is dense-only: present in the dense pool, ABSENT from the sparse pool.
+    assert!(dense_of(&ids[0]).present_in_pool, "A is in the dense pool");
+    let a_sparse = sparse_of(&ids[0]);
+    assert!(
+        !a_sparse.present_in_pool,
+        "A was never retrieved by the sparse leg"
+    );
+    assert_eq!(a_sparse.minmax_score, 0.0, "A's sparse score is injected 0");
+    assert_eq!(a_sparse.raw_splade_dot, 0.0, "A's raw dot is injected 0");
+    assert_eq!(a_sparse.rank, 0, "A has no sparse rank (rank 0 == absent)");
+
+    // C is sparse-only: present in the sparse pool, ABSENT from the dense pool.
+    assert!(
+        sparse_of(&ids[2]).present_in_pool,
+        "C is in the sparse pool"
+    );
+    let c_dense = dense_of(&ids[2]);
+    assert!(
+        !c_dense.present_in_pool,
+        "C was never retrieved by the dense leg"
+    );
+    assert_eq!(c_dense.raw_cosine, 0.0, "C's dense cosine is injected 0");
+    assert_eq!(c_dense.rank, 0, "C has no dense rank (rank 0 == absent)");
+
+    // B is in both pools.
+    assert!(dense_of(&ids[1]).present_in_pool, "B is in the dense pool");
+    assert!(
+        sparse_of(&ids[1]).present_in_pool,
+        "B is in the sparse pool"
+    );
+
+    // Every union chunk appears in BOTH legs (the legs span the union).
+    assert_eq!(legs.dense.len(), 3, "dense leg spans the candidate union");
+    assert_eq!(legs.sparse.len(), 3, "sparse leg spans the candidate union");
+}
+
+/// SPLADE disabled in the filter ⇒ no fusion ran ⇒ `legs` is `None`, but the
+/// dense-only results still come back.
+#[test]
+fn search_hybrid_legs_none_when_splade_disabled() {
+    let (store, _ids, splade_index, sparse_query, mock, query) = legs_corpus();
+    let mut filter = SearchFilter::default();
+    filter.enable_splade = false; // no fusion
+
+    let (results, legs) = store
+        .search_hybrid_legs(
+            &query,
+            &filter,
+            10,
+            0.0,
+            Some(&mock),
+            Some((&splade_index, &sparse_query)),
+        )
+        .unwrap();
+    assert!(legs.is_none(), "no fusion ran, so legs must be None");
+    assert!(!results.is_empty(), "dense-only results still returned");
+}
+
 // ===== #37: search_filtered with glob =====
 
 #[test]
