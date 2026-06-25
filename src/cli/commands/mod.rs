@@ -1400,4 +1400,29 @@ mod tests {
         assert_eq!(first, second, "scan must be idempotent (no flag doubling)");
         assert!(first.as_array().map(|a| !a.is_empty()).unwrap_or(false));
     }
+
+    // Boundary: a ref of EXACTLY 255 chars is the longest the validator
+    // accepts (`len() > 255`, inclusive upper bound), so it must NOT be
+    // rejected by the length gate — it passes validation and reaches git
+    // (which then fails because no such ref exists, a DIFFERENT error). The
+    // `> 255` -> `>= 255` off-by-one would reject a valid 255-char ref; the
+    // 256-char oversize test cannot see that flip (both reject 256). Pins the
+    // inclusive boundary by asserting the error, if any, is NOT the length
+    // rejection. cwd is the crate dir (a real git repo) so git can run.
+    #[test]
+    fn test_run_git_diff_accepts_max_length_ref() {
+        let max = "a".repeat(255);
+        let result = run_git_diff(Some(&max), std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        // A 255-char ref does not exist, so git fails — but the failure must be
+        // git's, not the validator's length rejection. Under the off-by-one
+        // mutation this returns the "1..=255 chars" validation error instead.
+        if let Err(e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("must be 1..=255 chars"),
+                "a 255-char ref must pass the length validator (inclusive upper \
+                 bound), not be rejected by it; got: {msg}"
+            );
+        }
+    }
 }
