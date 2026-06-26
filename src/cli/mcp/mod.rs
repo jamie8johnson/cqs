@@ -305,7 +305,7 @@ mod tests {
                 "tool `{}` must carry the `cqs_` prefix (D1)",
                 t.name
             );
-            let schema = (t.input_schema)();
+            let schema = tools::command_input_schema(t.command);
             assert_eq!(
                 schema.get("type").and_then(|v| v.as_str()),
                 Some("object"),
@@ -425,7 +425,7 @@ mod tests {
     fn tool_required_fields_are_declared_properties() {
         let _guard = MutationsEnvGuard::set(true);
         for t in tools::tool_table() {
-            let schema = (t.input_schema)();
+            let schema = tools::command_input_schema(t.command);
             let props = schema
                 .get("properties")
                 .and_then(|p| p.as_object())
@@ -577,5 +577,137 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Type-agreement guard: for every JSON-args-capable command, the MCP shape
+    /// pre-check ([`tools::validate_arguments`], whose per-command core is the
+    /// same registry entry the advertised `inputSchema` is generated from) and
+    /// the daemon's dispatch builder (`build_batch_cmd`, which deserializes the
+    /// command's core into its `BatchCmd` arm) must agree on whether a payload is
+    /// accepted. This pins that the type the pre-check validates IS the type the
+    /// dispatch deserializes — so the MCP schema/validate map and the daemon arm
+    /// cannot drift to different structs for the same command.
+    ///
+    /// On correct code the two share one core per command, so they agree on EVERY
+    /// payload (the only place dispatch does more than deserialize — the
+    /// `test-map`/`trace` 1..=50 `max_depth` gate — is mirrored by the pre-check's
+    /// `validate_max_depth`, and the gated mutators reach their parse once the
+    /// flag is on). A mis-pointed core deserializes some payload differently from
+    /// the dispatch arm; the probe corpus below — an empty object plus every
+    /// advertised field corrupted to a type-violating object — surfaces that
+    /// divergence (e.g. corrupting a field the correct core has but the
+    /// mis-pointed sibling lacks: the dispatch arm rejects it, the sibling
+    /// pre-check ignores it). Flag ON so the mutation arms are reachable.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn precheck_type_agrees_with_dispatch() {
+        let _guard = MutationsEnvGuard::set(true);
+
+        // Discriminator corpus: every property any tool advertises. Corrupting a
+        // field to a JSON object `{}` is a type violation for every scalar / enum
+        // / array / string core field (none of these wire cores has a map-typed
+        // field), so the corrupted payload is rejected by exactly the cores that
+        // declare that field — making it discriminate which core a command
+        // actually resolves to. (The overlay tri-state keys are read off the raw
+        // wire by both surfaces and belong to no core, so corrupting them is inert
+        // on both — harmless, not a false positive.)
+        let mut fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for t in tools::tool_table() {
+            if let Some(props) = tools::command_input_schema(t.command)
+                .get("properties")
+                .and_then(|p| p.as_object())
+            {
+                fields.extend(props.keys().cloned());
+            }
+        }
+        assert!(
+            fields.len() > 10,
+            "expected a non-trivial advertised-field corpus, got {}",
+            fields.len()
+        );
+
+        // Precheck and dispatch must return the SAME accept/reject verdict.
+        let agree = |command: &str, payload: &serde_json::Value| {
+            let precheck_ok = tools::validate_arguments(command, payload).is_ok();
+            let dispatch_ok = crate::cli::batch::build_batch_cmd(command, payload).is_ok();
+            assert_eq!(
+                precheck_ok, dispatch_ok,
+                "MCP pre-check and daemon dispatch disagree on `{command}` for {payload}: \
+                 precheck_ok={precheck_ok}, dispatch_ok={dispatch_ok} — the pre-check's core \
+                 type has drifted from the type `build_batch_cmd` deserializes"
+            );
+        };
+
+        for &command in crate::cli::batch::JSON_ARGS_CAPABLE_COMMANDS {
+            // Empty object: agreement holds whether the core requires a field
+            // (both reject) or is fully `#[serde(default)]` (both accept).
+            agree(command, &serde_json::json!({}));
+            // Each advertised field, corrupted to a type-violating object.
+            for f in &fields {
+                agree(command, &serde_json::json!({ f: {} }));
+            }
+        }
+
+        // Non-vacuity: a representative VALID payload per command is ACCEPTED by
+        // BOTH surfaces (so the corpus exercises the accept path, not only
+        // rejections). These also catch a mis-point to a sibling with an extra
+        // required field — the dispatch accepts the sample, the sibling pre-check
+        // rejects it. Required-field cores carry their field; the rest take `{}`.
+        let valid_samples: &[(&str, serde_json::Value)] = &[
+            ("search", serde_json::json!({ "query": "retry backoff" })),
+            ("explain", serde_json::json!({ "name": "foo" })),
+            ("plan", serde_json::json!({ "description": "add a flag" })),
+            ("callers", serde_json::json!({ "name": "foo" })),
+            ("trace", serde_json::json!({ "source": "a", "target": "b" })),
+            (
+                "test-map",
+                serde_json::json!({ "name": "foo", "max_depth": 5 }),
+            ),
+            ("dead", serde_json::json!({})),
+            (
+                "notes-add",
+                serde_json::json!({ "text": "n", "sentiment": 0.5 }),
+            ),
+        ];
+        for (command, payload) in valid_samples {
+            assert!(
+                tools::validate_arguments(command, payload).is_ok(),
+                "valid sample for `{command}` must pass the pre-check: {payload}"
+            );
+            assert!(
+                crate::cli::batch::build_batch_cmd(command, payload).is_ok(),
+                "valid sample for `{command}` must build a dispatch command: {payload}"
+            );
+        }
+    }
+
+    /// Totality guard: every command in `tool_table()` must be a rowed
+    /// [`tools::CORE_MAP_COMMANDS`] entry — none may fall through to
+    /// `command_input_schema`'s empty-object `_` fallback. This restores the
+    /// compile-time tool↔schema totality the mandatory `ToolDef.input_schema`
+    /// fn-pointer used to enforce: a future tool added to the table (and to
+    /// `JSON_ARGS_CAPABLE_COMMANDS`) but missing its `command_core_map!` row would
+    /// otherwise advertise an empty `inputSchema` and hard-reject every call, with
+    /// the other MCP guards green (`every_tool_is_well_formed` accepts the empty
+    /// fallback; `tools_list_matches_json_args_registry` pins the tool SET, not the
+    /// row set; `precheck_type_agrees_with_dispatch` misses a rowless required-field
+    /// core that isn't one of its `valid_samples`). Set equality also pins the
+    /// reverse — a stale row for a retired tool — so the registry and the table
+    /// stay in lockstep. Flag ON so the gated mutators are in the table.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn every_tool_table_command_has_a_core_map_row() {
+        let _guard = MutationsEnvGuard::set(true);
+        let rowed: std::collections::BTreeSet<&str> =
+            tools::CORE_MAP_COMMANDS.iter().copied().collect();
+        let tabled: std::collections::BTreeSet<&str> =
+            tools::tool_table().iter().map(|t| t.command).collect();
+        assert_eq!(
+            tabled, rowed,
+            "every tool_table command must have a command_core_map! row (and vice \
+             versa): a tabled command absent from the registry advertises the empty \
+             fallback inputSchema and rejects every call; a rowed command absent \
+             from the table is a stale registry row.\ntabled: {tabled:?}\nrowed: {rowed:?}"
+        );
     }
 }

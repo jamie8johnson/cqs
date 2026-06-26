@@ -56,6 +56,14 @@ pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
 #[cfg(test)]
 pub(crate) use json_args::JSON_ARGS_CAPABLE_COMMANDS;
 
+// The JSON-args dispatch builder, surfaced for the MCP type-agreement guard
+// (`cli::mcp::mod`) so it can prove the per-command core the daemon deserializes
+// matches the one the MCP pre-check validates. Test-only — its sole crate-wide
+// consumer is that `#[cfg(test)]` guard; production routing calls it within
+// `cli::batch`.
+#[cfg(test)]
+pub(crate) use json_args::build_batch_cmd;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
