@@ -97,11 +97,19 @@ pub(crate) const PARSER_MAX_WALK_DEPTH: usize = 800;
 ///
 /// Empirically the unfixed (uncapped) walk overflows a 1 MiB debug stack past
 /// ~1000 nesting levels; the `deep_walk_stack_safety` guards in
-/// `src/parser/calls.rs` confirm the depth-800 walk completes on a 1 MiB stack.
-/// The ceiling is therefore pinned at the calibrated-safe default (800): an
-/// operator may *lower* the rail (a tighter bound), but a raised
-/// `CQS_PARSER_MAX_WALK_DEPTH` is clamped back to a depth the floor stack
-/// provably accommodates rather than silently re-opening the overflow.
+/// `src/parser/calls.rs` confirm the depth-800 walk completes on a 1 MiB stack
+/// *when called at the top of a fresh stack*. Through the real parse entry the
+/// walk runs nested under the entry's own frames: at the 2 MiB default pool
+/// stack (the production config) and in release builds, depth-800 survives — but
+/// on the 1 MiB floor a debug build has near-zero margin at 800 (it survives at
+/// rail <= 700). So the depth-800 / floor-1MiB coupling is proven through the
+/// real entry only at the default stack, not at the floor in debug. The
+/// `parser_pipeline_stack_completeness` guard in `src/parser/mod.rs` exercises
+/// the real entry on the default pool stack; tightening the floor margin (lower
+/// the rail to its real-entry floor-safe value, or raise the floor) is a tracked
+/// recalibration. The ceiling is pinned at the default (800): an operator may
+/// *lower* the rail (a tighter bound), but a raised `CQS_PARSER_MAX_WALK_DEPTH`
+/// is clamped back rather than silently re-opening the overflow.
 pub(crate) const PARSER_MAX_WALK_DEPTH_CEIL: usize = PARSER_MAX_WALK_DEPTH;
 
 /// Resolve the recursive tree-walk depth ceiling honoring
