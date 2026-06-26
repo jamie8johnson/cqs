@@ -1862,8 +1862,8 @@ mod tests {
     fn parse_pool_applies_configured_stack_size() {
         let stack = cqs::limits::parser_stack_size();
         assert!(
-            stack >= 1024 * 1024,
-            "resolved stack must be at least the depth-rail floor (1 MiB), got {stack}"
+            stack >= 2 * 1024 * 1024,
+            "resolved stack must be at least the depth-rail floor (2 MiB), got {stack}"
         );
         let pool = rayon::ThreadPoolBuilder::new()
             .stack_size(stack)

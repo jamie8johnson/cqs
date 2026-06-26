@@ -74,9 +74,10 @@ pub(crate) fn parser_max_chunk_bytes() -> usize {
 /// the whole index/watch/daemon process. 800 is a DoS rail, not a tuning knob:
 /// no real source nests anywhere near this (tree-sitter's own grammar limits and
 /// human-written code sit in the tens, generated code in the low hundreds), and
-/// an 800-deep walk completes inside a 1 MiB worker stack even in an unoptimized
-/// debug build (release frames are far leaner), so it can never trip on a
-/// legitimate file. Override via `CQS_PARSER_MAX_WALK_DEPTH`, clamped to
+/// an 800-deep walk completes inside the parse-pool worker stack (floored at
+/// `PARSER_STACK_SIZE_MIN`, 2 MiB) through the real parse entry even in an
+/// unoptimized debug build (release frames are far leaner), so it can never trip
+/// on a legitimate file. Override via `CQS_PARSER_MAX_WALK_DEPTH`, clamped to
 /// `[1, PARSER_MAX_WALK_DEPTH_CEIL]`. Past the cap the
 /// walk stops descending (it does NOT abort the file) — the truncated subtree is
 /// the same one whose enclosing chunk would exceed `PARSER_MAX_CHUNK_BYTES` and
@@ -88,7 +89,7 @@ pub(crate) const PARSER_MAX_WALK_DEPTH: usize = 800;
 /// **Load-bearing coupling, enforced (not just documented).** The walk recurses
 /// one stack frame per tree level, so the depth rail is only a DoS rail while the
 /// resolved depth fits inside the *smallest* stack the parse pool can run on —
-/// `PARSER_STACK_SIZE_MIN` (1 MiB), the floor `parser_stack_size()` clamps up to.
+/// `PARSER_STACK_SIZE_MIN` (2 MiB), the floor `parser_stack_size()` clamps up to.
 /// `panic = abort` makes a stack overflow an uncatchable SIGSEGV, so a depth the
 /// floor stack can't hold re-opens exactly the index/watch/daemon-killing DoS the
 /// rail exists to prevent. The walk depth and the stack size are configured by
@@ -99,15 +100,15 @@ pub(crate) const PARSER_MAX_WALK_DEPTH: usize = 800;
 /// ~1000 nesting levels; the `deep_walk_stack_safety` guards in
 /// `src/parser/calls.rs` confirm the depth-800 walk completes on a 1 MiB stack
 /// *when called at the top of a fresh stack*. Through the real parse entry the
-/// walk runs nested under the entry's own frames: at the 2 MiB default pool
-/// stack (the production config) and in release builds, depth-800 survives — but
-/// on the 1 MiB floor a debug build has near-zero margin at 800 (it survives at
-/// rail <= 700). So the depth-800 / floor-1MiB coupling is proven through the
-/// real entry only at the default stack, not at the floor in debug. The
-/// `parser_pipeline_stack_completeness` guard in `src/parser/mod.rs` exercises
-/// the real entry on the default pool stack; tightening the floor margin (lower
-/// the rail to its real-entry floor-safe value, or raise the floor) is a tracked
-/// recalibration. The ceiling is pinned at the default (800): an operator may
+/// walk runs nested under the entry's own frames, which eats margin: a 1 MiB
+/// floor left a DEBUG build with near-zero headroom at depth-800 (it survived
+/// only at rail <= 700), so the floor was raised to 2 MiB — the size that holds
+/// rail-800 *through the real parse entry* with margin in both debug and release.
+/// The coupling now holds at the floor itself, not merely at the default:
+/// depth-800 fits `PARSER_STACK_SIZE_MIN` through the production parse entry in
+/// debug and release. The `parser_pipeline_stack_completeness` guard in
+/// `src/parser/mod.rs` exercises the real entry on the floor stack and is
+/// robustly green. The ceiling is pinned at the default (800): an operator may
 /// *lower* the rail (a tighter bound), but a raised `CQS_PARSER_MAX_WALK_DEPTH`
 /// is clamped back rather than silently re-opening the overflow.
 pub(crate) const PARSER_MAX_WALK_DEPTH_CEIL: usize = PARSER_MAX_WALK_DEPTH;
@@ -116,7 +117,8 @@ pub(crate) const PARSER_MAX_WALK_DEPTH_CEIL: usize = PARSER_MAX_WALK_DEPTH;
 /// `CQS_PARSER_MAX_WALK_DEPTH`, clamped to `[1, PARSER_MAX_WALK_DEPTH_CEIL]`.
 /// A value above the ceiling is clamped down (with a warn) so a raised override
 /// can never push the per-frame recursion past what the floor parse-pool stack
-/// (`PARSER_STACK_SIZE_MIN`) holds — see `PARSER_MAX_WALK_DEPTH_CEIL`.
+/// (`PARSER_STACK_SIZE_MIN`, 2 MiB) safely holds through the real parse entry —
+/// see `PARSER_MAX_WALK_DEPTH_CEIL`.
 pub(crate) fn parser_max_walk_depth() -> usize {
     parse_env_usize_clamped(
         "CQS_PARSER_MAX_WALK_DEPTH",
@@ -128,19 +130,25 @@ pub(crate) fn parser_max_walk_depth() -> usize {
 
 /// Default worker-thread stack size (bytes) for the dedicated rayon pool the
 /// parse stage runs on (2 MiB). The recursive tree-walk is bounded by
-/// `PARSER_MAX_WALK_DEPTH` (800), which is sized to complete inside a 1 MiB
-/// stack even in an unoptimized debug build; this default doubles that, giving
-/// the depth rail headroom rather than relying on the platform/runtime default
-/// happening to be large enough. Making the parse pool's stack size explicit
-/// turns "the depth rail fits the stack" into a load-bearing-by-design
-/// invariant instead of an ambient assumption. Override via
-/// `CQS_PARSER_STACK_SIZE`.
+/// `PARSER_MAX_WALK_DEPTH` (800); 2 MiB holds that depth-800 walk *through the
+/// real parse entry* (nested under the entry's own frames) with margin even in
+/// an unoptimized debug build — the 1 MiB top-of-stack figure the per-function
+/// guards certify is not enough once the walk runs under the entry, which is why
+/// the floor (`PARSER_STACK_SIZE_MIN`) was raised to equal this default. Making
+/// the parse pool's stack size explicit turns "the depth rail fits the stack"
+/// into a load-bearing-by-design invariant instead of an ambient assumption.
+/// Override via `CQS_PARSER_STACK_SIZE`.
 pub(crate) const PARSER_STACK_SIZE: usize = 2 * 1024 * 1024;
 
-/// Floor for the parse-pool worker stack (1 MiB) — the size the depth rail
-/// (`PARSER_MAX_WALK_DEPTH`) is sized to fit. An operator override below this
-/// is clamped up so the walk can never overflow a too-small stack.
-pub(crate) const PARSER_STACK_SIZE_MIN: usize = 1024 * 1024;
+/// Floor for the parse-pool worker stack (2 MiB) — the size that holds the
+/// depth-800 walk (`PARSER_MAX_WALK_DEPTH`) *through the real parse entry* in a
+/// debug build, not the 1 MiB top-of-stack-only figure. (Through the real entry
+/// the walk runs nested under the entry's own frames; a 1 MiB floor left a debug
+/// build with near-zero margin at rail-800, the exact too-small-stack foot-gun
+/// the rail exists to prevent.) The floor now equals the default
+/// `PARSER_STACK_SIZE`, so the parse pool can never run below the size that holds
+/// the rail. An operator override below this is clamped up.
+pub(crate) const PARSER_STACK_SIZE_MIN: usize = 2 * 1024 * 1024;
 
 /// Resolve the parse-pool worker stack size in bytes honoring
 /// `CQS_PARSER_STACK_SIZE`, clamped to `[PARSER_STACK_SIZE_MIN, 256 MiB]` so
@@ -950,7 +958,8 @@ mod tests {
     // ===== parser_stack_size tests =====
 
     /// Unset env → the 2 MiB default. The parse pool's worker stack must be at
-    /// least the 1 MiB the depth rail is sized to fit; the default doubles that.
+    /// least the size the depth rail needs through the real parse entry (2 MiB);
+    /// the floor now equals this default, so the pool can never run below it.
     #[test]
     #[serial]
     fn parser_stack_size_default_is_2mib() {
@@ -968,14 +977,15 @@ mod tests {
         std::env::remove_var("CQS_PARSER_STACK_SIZE");
     }
 
-    /// A below-floor override clamps UP to the depth-rail minimum (1 MiB), so an
-    /// operator can never shrink the stack below what the 800-deep walk needs.
+    /// A below-floor override clamps UP to the depth-rail minimum (2 MiB), so an
+    /// operator can never shrink the stack below what the 800-deep walk needs
+    /// through the real parse entry.
     #[test]
     #[serial]
     fn parser_stack_size_below_floor_clamps_to_min() {
         std::env::set_var("CQS_PARSER_STACK_SIZE", (256 * 1024).to_string());
         assert_eq!(parser_stack_size(), PARSER_STACK_SIZE_MIN);
-        assert_eq!(parser_stack_size(), 1024 * 1024);
+        assert_eq!(parser_stack_size(), 2 * 1024 * 1024);
         std::env::remove_var("CQS_PARSER_STACK_SIZE");
     }
 
