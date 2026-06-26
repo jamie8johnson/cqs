@@ -1,5 +1,18 @@
 # Roadmap
 
+## Post-v1.49.0 (on `main`, 2026-06-25, unreleased)
+
+A large autopilot/ultracode arc on `main` since the v1.49.0 cut; no release yet.
+
+- **MCP command-core campaign COMPLETE (#2021).** Every decidable read command is now a JsonSchema core + an unconditional MCP read tool — **30 read tools** (34 with `CQS_MCP_ENABLE_MUTATIONS=1`). This session: `cqs_notes_list` (#2064), `cqs_suggest`/`cqs_impact_diff` (#2070), and the two trust-boundary ones — `cqs_explain` (#2071) and `cqs_context` (#2073) — each cleared by a 3-auditor security workflow (SAFE_EXPOSE: scan==relayed verified, no new risk class) + an independent 3-adversary implementation verification. Earlier phases: zero-arg `cqs_stats`/`cqs_health` (#2051), `cqs_where`/`cqs_related`/`cqs_stale` (#2052), overlay-capable `cqs_task` (#2054). Remaining: only the correctly-withheld infra/mutating tail. Filed #2072 (`///`-doc-marker `leading-directive` heuristic gap, shared across relay tools). New `canonical_docs_read_tool_count_matches_registry` guard pins the count across SECURITY.md/CONTRIBUTING.md/lib.rs.
+- **SPLADE-on-embedding viz — Stage 1 + 2a LIVE.** `/api/search_legs` backend (dense/sparse/fused legs by chunk_id, #2060) + a query-anchored mechanism step-through on the three.js cluster plane (#2065). Locked design after 2 adversarial passes (`docs/plans/2026-06-25-splade-viz-design.md`). Next: Stage 2b (eval-gold R@K-delta "where hybrid wins" panel + stratified tour); 2c (deck.gl + token-teaching layer).
+- **`cqs index --umap` fixed for WSL `/mnt/c` (#2067 + #2069).** Was silently dropped under a running daemon AND hanging ~9h20m on v9fs (random-page SQLite IO). Now runs CLI-side on the delegation path + stages the read through a fast sequential `fs::copy` to tmpfs (VACUUM INTO was itself the v9fs pathology) + a fit-subprocess timeout. **9h20m → ~40s.**
+- **Orthogonal-auditor pass + 3 bugs (#2056–#2063):** spec-fidelity-auditor formalized (#2057, the sextet's null-of-the-meta-null), BUG 1 RT-RELAY straggler (#2058), BUG 2 git-diff `--relative` frame (#2063), BUG 3 slot ramp-up fail-closed (#2062), Fork-1 emit-convention (#2056), test-hardening consolidation (#2061). Fork-2 → #1992.
+- **serve Windows release-build regression fixed (#2068):** `serve` (default feature) `std::os::unix::net` ungated → E0432 on `x86_64-pc-windows-msvc`; cfg-gated.
+- Parked design specs (#2059): autotune-α + the viz v3 design.
+
+---
+
 ## Current: v1.49.0 (cut 2026-06-24, crates.io + GitHub Release)
 
 Minor — **v1.48.0 16-category audit fix cycle.** A full audit (16 parallel category auditors → per-category adversarial verification → triage, all opus) produced 36 verified findings → 19 rows; **all P1–P3 + 2 of 3 P4 fixed** across PRs #2038–#2042. Scoring path **byte-identical** to v1.48.0 — retrieval unchanged (recall carried: 72.0% R@5 / 47.2% R@1 / 87.2% R@20).
@@ -370,9 +383,10 @@ Re-audited 2026-06-10. The v1.39–v1.41 audit cycles closed nearly everything f
 ## Parked
 
 - **`nomic-ai/nomic-embed-code` (7B) — Phase 2 of the code-specific embedder A/B, deferred 2026-04-25.** Apache 2.0, base = Qwen2.5-Coder-7B, GGUF quantizations available. Released March 2025; reported to beat Voyage Code 3 + OpenAI Embed 3 Large on CodeSearchNet. ~14 GB VRAM at FP16; embedding is 3584-dim (4.5× current storage). Skipped because at 7B params, inference cost approaches an LLM call — defeats the local-embedder advantage. Would need agentic batching to amortize. Revisit only if Phase 1 (CodeRankEmbed-137M, opt-in via #1110) shows the code-specialist trade-off is worth pushing further at scale.
-- **Graph visualization** (`cqs serve`) — interactive web UI for call graphs, chunk types, impact radius. Spec: `docs/plans/graph-visualization.md`.
 - **OpenRCT2 → Rust dual-trail experiment** — spec: `docs/plans/2026-04-10-openrct2-rust-port-dual-trail.md`.
-- Wiki system (agent-first), MCP server (re-add when CLI solid), pre-built reference packages (#255), Blackwell RTX 6000 (96GB), L5X files from plant, KD-LoRA distillation (CodeSage→E5), ColBERT late interaction, enrichment-mismatch mining (Exp #4), lock/fork-aware training weights (Exp #5), ladder logic (RLL) parser, DXF/Openclaw PLC, SSD fine-tuning experiments.
+- Wiki system (agent-first), Blackwell RTX 6000 (96GB), L5X files from plant, KD-LoRA distillation (CodeSage→E5), ColBERT late interaction, enrichment-mismatch mining (Exp #4), lock/fork-aware training weights (Exp #5), ladder logic (RLL) parser, DXF/Openclaw PLC, SSD fine-tuning experiments.
+
+*(Shipped, formerly parked: graph-visualization `cqs serve` (cluster/call-graph views v1.29.0, SPLADE mechanism view 2026-06-25); MCP server (re-introduced v1.48.0, command-cores complete 2026-06-25).)*
 
 ---
 
