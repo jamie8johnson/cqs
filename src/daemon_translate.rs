@@ -2648,8 +2648,13 @@ mod tests {
             // Write WELL over the 64-byte cap with NO terminating newline before
             // the cap, so `read_line` fills the buffer and stops at the cap.
             let big = "x".repeat(4096);
-            write!(stream, "{{\"status\":\"ok\",\"output\":\"{big}\"}}").unwrap();
-            stream.flush().unwrap();
+            // The client reads only `cap + 1` bytes, returns `ResponseTooLarge`,
+            // and drops the stream by design — so this write can hit a broken
+            // pipe. That is the expected shape, not a harness fault: the assertion
+            // under test is the CLIENT's classification, not a clean server write.
+            // Ignore write/flush errors (matching the boundary proptest sibling).
+            let _ = write!(stream, "{{\"status\":\"ok\",\"output\":\"{big}\"}}");
+            let _ = stream.flush();
             // Hold the connection open briefly so the reader hits the cap rather
             // than EOF.
             std::thread::sleep(std::time::Duration::from_millis(50));
