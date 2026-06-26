@@ -89,18 +89,20 @@ impl ToolAnnotations {
     }
 }
 
-/// A statically-declared MCP tool. `input_schema` is a fn pointer that
-/// generates the JSON Schema on demand (schemars `schema_for!` is not `const`).
+/// A statically-declared MCP tool. The advertised `inputSchema` is NOT stored
+/// on the row — it is derived from `command` via [`command_input_schema`], whose
+/// per-command core type is declared ONCE in [`command_core_map!`] and is the
+/// SAME struct [`validate_arguments`] pre-checks and the daemon's
+/// `build_batch_cmd` deserializes. Keeping the type off the row removes a place
+/// the schema source and the deserialize target could name different structs.
 pub struct ToolDef {
     /// The `cqs_`-prefixed MCP tool name (D1).
     pub name: &'static str,
-    /// The bare daemon command name this tool relays to (e.g. `test-map`).
+    /// The bare daemon command name this tool relays to (e.g. `test-map`). Also
+    /// the key into [`command_input_schema`] for this tool's advertised schema.
     pub command: &'static str,
     /// One-line description surfaced in `tools/list`.
     pub description: &'static str,
-    /// Generates the `inputSchema` (JSON Schema 2020-12) from the command's
-    /// Phase-0 core struct.
-    pub input_schema: fn() -> Value,
     /// Per-tool annotation hints (§3). Read tools carry [`ToolAnnotations::READ`];
     /// the Phase-2a mutators carry per-command hints.
     pub annotations: ToolAnnotations,
@@ -190,6 +192,8 @@ use crate::cli::commands::context::ContextArgs as ContextCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
 use crate::cli::commands::explain::ExplainArgs as ExplainCore;
+use crate::cli::commands::index::IndexArgs as IndexCore;
+use crate::cli::commands::notes::{NotesAddArgs, NotesRemoveArgs, NotesUpdateArgs};
 use crate::cli::commands::review::suggest::SuggestArgs as SuggestCore;
 use crate::cli::commands::search::gather::GatherArgs as GatherCore;
 use crate::cli::commands::search::onboard::OnboardArgs as OnboardCore;
@@ -233,7 +237,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Semantic code search (hybrid RRF). Find functions/methods by concept, not just \
                  name — e.g. 'retry with exponential backoff' finds retry logic regardless of \
                  naming. Use name_only for fast 'where is X defined?' lookups.",
-            input_schema: schema_with_overlay::<QueryArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -242,7 +245,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Assemble context: a seed semantic search expanded along the call graph (BFS). \
                  Returns the seed hits plus their callers/callees up to a depth.",
-            input_schema: schema_with_overlay::<GatherCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -251,7 +253,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Investigation brief for a task: search + callers + tests + staleness + notes in \
                  one call. The first step before implementing.",
-            input_schema: schema_with_overlay::<ScoutCore>,
             annotations: ToolAnnotations::READ,
         },
         // Overlay-capable (seed-overlay): the daemon overlays the scout seed from
@@ -263,7 +264,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Full implementation brief for a task description: scout seed + gathered context \
                  + impact (who breaks) + placement (where to add) + test coverage, in one call. \
                  Set tokens to budget the brief across sections.",
-            input_schema: schema_with_overlay::<TaskCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -272,7 +272,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Guided tour of a concept: entry point → call chain → types → tests. For exploring \
                  unfamiliar code.",
-            input_schema: schema::<OnboardCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -281,7 +280,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Find functions structurally/semantically similar to a named function (nearest \
                  neighbors by embedding).",
-            input_schema: schema::<SimilarCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -290,14 +288,12 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Who calls this function? Direct callers from the call graph, each tagged with an \
                  edge_kind (call / serde_callback / macro_heuristic / fn_pointer / doc_reference).",
-            input_schema: schema_with_overlay::<CallersCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_callees",
             command: "callees",
             description: "What does this function call? Its direct callees from the call graph.",
-            input_schema: schema_with_overlay::<CalleesCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -305,7 +301,6 @@ fn read_tools() -> &'static [ToolDef] {
             command: "deps",
             description: "Type/symbol dependencies of a function (or, with reverse, its reverse \
                  dependencies).",
-            input_schema: schema::<DepsCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -314,14 +309,12 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Blast radius of changing a function: callers, transitively-affected functions, \
                  and the tests that cover them. The pre-edit safety check.",
-            input_schema: schema_with_overlay::<ImpactCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
             name: "cqs_test_map",
             command: "test-map",
             description: "Which tests exercise this function (directly or transitively)?",
-            input_schema: schema::<TestMapCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -329,7 +322,6 @@ fn read_tools() -> &'static [ToolDef] {
             command: "trace",
             description:
                 "Shortest call path(s) between a source and a target function, if one exists.",
-            input_schema: schema::<TraceCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -340,7 +332,6 @@ fn read_tools() -> &'static [ToolDef] {
                  and callees), the most semantically-similar code elsewhere, and usage hints. Set \
                  tokens to pack the relevant source bodies (the target and the closest similar \
                  chunks) within a budget.",
-            input_schema: schema::<ExplainCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -350,7 +341,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Module card for a file: all of its indexed chunks (signature, line range) with \
                  per-chunk caller/callee counts. Set tokens to add token-budgeted source bodies \
                  plus the external call graph (callers, callees, dependent files).",
-            input_schema: schema::<ContextCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -359,7 +349,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Semantic git blame for a function: who changed it, when, and why (commit \
                  messages), plus optional caller context.",
-            input_schema: schema::<BlameCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -368,7 +357,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Semantic diff between two indexed references (or a reference and the project): \
                  added / removed / modified functions.",
-            input_schema: schema::<DiffCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -377,7 +365,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Functions whose implementation has drifted from a reference index, ranked by \
                  semantic distance.",
-            input_schema: schema::<DriftCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -386,7 +373,6 @@ fn read_tools() -> &'static [ToolDef] {
             description: "Find dead code (zero callers), each carrying a verdict (test-only / \
                  low-confidence-live / known-gap / dead) — only `dead` is a confident absence \
                  claim.",
-            input_schema: schema_with_overlay::<DeadCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -395,7 +381,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Bundled pre-merge review for the current diff: review + dead-code gate, with a \
                  pass/fail verdict.",
-            input_schema: schema_with_overlay::<CiCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -404,7 +389,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Risk-ranked review of the current diff: which changed functions have the most \
                  callers / least test coverage.",
-            input_schema: schema_with_overlay::<ReviewCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -413,7 +397,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Task-planning brief for a described change: scout + gather + impact + suggested \
                  file placement.",
-            input_schema: schema::<PlanCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -422,7 +405,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Read a project file with cqs notes injected (or, with focus, just one function \
                  plus its type dependencies).",
-            input_schema: schema::<ReadArgs>,
             annotations: ToolAnnotations::READ,
         },
         // Simple read tools (MCP Phase 2). Flat cores, no overlay tri-state.
@@ -433,7 +415,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Suggest where to add new code described in natural language: ranked file \
                  placements with insertion line, nearby function, and the local patterns \
                  (imports, error handling, naming, visibility) of each candidate.",
-            input_schema: schema::<WhereCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -442,7 +423,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Functions related to a named one by co-occurrence: shared callers, shared \
                  callees, and shared custom types, each ranked by overlap count.",
-            input_schema: schema::<RelatedCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -452,7 +432,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Index freshness: which indexed files have changed (stale) or been deleted \
                  (missing) since the last index, plus the total indexed count. Use count_only \
                  for just the counts.",
-            input_schema: schema::<StaleCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -462,7 +441,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "List project notes/observations (sentiment-tagged context that biases search \
                  ranking): filter to warnings (negative) or patterns (positive), or by kind tag. \
                  Read-only. Set check to flag mentions whose files or symbols are stale.",
-            input_schema: schema::<NotesListCore>,
             annotations: ToolAnnotations::READ,
         },
         // Phase-4 read tools (suggest + impact-diff). Each withholds a
@@ -477,7 +455,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Auto-suggest note-worthy patterns in the codebase (warnings/observations that bias \
                  search ranking), as a read-only dry run — the entries are returned, NOT written. \
                  No input.",
-            input_schema: schema::<SuggestCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -487,7 +464,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Blast radius of a git diff: the functions changed by a working-tree diff (or a \
                  base-ref diff when base is set), plus their affected callers and the tests to \
                  re-run.",
-            input_schema: schema::<ImpactDiffCoreArgs>,
             annotations: ToolAnnotations::READ,
         },
         // Zero-arg read tools (MCP Phase 1). Both take no input — their cores
@@ -500,7 +476,6 @@ fn read_tools() -> &'static [ToolDef] {
                 "Index statistics: chunk/file/note counts, call-graph and type-graph totals, \
                  per-language and per-type breakdowns, model, schema version, and freshness \
                  (stale/missing files). The one-call snapshot of what's indexed.",
-            input_schema: schema::<StatsCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -509,7 +484,6 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Codebase quality snapshot: dead-code count, staleness, hotspots (most-called \
                  functions), and untested functions. The pre-work health check.",
-            input_schema: schema::<HealthCore>,
             annotations: ToolAnnotations::READ,
         },
     ]
@@ -532,8 +506,6 @@ fn read_tools() -> &'static [ToolDef] {
 /// `force` field, so the destructive full-rebuild variant is unreachable over
 /// the wire.
 fn mutation_tools() -> &'static [ToolDef] {
-    use crate::cli::commands::index::IndexArgs as IndexCore;
-    use crate::cli::commands::notes::{NotesAddArgs, NotesRemoveArgs, NotesUpdateArgs};
     &[
         ToolDef {
             name: "cqs_notes_add",
@@ -542,7 +514,6 @@ fn mutation_tools() -> &'static [ToolDef] {
                 "Add a project note (a sentiment-tagged observation that biases code-search \
                  ranking and is injected into `read`). Appends to docs/notes.toml; the watch \
                  loop reindexes. Additive — calling twice writes two notes.",
-            input_schema: schema::<NotesAddArgs>,
             annotations: ToolAnnotations {
                 read_only: false,
                 idempotent: false,
@@ -556,7 +527,6 @@ fn mutation_tools() -> &'static [ToolDef] {
             description:
                 "Update an existing note matched by its exact text: replace its text, sentiment, \
                  mentions, or kind. Rewrites docs/notes.toml; the watch loop reindexes.",
-            input_schema: schema::<NotesUpdateArgs>,
             annotations: ToolAnnotations {
                 read_only: false,
                 // Re-applying the same update converges to the same rewrite.
@@ -571,7 +541,6 @@ fn mutation_tools() -> &'static [ToolDef] {
             description:
                 "Remove a note matched by its exact text from docs/notes.toml (no soft-delete); \
                  the watch loop reindexes. Removing an absent note is a no-op error.",
-            input_schema: schema::<NotesRemoveArgs>,
             annotations: ToolAnnotations {
                 read_only: false,
                 idempotent: true,
@@ -590,7 +559,6 @@ fn mutation_tools() -> &'static [ToolDef] {
                  tool (e.g. cqs_search) and inspect its `_meta.stale_origins`: an empty list \
                  means the index has caught up. Non-destructive: rebuilds from the source tree \
                  (the full-rebuild `--force` variant is withheld).",
-            input_schema: schema::<IndexCore>,
             annotations: ToolAnnotations {
                 read_only: false,
                 // A queued reindex converges to the same fresh index — repeated
@@ -633,9 +601,10 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
 /// ([`READ_TOOLS_JSON`] / [`READ_PLUS_MUTATION_TOOLS_JSON`]) — `tools/list` is
 /// hot, and re-running every tool's `schema_for!` per call (the only non-trivial
 /// cost here) is pure waste because the schemas are static. Each snapshot is
-/// post-overlay-injection (it renders the `ToolDef.input_schema` fn pointers,
-/// which already produce the overlay-augmented schemas for overlay-capable
-/// tools). The flag chooses the snapshot but never re-renders.
+/// post-overlay-injection (it renders each tool's schema via
+/// [`command_input_schema`], which already produces the overlay-augmented schema
+/// for an overlay-capable command). The flag chooses the snapshot but never
+/// re-renders.
 pub fn list() -> Value {
     let tools = if crate::cli::mcp::mutations_enabled() {
         &*READ_PLUS_MUTATION_TOOLS_JSON
@@ -653,7 +622,7 @@ fn render_tools(defs: &[ToolDef]) -> Vec<Value> {
             serde_json::json!({
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": (t.input_schema)(),
+                "inputSchema": command_input_schema(t.command),
                 // Per-tool annotations (§3) — hints, not enforcement (the
                 // daemon's path/overlay gates + the §2 opt-in flag are the real
                 // boundary). Read tools carry the read-quartet; mutators differ.
@@ -796,77 +765,118 @@ fn validate_max_depth(arguments: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Deserialize-check `arguments` against the command's Phase-0 core, then apply
-/// the daemon's non-serde range gates (e.g. the `test-map` / `trace`
-/// `max_depth` 1..=50 bound enforced in the JSON-args adapter). Returns `Ok(())`
-/// when the object is both shape-valid AND within the bounds the daemon will
-/// enforce — so a value the daemon would range-reject is rejected pre-relay. The
-/// daemon re-deserializes and re-validates authoritatively (it is the boundary,
-/// not this check); this pre-check exists to surface a clearer message earlier.
-fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
-    fn check<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
-        serde_json::from_value::<T>(arguments.clone())
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    match command {
-        "search" => check::<QueryArgs>(arguments),
-        "gather" => check::<GatherCore>(arguments),
-        "scout" => check::<ScoutCore>(arguments),
-        "task" => check::<TaskCore>(arguments),
-        "onboard" => check::<OnboardCore>(arguments),
-        "similar" => check::<SimilarCore>(arguments),
-        "callers" => check::<CallersCoreArgs>(arguments),
-        "callees" => check::<CalleesCore>(arguments),
-        "deps" => check::<DepsCoreArgs>(arguments),
-        "impact" => check::<ImpactCoreArgs>(arguments),
-        // `test-map` / `trace` carry a `max_depth` the daemon range-gates (1..=50)
-        // in the JSON-args adapter — re-apply that bound after the shape check.
-        "test-map" => {
-            check::<TestMapCoreArgs>(arguments).and_then(|()| validate_max_depth(arguments))
+/// Single source of truth for the per-command JSON-args INPUT core type. Each
+/// row names the command's Phase-0 core ONCE; the macro emits BOTH the advertised
+/// `inputSchema` generator ([`command_input_schema`]) and the `tools/call` shape
+/// pre-check ([`validate_arguments`]) from that one declaration, so the schema the
+/// bridge advertises and the type the pre-check deserializes can never name
+/// different structs. The daemon's `build_batch_cmd` deserializes the SAME core
+/// into the matching `BatchCmd` (its arms stay heterogeneous — the variant, the
+/// converter signature, and the output shape vary per command); the
+/// `precheck_type_agrees_with_dispatch` guard pins this registry's per-command
+/// type against that arm, so all of schema, pre-check, and dispatch resolve to one
+/// core per command.
+///
+/// The per-row MODE captures the two ways a command's schema/pre-check diverge
+/// from the plain `schema::<T>` / `check::<T>` pair:
+/// - `overlay`: the command consumes the worktree-overlay tri-state off the raw
+///   wire (the daemon's `overlay_from_args`), so the advertised schema injects the
+///   [`OVERLAY_KEYS`] (`schema_with_overlay`). The core itself has no overlay
+///   field — the keys ride beside it — so the pre-check stays a plain `check::<T>`.
+/// - `max_depth`: the command's `max_depth` is range-gated 1..=50 by the daemon's
+///   JSON-args adapter, so the pre-check re-applies [`validate_max_depth`] after
+///   the shape check; the schema is plain.
+/// - `plain`: neither — `schema::<T>` and `check::<T>`.
+macro_rules! command_core_map {
+    ( $( $cmd:literal => $core:ty , $mode:ident ; )+ ) => {
+        /// Advertised `inputSchema` for a tool, keyed by its bare daemon command.
+        /// Generated from [`command_core_map!`] so the schema's core type is the
+        /// SAME one [`validate_arguments`] pre-checks. An unknown command (no row)
+        /// yields the normalized empty-object schema rather than poisoning
+        /// `tools/list`; a genuinely-missing row is caught in test by the
+        /// overlay-honesty and `precheck_type_agrees_with_dispatch` guards.
+        pub(crate) fn command_input_schema(command: &str) -> Value {
+            match command {
+                $( $cmd => command_core_map!(@schema $core, $mode), )+
+                _ => serde_json::json!({ "type": "object", "properties": {} }),
+            }
         }
-        "trace" => check::<TraceCoreArgs>(arguments).and_then(|()| validate_max_depth(arguments)),
-        // Function-card read tool — flat core, `name` required, `limit`/`tokens`
-        // optional; shape check only.
-        "explain" => check::<ExplainCore>(arguments),
-        // Module-card read tool — flat `#[serde(default)]` core, `path` plus
-        // optional `summary`/`compact`/`tokens`; shape check only (an empty/
-        // unknown path is rejected daemon-side, like the argv surface).
-        "context" => check::<ContextCore>(arguments),
-        "blame" => check::<BlameCore>(arguments),
-        "diff" => check::<DiffCore>(arguments),
-        "drift" => check::<DriftCore>(arguments),
-        "dead" => check::<DeadCore>(arguments),
-        "ci" => check::<CiCore>(arguments),
-        "review" => check::<ReviewCore>(arguments),
-        "plan" => check::<PlanCore>(arguments),
-        "read" => check::<ReadArgs>(arguments),
-        // Phase-2 simple read tools — flat cores, shape check only.
-        "where" => check::<WhereCore>(arguments),
-        "related" => check::<RelatedCore>(arguments),
-        "stale" => check::<StaleCore>(arguments),
-        "notes" => check::<NotesListCore>(arguments),
-        // Phase-4 read tools — `suggest` has a zero-field core (shape check only,
-        // `--apply` withheld); `impact-diff` exposes `base` (`--stdin` withheld).
-        "suggest" => check::<SuggestCore>(arguments),
-        "impact-diff" => check::<ImpactDiffCoreArgs>(arguments),
-        // Zero-arg read tools (Phase 1). The core has no advertised properties,
-        // so the shape check just rejects a non-object / wrong-typed `arguments`.
-        "stats" => check::<StatsCore>(arguments),
-        "health" => check::<HealthCore>(arguments),
-        // Phase-2a gated notes mutators. Only reachable when the mutation tools
-        // are in the table (flag on), since `find_tool` gates on the same flag —
-        // but the pre-check arm is unconditional so a flag-on call shape-checks.
-        "notes-add" => check::<crate::cli::commands::notes::NotesAddArgs>(arguments),
-        "notes-update" => check::<crate::cli::commands::notes::NotesUpdateArgs>(arguments),
-        "notes-remove" => check::<crate::cli::commands::notes::NotesRemoveArgs>(arguments),
-        // Phase-2b gated fire-and-forget reindex. The scoped core (no `force`)
-        // is the shape pre-check; the daemon re-deserializes authoritatively.
-        "index" => check::<crate::cli::commands::index::IndexArgs>(arguments),
-        // Unreachable: every table command is covered above. A new tool with no
-        // arm fails the pre-check loudly rather than silently skipping it.
-        other => Err(format!("no argument schema for command {other}")),
-    }
+
+        /// Deserialize-check `arguments` against the command's Phase-0 core, then
+        /// apply the daemon's non-serde range gates (the `test-map` / `trace`
+        /// `max_depth` 1..=50 bound the JSON-args adapter enforces). Returns
+        /// `Ok(())` when the object is both shape-valid AND within the bounds the
+        /// daemon will enforce — so a value the daemon would range-reject is
+        /// rejected pre-relay. The daemon re-deserializes and re-validates
+        /// authoritatively (it is the boundary, not this check); this pre-check
+        /// exists to surface a clearer message earlier. Generated from
+        /// [`command_core_map!`], so its per-command core type is the SAME one
+        /// [`command_input_schema`] advertises.
+        pub(crate) fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
+            fn check<T: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
+                serde_json::from_value::<T>(arguments.clone())
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            match command {
+                $( $cmd => command_core_map!(@check $core, $mode, arguments), )+
+                // A new tool with no row fails the pre-check loudly rather than
+                // silently skipping it.
+                other => Err(format!("no argument schema for command {other}")),
+            }
+        }
+    };
+    // Per-mode emitters. The schema injects overlay keys only for `overlay`; the
+    // pre-check re-applies the range gate only for `max_depth`.
+    (@schema $core:ty, plain) => { schema::<$core>() };
+    (@schema $core:ty, overlay) => { schema_with_overlay::<$core>() };
+    (@schema $core:ty, max_depth) => { schema::<$core>() };
+    (@check $core:ty, plain, $args:expr) => { check::<$core>($args) };
+    (@check $core:ty, overlay, $args:expr) => { check::<$core>($args) };
+    (@check $core:ty, max_depth, $args:expr) => {
+        check::<$core>($args).and_then(|()| validate_max_depth($args))
+    };
+}
+
+// The single per-command core registry. Read tools first (table order), then the
+// flag-gated mutators. Each command's core type is named exactly once here; the
+// schema generator and the pre-check are both derived from it above, and the
+// daemon's `build_batch_cmd` deserializes the same type into its `BatchCmd` arm.
+command_core_map! {
+    "search" => QueryArgs, overlay;
+    "gather" => GatherCore, overlay;
+    "scout" => ScoutCore, overlay;
+    "task" => TaskCore, overlay;
+    "onboard" => OnboardCore, plain;
+    "similar" => SimilarCore, plain;
+    "callers" => CallersCoreArgs, overlay;
+    "callees" => CalleesCore, overlay;
+    "deps" => DepsCoreArgs, plain;
+    "impact" => ImpactCoreArgs, overlay;
+    "test-map" => TestMapCoreArgs, max_depth;
+    "trace" => TraceCoreArgs, max_depth;
+    "explain" => ExplainCore, plain;
+    "context" => ContextCore, plain;
+    "blame" => BlameCore, plain;
+    "diff" => DiffCore, plain;
+    "drift" => DriftCore, plain;
+    "dead" => DeadCore, overlay;
+    "ci" => CiCore, overlay;
+    "review" => ReviewCore, overlay;
+    "plan" => PlanCore, plain;
+    "read" => ReadArgs, plain;
+    "where" => WhereCore, plain;
+    "related" => RelatedCore, plain;
+    "stale" => StaleCore, plain;
+    "notes" => NotesListCore, plain;
+    "suggest" => SuggestCore, plain;
+    "impact-diff" => ImpactDiffCoreArgs, plain;
+    "stats" => StatsCore, plain;
+    "health" => HealthCore, plain;
+    "notes-add" => NotesAddArgs, plain;
+    "notes-update" => NotesUpdateArgs, plain;
+    "notes-remove" => NotesRemoveArgs, plain;
+    "index" => IndexCore, plain;
 }
 
 /// Relay the JSON-args frame to the daemon and map the response envelope into a
@@ -1356,7 +1366,7 @@ mod tests {
     fn overlay_keys_declared_iff_command_consumes_them() {
         let overlay: std::collections::BTreeSet<&str> = OVERLAY_CAPABLE_TOOLS.into_iter().collect();
         for def in read_tools() {
-            let schema = (def.input_schema)();
+            let schema = command_input_schema(def.command);
             let props = schema
                 .get("properties")
                 .and_then(|p| p.as_object())
@@ -1393,7 +1403,7 @@ mod tests {
     fn trace_and_test_map_schema_omits_max_nodes() {
         for tool in ["cqs_trace", "cqs_test_map"] {
             let def = find_tool(tool).unwrap_or_else(|| panic!("`{tool}` must be in the table"));
-            let schema = (def.input_schema)();
+            let schema = command_input_schema(def.command);
             let props = schema
                 .get("properties")
                 .and_then(|p| p.as_object())

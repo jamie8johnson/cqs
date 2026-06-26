@@ -229,7 +229,7 @@ pub(crate) fn is_json_args_capable(command: &str) -> bool {
 /// An unknown command, or a command that has no Phase-0 core struct (and so is
 /// argv-only — `search-legs`, `reconcile`, the daemon-control commands, …),
 /// returns an error rather than dispatching.
-pub(super) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> Result<BatchCmd> {
+pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> Result<BatchCmd> {
     let _span = tracing::info_span!("json_args_build_cmd", command).entered();
 
     let cmd = match command {
