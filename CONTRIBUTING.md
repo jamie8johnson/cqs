@@ -261,6 +261,7 @@ src/
       view.rs     - BatchView snapshot (owned-Arc clones), checkout_view_from_arc/dispatch_via_view glue, SearchCtx impl, refs-LRU helpers (split #1691)
       session.rs  - Session entry points: create_context, cmd_batch stdin line-loop, create_test_context (split #1691)
       commands.rs - BatchInput/BatchCmd parsing, dispatch router
+      json_args.rs - MCP JSON-args daemon dispatch: parses the socket frame's `arguments` object into a command's typed `*Core` input via the `command_core_map!` macro (single source for schema + validate per command)
       handlers/ - Daemon dispatch adapters (one per command); each `dispatch_*` is a thin wrapper that parses the wire request into the command's typed `*Args` and calls the shared `*_core`
         mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs, dispatch_tests.rs (cross-surface parity tests: daemon dispatch == direct core)
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
@@ -354,7 +355,7 @@ src/
   search/       - Search algorithms, name matching, HNSW-guided search
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
     scoring/    - ScoringConfig, score normalization, RRF fusion constants
-      mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
+      mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs, provenance.rs (per-result rank_signals / result-trust §4)
       fusion.rs - RRF reciprocal-rank fusion (rrf_fuse, rrf_fuse_n, rrf_k, set_rrf_k_from_config); search owns fusion (moved out of store/search.rs)
       knob.rs   - Shared resolver for f32 scoring knobs (SCORING_KNOBS table: name, env var, default, range, cache contract — one row per knob)
     mmr.rs      - Maximum Marginal Relevance re-ranking: diversifies the top-K pool to break near-duplicate crowding (same-file/same-name) surfaced by the R@5 audit
@@ -454,7 +455,8 @@ src/
     daemon_client.rs - Synchronous client of the retrieval daemon socket; `/api/search_legs` (SPLADE-fusion inspector) forwards to the daemon rather than loading the embedder/index into the web process
     data.rs     - Wire-format types + builders for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention); wire-shaping only — SQL lives in store/serve_queries.rs
     error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses (incl. 503 ServiceUnavailable for daemon-down mechanism mode)
-    assets.rs   - Static assets baked into the binary via `include_str!` (index.html + app.css + app.js; no request-time filesystem reads)
+    assets.rs   - Static assets baked into the binary via `include_str!` (index.html + app.css + app.js + assets/views/*.js (callgraph-2d/3d, hierarchy-3d, cluster-3d) + assets/vendor/*.min.js (cytoscape/dagre/three/3d-force-graph); no request-time filesystem reads)
+    assets/     - Source for the baked viz: views/ (graph-view modules incl. the SPLADE cluster-3d mechanism step-through) + vendor/ (third-party JS bundles + LICENSES.md)
     auth.rs     - Per-launch auth token: 256-bit URL-safe base64, constant-time compare, Bearer/cookie/?token= surfaces (#1118 / SEC-7)
     tests.rs    - Router + auth integration tests (test_router_with_auth helper, host allowlist, gzip)
   main.rs       - Binary entry point: clap parse, tracing-subscriber init, dispatch into `cli`
