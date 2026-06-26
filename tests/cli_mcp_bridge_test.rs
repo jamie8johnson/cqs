@@ -276,7 +276,7 @@ fn stdio_round_trip_smoke() {
     // 2. notifications/initialized → NO response (notification).
     bridge.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
 
-    // 3. tools/list → cqs_search + cqs_explain present, context absent, schemas present.
+    // 3. tools/list → cqs_search + cqs_explain + cqs_context present, schemas present.
     bridge.send(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
     let listed = bridge.recv();
     assert_eq!(listed.get("id").and_then(|v| v.as_u64()), Some(2));
@@ -292,8 +292,8 @@ fn stdio_round_trip_smoke() {
     assert!(names.contains(&"cqs_search"), "cqs_search must be listed");
     assert!(names.contains(&"cqs_callers"), "cqs_callers must be listed");
     assert!(
-        !names.contains(&"cqs_context"),
-        "cqs_context must be withheld (D4b)"
+        names.contains(&"cqs_context"),
+        "cqs_context must be exposed (relay fully scanned, multi-chunk completeness pinned)"
     );
     assert!(
         names.contains(&"cqs_explain"),

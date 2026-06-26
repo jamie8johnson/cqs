@@ -107,15 +107,14 @@ mod tests {
             ["notes-add", "notes-update", "notes-remove", "index"]
                 .into_iter()
                 .collect();
-        // The withheld set: the doc/signature relay surface `context` (held back
-        // pending its own scan==relayed audit) PLUS the destructive mutators that
-        // are withheld by absence — naming them here makes the guard ENFORCE the
-        // withhold (a future hand that adds `cqs_gc` to the table fails this
-        // test). `explain` is NO LONGER withheld — its relay is fully
-        // injection-scanned (the explain.rs RT-RELAY guards pin scan==relayed), so
-        // it is an exposed read tool.
+        // The withheld set: the destructive mutators that are withheld by
+        // absence — naming them here makes the guard ENFORCE the withhold (a
+        // future hand that adds `cqs_gc` to the table fails this test). The
+        // doc/signature relay surfaces `context` and `explain` are NO LONGER
+        // withheld — their relay is fully injection-scanned (the context.rs /
+        // explain.rs RT-RELAY scan==relayed guards pin per-chunk completeness in
+        // both compact and full modes), so they are exposed read tools.
         let withheld: std::collections::BTreeSet<&str> = [
-            "context",
             "gc",
             "slot-remove",
             "index-force",
@@ -150,12 +149,13 @@ mod tests {
     ///
     /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
     /// equal the daemon's JSON-args-capable read command set MINUS the withheld
-    /// set — 29 read tools (the zero-arg `stats`/`health`, the Phase-2
+    /// set — 30 read tools (the zero-arg `stats`/`health`, the Phase-2
     /// `where`/`related`/`stale`, the Phase-3 overlay-capable `task`, the
     /// read-only `notes`, the Phase-4 `suggest`/`impact-diff`, and the
-    /// fully-scanned function-card `explain`), zero mutation delta. Fails if a
-    /// JSON-args command is added/removed without updating the MCP surface, or if
-    /// a withheld command leaks into `tools/list`.
+    /// fully-scanned function-card `explain` + module card `context`), zero
+    /// mutation delta. Fails if a JSON-args command is added/removed without
+    /// updating the MCP surface, or if a withheld command leaks into
+    /// `tools/list`.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn tools_list_matches_json_args_registry() {
@@ -167,18 +167,18 @@ mod tests {
             "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
              withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
         );
-        // The flag-off read surface = exactly 29 read tools.
+        // The flag-off read surface = exactly 30 read tools.
         assert_eq!(
             exposed.len(),
-            29,
-            "flag-off tools/list must expose 29 tools"
+            30,
+            "flag-off tools/list must expose 30 tools"
         );
     }
 
     /// Flag-gating guard: the mutation tools are present IFF
     /// `CQS_MCP_ENABLE_MUTATIONS=1`. With the flag on, the exposed set is the
     /// read set PLUS exactly the three notes mutators AND the fire-and-forget
-    /// `index` (33 total).
+    /// `index` (34 total).
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn mutation_tools_present_iff_flag_set() {
@@ -210,7 +210,7 @@ mod tests {
                 "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
                  and the index queue tool"
             );
-            assert_eq!(on.len(), 33, "flag-on tools/list must expose 33 tools");
+            assert_eq!(on.len(), 34, "flag-on tools/list must expose 34 tools");
         }
     }
 
@@ -385,18 +385,21 @@ mod tests {
         assert_eq!(hint(&index, "openWorldHint"), Some(false));
     }
 
-    /// `context` must be ABSENT from the exposed surface (still withheld pending
-    /// its own scan==relayed audit), regardless of the mutation flag — while
-    /// `explain` (its relay now fully scanned) must be PRESENT.
+    /// The doc/signature relay tools `context` and `explain` — both now fully
+    /// injection-scanned (the context.rs / explain.rs RT-RELAY scan==relayed
+    /// guards pin per-chunk completeness) — must be PRESENT in the exposed
+    /// surface, regardless of the mutation flag. A regression guard against
+    /// accidentally re-withholding a cleared relay tool. (The destructive set is
+    /// the one held back by absence — see `destructive_set_absent_regardless_of_flag`.)
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
-    fn withheld_tools_absent() {
+    fn doc_signature_relay_tools_exposed() {
         for on in [false, true] {
             let _guard = MutationsEnvGuard::set(on);
             let names: Vec<&'static str> = tools::tool_table().iter().map(|t| t.name).collect();
             assert!(
-                !names.contains(&"cqs_context"),
-                "cqs_context must be withheld from tools/list (flag={on})"
+                names.contains(&"cqs_context"),
+                "cqs_context must be exposed in tools/list (flag={on})"
             );
             assert!(
                 names.contains(&"cqs_explain"),
@@ -508,5 +511,71 @@ mod tests {
             "README `Default (read-only)` MCP tool list must equal the `tool_table()` read \
              tools in registry order.\nREADME: {readme:?}\nregistry: {registry_owned:?}"
         );
+    }
+
+    /// Every integer `N` in an `"<N> read-only"` claim within `text`, in order.
+    /// Hand-scanned (no regex dep, matching `readme_read_tool_names`): find each
+    /// ` read-only` occurrence and walk back over the immediately-preceding ASCII
+    /// digits.
+    fn read_only_counts(text: &str) -> Vec<usize> {
+        const NEEDLE: &str = " read-only";
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(NEEDLE) {
+            // Index of the space immediately before "read-only".
+            let space = from + rel;
+            let mut start = space;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if start < space {
+                if let Ok(n) = text[start..space].parse::<usize>() {
+                    out.push(n);
+                }
+            }
+            from = space + NEEDLE.len();
+        }
+        out
+    }
+
+    /// Canonical-docs read-tool-COUNT parity (docs-lie / incomplete-sweep guard).
+    /// The README *list* is pinned by `readme_read_tool_list_matches_registry`,
+    /// but the bare "N read-only tools" COUNT also lives in three other canonical
+    /// current-state docs — `SECURITY.md`, `CONTRIBUTING.md`, and the crate
+    /// rustdoc (`src/lib.rs`) — and these drift independently: the README/SECURITY
+    /// count tracked the registry up through 30 while `src/lib.rs` stayed pinned at
+    /// a stale 19. This guard ties every `<N> read-only` claim in those three files
+    /// to the live registry read-tool count (`tool_table()` with the mutation flag
+    /// off), so a future tool add/remove that updates the registry but not a doc
+    /// goes RED here rather than shipping a fabricated count.
+    ///
+    /// Scoped to exactly those three canonical files. It deliberately does NOT
+    /// scan `PROJECT_CONTINUITY.md` / `ROADMAP.md` / `docs/plans` / `docs/audit-*`,
+    /// which legitimately carry historical phase-record counts that must NOT track
+    /// the live registry.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn canonical_docs_read_tool_count_matches_registry() {
+        let registry_count = read_tool_names_in_order().len();
+        let root = env!("CARGO_MANIFEST_DIR");
+        for rel in ["SECURITY.md", "CONTRIBUTING.md", "src/lib.rs"] {
+            let text = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let claims = read_only_counts(&text);
+            assert!(
+                !claims.is_empty(),
+                "{rel} must carry a `<N> read-only` tool-count claim (the canonical \
+                 current-state count); none found — did the wording change out from under \
+                 this guard?"
+            );
+            for n in claims {
+                assert_eq!(
+                    n, registry_count,
+                    "{rel} claims `{n} read-only` tools but the registry exposes \
+                     {registry_count}; update the doc to match `read_tools()`"
+                );
+            }
+        }
     }
 }

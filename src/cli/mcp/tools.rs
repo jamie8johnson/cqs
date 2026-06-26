@@ -4,12 +4,13 @@
 //!
 //! The exposed tools are exactly the daemon's JSON-args-capable commands (those
 //! with a Phase-0 `schemars::JsonSchema` core, per
-//! `cli::batch::json_args::build_batch_cmd`) MINUS the withheld set. `context`
-//! stays withheld pending its own scan==relayed audit (its relay is not yet
-//! proven fully injection-scanned). `explain` IS exposed: its relay is fully
-//! scanned — doc and signature always, the target body and each similar body
-//! only when relayed within the token budget — so scan==relayed holds (the
-//! explain.rs RT-RELAY guards pin it). Each tool:
+//! `cli::batch::json_args::build_batch_cmd`) MINUS the withheld set (the
+//! destructive mutators, held back by absence). The doc/signature relay tools
+//! `context` and `explain` are BOTH exposed: their relay is fully scanned —
+//! every relayed chunk's doc + signature always, and each body only when it is
+//! relayed within the token budget — so scan==relayed holds per-chunk across the
+//! whole set (the context.rs / explain.rs RT-RELAY completeness guards pin it).
+//! Each tool:
 //! - Carries the `cqs_`-prefixed, underscore, noun-first name (D1):
 //!   `cqs_search`, `cqs_callers`, `cqs_notes_add` (none in P1), … — the v0.10.0
 //!   precedent. The lone hyphenated command `test-map` becomes `cqs_test_map`.
@@ -185,6 +186,7 @@ use crate::cli::args::NotesListArgs as NotesListCore;
 use crate::cli::args::ReadArgs;
 use crate::cli::args::StaleArgs as StaleCore;
 use crate::cli::commands::blame::BlameArgs as BlameCore;
+use crate::cli::commands::context::ContextArgs as ContextCore;
 use crate::cli::commands::diff::DiffArgs as DiffCore;
 use crate::cli::commands::drift::DriftArgs as DriftCore;
 use crate::cli::commands::explain::ExplainArgs as ExplainCore;
@@ -219,9 +221,9 @@ pub fn tool_table() -> Vec<&'static ToolDef> {
 
 /// The Phase-1 read tools — single source of truth for the unconditional part
 /// of `tools/list`. Every row is a JSON-args-capable command with a Phase-0
-/// core, EXCEPT the withheld `context` (held back pending its own scan==relayed
-/// audit; `explain` is exposed because its relay is fully scanned). Each carries
-/// the read-quartet annotation.
+/// core (the destructive mutators are withheld by absence; the doc/signature
+/// relay tools `context` and `explain` are exposed because their relay is fully
+/// injection-scanned). Each carries the read-quartet annotation.
 fn read_tools() -> &'static [ToolDef] {
     &[
         ToolDef {
@@ -339,6 +341,16 @@ fn read_tools() -> &'static [ToolDef] {
                  tokens to pack the relevant source bodies (the target and the closest similar \
                  chunks) within a budget.",
             input_schema: schema::<ExplainCore>,
+            annotations: ToolAnnotations::READ,
+        },
+        ToolDef {
+            name: "cqs_context",
+            command: "context",
+            description:
+                "Module card for a file: all of its indexed chunks (signature, line range) with \
+                 per-chunk caller/callee counts. Set tokens to add token-budgeted source bodies \
+                 plus the external call graph (callers, callees, dependent files).",
+            input_schema: schema::<ContextCore>,
             annotations: ToolAnnotations::READ,
         },
         ToolDef {
@@ -817,6 +829,10 @@ fn validate_arguments(command: &str, arguments: &Value) -> Result<(), String> {
         // Function-card read tool — flat core, `name` required, `limit`/`tokens`
         // optional; shape check only.
         "explain" => check::<ExplainCore>(arguments),
+        // Module-card read tool — flat `#[serde(default)]` core, `path` plus
+        // optional `summary`/`compact`/`tokens`; shape check only (an empty/
+        // unknown path is rejected daemon-side, like the argv surface).
+        "context" => check::<ContextCore>(arguments),
         "blame" => check::<BlameCore>(arguments),
         "diff" => check::<DiffCore>(arguments),
         "drift" => check::<DriftCore>(arguments),
@@ -1260,6 +1276,8 @@ mod tests {
         assert_eq!(mcp_name_to_command("cqs_impact_diff"), "impact-diff");
         // Phase-4 function-card tool: `cqs_explain` → `explain`.
         assert_eq!(mcp_name_to_command("cqs_explain"), "explain");
+        // Module-card tool: `cqs_context` → `context`.
+        assert_eq!(mcp_name_to_command("cqs_context"), "context");
     }
 
     /// Collect `cqs_<ident>` tokens from `text`, in order.
