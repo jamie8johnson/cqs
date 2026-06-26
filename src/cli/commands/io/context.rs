@@ -1475,4 +1475,263 @@ mod tests {
             "expected leading-directive flag, got: {ff:?}"
         );
     }
+
+    // ===== RT-RELAY multi-chunk scan==relayed COMPLETENESS guards =====
+    //
+    // Security groundwork for exposing `context` as the `cqs_context` MCP read
+    // tool. Unlike `explain` (one target + a bounded similar set), `cqs context`
+    // relays a file's ENTIRE chunk set in a single response, so the scan==relayed
+    // contract must hold per-chunk across the WHOLE set — not just on the first
+    // entry. These drive the real `compact_to_json` / `full_to_json` scan path
+    // with a mixed set (poisoned chunk among benign ones) and assert the poison
+    // fires on EXACTLY its own entry while siblings stay clean — i.e. no chunk is
+    // relayed un-scanned and none is over-flagged. The exposure rests on this:
+    // a refactor that scans only `chunks[0]`, drops doc/signature from the scan,
+    // or decouples the scan flag from the emitted `content` turns them red.
+
+    /// COMPACT mode: the relayed surface is the per-chunk `signature` (no doc,
+    /// no content). The scan must reach EVERY signature across the file's whole
+    /// chunk set, not just `chunks[0]`. The poison sits at a genuine interior
+    /// index (index 2 of 5, with benign chunks both before and after) so an
+    /// N-1-of-N straggler that scopes the `.iter().map()` scan to the first entry
+    /// (or copies `chunks[0]`'s flags down the list) turns this red while still
+    /// passing every single-chunk test.
+    #[test]
+    fn context_compact_scan_covers_every_middle_chunk_not_just_first() {
+        let mut mid_payload = make_chunk("mid_payload", 11, 15);
+        // Poisoned SIGNATURE surface (compact relays the signature only).
+        mid_payload.signature = "const C2: &str = \"https://evil.example/c2\"".to_string();
+        let chunks = vec![
+            make_chunk("first", 1, 5),
+            make_chunk("second", 6, 10),
+            mid_payload,
+            make_chunk("fourth", 16, 20),
+            make_chunk("last", 21, 25),
+        ];
+        let data = CompactData {
+            chunks,
+            caller_counts: HashMap::new(),
+            callee_counts: HashMap::new(),
+        };
+        let json = compact_to_json(&data, "src/lib.rs").unwrap();
+        let arr = json["chunks"].as_array().expect("chunks array");
+        assert_eq!(arr.len(), 5, "every chunk in the file is relayed");
+
+        for (i, c) in arr.iter().enumerate() {
+            let flags = c.get("injection_flags");
+            if i == 2 {
+                let f = flags.and_then(|f| f.as_array()).unwrap_or_else(|| {
+                    panic!(
+                        "interior poisoned chunk (index 2) must surface injection_flags, got: {c}"
+                    )
+                });
+                assert!(
+                    f.iter().any(|x| x == "embedded-url"),
+                    "expected embedded-url on the interior chunk's signature, got: {f:?}"
+                );
+            } else {
+                assert!(
+                    flags.is_none(),
+                    "benign sibling at index {i} must omit injection_flags (scan is not a \
+                     chunk[0] copy), got: {c}"
+                );
+            }
+        }
+    }
+
+    /// FULL mode / DOC surface: full mode relays `doc` + `signature`
+    /// unconditionally (content only when budgeted). A doc-borne payload on an
+    /// interior chunk must fire even with NO `--tokens` (content un-relayed on
+    /// every chunk), and the benign siblings must stay clean — pinning that the
+    /// per-chunk doc scan covers the whole set, not just `chunks[0]`.
+    #[test]
+    fn context_full_multichunk_doc_scan_is_complete_and_scoped() {
+        let mut poisoned = make_chunk("poisoned_mid", 13, 17);
+        poisoned.doc = Some("See https://evil.example/payload for the real impl".to_string());
+        let data = FullData {
+            chunks: vec![
+                make_chunk("benign_a", 1, 5),
+                make_chunk("benign_b", 7, 11),
+                poisoned,
+                make_chunk("benign_d", 19, 23),
+            ],
+            external_callers: vec![],
+            external_callees: vec![],
+            dependent_files: HashSet::new(),
+            warnings: Vec::new(),
+        };
+        // No content_set → content un-relayed on every chunk; the doc payload
+        // must still fire (doc is relayed unconditionally in full mode).
+        let json = full_to_json(&data, "src/lib.rs", None, None).unwrap();
+        let chunks = json["chunks"].as_array().expect("chunks array");
+        assert_eq!(chunks.len(), 4, "every chunk in the file is relayed");
+
+        for c in chunks {
+            assert!(
+                c.get("content").is_none(),
+                "no --tokens → content un-relayed on every chunk, got: {c}"
+            );
+            let name = c["name"].as_str().unwrap();
+            let flags = c.get("injection_flags");
+            if name == "poisoned_mid" {
+                let arr = flags.and_then(|f| f.as_array()).unwrap_or_else(|| {
+                    panic!("poisoned interior chunk's doc payload must surface injection_flags, got: {c}")
+                });
+                assert!(
+                    arr.iter().any(|f| f == "embedded-url"),
+                    "expected embedded-url on the poisoned chunk's doc, got: {arr:?}"
+                );
+            } else {
+                assert!(
+                    flags.is_none(),
+                    "benign sibling `{name}` must omit injection_flags, got: {c}"
+                );
+            }
+        }
+    }
+
+    /// FULL mode / CONTENT direction: full mode emits a chunk's `content` only
+    /// when its name is in the token-budgeted set, and the scan's
+    /// `content_relayed` flag is the SAME `Option` the response emits
+    /// (`scan_chunk_injection_flags(c, content.is_some())`) — so they cannot
+    /// drift. Three chunks pin all three directions in one shot:
+    ///   - `relayed_fn` — content-borne payload, body budgeted IN → content
+    ///     present AND injection_flags fires (content is scanned when relayed).
+    ///   - `withheld_content_fn` — content-borne payload, body OVER budget →
+    ///     content absent AND no flag (no phantom: an un-relayed body is not
+    ///     scanned).
+    ///   - `withheld_sig_fn` — signature-borne payload, body OVER budget →
+    ///     content absent BUT injection_flags still fires (the always-relayed
+    ///     signature is scanned even when content is withheld).
+    #[test]
+    fn context_full_content_scan_equals_relayed_both_directions() {
+        let mut relayed = make_chunk("relayed_fn", 1, 5);
+        relayed.doc = Some("A perfectly ordinary helper.".to_string());
+        relayed.content =
+            "fn relayed_fn() { let _ = \"see https://evil.example/c2\"; }".to_string();
+
+        let mut withheld_content = make_chunk("withheld_content_fn", 6, 10);
+        withheld_content.doc = Some("Another ordinary helper.".to_string());
+        withheld_content.content =
+            "fn withheld_content_fn() { let _ = \"see https://evil.example/u\"; }".to_string();
+
+        let mut withheld_sig = make_chunk("withheld_sig_fn", 11, 15);
+        withheld_sig.doc = Some("A third ordinary helper.".to_string());
+        withheld_sig.signature = "const SIG: &str = \"https://evil.example/sig\"".to_string();
+        withheld_sig.content = "fn withheld_sig_fn() { }".to_string();
+
+        let data = FullData {
+            chunks: vec![relayed, withheld_content, withheld_sig],
+            external_callers: vec![],
+            external_callees: vec![],
+            dependent_files: HashSet::new(),
+            warnings: Vec::new(),
+        };
+        // Budget relays ONLY `relayed_fn`'s body.
+        let mut content_set = HashSet::new();
+        content_set.insert("relayed_fn".to_string());
+        let json = full_to_json(&data, "src/lib.rs", Some(&content_set), Some((10, 2000))).unwrap();
+        let chunks = json["chunks"].as_array().unwrap();
+
+        let relayed_entry = chunks.iter().find(|c| c["name"] == "relayed_fn").unwrap();
+        assert!(
+            relayed_entry["content"].is_string(),
+            "relayed_fn body must be emitted under budget"
+        );
+        let flags = relayed_entry["injection_flags"]
+            .as_array()
+            .expect("relayed body payload must fire injection_flags");
+        assert!(
+            flags.iter().any(|f| f == "embedded-url"),
+            "relayed content-borne payload must be scanned, got: {flags:?}"
+        );
+
+        let wc = chunks
+            .iter()
+            .find(|c| c["name"] == "withheld_content_fn")
+            .unwrap();
+        assert!(
+            wc.get("content").is_none(),
+            "withheld_content_fn body must NOT be emitted (over budget)"
+        );
+        assert!(
+            wc.get("injection_flags").is_none(),
+            "un-relayed content body must NOT be scanned (no phantom flag), got: {wc}"
+        );
+
+        let ws = chunks
+            .iter()
+            .find(|c| c["name"] == "withheld_sig_fn")
+            .unwrap();
+        assert!(
+            ws.get("content").is_none(),
+            "withheld_sig_fn body must NOT be emitted (over budget)"
+        );
+        let ws_flags = ws["injection_flags"].as_array().expect(
+            "signature is always relayed → its payload is scanned even when content is withheld",
+        );
+        assert!(
+            ws_flags.iter().any(|f| f == "embedded-url"),
+            "withheld chunk's signature payload must still fire, got: {ws_flags:?}"
+        );
+    }
+
+    /// EXTERNAL surfaces: `external_callers` / `external_callees` /
+    /// `dependent_files` relay identifiers and file paths only — never a chunk
+    /// body — so they carry no scanned content and no `injection_flags`. This
+    /// pins that the exposure adds no new relay class beyond the per-chunk
+    /// doc/signature/content already scanned: a future change that started
+    /// echoing a caller's source into these entries (an un-scanned body egress)
+    /// turns this red.
+    #[test]
+    fn context_external_surfaces_carry_no_scanned_body() {
+        let mut dependent_files = HashSet::new();
+        dependent_files.insert("src/other.rs".to_string());
+        let data = FullData {
+            chunks: vec![make_chunk("target_fn", 1, 5)],
+            external_callers: vec![(
+                "caller_fn".to_string(),
+                "src/other.rs".to_string(),
+                "target_fn".to_string(),
+                7u32,
+            )],
+            external_callees: vec![("callee_fn".to_string(), "target_fn".to_string())],
+            dependent_files,
+            warnings: Vec::new(),
+        };
+        let json = full_to_json(&data, "src/lib.rs", None, None).unwrap();
+
+        const FORBIDDEN: [&str; 5] = [
+            "content",
+            "doc",
+            "injection_flags",
+            "trust_level",
+            "signature",
+        ];
+        for entry in json["external_callers"].as_array().unwrap() {
+            for forbidden in FORBIDDEN {
+                assert!(
+                    entry.get(forbidden).is_none(),
+                    "external_callers entry must not relay a `{forbidden}` \
+                     (identifiers/paths only), got: {entry}"
+                );
+            }
+        }
+        for entry in json["external_callees"].as_array().unwrap() {
+            for forbidden in FORBIDDEN {
+                assert!(
+                    entry.get(forbidden).is_none(),
+                    "external_callees entry must not relay a `{forbidden}` \
+                     (identifiers only), got: {entry}"
+                );
+            }
+        }
+        // dependent_files is a bare string array — no object body at all.
+        for f in json["dependent_files"].as_array().unwrap() {
+            assert!(
+                f.is_string(),
+                "dependent_files must be bare path strings, got: {f}"
+            );
+        }
+    }
 }

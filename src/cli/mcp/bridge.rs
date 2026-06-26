@@ -232,8 +232,8 @@ mod tests {
         assert!(tools
             .iter()
             .any(|t| t.get("name").and_then(|n| n.as_str()) == Some("cqs_search")));
-        // context withheld; explain is exposed (its relay is fully scanned).
-        assert!(!tools
+        // context and explain are both exposed (their relay is fully scanned).
+        assert!(tools
             .iter()
             .any(|t| t.get("name").and_then(|n| n.as_str()) == Some("cqs_context")));
         assert!(tools

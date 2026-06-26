@@ -1060,6 +1060,51 @@ mod tests {
         }
     }
 
+    /// `context` mode parity (compact + `--tokens`). The default full-mode
+    /// `context` row in `parity_json_args_equals_argv` covers the no-tokens path;
+    /// this pins the two modes it does not, since the MCP `cqs_context` tool
+    /// exposes all of them. Compact is embedder-free and deterministic (both
+    /// surfaces emit identical signature-only TOCs). `--tokens` routes through
+    /// the embedder branch of `dispatch_context` (`ctx.embedder()?`) on BOTH
+    /// surfaces, so the two envelopes agree whether the embedder loads (identical
+    /// token-packed bodies) or is absent (identical error envelope) — proving the
+    /// JSON-args `tokens` field reaches the same packing path the argv `--tokens`
+    /// flag does.
+    #[test]
+    fn parity_context_modes_json_args_equals_argv() {
+        let (_dir, ctx) = seed_ctx();
+
+        // Compact mode — embedder-free, must carry data on both surfaces.
+        let (v_argv, v_json) = run_both(
+            &ctx,
+            "context",
+            &["src/lib.rs", "--compact"],
+            json!({"path": "src/lib.rs", "compact": true}),
+        );
+        assert!(
+            v_argv.get("data").is_some_and(|d| !d.is_null()),
+            "argv context --compact should return data, got: {v_argv}"
+        );
+        assert_eq!(
+            v_argv, v_json,
+            "JSON-args output must equal argv output for `context --compact`\nargv:  {v_argv}\njson:  {v_json}"
+        );
+
+        // `--tokens` mode — both surfaces route through the same embedder branch,
+        // so the envelopes agree (data when the embedder loads, identical error
+        // otherwise). Equality is the assertion; data is not required.
+        let (v_argv, v_json) = run_both(
+            &ctx,
+            "context",
+            &["src/lib.rs", "--tokens", "500"],
+            json!({"path": "src/lib.rs", "tokens": 500}),
+        );
+        assert_eq!(
+            v_argv, v_json,
+            "JSON-args output must equal argv output for `context --tokens 500`\nargv:  {v_argv}\njson:  {v_json}"
+        );
+    }
+
     /// `where` parity: it needs an embedder (`suggest_placement`), which the
     /// embedder-free seed corpus lacks, so both paths return the SAME error
     /// envelope — the assertion is value-equality of the two envelopes, proving
