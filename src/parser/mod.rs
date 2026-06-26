@@ -1812,12 +1812,14 @@ fn build() {
     /// injection), `extract_calls_with_candidates` (Pass-2 call / fn-pointer /
     /// macro / serde-candidate walks), `extract_types` (the type walk), and the
     /// end-to-end `parse_file_all` (the literal indexer entry: file read + both
-    /// passes) — over deeply-nested fixtures, on a thread sized to the production
-    /// parse-pool stack (`PARSER_STACK_SIZE`, the default `parser_stack_size()`
-    /// resolves to). It names no individual walk, so a NEW un-railed recursive
-    /// walk wired into any of those entries is caught here (an un-railed walk
-    /// recurses to the input's full nesting depth — tens of thousands of frames —
-    /// and overflows the pool stack) even when no per-function guard was added
+    /// passes) — over deeply-nested fixtures, on a thread sized to the FLOOR
+    /// parse-pool stack (`PARSER_STACK_SIZE_MIN`, the worst-case stack
+    /// `parser_stack_size()` can clamp down to — the stack the floor-coupling
+    /// invariant promises to hold the rail on). It names no individual walk, so a
+    /// NEW un-railed recursive walk wired into any of those entries is caught here
+    /// (an un-railed walk recurses to the input's full nesting depth — tens of
+    /// thousands of frames — and overflows the pool stack) even when no
+    /// per-function guard was added
     /// for it. That is the durable property: the per-function
     /// `deep_walk_stack_safety` / `deep_tree_stack_safety` guards each pin ONE
     /// named walk; this pins "no reachable walk overflows the real entry,"
@@ -1837,19 +1839,19 @@ fn build() {
     /// rail is actually exercised and a future un-railed walk would deep-recurse
     /// past the pool stack and abort the test binary.
     ///
-    /// CALIBRATION CAVEAT (margin, not a missing rail). The per-function guards
-    /// certify "the depth-800 walk completes on the 1 MiB floor stack" by calling
-    /// each walk at the TOP of a fresh stack. Through the REAL entry the walk runs
-    /// nested under the entry's frames, and at the 1 MiB floor a DEBUG build
-    /// overflows at the default rail (800) while it survives at rail <= 700 and at
-    /// the 2 MiB default stack; a RELEASE build survives the floor at 800. So the
-    /// rail-800 / floor-1 MiB calibration has near-zero margin for the production
-    /// caller stack in debug — the cited floor-accommodation invariant
-    /// (`crate::limits::PARSER_MAX_WALK_DEPTH_CEIL`) is proven only standalone,
-    /// not through the entry it protects. This guard therefore runs at the
-    /// production-DEFAULT stack (where it is robustly green) rather than the floor
-    /// (where a debug build would abort on the thin margin, which is a separate
-    /// recalibration concern, not an un-railed walk).
+    /// CALIBRATION (resolved). The per-function guards certify "the depth-800
+    /// walk completes on a 1 MiB stack" by calling each walk at the TOP of a fresh
+    /// stack. Through the REAL entry the walk runs nested under the entry's frames,
+    /// which costs extra margin: a 1 MiB floor left a DEBUG build overflowing at
+    /// the default rail (800) while it survived at rail <= 700 and at the 2 MiB
+    /// stack. The floor (`crate::limits::PARSER_STACK_SIZE_MIN`) was therefore
+    /// raised to 2 MiB — the size that holds rail-800 through the real entry with
+    /// margin in both debug and release. The floor-accommodation invariant
+    /// (`crate::limits::PARSER_MAX_WALK_DEPTH_CEIL`) now holds through the entry it
+    /// protects, not merely standalone. This guard runs at the FLOOR stack
+    /// (`PARSER_STACK_SIZE_MIN`) — the worst case the invariant promises — where it
+    /// is robustly green, with ample headroom for rail-800 through the real entry
+    /// even in a debug build.
     mod parser_pipeline_stack_completeness {
         use super::*;
 
@@ -1861,15 +1863,18 @@ fn build() {
         /// emits the enclosing chunk rather than dropping it oversized.
         const NEST: usize = 16_000;
 
-        /// Run `f` on a thread sized to the production-default parse-pool stack
-        /// (`PARSER_STACK_SIZE`) — the stack the index / watch / daemon parse
-        /// stage actually runs on. A stack overflow here aborts the whole test
-        /// binary (uncatchable), which is exactly the red signal a missing rail
-        /// must produce; an ordinary assertion failure surfaces as a joined
-        /// `Err`.
+        /// Run `f` on a thread sized to the FLOOR parse-pool stack
+        /// (`PARSER_STACK_SIZE_MIN`) — the smallest stack `parser_stack_size()`
+        /// can clamp down to, i.e. the worst case the floor-coupling invariant
+        /// promises to hold the rail on. Running at the floor (rather than the
+        /// larger default) is what makes this guard actually test the invariant,
+        /// and future-proofs it if the default is ever raised above the floor. A
+        /// stack overflow here aborts the whole test binary (uncatchable), which
+        /// is exactly the red signal a missing rail must produce; an ordinary
+        /// assertion failure surfaces as a joined `Err`.
         fn run_on_parse_pool_stack<F: FnOnce() + Send + 'static>(label: &'static str, f: F) {
             let joined = std::thread::Builder::new()
-                .stack_size(crate::limits::PARSER_STACK_SIZE)
+                .stack_size(crate::limits::PARSER_STACK_SIZE_MIN)
                 .name(format!("parse-pool-{label}"))
                 .spawn(f)
                 .expect("spawn parse-pool stack thread")
@@ -1904,8 +1909,9 @@ fn build() {
         }
 
         /// The whole public parse pipeline must survive adversarially deep
-        /// nesting on the production parse-pool stack — for every grammar-bearing
-        /// entry, not just the hand-enumerated relationship walks.
+        /// nesting on the FLOOR parse-pool stack — the worst case the rail/stack
+        /// coupling promises — for every grammar-bearing entry, not just the
+        /// hand-enumerated relationship walks.
         #[test]
         fn pipeline_survives_adversarially_deep_nesting() {
             // Deep parens in call-argument position drive the fn-pointer walk;
