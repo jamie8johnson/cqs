@@ -1,8 +1,8 @@
 # Roadmap
 
-## Post-v1.49.0 (on `main`, 2026-06-25, unreleased)
+## Released: v1.50.0 (2026-06-26, crates.io + GitHub Release)
 
-A large autopilot/ultracode arc on `main` since the v1.49.0 cut; no release yet.
+Shipped the post-v1.49.0 autopilot/ultracode arc as v1.50.0. **Recall gate PASSED** — a same-corpus binary A/B (v1.49.0 binary vs current on the same index) returned identical R@K, so scoring is byte-identical to v1.49.0; agg **47.2/70.7/86.7** (the shift vs the prior 72.0 R@5 is corpus growth, 16.9k→17.5k chunks, 0 dead golds). Highlights:
 
 - **MCP command-core campaign COMPLETE (#2021).** Every decidable read command is now a JsonSchema core + an unconditional MCP read tool — **30 read tools** (34 with `CQS_MCP_ENABLE_MUTATIONS=1`). This session: `cqs_notes_list` (#2064), `cqs_suggest`/`cqs_impact_diff` (#2070), and the two trust-boundary ones — `cqs_explain` (#2071) and `cqs_context` (#2073) — each cleared by a 3-auditor security workflow (SAFE_EXPOSE: scan==relayed verified, no new risk class) + an independent 3-adversary implementation verification. Earlier phases: zero-arg `cqs_stats`/`cqs_health` (#2051), `cqs_where`/`cqs_related`/`cqs_stale` (#2052), overlay-capable `cqs_task` (#2054). Remaining: only the correctly-withheld infra/mutating tail. Filed #2072 (`///`-doc-marker `leading-directive` heuristic gap, shared across relay tools). New `canonical_docs_read_tool_count_matches_registry` guard pins the count across SECURITY.md/CONTRIBUTING.md/lib.rs.
 - **SPLADE-on-embedding viz — Stage 1 + 2a LIVE.** `/api/search_legs` backend (dense/sparse/fused legs by chunk_id, #2060) + a query-anchored mechanism step-through on the three.js cluster plane (#2065). Locked design after 2 adversarial passes (`docs/plans/2026-06-25-splade-viz-design.md`). Next: Stage 2b (eval-gold R@K-delta "where hybrid wins" panel + stratified tour); 2c (deck.gl + token-teaching layer).
