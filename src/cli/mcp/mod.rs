@@ -680,4 +680,34 @@ mod tests {
             );
         }
     }
+
+    /// Totality guard: every command in `tool_table()` must be a rowed
+    /// [`tools::CORE_MAP_COMMANDS`] entry — none may fall through to
+    /// `command_input_schema`'s empty-object `_` fallback. This restores the
+    /// compile-time tool↔schema totality the mandatory `ToolDef.input_schema`
+    /// fn-pointer used to enforce: a future tool added to the table (and to
+    /// `JSON_ARGS_CAPABLE_COMMANDS`) but missing its `command_core_map!` row would
+    /// otherwise advertise an empty `inputSchema` and hard-reject every call, with
+    /// the other MCP guards green (`every_tool_is_well_formed` accepts the empty
+    /// fallback; `tools_list_matches_json_args_registry` pins the tool SET, not the
+    /// row set; `precheck_type_agrees_with_dispatch` misses a rowless required-field
+    /// core that isn't one of its `valid_samples`). Set equality also pins the
+    /// reverse — a stale row for a retired tool — so the registry and the table
+    /// stay in lockstep. Flag ON so the gated mutators are in the table.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn every_tool_table_command_has_a_core_map_row() {
+        let _guard = MutationsEnvGuard::set(true);
+        let rowed: std::collections::BTreeSet<&str> =
+            tools::CORE_MAP_COMMANDS.iter().copied().collect();
+        let tabled: std::collections::BTreeSet<&str> =
+            tools::tool_table().iter().map(|t| t.command).collect();
+        assert_eq!(
+            tabled, rowed,
+            "every tool_table command must have a command_core_map! row (and vice \
+             versa): a tabled command absent from the registry advertises the empty \
+             fallback inputSchema and rejects every call; a rowed command absent \
+             from the table is a stale registry row.\ntabled: {tabled:?}\nrowed: {rowed:?}"
+        );
+    }
 }

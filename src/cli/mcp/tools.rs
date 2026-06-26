@@ -793,8 +793,10 @@ macro_rules! command_core_map {
         /// Generated from [`command_core_map!`] so the schema's core type is the
         /// SAME one [`validate_arguments`] pre-checks. An unknown command (no row)
         /// yields the normalized empty-object schema rather than poisoning
-        /// `tools/list`; a genuinely-missing row is caught in test by the
-        /// overlay-honesty and `precheck_type_agrees_with_dispatch` guards.
+        /// `tools/list` — a graceful production degrade. A genuinely-missing row
+        /// for a real tool is caught in test by
+        /// `every_tool_table_command_has_a_core_map_row` (every `tool_table`
+        /// command must be a rowed [`CORE_MAP_COMMANDS`] entry, not this fallback).
         pub(crate) fn command_input_schema(command: &str) -> Value {
             match command {
                 $( $cmd => command_core_map!(@schema $core, $mode), )+
@@ -825,6 +827,18 @@ macro_rules! command_core_map {
                 other => Err(format!("no argument schema for command {other}")),
             }
         }
+
+        /// Every command this registry rows — the commands with a real per-command
+        /// core, so a NON-fallback `inputSchema` and a real pre-check arm. The
+        /// production `_` / `other` arms degrade a rowless command gracefully (an
+        /// empty schema, a loud pre-check error) rather than crashing the daemon;
+        /// this list is what the `every_tool_table_command_has_a_core_map_row`
+        /// guard checks `tool_table` against, restoring the compile-time totality
+        /// the per-row schema fn-pointer used to enforce — a future tool added to
+        /// the table without a row goes RED there instead of silently advertising
+        /// the empty fallback schema. Test-only.
+        #[cfg(test)]
+        pub(crate) const CORE_MAP_COMMANDS: &[&str] = &[$($cmd,)+];
     };
     // Per-mode emitters. The schema injects overlay keys only for `overlay`; the
     // pre-check re-applies the range gate only for `max_depth`.
