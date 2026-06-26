@@ -512,4 +512,70 @@ mod tests {
              tools in registry order.\nREADME: {readme:?}\nregistry: {registry_owned:?}"
         );
     }
+
+    /// Every integer `N` in an `"<N> read-only"` claim within `text`, in order.
+    /// Hand-scanned (no regex dep, matching `readme_read_tool_names`): find each
+    /// ` read-only` occurrence and walk back over the immediately-preceding ASCII
+    /// digits.
+    fn read_only_counts(text: &str) -> Vec<usize> {
+        const NEEDLE: &str = " read-only";
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(NEEDLE) {
+            // Index of the space immediately before "read-only".
+            let space = from + rel;
+            let mut start = space;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if start < space {
+                if let Ok(n) = text[start..space].parse::<usize>() {
+                    out.push(n);
+                }
+            }
+            from = space + NEEDLE.len();
+        }
+        out
+    }
+
+    /// Canonical-docs read-tool-COUNT parity (docs-lie / incomplete-sweep guard).
+    /// The README *list* is pinned by `readme_read_tool_list_matches_registry`,
+    /// but the bare "N read-only tools" COUNT also lives in three other canonical
+    /// current-state docs — `SECURITY.md`, `CONTRIBUTING.md`, and the crate
+    /// rustdoc (`src/lib.rs`) — and these drift independently: the README/SECURITY
+    /// count tracked the registry up through 30 while `src/lib.rs` stayed pinned at
+    /// a stale 19. This guard ties every `<N> read-only` claim in those three files
+    /// to the live registry read-tool count (`tool_table()` with the mutation flag
+    /// off), so a future tool add/remove that updates the registry but not a doc
+    /// goes RED here rather than shipping a fabricated count.
+    ///
+    /// Scoped to exactly those three canonical files. It deliberately does NOT
+    /// scan `PROJECT_CONTINUITY.md` / `ROADMAP.md` / `docs/plans` / `docs/audit-*`,
+    /// which legitimately carry historical phase-record counts that must NOT track
+    /// the live registry.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn canonical_docs_read_tool_count_matches_registry() {
+        let registry_count = read_tool_names_in_order().len();
+        let root = env!("CARGO_MANIFEST_DIR");
+        for rel in ["SECURITY.md", "CONTRIBUTING.md", "src/lib.rs"] {
+            let text = std::fs::read_to_string(format!("{root}/{rel}"))
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let claims = read_only_counts(&text);
+            assert!(
+                !claims.is_empty(),
+                "{rel} must carry a `<N> read-only` tool-count claim (the canonical \
+                 current-state count); none found — did the wording change out from under \
+                 this guard?"
+            );
+            for n in claims {
+                assert_eq!(
+                    n, registry_count,
+                    "{rel} claims `{n} read-only` tools but the registry exposes \
+                     {registry_count}; update the doc to match `read_tools()`"
+                );
+            }
+        }
+    }
 }

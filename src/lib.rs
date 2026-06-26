@@ -13,7 +13,7 @@
 //! - **Smart context assembly**: `gather` (search + BFS expansion), `task` (scout + gather + impact + placement), `scout` (pre-investigation dashboard)
 //! - **Diff review & CI**: Structured risk analysis, dead code detection in diffs, gating pipeline
 //! - **Batch & chat modes**: Persistent session with pipeline syntax (`search "error" | callers | test-map`)
-//! - **MCP server**: stdio↔daemon bridge exposing 19 read-only tools (plus 4 gated mutation tools) to any MCP-capable client; GPU-free, requires a running daemon
+//! - **MCP server**: stdio↔daemon bridge exposing 30 read-only tools (plus 4 gated mutation tools) to any MCP-capable client; GPU-free, requires a running daemon
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: 54 languages + L5X/L5K PLC exports, with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
 //! - **Type-aware embeddings**: Full signatures appended to NL descriptions for richer type discrimination
