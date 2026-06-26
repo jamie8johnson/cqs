@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, smart context assembly, and MCP server — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **72.0% R@5 / 47.2% R@1 / 87.2% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (2026-06-16 v1.47.0 release-gate snapshot at 16.9k chunks; gemma dense + SPLADE sparse with per-category α fusion + centroid query routing). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. **70.7% R@5 / 47.2% R@1 / 86.7% R@20 on a 218-query dual-judge eval (109 test + 109 dev, v3.v2 fixture) against the cqs codebase itself** with EmbeddingGemma-300m default (2026-06-26 v1.50.0 release-gate snapshot at ~17.5k chunks; gemma dense + SPLADE sparse with per-category α fusion + centroid query routing; scoring byte-identical to v1.47.0 — the shift vs the prior 72.0 snapshot is corpus growth, confirmed by a same-corpus binary A/B). 54 languages + L5X/L5K PLC exports, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -754,9 +754,9 @@ The tiered defaults work well for most codebases; reach for the env overrides on
 
 | Preset | Params | Test R@1 | Test R@5 | Test R@20 | Dev R@1 | Dev R@5 | Dev R@20 | Agg R@1 | Agg R@5 | Agg R@20 |
 |--------|--------|---------:|---------:|----------:|--------:|--------:|---------:|--------:|--------:|---------:|
-| **embeddinggemma-300m** (default, per-category α; v3.v2 fixture) | 308M | 46.8% | 68.8% | 86.2% | 50.5% | 75.2% | 89.0% | **48.7%** | **72.0%** | **87.6%** |
+| **embeddinggemma-300m** (default, per-category α; v3.v2 fixture) | 308M | 46.8% | 68.8% | 85.3% | 47.7% | 72.5% | 88.1% | **47.2%** | **70.7%** | **86.7%** |
 
-2026-06-15 v1.46.0 release-gate snapshot on the gemma slot at ~16.8k chunks (schema 32, PARSER_VERSION 13, EmbeddingGemma-300m at level_scale 0.5; daemon mode). Per-category SPLADE alphas (set in the v1.36/v1.39.x retunes, unchanged since):
+2026-06-26 v1.50.0 release-gate snapshot on the gemma slot at ~17.5k chunks (17,523; schema 32, PARSER_VERSION 14, EmbeddingGemma-300m at level_scale 0.5; daemon mode). Scoring is byte-identical to v1.47.0 — a same-corpus binary A/B (v1.49.0 vs current on the same index) returned identical R@K, so the shift vs the 72.0 snapshot is the larger self-corpus, not a scoring change. Per-category SPLADE alphas (set in the v1.36/v1.39.x retunes, unchanged since):
 
 - `IdentifierLookup` 1.00 → 0.85 (v1.39.x retune; +11.1pp dev R@5 within category)
 - `Structural` 0.60, `Behavioral` 1.00, `Conceptual` 0.80, `TypeFiltered` 0.00, `CrossLanguage` 0.70, `MultiStep` 0.10, `Negation` 0.80, `Unknown` 0.80 (catch-all hedge for misroutes).
