@@ -1794,4 +1794,207 @@ fn build() {
             "fn-pointer-arg pass did not fire on the fixture; got: {prod_calls_n:#?}"
         );
     }
+
+    /// Completeness guard for the recursive-tree-walk stack-overflow DoS class.
+    ///
+    /// The parser's relationship-extraction passes recurse one stack frame per
+    /// CST level. An adversarial indexed file with deeply-nested parentheses /
+    /// macro `token_tree`s / array literals (a few KB of source, well under
+    /// every size cap) drives such a walk past the worker stack and SIGABRTs the
+    /// in-process index / watch / daemon. tree-sitter's own parse is iterative
+    /// and tolerates the nesting cheaply; only cqs's own Rust walks overflowed.
+    /// Each individual recursive walk is therefore depth-railed
+    /// (`crate::limits::parser_max_walk_depth`) or iterative by construction, and
+    /// each has its own per-function guard in `calls.rs` / `chunk.rs`.
+    ///
+    /// THIS guard is relational rather than per-function: it drives the PUBLIC
+    /// parse entry points — `parse_source` (Pass-1 chunking + its node helpers +
+    /// injection), `extract_calls_with_candidates` (Pass-2 call / fn-pointer /
+    /// macro / serde-candidate walks), `extract_types` (the type walk), and the
+    /// end-to-end `parse_file_all` (the literal indexer entry: file read + both
+    /// passes) — over deeply-nested fixtures, on a thread sized to the production
+    /// parse-pool stack (`PARSER_STACK_SIZE`, the default `parser_stack_size()`
+    /// resolves to). It names no individual walk, so a NEW un-railed recursive
+    /// walk wired into any of those entries is caught here (an un-railed walk
+    /// recurses to the input's full nesting depth — tens of thousands of frames —
+    /// and overflows the pool stack) even when no per-function guard was added
+    /// for it. That is the durable property: the per-function
+    /// `deep_walk_stack_safety` / `deep_tree_stack_safety` guards each pin ONE
+    /// named walk; this pins "no reachable walk overflows the real entry,"
+    /// whatever the set of walks becomes.
+    ///
+    /// The full set of recursive parser walks was swept and confirmed complete
+    /// at the time this was written: every member is depth-railed (the four
+    /// call-graph walk families in `calls.rs`), iterative by explicit work-stack
+    /// (`collect_comment_ranges`, `find_type_identifier_recursive`,
+    /// `collect_rust_fn_names`, `collect_serde_candidates`, `extract_types`),
+    /// cursor-/parent-/sibling-bounded (`walk_for_containers`, `infer_chunk_type`,
+    /// `extract_doc_comment`), injection-depth-bounded
+    /// (`parse_injected_chunks`), or grammar-bounded-shallow
+    /// (`has_function_value_lua`). No walk lacks a rail, so this guard is GREEN
+    /// hardening rather than a falsifier. It is non-vacuous by construction: each
+    /// fixture's parse-tree depth is asserted to exceed the walk rail, so the
+    /// rail is actually exercised and a future un-railed walk would deep-recurse
+    /// past the pool stack and abort the test binary.
+    ///
+    /// CALIBRATION CAVEAT (margin, not a missing rail). The per-function guards
+    /// certify "the depth-800 walk completes on the 1 MiB floor stack" by calling
+    /// each walk at the TOP of a fresh stack. Through the REAL entry the walk runs
+    /// nested under the entry's frames, and at the 1 MiB floor a DEBUG build
+    /// overflows at the default rail (800) while it survives at rail <= 700 and at
+    /// the 2 MiB default stack; a RELEASE build survives the floor at 800. So the
+    /// rail-800 / floor-1 MiB calibration has near-zero margin for the production
+    /// caller stack in debug — the cited floor-accommodation invariant
+    /// (`crate::limits::PARSER_MAX_WALK_DEPTH_CEIL`) is proven only standalone,
+    /// not through the entry it protects. This guard therefore runs at the
+    /// production-DEFAULT stack (where it is robustly green) rather than the floor
+    /// (where a debug build would abort on the thin margin, which is a separate
+    /// recalibration concern, not an un-railed walk).
+    mod parser_pipeline_stack_completeness {
+        use super::*;
+
+        /// Nesting depth for every adversarial fixture. ~20x the default depth
+        /// rail, so an un-railed walk would recurse far past the pool stack's
+        /// capacity, while the railed / iterative walks stop or stream and the
+        /// thread joins cleanly. Two source bytes per level keeps the deepest
+        /// fixture (~32 KB) well under the per-chunk byte cap, so Pass-1 still
+        /// emits the enclosing chunk rather than dropping it oversized.
+        const NEST: usize = 16_000;
+
+        /// Run `f` on a thread sized to the production-default parse-pool stack
+        /// (`PARSER_STACK_SIZE`) — the stack the index / watch / daemon parse
+        /// stage actually runs on. A stack overflow here aborts the whole test
+        /// binary (uncatchable), which is exactly the red signal a missing rail
+        /// must produce; an ordinary assertion failure surfaces as a joined
+        /// `Err`.
+        fn run_on_parse_pool_stack<F: FnOnce() + Send + 'static>(label: &'static str, f: F) {
+            let joined = std::thread::Builder::new()
+                .stack_size(crate::limits::PARSER_STACK_SIZE)
+                .name(format!("parse-pool-{label}"))
+                .spawn(f)
+                .expect("spawn parse-pool stack thread")
+                .join();
+            assert!(
+                joined.is_ok(),
+                "parse-pool-stack pipeline for {label} panicked or overflowed its stack \
+                 (a new un-railed recursive parser walk?)"
+            );
+        }
+
+        /// Maximum CST depth, computed iteratively so the guard's own
+        /// measurement can never overflow on the very trees it is testing.
+        fn max_tree_depth(root: tree_sitter::Node) -> usize {
+            let mut stack: Vec<(tree_sitter::Node, usize)> = vec![(root, 1)];
+            let mut max = 0usize;
+            while let Some((node, d)) = stack.pop() {
+                max = max.max(d);
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    stack.push((child, d + 1));
+                }
+            }
+            max
+        }
+
+        fn parse_tree(src: &str, lang: Language) -> tree_sitter::Tree {
+            let grammar = lang.try_grammar().expect("grammar available");
+            let mut ts = tree_sitter::Parser::new();
+            ts.set_language(&grammar).expect("set language");
+            ts.parse(src, None).expect("tree-sitter parse succeeds")
+        }
+
+        /// The whole public parse pipeline must survive adversarially deep
+        /// nesting on the production parse-pool stack — for every grammar-bearing
+        /// entry, not just the hand-enumerated relationship walks.
+        #[test]
+        fn pipeline_survives_adversarially_deep_nesting() {
+            // Deep parens in call-argument position drive the fn-pointer walk;
+            // a deep macro token-tree drives the macro walk; both also drive the
+            // Pass-1 node helpers and the type walk over the same deep tree.
+            let rust_call_args = format!(
+                "fn deep() {{ let _ = f({}1{}); }}\n",
+                "(".repeat(NEST),
+                ")".repeat(NEST)
+            );
+            let rust_macro = format!(
+                "fn deep() {{ my_macro!({}{}); }}\n",
+                "(".repeat(NEST),
+                ")".repeat(NEST)
+            );
+            // A second grammar exercises the language-agnostic Pass-1 helpers
+            // (canonical hash / comment-range collection / signature) on a deep
+            // tree through a non-Rust route.
+            let python_parens = format!("x = {}1{}\n", "(".repeat(NEST), ")".repeat(NEST));
+
+            run_on_parse_pool_stack("pipeline", move || {
+                let parser = Parser::new().expect("parser init");
+
+                for (src, label) in [
+                    (rust_call_args.as_str(), "rust_call_args"),
+                    (rust_macro.as_str(), "rust_macro"),
+                ] {
+                    let tree = parse_tree(src, Language::Rust);
+                    let depth = max_tree_depth(tree.root_node());
+                    // Non-vacuity: the fixture must reach past the rail, else a
+                    // walk could pass this guard without ever being stressed.
+                    assert!(
+                        depth > crate::limits::PARSER_MAX_WALK_DEPTH,
+                        "{label} fixture CST depth {depth} must exceed the walk rail {} \
+                         for the guard to be non-vacuous",
+                        crate::limits::PARSER_MAX_WALK_DEPTH
+                    );
+
+                    // Pass-1 chunking (+ its node helpers + injection).
+                    let _ =
+                        parser.parse_source(src, Language::Rust, std::path::Path::new("deep.rs"));
+                    // Pass-2 confident edges + low-confidence candidates: the
+                    // four railed call-graph walk families.
+                    let _ =
+                        parser.extract_calls_with_candidates(src, Language::Rust, 0, src.len(), 0);
+                    // The type walk over the same deep tree.
+                    let _ = parser.extract_types(src, &tree, Language::Rust, 0, src.len());
+                }
+
+                // End-to-end indexer entry: file read + Pass-1 + Pass-2.
+                let dir = TempDir::new().expect("tempdir");
+                let path = dir.path().join("deep.rs");
+                std::fs::write(&path, rust_call_args.as_str()).expect("write fixture");
+                let _ = parser.parse_file_all(&path);
+
+                // Second-grammar Pass-1 + type walk (skipped if the grammar is
+                // not compiled into this build).
+                if Language::Python.try_grammar().is_some() {
+                    let _ = parser.parse_source(
+                        python_parens.as_str(),
+                        Language::Python,
+                        std::path::Path::new("deep.py"),
+                    );
+                    let pytree = parse_tree(python_parens.as_str(), Language::Python);
+                    let _ = parser.extract_types(
+                        python_parens.as_str(),
+                        &pytree,
+                        Language::Python,
+                        0,
+                        python_parens.len(),
+                    );
+                }
+            });
+        }
+
+        /// Behavior-neutrality pin: the rail (and the whole pipeline) must not
+        /// truncate legitimate shallow code. A real fn-pointer edge in a
+        /// well-under-the-cap fixture must still be extracted, so a future cap
+        /// value (or off-by-one) that suppresses real edges fails here.
+        #[test]
+        fn pipeline_shallow_real_code_still_extracts() {
+            let parser = Parser::new().expect("parser init");
+            let src = "fn handler() {}\nfn build() { register(handler); }\n";
+            let (calls, _candidates) =
+                parser.extract_calls_with_candidates(src, Language::Rust, 0, src.len(), 0);
+            assert!(
+                calls.iter().any(|c| c.callee_name == "handler"),
+                "the depth rail must not suppress a real fn-pointer edge in shallow code: {calls:?}"
+            );
+        }
+    }
 }
