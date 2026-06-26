@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.50.1] - 2026-06-26
+
+### Fixed
+
+- **Windows release build (`x86_64-pc-windows-msvc`) — daemon-socket-path cfg gate.** v1.50.0's SPLADE-leg viz wired `/api/search_legs` to the retrieval daemon, computing the daemon socket path in the `serve` command. `daemon_socket_path` is unix-only (the socket is a Unix domain socket; the resolver uses `libc::getuid` for the XDG-unset fallback), but `serve` compiles on all targets, so the ungated call broke the Windows release build (E0425) — invisible in PR CI (Linux-only), caught only on the v1.50.0 tag's cross-build (and it broke `cargo install cqs` on Windows). A sibling of the #2068 daemon-client cfg-gating that this missed: the socket *path* computation is now gated too. On non-unix the `serve` process passes no daemon socket, so `/api/search_legs` degrades to the same clean 503 the cfg-gated client already returns; the rest of the read-only web UI is unaffected. No behavior change on unix; scoring untouched (recall carried from v1.50.0). v1.50.0 is yanked from crates.io in favor of this.
+
 ## [1.50.0] - 2026-06-26
 
 Completes the MCP read-tool campaign (#2021): the unconditional read-tool surface grows from 19 to 30 (34 with `CQS_MCP_ENABLE_MUTATIONS`), every tool riding the existing command cores with no per-tool reimplementation. Also adds the SPLADE↔dense fusion mechanism visualization (Stages 1 + 2a), formalizes the spec-fidelity-auditor, and lands a cluster of daemon / serve / index correctness and security fixes — notably `cqs index --umap` on WSL `/mnt/c`. The scoring path is byte-identical to v1.49.0 — a same-corpus binary A/B (v1.49.0 vs current on the same index) returned identical R@K, so the recall shift vs the prior snapshot is corpus growth, not a scoring change.
@@ -3913,6 +3919,7 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[1.50.1]: https://github.com/jamie8johnson/cqs/compare/v1.50.0...v1.50.1
 [1.50.0]: https://github.com/jamie8johnson/cqs/compare/v1.49.0...v1.50.0
 [1.49.0]: https://github.com/jamie8johnson/cqs/compare/v1.48.0...v1.49.0
 [1.48.0]: https://github.com/jamie8johnson/cqs/compare/v1.47.0...v1.48.0
