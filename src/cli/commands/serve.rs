@@ -109,10 +109,17 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
 
     // The retrieval daemon's socket — `/api/search_legs` forwards to it (the
     // serve process holds no embedder/index, so mechanism mode requires
-    // `cqs watch --serve`). Same path resolution the CLI client uses.
-    let daemon_socket = cqs::daemon_translate::daemon_socket_path(&cqs_dir);
+    // `cqs watch --serve`). Same path resolution the CLI client uses. The
+    // socket is a Unix domain socket and `daemon_socket_path` is unix-only; on
+    // non-unix targets the daemon-client transport is unavailable, so no socket
+    // is passed and `/api/search_legs` degrades to a clean 503 (mirrors the
+    // cfg-gated daemon client). The rest of the read-only web UI is unaffected.
+    #[cfg(unix)]
+    let daemon_socket = Some(cqs::daemon_translate::daemon_socket_path(&cqs_dir));
+    #[cfg(not(unix))]
+    let daemon_socket: Option<std::path::PathBuf> = None;
 
-    cqs::serve::run_server(store, bind_addr, false, auth, Some(daemon_socket))
+    cqs::serve::run_server(store, bind_addr, false, auth, daemon_socket)
 }
 
 /// Reject URLs containing shell metacharacters before handing them to
