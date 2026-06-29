@@ -830,7 +830,7 @@ dependencies = [
  "hnsw_rs",
  "httpmock",
  "ignore",
- "indicatif 0.18.4",
+ "indicatif 0.18.5",
  "insta",
  "libc",
  "log",
@@ -2209,9 +2209,9 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.18.4"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
+checksum = "993f007684f2e9727160da8b960ec161264703bfd1af084fd2e34d040c9a0dd4"
 dependencies = [
  "console 0.16.2",
  "portable-atomic",
@@ -4436,7 +4436,7 @@ dependencies = [
  "esaxx-rs",
  "getrandom 0.3.4",
  "hf-hub",
- "indicatif 0.18.4",
+ "indicatif 0.18.5",
  "itertools",
  "log",
  "macro_rules_attribute",
