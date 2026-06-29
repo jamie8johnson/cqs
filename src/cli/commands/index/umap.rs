@@ -769,6 +769,7 @@ mod tests {
     /// paths so the test is portable across the dev workstation and CI
     /// runners that lack umap-learn.
     #[test]
+    #[serial]
     fn run_umap_projection_returns_zero_for_empty_corpus() {
         let (store, db_path, _tmp) = fresh_empty_store(8);
         let result = run_umap_projection(&store, &db_path, true);
@@ -803,6 +804,7 @@ mod tests {
     /// temp dir available (the normal case on this workstation) the decision
     /// is `StageVia`.
     #[test]
+    #[serial]
     fn decide_staging_wsl_mount_selects_staging_when_fast_disk_available() {
         let slow_db = Path::new("/mnt/c/Projects/cqs/.cqs/slots/gemma/index.db");
         // Only meaningful when this host actually exposes a fast temp dir
@@ -908,6 +910,7 @@ mod tests {
     /// — including data still resident in the WAL at copy time, which the
     /// copy's read-only open replays.
     #[test]
+    #[serial]
     fn staged_read_matches_direct_read() {
         let dim = 8usize;
         let (store, db_path, _tmp) = fresh_empty_store(dim);
@@ -956,6 +959,7 @@ mod tests {
     /// eagerly (the `TempPath` only owns the main `.db`); a regression there
     /// would silently accumulate files across repeated `--umap` runs.
     #[test]
+    #[serial]
     fn staged_copy_cleans_up_sidecars() {
         let dim = 8usize;
         let (store, db_path, _tmp) = fresh_empty_store(dim);
