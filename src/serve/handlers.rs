@@ -321,6 +321,26 @@ pub(crate) async fn search_legs(
     search_legs_dispatch(state, socket, params).await
 }
 
+/// Build the daemon argv for a `search-legs` forward. The flags go first, then
+/// a `--` end-of-options terminator, then the client query as the trailing
+/// positional — so a query supplied by the untrusted web client that begins
+/// with `-` / `--` is parsed by the daemon-side clap as the positional query,
+/// never as a daemon flag. Without the terminator a query like
+/// `--limit 9999` or `--path /etc` would inject flags into the forwarded
+/// command.
+fn build_search_legs_daemon_args(q: &str, k: usize, splade_alpha: Option<f32>) -> Vec<String> {
+    let mut args = vec!["--limit".to_string(), k.to_string()];
+    if let Some(alpha) = splade_alpha {
+        args.push("--splade-alpha".to_string());
+        args.push(alpha.to_string());
+    }
+    // End-of-options: everything after this is positional, so the query can
+    // never be read as a flag regardless of its leading characters.
+    args.push("--".to_string());
+    args.push(q.to_string());
+    args
+}
+
 /// The daemon round-trip half of [`search_legs`], split out so the unix-only
 /// daemon-client path can be cfg-gated independently of the request validation
 /// above. The daemon client speaks a Unix domain socket (`std::os::unix::net`),
@@ -336,11 +356,7 @@ async fn search_legs_dispatch(
     // Build the daemon argv: the verb is supplied by the client; these are the
     // tokens after it. Clamp `k` to the same bound the name-search handler uses.
     let k = params.k.clamp(1, 200);
-    let mut args = vec![params.q.clone(), "--limit".to_string(), k.to_string()];
-    if let Some(alpha) = params.splade_alpha {
-        args.push("--splade-alpha".to_string());
-        args.push(alpha.to_string());
-    }
+    let args = build_search_legs_daemon_args(&params.q, k, params.splade_alpha);
 
     // The daemon round-trip is blocking socket I/O; run it off the async
     // executor. The permit cap shares the same semaphore the SQL handlers use

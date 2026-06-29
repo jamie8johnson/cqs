@@ -1800,9 +1800,25 @@ async fn search_legs_forwards_daemon_legs_response() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(args[0], "parse config");
-    assert!(args.contains(&"--limit".to_string()) && args.contains(&"5".to_string()));
-    assert!(args.contains(&"--splade-alpha".to_string()) && args.contains(&"0.4".to_string()));
+    // The client query is the trailing positional behind a `--` end-of-options
+    // terminator, never args[0] — so a query that begins with `-`/`--` cannot be
+    // parsed as a daemon flag (flag-injection defense). The real flags precede
+    // the terminator and still parse.
+    let dd = args
+        .iter()
+        .rposition(|a| a == "--")
+        .expect("daemon argv must carry a `--` end-of-options terminator");
+    assert_eq!(args.last().unwrap(), "parse config");
+    assert_eq!(
+        dd,
+        args.len() - 2,
+        "query must be the lone token after `--`"
+    );
+    assert!(args[..dd].contains(&"--limit".to_string()) && args[..dd].contains(&"5".to_string()));
+    assert!(
+        args[..dd].contains(&"--splade-alpha".to_string())
+            && args[..dd].contains(&"0.4".to_string())
+    );
 }
 
 #[cfg(unix)]
