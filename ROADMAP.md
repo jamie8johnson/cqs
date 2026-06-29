@@ -1,5 +1,9 @@
 # Roadmap
 
+## Released: v1.51.0 (2026-06-29, crates.io + GitHub Release)
+
+**SPLADE-viz Stage 2b** (the eval-gold "where hybrid wins" tour + R@K-delta panel, #2087, live-verified) + **four security fixes from a post-v1.50.1 red-team pass** (#2086 A/B/C: the leading-directive `ignore all previous` gap, the comment-marker strip-set, the unscanned full-file `read` relay; #2088 D: the `/api/search_legs` flag-injection — 4 confirmed / 0 false-positive, the heuristic widening empirically proven inert at 0 newly-flagged on the 17.5k corpus). A per-category α sweep confirmed the SPLADE conceptual-tax the viz surfaces does **not** survive the full production pipeline, so no retune (#2085 closed). Scoring **byte-identical** to v1.50.1 (empty scoring diff) → recall carries **47.2/70.7/86.7**; the cross-build dry-run validated all 3 platforms before tagging.
+
 ## Released: v1.50.1 (2026-06-26, crates.io + GitHub Release)
 
 Shipped the post-v1.49.0 autopilot/ultracode arc as v1.50.0, then patched a Windows cross-build break in **v1.50.1** (`serve.rs` referenced unix-only `daemon_socket_path` ungated → win `E0425` + broke `cargo install` on Windows; cfg-gated in #2083, validated by a pre-tag cross-build dry-run; v1.50.0 yanked). **Recall gate PASSED** — a same-corpus binary A/B (v1.49.0 binary vs current on the same index) returned identical R@K, so scoring is byte-identical to v1.49.0; agg **47.2/70.7/86.7** (the shift vs the prior 72.0 R@5 is corpus growth, 16.9k→17.5k chunks, 0 dead golds). Highlights:
