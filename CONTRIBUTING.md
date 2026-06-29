@@ -451,7 +451,7 @@ src/
     query.rs    - Query normalization for training pairs
   serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
     mod.rs      - run_server, build_router, server wiring
-    handlers.rs - axum route handlers (search, search_legs, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
+    handlers.rs - axum route handlers (search, search_legs, eval_gold, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
     daemon_client.rs - Synchronous client of the retrieval daemon socket; `/api/search_legs` (SPLADE-fusion inspector) forwards to the daemon rather than loading the embedder/index into the web process
     data.rs     - Wire-format types + builders for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention); wire-shaping only — SQL lives in store/serve_queries.rs
     error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses (incl. 503 ServiceUnavailable for daemon-down mechanism mode)

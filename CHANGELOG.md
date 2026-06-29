@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.51.0] - 2026-06-28
+
+The SPLADE-viz Stage 2b feature plus four security fixes from a post-v1.50.1 red-team pass (4 confirmed findings / 0 false positives across serve / MCP / relay / parse / path). The scoring path is byte-identical to v1.50.1 (the diff touches only the injection scanner, the read/serve relay surfaces, and docs) — retrieval is unchanged (47.2 / 70.7 / 86.7 R@1/R@5/R@20).
+
 ### Added
 
-- **SPLADE-viz Stage 2b — eval-gold "where hybrid wins" tour + R@K-delta panel.** Builds on the Stage 1 `search_legs` backend and the Stage 2a mechanism step-through. A new `GET /api/eval_gold` route serves the v3.v2 eval set (218 golds) resolved to current chunk ids (by `(origin, name)`, the eval harness's match key), and the cluster-3d view gains a **gold-tour mode**: a stratified walk — one anchor per category, *including* the zero/negative-uplift ones (conceptual_search, multi_step) — that fetches the legs per gold and renders the dense-leg→fused-leg rank movement as text on a dimmed base (`gold: dense #121 → fused #2 + rescued`), plus an **R@K-delta panel** showing the per-category net (rescued − hurt) @K=5. The standalone legs analysis it visualizes: SPLADE fusion nets **+9 queries @5** (21 rescued / 12 hurt) over dense-alone, winning on literal/structural/type queries (type_filtered +4) and losing on conceptual ones (conceptual_search −4) — and a per-category α sweep confirmed that tax does **not** survive the full production pipeline (FTS/RRF + MMR + boosts), so no retune is warranted; the viz teaches the mechanism, orthogonal to tuning.
+- **SPLADE-viz Stage 2b — eval-gold "where hybrid wins" tour + R@K-delta panel.** Builds on the Stage 1 `search_legs` backend and the Stage 2a mechanism step-through. A new `GET /api/eval_gold` route serves the v3.v2 eval set (218 golds) resolved to current chunk ids (by `(origin, name)`, the eval harness's match key), and the cluster-3d view gains a **gold-tour mode**: a stratified walk — one anchor per category, *including* the zero/negative-uplift ones (conceptual_search, multi_step) — that fetches the legs per gold and renders the dense-leg→fused-leg rank movement as text on a dimmed base (`gold: dense #121 → fused #2 + rescued`), plus an **R@K-delta panel** showing the per-category net (rescued − hurt) @K=5. The standalone legs analysis it visualizes: SPLADE fusion nets **+9 queries @5** (21 rescued / 12 hurt) over dense-alone, winning on literal/structural/type queries (type_filtered +4) and losing on conceptual ones (conceptual_search −4) — and a per-category α sweep confirmed that tax does **not** survive the full production pipeline (FTS/RRF + MMR + boosts), so no retune is warranted; the viz teaches the mechanism, orthogonal to tuning. Builds on the Stage 1 `search_legs` backend and the Stage 2a mechanism step-through. A new `GET /api/eval_gold` route serves the v3.v2 eval set (218 golds) resolved to current chunk ids (by `(origin, name)`, the eval harness's match key), and the cluster-3d view gains a **gold-tour mode**: a stratified walk — one anchor per category, *including* the zero/negative-uplift ones (conceptual_search, multi_step) — that fetches the legs per gold and renders the dense-leg→fused-leg rank movement as text on a dimmed base (`gold: dense #121 → fused #2 + rescued`), plus an **R@K-delta panel** showing the per-category net (rescued − hurt) @K=5. The standalone legs analysis it visualizes: SPLADE fusion nets **+9 queries @5** (21 rescued / 12 hurt) over dense-alone, winning on literal/structural/type queries (type_filtered +4) and losing on conceptual ones (conceptual_search −4) — and a per-category α sweep confirmed that tax does **not** survive the full production pipeline (FTS/RRF + MMR + boosts), so no retune is warranted; the viz teaches the mechanism, orthogonal to tuning.
 
 ### Security
 
@@ -3928,6 +3932,7 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[1.51.0]: https://github.com/jamie8johnson/cqs/compare/v1.50.1...v1.51.0
 [1.50.1]: https://github.com/jamie8johnson/cqs/compare/v1.50.0...v1.50.1
 [1.50.0]: https://github.com/jamie8johnson/cqs/compare/v1.49.0...v1.50.0
 [1.49.0]: https://github.com/jamie8johnson/cqs/compare/v1.48.0...v1.49.0
