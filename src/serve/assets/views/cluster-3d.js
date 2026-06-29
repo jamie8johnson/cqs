@@ -74,11 +74,29 @@
     dense: "#4a86e8", // blue    — dense leg
     splade: "#e0529c", // magenta — SPLADE-only / dense-low pulls
     fused: "#f5a623", // amber   — fusion elevated over dense-alone
+    gold: "#ffd34d", // bright   — the eval-gold chunk (Stage-2b tour)
     dimmed: "rgba(120,130,150,0.16)", // dimmed base layer
   };
 
   // Number of top entries per leg used to drive the step-through highlight.
   const MECH_TOP_K = 20;
+
+  // The R@K window for the honest "where hybrid wins" signal. A win/loss is a
+  // top-K presence FLIP of the gold between the dense-alone leg and the fused
+  // leg: rescued = gold absent from dense top-K but present in fused top-K;
+  // hurt = present in dense top-K but absent from fused top-K. K=5 matches the
+  // ground-truth reference the tour is validated against.
+  const TOUR_K = 5;
+
+  // Per-category anchors the tour prefers when a matching query is present, so
+  // the stratified walk reliably surfaces the canonical showcases — including
+  // the honest NEGATIVE (conceptual_search, where fusion hurts the gold). Match
+  // is case-insensitive prefix; any category without a pin falls back to its
+  // first gold-resolved query.
+  const TOUR_SHOWCASE = {
+    type_filtered: "method implementations on the store struct",
+    conceptual_search: "reciprocal rank fusion",
+  };
 
   function colorByType(kind) {
     return TYPE_COLORS[kind] || "#999";
@@ -127,6 +145,32 @@
     mechStep: 0,
     mechRole: new Map(),
     mechPanel: null,
+
+    // ── Stage-2b eval-gold tour ───────────────────────────────────────────
+    // The "where hybrid wins" stratified walk + R@K-delta panel. Shares the
+    // dimmed-base renderer with mechanism mode but is a SEPARATE mode (the two
+    // are mutually exclusive; entering one clears the other).
+    // `tourActive` gates the tour's dimmed-base highlight + text-win panel.
+    // `tourQueries` is the full `/api/eval_gold` set (every gold for the sweep).
+    // `tourAnchors` is the stratified one-per-category walk (the step-through).
+    // `tourStep` indexes `tourAnchors`.
+    // `tourRole` maps chunk_id → role ("gold"|"dense"|"fused") for the active
+    //   anchor only; recomputed per step.
+    // `tourLegsCache` memoizes `/api/search_legs` by query string so stepping
+    //   back and the R@K sweep don't refetch.
+    // `tourPanelMode` is "walk" (per-anchor text win) or "rk" (the per-category
+    //   R@K-delta table).
+    // `rkRows` holds the per-category aggregates; `rkGen` cancels a stale sweep.
+    tourActive: false,
+    tourQueries: [],
+    tourAnchors: [],
+    tourStep: 0,
+    tourRole: new Map(),
+    tourLegsCache: new Map(),
+    tourPanelMode: "walk",
+    rkRows: null,
+    rkGen: 0,
+    rkSweeping: false,
 
     async init(container, options) {
       this.container = container;
@@ -208,12 +252,12 @@
         .backgroundColor("#0d1117")
         .nodeLabel((n) => this.nodeLabelText(n))
         .nodeColor((n) => {
-          // Mechanism mode overrides the base palette: dimmed base layer with
-          // the active step's role chunks lit. Selection still wins so a
-          // clicked chunk stays findable.
-          if (this.mechActive) {
+          // Mechanism mode and the eval-gold tour both override the base
+          // palette: dimmed base layer with the active step's role chunks lit.
+          // Selection still wins so a clicked chunk stays findable.
+          if (this.mechActive || this.tourActive) {
             if (this.selected === n.id) return "#fff";
-            const role = this.mechRole.get(n.id);
+            const role = this.dimRole().get(n.id);
             if (role) return MECH_COLORS[role] || MECH_COLORS.dense;
             return MECH_COLORS.dimmed;
           }
@@ -225,11 +269,11 @@
             : colorByType(n.kind);
         })
         .nodeVal((n) => {
-          // In mech mode, inflate role chunks so the lit set reads against the
-          // dimmed base; base nodes shrink so the highlight carries.
-          if (this.mechActive) {
+          // In a dimmed-base mode, inflate role chunks so the lit set reads
+          // against the dimmed base; base nodes shrink so the highlight carries.
+          if (this.mechActive || this.tourActive) {
             const base = Math.pow(nodeRadius(n.callers), 2);
-            return this.mechRole.has(n.id) ? base * 3.5 : base * 0.5;
+            return this.dimRole().has(n.id) ? base * 3.5 : base * 0.5;
           }
           return Math.pow(nodeRadius(n.callers), 2);
         })
@@ -274,12 +318,18 @@
       if (this.graph) this.graph.refresh();
     },
 
-    // Hover/label text. In mechanism mode, append the per-leg roles so the
+    // The role map the dimmed-base renderer reads — mechanism mode and the
+    // eval-gold tour each own one, and they're mutually exclusive.
+    dimRole() {
+      return this.tourActive ? this.tourRole : this.mechRole;
+    },
+
+    // Hover/label text. In a dimmed-base mode, append the active role so the
     // tooltip carries the mechanism even before the panel is read.
     nodeLabelText(n) {
       const base = `${n.name} · ${n.kind} · ${n.language} · ${n.callers} callers`;
-      if (!this.mechActive) return base;
-      const role = this.mechRole.get(n.id);
+      if (!this.mechActive && !this.tourActive) return base;
+      const role = this.dimRole().get(n.id);
       const roleTag = role ? ` · [${role}]` : "";
       return base + roleTag;
     },
@@ -292,6 +342,9 @@
     // 503 and the "fusion did not run" (legs:null) cases without crashing.
     async runMechanism(query) {
       if (!this.graph) return;
+      // Mechanism mode and the eval-gold tour are mutually exclusive dimmed-base
+      // modes — leave the tour before entering the query-anchored step-through.
+      if (this.tourActive) this.clearTour();
       const q = (query || "").trim();
       if (q.length < 2) {
         this.clearMechanism();
@@ -628,6 +681,580 @@
       });
     },
 
+    // ── Stage-2b eval-gold tour ───────────────────────────────────────────
+    // The honest "where hybrid wins" walk. For each gold query it reads the
+    // gold chunk's rank in the FUSED leg vs the DENSE-alone leg (per-query,
+    // @K=TOUR_K, attributable to fusion — NOT a per-chunk +/- color). The
+    // default walk is stratified (one anchor per category, ALL categories
+    // including the zero/negative ones), and the R@K-delta panel aggregates the
+    // net fused-vs-dense flips per category over the full gold set.
+
+    // Entry point: load the eval-gold set, build the stratified anchors, and
+    // show anchor 1. Degrades cleanly on 503 (no eval set / daemon down) and on
+    // an empty set — no crash.
+    async runGoldTour() {
+      if (!this.graph) return;
+      // Mutually exclusive with mechanism mode.
+      if (this.mechActive) this.clearMechanism();
+      this.ensureMechPanel();
+      this.mechSetPanelHtml(
+        `<div class="mech-status">loading eval-gold set…</div>`,
+      );
+
+      let resp;
+      try {
+        resp = await fetch("/api/eval_gold");
+      } catch (e) {
+        this.mechSetPanelHtml(
+          `<div class="mech-status error">eval-gold fetch error: ${escapeHtml(e.message)}</div>`,
+        );
+        return;
+      }
+      if (resp.status === 503) {
+        let msg = "no eval-gold set at the served root";
+        try {
+          const b = await resp.text();
+          if (b) {
+            try {
+              msg = JSON.parse(b).detail || msg;
+            } catch (_e) {
+              msg = b.slice(0, 240);
+            }
+          }
+        } catch (_e) {
+          /* keep default */
+        }
+        this.mechSetPanelHtml(
+          `<div class="mech-status error">gold tour unavailable (503): ${escapeHtml(msg)}</div>`,
+        );
+        return;
+      }
+      if (!resp.ok) {
+        let b = "";
+        try {
+          b = await resp.text();
+        } catch (_e) {
+          /* ignore */
+        }
+        this.mechSetPanelHtml(
+          `<div class="mech-status error">eval-gold HTTP ${resp.status}: ${escapeHtml(b.slice(0, 200))}</div>`,
+        );
+        return;
+      }
+      let data;
+      try {
+        data = await resp.json();
+      } catch (e) {
+        this.mechSetPanelHtml(
+          `<div class="mech-status error">eval-gold parse error: ${escapeHtml(e.message)}</div>`,
+        );
+        return;
+      }
+
+      this.tourQueries = Array.isArray(data.queries) ? data.queries : [];
+      this.tourCategories = Array.isArray(data.categories)
+        ? data.categories
+        : [];
+      this.tourResolved = data.resolved || 0;
+      this.tourTotal = data.total || this.tourQueries.length;
+      if (!this.tourQueries.length) {
+        this.mechSetPanelHtml(
+          `<div class="mech-status">eval-gold set is empty (no usable golds at the served root).</div>`,
+        );
+        return;
+      }
+
+      this.tourAnchors = this.buildTourAnchors();
+      this.tourLegsCache = new Map();
+      this.rkRows = null;
+      this.rkProgress = null;
+      this.rkSweeping = false;
+      this.rkGen += 1; // strand any sweep left running from a prior tour session
+      this.tourActive = true;
+      this.tourPanelMode = "walk";
+      this.tourStep = 0;
+      await this.tourSetStep(0);
+    },
+
+    // One anchor per category, in the payload's canonical order, preferring a
+    // showcase query when present so the walk reliably surfaces the canonical
+    // wins AND the honest negative (conceptual_search). Falls back to the first
+    // gold-resolved query in the category, then the first query.
+    buildTourAnchors() {
+      const byCat = new Map();
+      for (const q of this.tourQueries) {
+        if (!byCat.has(q.category)) byCat.set(q.category, []);
+        byCat.get(q.category).push(q);
+      }
+      const order =
+        this.tourCategories && this.tourCategories.length
+          ? this.tourCategories
+          : Array.from(byCat.keys());
+      const anchors = [];
+      for (const cat of order) {
+        const list = byCat.get(cat);
+        if (!list || !list.length) continue;
+        const showcase = TOUR_SHOWCASE[cat];
+        let pick = null;
+        if (showcase) {
+          pick = list.find((q) =>
+            (q.query || "").toLowerCase().startsWith(showcase),
+          );
+        }
+        if (!pick)
+          pick = list.find((q) => (q.gold_chunk_ids || []).length > 0);
+        if (!pick) pick = list[0];
+        anchors.push(pick);
+      }
+      return anchors;
+    },
+
+    // Fetch the three legs for one query. Returns a tagged result the panel
+    // renders without throwing: ok / no-fusion / daemon-down / http-error /
+    // parse-error / error. Shares the daemon envelope-peel with mechanism mode.
+    async fetchSearchLegs(query) {
+      const q = (query || "").trim();
+      if (q.length < 2) return { state: "empty" };
+      let resp;
+      try {
+        resp = await fetch(
+          `/api/search_legs?q=${encodeURIComponent(q)}&k=${TOUR_K}`,
+        );
+      } catch (e) {
+        return { state: "error", message: e.message };
+      }
+      if (resp.status === 503) {
+        let msg = "retrieval daemon required (cqs watch --serve)";
+        try {
+          const b = await resp.text();
+          if (b) msg = b.slice(0, 240);
+        } catch (_e) {
+          /* keep default */
+        }
+        return { state: "daemon-down", message: msg };
+      }
+      if (!resp.ok) {
+        let b = "";
+        try {
+          b = await resp.text();
+        } catch (_e) {
+          /* ignore */
+        }
+        return {
+          state: "http-error",
+          message: `HTTP ${resp.status}: ${b.slice(0, 160)}`,
+        };
+      }
+      let body;
+      try {
+        body = await resp.json();
+      } catch (e) {
+        return { state: "parse-error", message: e.message };
+      }
+      const d = body && body.data ? body.data : body;
+      const results = Array.isArray(d.results) ? d.results : [];
+      if (!d.legs) return { state: "no-fusion", query: d.query || q, results };
+      const legs = {
+        dense: Array.isArray(d.legs.dense) ? d.legs.dense : [],
+        sparse: Array.isArray(d.legs.sparse) ? d.legs.sparse : [],
+        fused: Array.isArray(d.legs.fused) ? d.legs.fused : [],
+      };
+      return { state: "ok", query: d.query || q, legs, results };
+    },
+
+    // Memoizing legs fetch — the walk (step back/forth) and the R@K sweep share
+    // it so a query is never sent twice. Only terminal states cache; a network
+    // blip stays retryable.
+    async cachedLegs(query) {
+      if (this.tourLegsCache.has(query)) return this.tourLegsCache.get(query);
+      const fetched = await this.fetchSearchLegs(query);
+      if (fetched.state === "ok" || fetched.state === "no-fusion") {
+        this.tourLegsCache.set(query, fetched);
+      }
+      return fetched;
+    },
+
+    // Move the walk to anchor `s`: dim the base, fetch its legs, recompute the
+    // gold roles, pan to the gold, render the text win. Guards against a step
+    // change while awaiting (the late response is dropped).
+    async tourSetStep(s) {
+      if (!this.tourActive || !this.tourAnchors.length) return;
+      this.tourStep = Math.max(0, Math.min(this.tourAnchors.length - 1, s));
+      this.tourPanelMode = "walk";
+      const anchor = this.tourAnchors[this.tourStep];
+
+      this.tourRole = this.computeTourRoles(null, anchor.gold_chunk_ids);
+      if (this.graph) this.graph.refresh();
+      this.renderTourWalk({ state: "loading" }, anchor);
+
+      const fetched = await this.cachedLegs(anchor.query);
+      if (!this.tourActive || this.tourAnchors[this.tourStep] !== anchor) return;
+
+      if (fetched.state === "ok") {
+        this.tourRole = this.computeTourRoles(
+          fetched.legs,
+          anchor.gold_chunk_ids,
+        );
+        if (this.graph) this.graph.refresh();
+        this.focusGold(anchor.gold_chunk_ids);
+      } else {
+        this.tourRole = this.computeTourRoles(null, anchor.gold_chunk_ids);
+        if (this.graph) this.graph.refresh();
+      }
+      this.renderTourWalk(fetched, anchor);
+    },
+
+    // Pan the camera to the first resolved gold that's loaded in the cluster.
+    focusGold(goldIds) {
+      for (const id of goldIds || []) {
+        if (this.nodeIds.has(id)) {
+          this.onNodeFocus(id);
+          return;
+        }
+      }
+    },
+
+    // The honest per-query metric: the gold's rank in the dense-alone leg vs the
+    // fused leg, classified by a top-TOUR_K presence FLIP.
+    //   rescued = gold below TOUR_K in dense, inside top-TOUR_K after fusion
+    //   hurt    = gold inside top-TOUR_K in dense, below TOUR_K after fusion
+    //   neutral = no flip across the TOUR_K boundary
+    //   unresolved = the gold (origin,name) didn't resolve in the served index
+    // `rank == 0` means absent from the leg; the best (lowest) rank across the
+    // resolved ids wins when an (origin,name) maps to more than one chunk.
+    computeGoldDelta(legs, goldIds) {
+      const idSet = new Set(goldIds || []);
+      if (idSet.size === 0) {
+        return { denseRank: 0, fusedRank: 0, classification: "unresolved" };
+      }
+      let denseRank = 0;
+      for (const e of legs.dense) {
+        if (idSet.has(e.chunk_id) && e.present_in_pool && e.rank > 0) {
+          if (denseRank === 0 || e.rank < denseRank) denseRank = e.rank;
+        }
+      }
+      let fusedRank = 0;
+      for (const e of legs.fused) {
+        if (idSet.has(e.chunk_id) && e.rank > 0) {
+          if (fusedRank === 0 || e.rank < fusedRank) fusedRank = e.rank;
+        }
+      }
+      const denseTop = denseRank >= 1 && denseRank <= TOUR_K;
+      const fusedTop = fusedRank >= 1 && fusedRank <= TOUR_K;
+      let classification;
+      if (!denseTop && fusedTop) classification = "rescued";
+      else if (denseTop && !fusedTop) classification = "hurt";
+      else classification = "neutral";
+      return { denseRank, fusedRank, classification };
+    },
+
+    // Role map for the dimmed-base highlight on one anchor: the gold (always
+    // lit, top priority), the dense top neighborhood, and the fused-elevated
+    // neighborhood. Pure highlight context — the win itself rides the text.
+    computeTourRoles(legs, goldIds) {
+      const roles = new Map();
+      if (legs) {
+        const denseTop = legs.dense
+          .filter((e) => e.present_in_pool && e.rank > 0)
+          .slice(0, MECH_TOP_K);
+        for (const e of denseTop) roles.set(e.chunk_id, "dense");
+
+        const denseRankById = new Map();
+        for (const e of legs.dense) denseRankById.set(e.chunk_id, e.rank || 0);
+        const fusedTop = legs.fused
+          .filter((e) => e.rank > 0)
+          .slice(0, MECH_TOP_K);
+        for (const e of fusedTop) {
+          const dr = denseRankById.get(e.chunk_id) || 0;
+          const elevated = dr === 0 || e.rank < dr;
+          if (elevated) roles.set(e.chunk_id, "fused");
+          else if (!roles.has(e.chunk_id)) roles.set(e.chunk_id, "dense");
+        }
+      }
+      for (const id of goldIds || []) roles.set(id, "gold");
+      return roles;
+    },
+
+    // Switch the panel to the R@K-delta table; kick off the sweep on first view.
+    showRkPanel() {
+      if (!this.tourActive) return;
+      this.tourPanelMode = "rk";
+      if (this.rkRows === null && !this.rkSweeping) {
+        this.runRkSweep();
+      } else {
+        this.renderRkPanel();
+      }
+    },
+
+    // Sweep the full gold set through the daemon, aggregating the net
+    // fused-vs-dense flips per category @K=TOUR_K. Sequential (one daemon
+    // round-trip at a time) and incremental (re-renders as it goes). A
+    // generation counter cancels a stale sweep when the user clears or restarts.
+    // Aborts cleanly the moment the daemon is unreachable.
+    async runRkSweep() {
+      const gen = ++this.rkGen;
+      this.rkSweeping = true;
+      const rows = new Map();
+      const ensureRow = (c) => {
+        if (!rows.has(c)) {
+          rows.set(c, {
+            rescued: 0,
+            hurt: 0,
+            neutral: 0,
+            unresolved: 0,
+            noFusion: 0,
+            error: 0,
+            total: 0,
+          });
+        }
+        return rows.get(c);
+      };
+      for (const c of this.tourCategories) ensureRow(c);
+      this.rkRows = rows;
+      this.rkProgress = {
+        done: 0,
+        total: this.tourQueries.length,
+        daemonDown: false,
+      };
+      this.renderRkPanel();
+
+      for (const q of this.tourQueries) {
+        if (gen !== this.rkGen || !this.tourActive) return; // cancelled
+        const row = ensureRow(q.category || "—");
+        row.total += 1;
+        const ids = q.gold_chunk_ids || [];
+        if (ids.length === 0) {
+          row.unresolved += 1;
+        } else {
+          const fetched = await this.cachedLegs(q.query);
+          if (gen !== this.rkGen || !this.tourActive) return;
+          if (fetched.state === "ok") {
+            const d = this.computeGoldDelta(fetched.legs, ids);
+            if (d.classification === "rescued") row.rescued += 1;
+            else if (d.classification === "hurt") row.hurt += 1;
+            else row.neutral += 1;
+          } else if (fetched.state === "no-fusion") {
+            row.noFusion += 1;
+          } else if (fetched.state === "daemon-down") {
+            this.rkProgress.daemonDown = true;
+            this.rkSweeping = false;
+            this.renderRkPanel();
+            return; // no daemon — stop, keep partial counts
+          } else {
+            row.error += 1;
+          }
+        }
+        this.rkProgress.done += 1;
+        if (
+          this.rkProgress.done % 5 === 0 ||
+          this.rkProgress.done === this.rkProgress.total
+        ) {
+          this.renderRkPanel();
+        }
+      }
+      this.rkSweeping = false;
+      this.renderRkPanel();
+    },
+
+    // Re-bind the tour panel buttons after an innerHTML replace.
+    wireTourButtons() {
+      if (!this.mechPanel) return;
+      this.mechPanel.querySelectorAll("[data-tour]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const action = btn.getAttribute("data-tour");
+          if (action === "next") this.tourSetStep(this.tourStep + 1);
+          else if (action === "prev") this.tourSetStep(this.tourStep - 1);
+          else if (action === "clear") this.clearTour();
+          else if (action === "rk") this.showRkPanel();
+          else if (action === "walk") this.tourSetStep(this.tourStep);
+        });
+      });
+    },
+
+    // The per-anchor "walk" panel: the gold identity + the text win
+    // (dense rank → fused rank, rescued/hurt/neutral), step nav, and the link to
+    // the R@K-delta panel. The win is TEXT, never a per-chunk color.
+    renderTourWalk(fetched, anchor) {
+      this.ensureMechPanel();
+      if (!this.mechPanel) return;
+      const n = this.tourAnchors.length;
+      const stepLabel = `anchor ${this.tourStep + 1}/${n}`;
+      const cat = anchor.category || "—";
+      const split = anchor.split || "";
+      const ids = anchor.gold_chunk_ids || [];
+      const goldName = anchor.gold_name || "?";
+      const goldLoc = anchor.gold_origin || "?";
+
+      const CLASS_LABEL = {
+        rescued: { text: "rescued", sign: "+", color: MECH_COLORS.fused },
+        hurt: { text: "hurt", sign: "−", color: MECH_COLORS.splade },
+        neutral: { text: "no change @K", sign: "·", color: "#8591ab" },
+        unresolved: { text: "gold not in index", sign: "?", color: "#8591ab" },
+      };
+
+      let winHtml;
+      if (fetched.state === "loading") {
+        winHtml = `<div class="mech-status">querying legs for this gold…</div>`;
+      } else if (fetched.state === "daemon-down") {
+        winHtml = `<div class="mech-status error">retrieval daemon required for legs (cqs watch --serve): ${escapeHtml(fetched.message || "")}</div>`;
+      } else if (fetched.state === "no-fusion") {
+        winHtml = `<div class="mech-status">no SPLADE fusion ran for this query — the dense↔fused win is only defined when fusion runs.</div>`;
+      } else if (fetched.state !== "ok") {
+        winHtml = `<div class="mech-status error">legs unavailable (${escapeHtml(fetched.state)}): ${escapeHtml(fetched.message || "")}</div>`;
+      } else {
+        const d = this.computeGoldDelta(fetched.legs, ids);
+        const meta = CLASS_LABEL[d.classification] || CLASS_LABEL.neutral;
+        winHtml =
+          `<div class="tour-win" style="border-color:${meta.color}">` +
+          `<span class="tour-win-num">gold: dense ${fmtRank(d.denseRank)} → fused ${fmtRank(d.fusedRank)}</span>` +
+          `<span class="tour-win-tag" style="color:${meta.color}">${meta.sign} ${escapeHtml(meta.text)}</span>` +
+          `</div>`;
+      }
+
+      const resolvedTag = ids.length
+        ? `<span class="tour-ok">${ids.length} chunk id${ids.length > 1 ? "s" : ""}</span>`
+        : `<span class="tour-dead" title="gold (origin,name) not in the served index">dead gold</span>`;
+
+      const html =
+        `<div class="mech-panel-head">` +
+        `<div class="mech-title">gold tour · <span class="tour-cat">${escapeHtml(cat)}</span>${split ? ` <span class="tour-split">${escapeHtml(split)}</span>` : ""}</div>` +
+        `<div class="mech-steptabs">` +
+        `<button type="button" class="mech-btn" data-tour="prev"${this.tourStep === 0 ? " disabled" : ""}>‹ prev</button>` +
+        `<span class="mech-stepname">${escapeHtml(stepLabel)}</span>` +
+        `<button type="button" class="mech-btn" data-tour="next"${this.tourStep === n - 1 ? " disabled" : ""}>next ›</button>` +
+        `<button type="button" class="mech-btn mech-clear" data-tour="clear">clear</button>` +
+        `</div>` +
+        `<div class="tour-query"><code>${escapeHtml(anchor.query)}</code></div>` +
+        `<div class="tour-gold">gold: <strong>${escapeHtml(goldName)}</strong> <span class="mech-loc"><code>${escapeHtml(goldLoc)}</code></span> ${resolvedTag}</div>` +
+        winHtml +
+        `<div class="mech-legend">` +
+        `<span><span class="mech-dot" style="background:${MECH_COLORS.gold}"></span>gold</span>` +
+        `<span><span class="mech-dot" style="background:${MECH_COLORS.dense}"></span>dense top</span>` +
+        `<span><span class="mech-dot" style="background:${MECH_COLORS.fused}"></span>fused-elevated</span>` +
+        `</div>` +
+        `<div class="mech-steptabs"><button type="button" class="mech-btn" data-tour="rk">R@K-delta panel ▸</button></div>` +
+        `<div class="mech-note">Win = the gold's rank in the FUSED leg vs the DENSE-alone leg (per-query, @K=${TOUR_K}, attributable to fusion — not a per-chunk color). Plane = dense-cosine UMAP (locally faithful, globally distorted; NOT a metric). The walk steps through ALL categories, including where hybrid does NOT help.</div>` +
+        `</div>`;
+
+      this.mechPanel.style.display = "block";
+      this.mechPanel.innerHTML = html;
+      this.wireTourButtons();
+    },
+
+    // The R@K-delta panel: per-category net (rescued − hurt) @K=TOUR_K over the
+    // FULL gold set — the honest "where hybrid earns its keep", explicitly
+    // including the ~0 and negative categories (conceptual_search is the
+    // negative one; it's in the table on purpose).
+    renderRkPanel() {
+      this.ensureMechPanel();
+      if (!this.mechPanel) return;
+      const order =
+        this.tourCategories && this.tourCategories.length
+          ? this.tourCategories
+          : this.rkRows
+            ? Array.from(this.rkRows.keys())
+            : [];
+
+      let totRes = 0;
+      let totHurt = 0;
+      let totUnres = 0;
+      let totNoFus = 0;
+      const bodyRows = order
+        .map((cat) => {
+          const r = (this.rkRows && this.rkRows.get(cat)) || {
+            rescued: 0,
+            hurt: 0,
+            unresolved: 0,
+            noFusion: 0,
+          };
+          totRes += r.rescued;
+          totHurt += r.hurt;
+          totUnres += r.unresolved;
+          totNoFus += r.noFusion;
+          const net = r.rescued - r.hurt;
+          const netColor =
+            net > 0
+              ? MECH_COLORS.fused
+              : net < 0
+                ? MECH_COLORS.splade
+                : "#8591ab";
+          return (
+            `<tr>` +
+            `<td class="rk-cat">${escapeHtml(cat)}</td>` +
+            `<td class="rk-num">${r.rescued}</td>` +
+            `<td class="rk-num">${r.hurt}</td>` +
+            `<td class="rk-net" style="color:${netColor}">${net > 0 ? "+" : ""}${net}</td>` +
+            `</tr>`
+          );
+        })
+        .join("");
+      const totNet = totRes - totHurt;
+      const totColor =
+        totNet > 0
+          ? MECH_COLORS.fused
+          : totNet < 0
+            ? MECH_COLORS.splade
+            : "#8591ab";
+
+      const prog = this.rkProgress || {
+        done: 0,
+        total: this.tourQueries.length,
+        daemonDown: false,
+      };
+      let progLine = "";
+      if (this.rkSweeping) {
+        progLine = `<div class="mech-status">sweeping ${prog.done}/${prog.total} golds through the daemon…</div>`;
+      } else if (prog.daemonDown) {
+        progLine = `<div class="mech-status error">aborted: retrieval daemon required (cqs watch --serve). Partial counts below.</div>`;
+      }
+
+      const excl =
+        totUnres || totNoFus
+          ? ` (${totUnres} dead gold${totUnres === 1 ? "" : "s"}, ${totNoFus} no-fusion excluded)`
+          : "";
+
+      const html =
+        `<div class="mech-panel-head">` +
+        `<div class="mech-title">R@K-delta · net fused vs dense-alone @K=${TOUR_K}</div>` +
+        `<div class="mech-steptabs">` +
+        `<button type="button" class="mech-btn" data-tour="walk">‹ back to walk</button>` +
+        `<button type="button" class="mech-btn mech-clear" data-tour="clear">clear</button>` +
+        `</div>` +
+        progLine +
+        `<table class="rk-table"><thead><tr><th>category</th><th>resc</th><th>hurt</th><th>net</th></tr></thead><tbody>` +
+        bodyRows +
+        `<tr class="rk-total"><td>TOTAL</td><td class="rk-num">${totRes}</td><td class="rk-num">${totHurt}</td><td class="rk-net" style="color:${totColor}">${totNet > 0 ? "+" : ""}${totNet}</td></tr>` +
+        `</tbody></table>` +
+        `<div class="mech-note">net = rescued − hurt @K=${TOUR_K}. Rescue: gold below rank ${TOUR_K} in the dense-alone leg, inside top-${TOUR_K} after fusion. Hurt: the reverse. conceptual_search is the honest negative — fusion tends to hurt its gold; it's in the table on purpose.${excl}</div>` +
+        `</div>`;
+
+      this.mechPanel.style.display = "block";
+      this.mechPanel.innerHTML = html;
+      this.wireTourButtons();
+    },
+
+    // Leave the tour: restore the base palette, clear the panel, cancel any
+    // in-flight R@K sweep (the generation bump strands it).
+    clearTour() {
+      this.tourActive = false;
+      this.tourQueries = [];
+      this.tourAnchors = [];
+      this.tourStep = 0;
+      this.tourRole = new Map();
+      this.tourLegsCache = new Map();
+      this.tourPanelMode = "walk";
+      this.rkRows = null;
+      this.rkProgress = null;
+      this.rkSweeping = false;
+      this.rkGen += 1;
+      if (this.graph) this.graph.refresh();
+      if (this.mechPanel) {
+        this.mechPanel.style.display = "none";
+        this.mechPanel.innerHTML = "";
+      }
+    },
+
     onSearchHighlight(matchedIds) {
       if (!this.graph) return 0;
       this.highlighted = new Set();
@@ -709,6 +1336,18 @@
       this.mechStep = 0;
       this.mechRole = new Map();
       this.mechPanel = null;
+      // Stage-2b tour state. The generation bump strands any in-flight R@K sweep.
+      this.tourActive = false;
+      this.tourQueries = [];
+      this.tourAnchors = [];
+      this.tourStep = 0;
+      this.tourRole = new Map();
+      this.tourLegsCache = new Map();
+      this.tourPanelMode = "walk";
+      this.rkRows = null;
+      this.rkProgress = null;
+      this.rkSweeping = false;
+      this.rkGen += 1;
       if (this.container) {
         this.container.innerHTML = "";
       }

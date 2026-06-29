@@ -98,6 +98,10 @@ fn fixture_state() -> Fixture {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
+            // The eval-gold tour route has its own dedicated tests that supply
+            // a temp `eval_root`; the handler-shape fixtures leave it unset so
+            // `/api/eval_gold` 503s (its structurally-unavailable path).
+            eval_root: None,
         }),
         _dir: Some(dir),
     }
@@ -240,6 +244,10 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
+            // The eval-gold tour route has its own dedicated tests that supply
+            // a temp `eval_root`; the handler-shape fixtures leave it unset so
+            // `/api/eval_gold` 503s (its structurally-unavailable path).
+            eval_root: None,
         }),
         _dir: Some(dir),
     }
@@ -324,6 +332,10 @@ fn single_chunk_fixture(content: &str, vendored: bool) -> (Fixture, String) {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
+            // The eval-gold tour route has its own dedicated tests that supply
+            // a temp `eval_root`; the handler-shape fixtures leave it unset so
+            // `/api/eval_gold` 503s (its structurally-unavailable path).
+            eval_root: None,
         }),
         _dir: Some(dir),
     };
@@ -656,6 +668,7 @@ async fn index_html_loads_view_modules() {
         "hierarchy-depth",
         "cluster-controls",
         "cluster-color",
+        "gold-tour",
     ] {
         assert!(
             body.contains(needle),
@@ -2570,4 +2583,212 @@ fn auth_banner_non_tty_omits_token_and_hints() {
         joined.contains("per-launch") && joined.contains("terminal"),
         "non-TTY banner must hint that the token is per-launch and terminal-only: {joined}"
     );
+}
+
+// ─── /api/eval_gold (Stage-2b tour driver) ───────────────────────────────────
+
+/// Build a fixture whose store carries chunks at the given `(origin, name)`
+/// pairs and whose `eval_root` points at a temp dir holding `eval_json` as
+/// `evals/queries/v3_test.v2.json`. Returns the `Fixture` (owns the store dir +
+/// drop discipline) and the eval-root `TempDir` (caller keeps it alive for the
+/// request). Separate dirs because `Fixture` holds only one.
+fn eval_gold_fixture(chunks: &[(&str, &str)], eval_json: &str) -> (Fixture, TempDir) {
+    let store_dir = TempDir::new().expect("store tempdir");
+    let db_path = store_dir.path().join(crate::INDEX_DB_FILENAME);
+    let path_for_setup = db_path.clone();
+    let chunks_owned: Vec<(String, String)> = chunks
+        .iter()
+        .map(|(o, n)| (o.to_string(), n.to_string()))
+        .collect();
+    let ro = std::thread::spawn(move || {
+        let store = Store::open(&path_for_setup).expect("open RW");
+        store.init(&ModelInfo::default()).expect("init");
+        let dim = store.dim();
+        for (i, (origin, name)) in chunks_owned.iter().enumerate() {
+            let content = format!("fn {name}() {{ /* body */ }}");
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let chunk = Chunk {
+                id: format!("{origin}:1:{}:{i}", &hash[..8]),
+                file: PathBuf::from(origin),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.clone(),
+                signature: format!("fn {name}()"),
+                content,
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                byte_start: 0,
+                content_hash: hash,
+                canonical_hash: String::new(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            let mut v = vec![0.0f32; dim];
+            if !v.is_empty() {
+                v[i % dim] = 1.0;
+            }
+            store
+                .upsert_chunk(&chunk, &Embedding::new(v), Some(100))
+                .unwrap();
+        }
+        drop(store);
+        Store::open_readonly(&path_for_setup).expect("open RO")
+    })
+    .join()
+    .expect("OS thread join");
+
+    let eval_dir = TempDir::new().expect("eval tempdir");
+    let queries_dir = eval_dir.path().join("evals").join("queries");
+    std::fs::create_dir_all(&queries_dir).expect("mkdir evals/queries");
+    std::fs::write(queries_dir.join("v3_test.v2.json"), eval_json).expect("write eval json");
+
+    let fixture = Fixture {
+        state: Some(AppState {
+            store: Arc::new(ro),
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::limits::serve_blocking_permits(),
+            )),
+            last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            daemon_socket: None,
+            eval_root: Some(Arc::new(eval_dir.path().to_path_buf())),
+        }),
+        _dir: Some(store_dir),
+    };
+    (fixture, eval_dir)
+}
+
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eval_gold_resolves_golds_and_drops_unusable() {
+    // Two resolvable golds (chunks inserted), one dead gold (origin/name absent
+    // from the index), one query with no gold_chunk, one with an empty origin.
+    // Expect: 3 queries kept (the two no-gold/empty-origin dropped), 2 resolved,
+    // canonical category order, dead gold present with empty ids.
+    let eval_json = r#"{"queries":[
+        {"query":"method implementations on the Store struct","category":"type_filtered","gold_chunk":{"origin":"src/store/query.rs","name":"search_filtered"}},
+        {"query":"reciprocal rank fusion","category":"conceptual_search","gold_chunk":{"origin":"src/search/fusion.rs","name":"rrf_fuse"}},
+        {"query":"two step vanished gold","category":"multi_step","gold_chunk":{"origin":"src/gone.rs","name":"vanished"}},
+        {"query":"no gold here","category":"negation"},
+        {"query":"empty origin gold","category":"negation","gold_chunk":{"origin":"","name":"x"}}
+    ]}"#;
+    let (fixture, _eval_dir) = eval_gold_fixture(
+        &[
+            ("src/store/query.rs", "search_filtered"),
+            ("src/search/fusion.rs", "rrf_fuse"),
+        ],
+        eval_json,
+    );
+    let app = test_router(fixture.state());
+    let (status, json) = get_json(app, "/api/eval_gold").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["total"].as_u64(),
+        Some(3),
+        "two unusable queries dropped"
+    );
+    assert_eq!(json["resolved"].as_u64(), Some(2), "dead gold not resolved");
+
+    let cats: Vec<&str> = json["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cats,
+        vec!["type_filtered", "conceptual_search", "multi_step"],
+        "categories must be in canonical order, negation dropped (its queries were unusable)"
+    );
+
+    let queries = json["queries"].as_array().unwrap();
+    assert_eq!(queries.len(), 3);
+
+    // Resolvable gold: at least one id, prefixed by its origin.
+    let store_q = queries
+        .iter()
+        .find(|q| q["gold_name"] == "search_filtered")
+        .expect("search_filtered query present");
+    let ids = store_q["gold_chunk_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 1, "exactly one chunk matches the gold");
+    assert!(
+        ids[0].as_str().unwrap().starts_with("src/store/query.rs:"),
+        "resolved id must belong to the gold origin: {:?}",
+        ids[0]
+    );
+
+    // Dead gold: kept but unresolved (empty ids), not faked.
+    let dead = queries
+        .iter()
+        .find(|q| q["gold_name"] == "vanished")
+        .expect("dead gold query present");
+    assert_eq!(
+        dead["gold_chunk_ids"].as_array().unwrap().len(),
+        0,
+        "dead gold must resolve to no ids, not a fabricated rank"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eval_gold_503_when_no_root() {
+    // The default handler-shape fixture leaves eval_root unset → structurally
+    // unavailable → clean 503, never a 500 or an empty 200.
+    let fixture = fixture_state();
+    let app = test_router(fixture.state());
+    let (status, _json) = get_json(app, "/api/eval_gold").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eval_gold_503_when_fixtures_absent() {
+    // eval_root is set but the dir holds no evals/queries fixtures → 503, so the
+    // tour degrades to "no eval set here" rather than a misleading empty success.
+    let store_dir = TempDir::new().expect("store tempdir");
+    let db_path = store_dir.path().join(crate::INDEX_DB_FILENAME);
+    let path_for_setup = db_path.clone();
+    let ro = std::thread::spawn(move || {
+        let store = Store::open(&path_for_setup).expect("open RW");
+        store.init(&ModelInfo::default()).expect("init");
+        drop(store);
+        Store::open_readonly(&path_for_setup).expect("open RO")
+    })
+    .join()
+    .expect("OS thread join");
+    let empty_root = TempDir::new().expect("empty eval root");
+    let fixture = Fixture {
+        state: Some(AppState {
+            store: Arc::new(ro),
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::limits::serve_blocking_permits(),
+            )),
+            last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            daemon_socket: None,
+            eval_root: Some(Arc::new(empty_root.path().to_path_buf())),
+        }),
+        _dir: Some(store_dir),
+    };
+    let app = test_router(fixture.state());
+    let (status, _json) = get_json(app, "/api/eval_gold").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
