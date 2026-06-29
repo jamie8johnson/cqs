@@ -26,6 +26,7 @@
   const $colorGroup = document.getElementById("cluster-color");
   const $mechQuery = document.getElementById("mech-query");
   const $mechRun = document.getElementById("mech-run");
+  const $goldTour = document.getElementById("gold-tour");
 
   // --- View registry ---
   const VIEWS = {
@@ -319,6 +320,15 @@
     }
   }
 
+  // Drive the cluster view's eval-gold "where hybrid wins" tour. Only the
+  // cluster view implements `runGoldTour`; a no-op for any other view.
+  function runGoldTour() {
+    if (currentView && typeof currentView.runGoldTour === "function") {
+      setStatus("gold tour");
+      currentView.runGoldTour();
+    }
+  }
+
   async function loadChunkDetail(id) {
     $sidebar.innerHTML = `<p class="hint">loading…</p>`;
     try {
@@ -478,6 +488,10 @@
         runMechanism();
       }
     });
+  }
+  // Cluster eval-gold tour: a single button enters the stratified walk.
+  if ($goldTour) {
+    $goldTour.addEventListener("click", () => runGoldTour());
   }
   $search.addEventListener("input", onSearchInput);
 

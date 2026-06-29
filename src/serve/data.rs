@@ -5,9 +5,11 @@
 //! pass the rows through without transformation.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::error::ServeError;
 use crate::store::serve_queries::NeighborRow;
 use crate::store::{ReadOnly, Store, StoreError};
 
@@ -893,5 +895,246 @@ pub(crate) fn build_stats(store: &Store<ReadOnly>) -> Result<StatsResponse, Stor
         total_files: row.total_files.max(0) as u64,
         call_edges: row.call_edges.max(0) as u64,
         type_edges: row.type_edges.max(0) as u64,
+    })
+}
+
+// ─── Eval-gold tour (the "where hybrid wins" driver) ─────────────────────────
+//
+// `GET /api/eval_gold` serves the eval query set so the frontend tour can,
+// per gold query, fetch its three search legs (`/api/search_legs`) and read the
+// honest win signal: the gold chunk's rank in the FUSED leg vs its rank in the
+// DENSE-alone leg. The win is per-query and attributable to fusion — NOT a
+// per-chunk +/- color. The gold is pinned by `(origin, name)` in the eval files;
+// chunk ids drift across reindexes, so each gold is resolved to current ids by
+// (origin, name) against the *served* index here, never by trusting the pinned id.
+
+/// One eval-gold query surfaced to the Stage-2b tour.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EvalGoldQuery {
+    /// The natural-language query string fed to `/api/search_legs`.
+    pub query: String,
+    /// Eval category (`type_filtered`, `conceptual_search`, ...). Drives the
+    /// stratified per-category tour and the R@K-delta panel grouping.
+    pub category: String,
+    /// Source fixture split: `test` or `dev`.
+    pub split: String,
+    /// Gold chunk's source file (the `(origin, name)` match key).
+    pub gold_origin: String,
+    /// Gold chunk's symbol name (the `(origin, name)` match key).
+    pub gold_name: String,
+    /// Current-index chunk ids whose `(origin, name)` match this gold. Empty
+    /// when the gold no longer resolves in the served index (a dead gold after a
+    /// file move/split) — the tour reports it unresolved rather than faking a rank.
+    pub gold_chunk_ids: Vec<String>,
+}
+
+/// `GET /api/eval_gold` response: the eval query set plus resolution stats.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EvalGoldResponse {
+    /// Every eval query that carries a usable `(origin, name)` gold, test then dev.
+    pub queries: Vec<EvalGoldQuery>,
+    /// Distinct categories present, in a stable canonical display order.
+    pub categories: Vec<String>,
+    /// Total queries returned.
+    pub total: usize,
+    /// How many of `total` resolved to at least one current chunk id. A large
+    /// `total - resolved` gap means the served index drifted from the eval pins
+    /// (dead golds) and tour ranks will read as unresolved for those.
+    pub resolved: usize,
+}
+
+/// Minimal projection of an eval fixture file — only the fields the tour needs.
+/// `#[serde(default)]` everywhere so a schema change in the fixture (extra keys,
+/// renamed siblings) never fails the parse; missing pieces just drop the query.
+#[derive(Deserialize)]
+struct EvalFileRaw {
+    #[serde(default)]
+    queries: Vec<EvalQueryRaw>,
+}
+
+#[derive(Deserialize)]
+struct EvalQueryRaw {
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    category: String,
+    /// Consensus gold (top-level `gold_chunk`, `gold_chunk_source: consensus`).
+    #[serde(default)]
+    gold_chunk: Option<GoldChunkRaw>,
+}
+
+#[derive(Deserialize)]
+struct GoldChunkRaw {
+    #[serde(default)]
+    origin: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// Canonical category display order for the tour. The two zero/negative-uplift
+/// categories (`conceptual_search`, `multi_step`) are kept in the set on
+/// purpose: the tour is honest about where hybrid does NOT help, so they must
+/// be tourable, not hidden. Categories present but not listed here are appended
+/// after, in first-seen order.
+const CANON_CATEGORIES: [&str; 8] = [
+    "type_filtered",
+    "conceptual_search",
+    "cross_language",
+    "identifier_lookup",
+    "negation",
+    "behavioral_search",
+    "structural_search",
+    "multi_step",
+];
+
+fn order_categories(present: Vec<String>) -> Vec<String> {
+    let mut ordered: Vec<String> = Vec::new();
+    for c in CANON_CATEGORIES {
+        if present.iter().any(|p| p == c) {
+            ordered.push(c.to_string());
+        }
+    }
+    for p in present {
+        if !ordered.contains(&p) {
+            ordered.push(p);
+        }
+    }
+    ordered
+}
+
+/// Build the `GET /api/eval_gold` payload from the eval fixtures under
+/// `<root>/evals/queries/` and the served index.
+///
+/// Reads `v3_test.v2.json` and `v3_dev.v2.json` (merged, each tagged with its
+/// split), keeps only queries that carry a usable `(origin, name)` gold, and
+/// resolves every gold to current chunk ids by `(origin, name)` against the
+/// served index — robust to id drift, the same match key the eval harness uses.
+///
+/// Returns `503 ServiceUnavailable` when NEITHER fixture file is present, so the
+/// tour degrades to a clean "no eval set here" rather than an empty success that
+/// reads as "no wins". A present-but-unparseable file is logged and skipped (the
+/// other split may still drive the tour).
+pub(crate) fn build_eval_gold(
+    store: &Store<ReadOnly>,
+    root: &Path,
+) -> Result<EvalGoldResponse, ServeError> {
+    let _span = tracing::info_span!("build_eval_gold").entered();
+
+    let dir = root.join("evals").join("queries");
+    let files = [("test", "v3_test.v2.json"), ("dev", "v3_dev.v2.json")];
+
+    let mut raw: Vec<(&'static str, EvalQueryRaw)> = Vec::new();
+    let mut found_any = false;
+    for (split, fname) in files {
+        let path = dir.join(fname);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                found_any = true;
+                match serde_json::from_str::<EvalFileRaw>(&text) {
+                    Ok(parsed) => {
+                        for q in parsed.queries {
+                            raw.push((split, q));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            file = %path.display(),
+                            "eval-gold: failed to parse eval fixture; skipping this split"
+                        );
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(file = %path.display(), "eval-gold: fixture not present");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    file = %path.display(),
+                    "eval-gold: failed to read eval fixture; skipping this split"
+                );
+            }
+        }
+    }
+
+    if !found_any {
+        return Err(ServeError::ServiceUnavailable(format!(
+            "eval-gold tour unavailable: no eval query fixtures at {} \
+             (expected v3_test.v2.json / v3_dev.v2.json)",
+            dir.display()
+        )));
+    }
+
+    // Keep only queries with a usable (origin, name) gold.
+    struct Pending {
+        query: String,
+        category: String,
+        split: &'static str,
+        origin: String,
+        name: String,
+    }
+    let mut pending: Vec<Pending> = Vec::with_capacity(raw.len());
+    for (split, q) in raw {
+        let Some(gc) = q.gold_chunk else { continue };
+        if q.query.is_empty() || gc.origin.is_empty() || gc.name.is_empty() {
+            continue;
+        }
+        pending.push(Pending {
+            query: q.query,
+            category: q.category,
+            split,
+            origin: gc.origin,
+            name: gc.name,
+        });
+    }
+
+    // Resolve golds to current chunk ids by (origin, name) against the served
+    // index. Query only the gold names (a bounded set), then disambiguate by
+    // origin in Rust — the chunk id encodes origin as a prefix, but we map via
+    // the index rather than parse it.
+    let mut name_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for p in &pending {
+        name_set.insert(p.name.as_str());
+    }
+    let names: Vec<&str> = name_set.into_iter().collect();
+    let rows = store.serve_resolve_origin_names(&names)?;
+    let mut by_origin_name: HashMap<(String, String), Vec<String>> = HashMap::new();
+    for (id, origin, name) in rows {
+        by_origin_name.entry((origin, name)).or_default().push(id);
+    }
+
+    let mut queries: Vec<EvalGoldQuery> = Vec::with_capacity(pending.len());
+    let mut resolved = 0usize;
+    let mut seen_categories: Vec<String> = Vec::new();
+    for p in pending {
+        let ids = by_origin_name
+            .get(&(p.origin.clone(), p.name.clone()))
+            .cloned()
+            .unwrap_or_default();
+        if !ids.is_empty() {
+            resolved += 1;
+        }
+        if !p.category.is_empty() && !seen_categories.iter().any(|c| c == &p.category) {
+            seen_categories.push(p.category.clone());
+        }
+        queries.push(EvalGoldQuery {
+            query: p.query,
+            category: p.category,
+            split: p.split.to_string(),
+            gold_origin: p.origin,
+            gold_name: p.name,
+            gold_chunk_ids: ids,
+        });
+    }
+
+    let categories = order_categories(seen_categories);
+    let total = queries.len();
+    tracing::info!(total, resolved, "build_eval_gold");
+    Ok(EvalGoldResponse {
+        queries,
+        categories,
+        total,
+        resolved,
     })
 }

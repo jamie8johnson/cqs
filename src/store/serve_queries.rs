@@ -579,6 +579,52 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Resolve a set of chunk names to `(id, origin, name)` rows in the current
+    /// index. Backs the eval-gold tour's gold→chunk_id mapping
+    /// (`GET /api/eval_gold`): the eval files pin a gold by `(origin, name)`, but
+    /// chunk ids drift across reindexes (line numbers, content hashes), so the
+    /// pinned `gold_chunk.id` cannot be trusted. The caller filters the returned
+    /// rows by `origin` to build a robust `(origin, name) -> [id]` map against the
+    /// *served* index — the same (origin, name) match key the eval harness uses.
+    ///
+    /// Scoped to the gold names (a bounded ~hundreds set), not the whole corpus,
+    /// and IN-list chunked so a name set larger than SQLite's bind-variable cap
+    /// can't overflow the cursor. Duplicate names across chunks return one row
+    /// each (overloads / same-named chunks in different files); the caller keeps
+    /// all and disambiguates by origin.
+    pub(crate) fn serve_resolve_origin_names(
+        &self,
+        names: &[&str],
+    ) -> Result<Vec<(String, String, String)>, StoreError> {
+        let _span = tracing::info_span!("serve_resolve_origin_names").entered();
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.rt.block_on(async {
+            use crate::store::helpers::sql::max_rows_per_statement;
+            // One bind per name in the IN-list.
+            const NAME_CHUNK: usize = max_rows_per_statement(1);
+            let mut out: Vec<(String, String, String)> = Vec::new();
+            for chunk in names.chunks(NAME_CHUNK) {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+                let sql =
+                    format!("SELECT id, origin, name FROM chunks WHERE name IN ({placeholders})");
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+                for n in chunk {
+                    q = q.bind(*n);
+                }
+                let rows = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let id: String = row.get("id");
+                    let origin: String = row.get("origin");
+                    let name: String = row.get("name");
+                    out.push((id, origin, name));
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Fetch the four corpus counts for `GET /api/stats` in one round-trip.
     pub(crate) fn serve_stats(&self) -> Result<StatsRow, StoreError> {
         let _span = tracing::info_span!("serve_stats").entered();

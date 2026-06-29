@@ -260,3 +260,44 @@ main {
 
 .mech-status { color: #9aa6bf; font-size: 12px; padding: 4px 0; line-height: 1.4; }
 .mech-status.error { color: #ff9a9a; }
+
+/* Stage-2b eval-gold tour. Reuses the .mech-panel shell; these add the
+   per-anchor text win and the R@K-delta table. The win rides TEXT, never a
+   per-chunk color — the panel is where the honest signal is read. */
+.tour-cat { color: #ffd34d; font-weight: 600; }
+.tour-split { font-size: 10px; color: #8591ab; border: 1px solid #3a4870; border-radius: 3px; padding: 0 4px; }
+.tour-query { font-size: 12px; margin: 6px 0 4px; color: #cdd6e6; }
+.tour-gold { font-size: 11.5px; color: #b8c2d8; margin-bottom: 6px; }
+.tour-gold strong { color: #e8edf5; }
+.tour-ok { font-size: 10px; color: #7fd6a0; border: 1px solid #2f6a47; border-radius: 3px; padding: 0 4px; }
+.tour-dead { font-size: 10px; color: #d8995a; border: 1px solid #6b5a2a; border-radius: 3px; padding: 0 4px; }
+.tour-win {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #3a4870;
+  border-left-width: 4px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 6px 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+.tour-win-num { font-size: 12.5px; font-weight: 600; color: #e8edf5; font-variant-numeric: tabular-nums; }
+.tour-win-tag { font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+.rk-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 11.5px; }
+.rk-table th {
+  text-align: right;
+  color: #9aa6bf;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-bottom: 1px solid #2a3550;
+}
+.rk-table th:first-child { text-align: left; }
+.rk-table td { padding: 2px 4px; border-bottom: 1px solid rgba(42, 53, 80, 0.5); }
+.rk-cat { color: #cdd6e6; }
+.rk-num { text-align: right; color: #b8c2d8; font-variant-numeric: tabular-nums; }
+.rk-net { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rk-total td { border-top: 1px solid #3a4870; border-bottom: none; font-weight: 700; color: #e8edf5; padding-top: 4px; }
+.rk-total td:first-child { color: #9aa6bf; }

@@ -119,7 +119,11 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
     #[cfg(not(unix))]
     let daemon_socket: Option<std::path::PathBuf> = None;
 
-    cqs::serve::run_server(store, bind_addr, false, auth, daemon_socket)
+    // The eval-gold tour (`/api/eval_gold`) reads `evals/queries/*.json` relative
+    // to the project root so the fixtures stay fresh with the checkout. Pass the
+    // same root the index was resolved from; the route 503s cleanly when the
+    // fixtures aren't present there.
+    cqs::serve::run_server(store, bind_addr, false, auth, daemon_socket, Some(root))
 }
 
 /// Reject URLs containing shell metacharacters before handing them to

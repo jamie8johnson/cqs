@@ -82,6 +82,11 @@ pub(crate) struct AppState {
     /// mode forwards the query to the daemon and returns its three legs. `None`
     /// when no socket path was resolved (legs mode then always 503s).
     pub(crate) daemon_socket: Option<Arc<std::path::PathBuf>>,
+    /// Project root used to locate the eval fixtures (`evals/queries/*.json`)
+    /// that drive the Stage-2b "where hybrid wins" tour (`/api/eval_gold`).
+    /// `None` disables the tour route — it then returns a clean 503 instead of
+    /// reading from an unknown root.
+    pub(crate) eval_root: Option<Arc<std::path::PathBuf>>,
 }
 
 /// Allowed `Host` header values, built at router-build time from the
@@ -121,6 +126,7 @@ pub fn run_server(
     quiet: bool,
     auth: AuthMode,
     daemon_socket: Option<std::path::PathBuf>,
+    eval_root: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let _span = tracing::info_span!("serve", addr = %bind_addr).entered();
 
@@ -136,6 +142,7 @@ pub fn run_server(
         blocking_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         last_request_epoch: Arc::clone(&last_request_epoch),
         daemon_socket: daemon_socket.map(Arc::new),
+        eval_root: eval_root.map(Arc::new),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
     let idle_minutes = crate::limits::serve_idle_minutes();
@@ -385,6 +392,7 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
         .route("/api/embed/2d", get(handlers::cluster_2d))
         .route("/api/search", get(handlers::search))
         .route("/api/search_legs", get(handlers::search_legs))
+        .route("/api/eval_gold", get(handlers::eval_gold))
         .route("/", get(assets::index_html))
         .route("/static/{*path}", get(assets::static_asset))
         .with_state(state);

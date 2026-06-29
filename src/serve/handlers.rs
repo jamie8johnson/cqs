@@ -15,8 +15,8 @@ use axum::{
 use serde::Deserialize;
 
 use super::data::{
-    ChunkDetail, ClusterResponse, GraphResponse, HierarchyDirection, HierarchyResponse, NodeRef,
-    SearchResponse, StatsResponse,
+    ChunkDetail, ClusterResponse, EvalGoldResponse, GraphResponse, HierarchyDirection,
+    HierarchyResponse, NodeRef, SearchResponse, StatsResponse,
 };
 use super::error::ServeError;
 use super::AppState;
@@ -378,6 +378,40 @@ async fn search_legs_dispatch(
         "mechanism mode requires the retrieval daemon over a unix socket; not available on this platform"
             .to_string(),
     ))
+}
+
+/// `GET /api/eval_gold` — the eval query set that drives the Stage-2b
+/// "where hybrid wins" tour. Returns each eval query with its category, split,
+/// and gold `(origin, name)` resolved to current chunk ids against the served
+/// index, so the frontend can fetch `/api/search_legs` per query and read the
+/// honest per-query R@K delta (gold's fused-leg rank vs dense-alone rank).
+///
+/// Reads the fixtures from the project root passed at launch (`state.eval_root`).
+/// Returns a clean 503 when no root was resolved (the route is structurally
+/// unavailable) or when the fixtures are absent at that root — the tour degrades
+/// to "no eval set here", never a fake empty success.
+pub(crate) async fn eval_gold(
+    State(state): State<AppState>,
+) -> Result<Json<EvalGoldResponse>, ServeError> {
+    tracing::info!("serve::eval_gold");
+
+    let root = match &state.eval_root {
+        Some(r) => r.clone(),
+        None => {
+            return Err(ServeError::ServiceUnavailable(
+                "eval-gold tour unavailable: cqs serve was not launched from a project root \
+                 (no path resolved for evals/queries/)"
+                    .to_string(),
+            ));
+        }
+    };
+
+    let response = with_blocking(&state, "eval_gold", move |store| {
+        super::data::build_eval_gold(store, root.as_ref())
+    })
+    .await?;
+
+    Ok(Json(response))
 }
 
 /// `GET /api/hierarchy/{id}?direction={callers|callees}&depth=N`
