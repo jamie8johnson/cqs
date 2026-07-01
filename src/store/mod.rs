@@ -343,6 +343,12 @@ pub struct Store<Mode = ReadWrite> {
     pub(crate) dim: usize,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
+    /// Whether the SQLite connection was opened `read_only(true)`. A read-only
+    /// connection cannot checkpoint the WAL (it would fail with SQLITE_READONLY)
+    /// and has nothing buffered to flush, so [`Store`]'s `Drop` skips the
+    /// best-effort checkpoint for it. Tracked as a runtime bool because `Drop`
+    /// is `impl<Mode>` and cannot branch on the `Mode` typestate.
+    read_only: bool,
     notes_summaries_cache: RwLock<Option<Arc<Vec<NoteSummary>>>>,
     /// Search-owned note-boost cache, derived from `notes_summaries_cache`.
     /// Built lazily on first `cached_note_boost_index()` call (defined
@@ -1123,6 +1129,7 @@ impl Store<ReadWrite> {
             rt,
             dim: crate::EMBEDDING_DIM,
             closed: AtomicBool::new(false),
+            read_only: false,
             notes_summaries_cache: RwLock::new(None),
             note_boost_cache: crate::search::scoring::NoteBoostCache::default(),
             call_graph_cache: std::sync::OnceLock::new(),
@@ -1554,6 +1561,7 @@ fn open_with_config_impl<Mode>(
         rt,
         dim,
         closed: AtomicBool::new(false),
+        read_only: config.read_only,
         notes_summaries_cache: RwLock::new(None),
         note_boost_cache: crate::search::scoring::NoteBoostCache::default(),
         call_graph_cache: std::sync::OnceLock::new(),
@@ -1904,6 +1912,27 @@ CREATE TABLE baz (id INTEGER);
     }
 }
 
+/// Drop-time decision: should the `Store` attempt its best-effort WAL
+/// checkpoint via `block_on`?
+///
+/// Returns `false` when any of:
+/// - `closed`: already checkpointed in [`Store::close`].
+/// - `in_runtime`: a tokio runtime is active on the current thread. Calling
+///   `Runtime::block_on` from within a runtime panics ("Cannot start a runtime
+///   from within a runtime"), so an in-runtime drop must skip by construction —
+///   this is the real guard, since `catch_unwind` cannot swallow that panic
+///   under `panic = "abort"`.
+/// - `read_only`: the connection was opened `read_only(true)`, so it has
+///   nothing buffered to flush and cannot checkpoint anyway (a checkpoint needs
+///   write access — it would fail with `SQLITE_READONLY` and log a misleading
+///   warning on every clean shutdown).
+///
+/// Skipping is not lossy: the WAL is checkpointed on the next open and by
+/// SQLite's own autocheckpoint.
+fn should_wal_checkpoint_on_drop(closed: bool, in_runtime: bool, read_only: bool) -> bool {
+    !closed && !in_runtime && !read_only
+}
+
 impl<Mode> Drop for Store<Mode> {
     /// Performs a best-effort WAL (Write-Ahead Logging) checkpoint when the Store is dropped to prevent accumulation of large WAL files.
     /// # Arguments
@@ -1911,10 +1940,31 @@ impl<Mode> Drop for Store<Mode> {
     /// # Returns
     /// Nothing. Errors during checkpoint are logged as warnings but not propagated, as Drop implementations cannot fail.
     /// # Panics
-    /// Does not panic. Uses `catch_unwind` to safely handle potential panics from `block_on` when called from within an async context (e.g., dropping Store inside a tokio runtime).
+    /// The best-effort WAL checkpoint itself never panics: it is skipped
+    /// whenever a tokio runtime is active on the thread (see
+    /// [`should_wal_checkpoint_on_drop`]), which is the only context in which
+    /// its `block_on` could panic. Dropping the Store still drops its fields,
+    /// including the owned `Arc<Runtime>`; if a caller drops the *last* `Store`
+    /// handle from *within* a runtime context while the Store exclusively owns
+    /// that runtime, tokio's own `Runtime::drop` blocks and panics ("Cannot
+    /// drop a runtime in a context where blocking is not allowed"). Such
+    /// callers (e.g. `serve`) must hold a `Store` keepalive so the last drop —
+    /// and thus the runtime shutdown — happens on a plain, non-runtime thread;
+    /// see `run_server`.
     fn drop(&mut self) {
-        if self.closed.load(Ordering::Acquire) {
-            return; // Already checkpointed in close()
+        let closed = self.closed.load(Ordering::Acquire);
+        // A runtime is active on this thread when serve tears down its
+        // AppState-held Store during idle eviction or SIGTERM; block_on would
+        // then panic and, under panic=abort, abort the process.
+        let in_runtime = tokio::runtime::Handle::try_current().is_ok();
+        if !should_wal_checkpoint_on_drop(closed, in_runtime, self.read_only) {
+            tracing::debug!(
+                closed,
+                in_runtime,
+                read_only = self.read_only,
+                "skipping best-effort WAL checkpoint on Store drop"
+            );
+            return;
         }
         // Best-effort WAL checkpoint on drop to bound the WAL.
         //
@@ -1930,8 +1980,10 @@ impl<Mode> Drop for Store<Mode> {
         // [`Store::close`] from the structured-shutdown path before drop.
         // Mirrors `EmbeddingCache::drop`.
         //
-        // catch_unwind guards against block_on panicking when called from
-        // within an async context (e.g., if Store is dropped inside a tokio runtime).
+        // catch_unwind is defense-in-depth only — it is a no-op under
+        // panic=abort (release builds), so it cannot be relied on. The
+        // in_runtime guard above is the actual protection against the
+        // block_on-from-within-a-runtime panic.
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let res = self.rt.block_on(async {
                 tokio::time::timeout(
@@ -2556,5 +2608,72 @@ mod tests {
         // DB, the schema from init() would be invisible to the second query.
         assert_eq!(store.chunk_count().expect("first chunk_count"), 0);
         assert_eq!(store.chunk_count().expect("second chunk_count"), 0);
+    }
+
+    /// Primary guard for the serve-abort fix: the drop-time decision itself.
+    ///
+    /// A `#[tokio::test]` that merely drops a Store in-runtime and asserts "no
+    /// panic" is a FALSE guard — the test binary is built with `panic =
+    /// "unwind"`, so the OLD code's `catch_unwind` swallows the block_on panic
+    /// and the test passes on the broken code too. This pins the DECISION
+    /// instead: closed, in-runtime, and read-only all skip the checkpoint.
+    ///
+    /// Calibration: deleting any one term from `should_wal_checkpoint_on_drop`
+    /// flips its dedicated `(…, true)` assertion RED (verified per term).
+    #[test]
+    fn should_wal_checkpoint_on_drop_decision() {
+        // Fresh writable handle, no active runtime → do the best-effort
+        // checkpoint. (closed, in_runtime, read_only) = (false, false, false).
+        assert!(should_wal_checkpoint_on_drop(false, false, false));
+        // Already closed by close() → nothing left to checkpoint.
+        assert!(!should_wal_checkpoint_on_drop(true, false, false));
+        // Runtime active on the thread → block_on would panic (and abort under
+        // panic=abort); skip. This arm is the serve-abort fix.
+        assert!(!should_wal_checkpoint_on_drop(false, true, false));
+        // Read-only connection → cannot checkpoint (SQLITE_READONLY) and has
+        // nothing buffered; skip to avoid a misleading shutdown warning.
+        assert!(!should_wal_checkpoint_on_drop(false, false, true));
+        // Every combination with any skip reason set stays false.
+        assert!(!should_wal_checkpoint_on_drop(true, true, true));
+    }
+
+    /// Corroborating (weaker) check: constructing a real Store and dropping it
+    /// while a tokio runtime is active on the thread executes the skip decision
+    /// and returns cleanly. This is NOT the primary guard and it does NOT cover
+    /// the process-abort class from the serve teardown — that abort comes from
+    /// tokio's `Runtime::drop` when the store's exclusively-owned runtime drops
+    /// inside a runtime context, and it can only be observed across a real
+    /// process boundary (see the child-process test
+    /// `cqs_serve_sigterm_teardown_exits_clean` in `tests/cli_serve_test.rs`).
+    /// Here the store's inner runtime is deliberately kept alive so this test
+    /// exercises only the checkpoint-skip path inside a real `block_on`
+    /// (`Entered`) context, not the runtime-shutdown panic.
+    #[test]
+    fn store_drop_inside_active_runtime_continues() {
+        // Construct outside any ambient runtime (Store::open uses its own
+        // internal current-thread runtime via block_on).
+        let (store, _dir) = make_test_store_initialized();
+        // Keep the Store's inner runtime alive past the drop so this test
+        // exercises only the checkpoint decision, not tokio's separate
+        // "drop a runtime inside a runtime" guard.
+        let _rt_keepalive = Arc::clone(&store.rt);
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build multi-thread runtime");
+
+        // Drop the store INSIDE block_on — the real `Entered` context serve
+        // tears down in (an `rt.enter()` guard alone does not forbid blocking,
+        // so it would not reproduce the topology).
+        rt.block_on(async move {
+            assert!(
+                tokio::runtime::Handle::try_current().is_ok(),
+                "must be inside an active runtime for the test to be meaningful"
+            );
+            drop(store); // in_runtime=true ⇒ skip checkpoint, return.
+        });
+
+        // Reaching here means the in-runtime drop did not abort the process.
     }
 }

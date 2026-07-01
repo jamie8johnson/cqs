@@ -52,7 +52,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command as AssertCmd;
 use serial_test::serial;
@@ -306,4 +306,89 @@ fn cqs_serve_full_layer_stack_round_trip() {
         cqs_path().exists(),
         "cqs binary disappeared between spawn and end of test"
     );
+}
+
+/// Send `SIGTERM` to `pid` by shelling out to `kill` (integration tests
+/// don't link `libc`). Panics if the `kill` invocation itself fails.
+fn send_sigterm(pid: u32) {
+    let status = Command::new("kill")
+        .args(["-s", "TERM", &pid.to_string()])
+        .status()
+        .expect("spawn `kill`");
+    assert!(status.success(), "`kill -s TERM {pid}` failed: {status:?}");
+}
+
+/// Bounded wait for a child to exit, polling `try_wait`. On timeout the
+/// child is force-killed and the test fails loudly rather than hanging the
+/// suite (a hang would itself be a teardown regression).
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
+    let start = Instant::now();
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => return status,
+            None if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("cqs serve did not exit within {timeout:?} after SIGTERM (hang?)");
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Real end-to-end guard for the serve idle-eviction / SIGTERM abort:
+/// `cqs serve` must exit CLEANLY (exit code 0) when it receives SIGTERM,
+/// exercising the full graceful-shutdown + teardown path.
+///
+/// This is the child-process guard the in-process store tests structurally
+/// cannot be: the abort is a `Runtime::drop` panic under `panic = "abort"`,
+/// which terminates the whole process — an in-process `#[tokio::test]` runs
+/// in a `panic = "unwind"` binary and cannot observe it. Only a real process
+/// boundary + exit-code assertion bites.
+///
+/// The existing `ServeHarness` tears down with `child.kill()` (SIGKILL),
+/// which skips graceful shutdown entirely and never reaches the buggy drop —
+/// which is exactly why the abort went uncaught. This test uses SIGTERM.
+///
+/// Pre-fix (revert the `run_server` store keepalive): the last `Arc<Store>`
+/// drops inside the serve runtime, tokio's `Runtime::drop` panics ("Cannot
+/// drop a runtime in a context where blocking is not allowed"), and the
+/// process aborts — a non-`success()` exit. Post-fix: exit 0.
+#[test]
+#[serial]
+fn cqs_serve_sigterm_teardown_exits_clean() {
+    let dir = setup_indexed_project();
+
+    let mut child = Command::new(cqs_path())
+        .args(["serve", "--port", "0", "--no-auth"])
+        .current_dir(dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cqs serve");
+
+    // Wait for the listening banner: it fires after `TcpListener::bind`, so
+    // the axum accept loop (and its graceful-shutdown signal handler) is up
+    // and a SIGTERM will be handled rather than default-terminating.
+    let stdout = child.stdout.take().expect("child stdout");
+    let stderr = child.stderr.take().expect("child stderr");
+    let (tx, rx) = mpsc::channel::<String>();
+    spawn_banner_reader(stdout, tx.clone());
+    spawn_banner_reader(stderr, tx);
+    let _banner = recv_banner(&rx, Duration::from_secs(30))
+        .unwrap_or_else(|| panic!("timed out waiting for `cqs serve` listening banner"));
+
+    // Give the graceful-shutdown future a beat to be polled/registered.
+    thread::sleep(Duration::from_millis(500));
+
+    send_sigterm(child.id());
+
+    let status = wait_for_exit(&mut child, Duration::from_secs(20));
+    assert!(
+        status.success(),
+        "cqs serve did not exit cleanly after SIGTERM: {status:?} — the store's \
+         tokio runtime must drop outside the serve runtime context (run_server keepalive)"
+    );
+
+    drop(dir);
 }
