@@ -1,7 +1,7 @@
 ---
 name: legacy-state-auditor
 description: Version adversary - finds where current code mishandles persisted state that only a PAST version (or external mutation) could have written. The per-unit suite is structurally blind to it because every fixture is born at the current version, so a shape the current code cannot itself produce is unreachable. Dispatch after a schema migration, a PARSER_VERSION / format / wire-version bump, a sidecar-header change, or a new-field-with-default. Writes a frozen-artifact guard; the deliverable is a mishandled old shape (a bug) or a durable old-format fixture test. (#1826 family - the fifth orthogonal shape.)
-# fable is the to-restore reviewer default; this lane writes code, so opus.
+# implementation lane (writes frozen-artifact guards), so opus; fable is the review/judge seat
 model: opus
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---

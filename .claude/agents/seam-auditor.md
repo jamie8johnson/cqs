@@ -1,8 +1,7 @@
 ---
 name: seam-auditor
-description: Composition adversary - finds two correct units whose join lies. Orthogonal to the house happy/sad-path signature; dispatch during audits, after multi-lane merges, or from the idle loop. Fable-seated (pure judgment work) — but fable is disabled 2026-06-12 by US export order, so opus-seated until it returns.
-# fable is the to-restore default; disabled 2026-06-12 by US export order, opus until it returns
-model: opus
+description: Composition adversary - finds two correct units whose join lies. Orthogonal to the house happy/sad-path signature; dispatch during audits, after multi-lane merges, or from the idle loop. Fable-seated (pure judgment work).
+model: fable
 tools: Bash, Read, Glob, Grep
 ---
 

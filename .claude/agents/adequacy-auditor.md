@@ -1,7 +1,7 @@
 ---
 name: adequacy-auditor
 description: Meta adversary - finds where the test suite's own assertions don't bite, via mutation testing. A green suite is consistent with a test that asserts nothing; this is the only auditor that turns the lens on the suite itself. Dispatch after a logic-dense change with tests that LOOK thorough, during audits, or from /idle. Writes the killing test; deliverable is a surviving mutant (a vacuous test) or a hardened assertion. (#1826 family - the meta-null; enumerable, so it gets the Agent tool.)
-# fable is the to-restore reviewer default; this lane writes code, so opus.
+# implementation lane (writes durable guards/tests), so opus; fable is the review/judge seat
 model: opus
 tools: Bash, Read, Write, Edit, Glob, Grep, Agent
 ---

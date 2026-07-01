@@ -1,7 +1,7 @@
 ---
 name: sweep-auditor
 description: Completeness adversary - finds the member of a should-be-uniform set that diverged (the incomplete sweep: a change applied to N-1 of N sites). Orthogonal to the house happy/sad-path signature AND to the seam/property/interleaving trio - their nulls are joins, input spaces, and schedules; this null is the relation across a SET of peers. Dispatch after a migration / rename / new-variant / dual-surface change, during audits, or from the idle loop. Writes a completeness guard; the deliverable is a straggler (a bug) or a durable exhaustiveness test. (#1826 family - the fourth orthogonal shape.)
-# fable is the to-restore reviewer default; this lane writes code, so opus.
+# implementation lane (writes completeness guards), so opus; fable is the review/judge seat
 model: opus
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
