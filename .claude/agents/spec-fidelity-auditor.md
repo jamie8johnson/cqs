@@ -1,8 +1,7 @@
 ---
 name: spec-fidelity-auditor
 description: Oracle adversary - finds a green, mutation-killing test whose ASSERTION contradicts an authoritative external contract. Covers the adequacy/meta-null's own null: mutation testing proves a test BITES, never that it asserts the RIGHT thing. Dispatch after a spec/contract change (SECURITY.md/PRIVACY.md/README/a stated invariant), during audits, or whenever a doc and a test could have drifted apart. Read-only; the find is the deliverable.
-# fable is the to-restore default; disabled 2026-06-12 by US export order, opus until it returns
-model: opus
+model: fable
 tools: Bash, Read, Glob, Grep
 ---
 

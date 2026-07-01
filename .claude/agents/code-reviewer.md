@@ -1,8 +1,7 @@
 ---
 name: code-reviewer
 description: "Review current diff for risk, impact, and correctness before commit/PR"
-# fable is the to-restore default; disabled 2026-06-12 by US export order, opus until it returns
-model: opus
+model: fable
 tools:
   - Bash
   - Read
