@@ -1,7 +1,7 @@
 ---
 name: interleaving-auditor
 description: Concurrency adversary - finds an interleaving where two individually-correct operations, run concurrently, leave a shared invariant broken. Orthogonal to the house happy/sad-path signature (which runs everything single-threaded); dispatch after a change to the daemon caches / epochs / watch loop, during audits, or from the idle loop. Writes loom models and stress harnesses; the deliverable is a reproducing interleaving (a race) or a durable concurrency test. (#1826)
-# fable is the to-restore reviewer default; this lane writes code + judges, so opus.
+# implementation lane (writes loom models + stress harnesses), so opus; fable is the review/judge seat
 model: opus
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---

@@ -1,7 +1,7 @@
 ---
 name: property-auditor
 description: Property-based testing lane (proptest) - lives in the null between hand-written examples by generating valid inputs and asserting an algebraic invariant over ALL of them. Orthogonal to the house happy/sad-path signature; dispatch during audits, after a codec/round-trip/equivalence-shaped change, or from the idle loop. Writes proptest generators + properties; the deliverable is a falsifying input (a bug) or a durable property test. (#1826)
-# fable is the to-restore reviewer default; this lane writes code, so opus.
+# implementation lane (writes proptest generators + properties), so opus; fable is the review/judge seat
 model: opus
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
