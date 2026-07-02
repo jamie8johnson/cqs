@@ -71,10 +71,10 @@ mod rebuild;
 use rebuild::{
     clear_hnsw_dirty_with_retry, drain_pending_rebuild, hnsw_rebuild_threshold,
     resolve_index_aware_model_for_watch, spawn_hnsw_rebuild, tiered_index_active,
-    try_init_embedder, EmbedderBackoff, PendingRebuild,
+    try_init_embedder, DrainOutcome, EmbedderBackoff, PendingRebuild,
 };
 #[cfg(test)]
-use rebuild::{DrainOutcome, RebuildOutcome, RebuildResult};
+use rebuild::{RebuildOutcome, RebuildResult};
 
 mod gc;
 use gc::{
@@ -337,6 +337,50 @@ fn publish_watch_snapshot(
     // `false → true` transitions issue a `notify_all` to parked
     // `wait_fresh` clients.
     fresh_notifier.set_fresh(next_snap.is_fresh());
+}
+
+/// Drain a completed background HNSW rebuild from the watch loop's periodic
+/// (idle) path, so freshness never wedges when the repo goes quiet.
+///
+/// `process_file_changes` is the only other drain site, and it runs solely on
+/// flush ticks (pending files/notes present). A rebuild that finishes while the
+/// repo is quiet — no inotify events, or WSL `/mnt/c` dropping them — would
+/// otherwise leave `pending_rebuild` `Some` indefinitely. Every freshness
+/// snapshot derives `rebuild_in_flight` from `pending_rebuild.is_some()`, so a
+/// stuck pending pins the gate at `Rebuilding` and blocks every
+/// `--require-fresh` consumer until the next file event arrives. Draining on
+/// the periodic path closes that gap: the drain early-returns `NoPending`
+/// cheaply, so an idle tick with nothing pending pays nothing.
+///
+/// No pairs handling here, unlike `process_file_changes`. "Pairs" are the
+/// `(id, embedding, hash)` triples a flush tick commits this cycle; that path
+/// merges them into an in-flight rebuild's delta *before* draining and
+/// re-handles them (fast incremental insert or fresh delta) if the drain
+/// cleared without a swap. An idle tick reindexes nothing, so there are no such
+/// pairs to queue or re-handle. The drain still replays its OWN accumulated
+/// delta — chunks captured by earlier flush ticks while this rebuild was in
+/// flight — which is invariant to the caller. Re-spawn is likewise unneeded: a
+/// `Swapped` outcome resets `incremental_count` (no threshold re-arm), and a
+/// `Cleared` outcome re-spawns naturally on the next file event's threshold
+/// check.
+fn drain_completed_rebuild_idle(
+    cfg: &WatchConfig,
+    store: &Store,
+    state: &mut WatchState,
+) -> DrainOutcome {
+    let outcome = drain_pending_rebuild(cfg, store, state);
+    match outcome {
+        DrainOutcome::Swapped => {
+            tracing::info!("Idle-tick drain swapped in a completed background HNSW rebuild")
+        }
+        DrainOutcome::Cleared => {
+            tracing::debug!(
+                "Idle-tick drain cleared a finished background HNSW rebuild without swap"
+            )
+        }
+        DrainOutcome::StillRunning | DrainOutcome::NoPending => {}
+    }
+    outcome
 }
 
 /// Timing knobs for the watch loop's idle-flush debounce.
@@ -1521,6 +1565,15 @@ pub fn cmd_watch(
                 // arrivals too, not just on quiet ticks. The idle
                 // housekeeping here only runs when no flush is due.
                 if !flush_due(&state, &debounce) {
+                    // Drain a background HNSW rebuild that completed while the
+                    // repo was quiet. Runs before the sibling `drain_one` below
+                    // so foreign sibling slots — gated on
+                    // `pending_rebuild.is_some()` to defer while a rebuild may
+                    // hold GPU memory — un-defer in the same tick the rebuild
+                    // lands, and before the end-of-loop snapshot publish so
+                    // `rebuild_in_flight` reflects the drained state this tick.
+                    drain_completed_rebuild_idle(&watch_cfg, &store, &mut state);
+
                     // Age-only prune fires hourly on idle ticks regardless of
                     // map size. The size-gated `prune_last_indexed_mtime`
                     // still runs in the event path; this idle-tick variant
