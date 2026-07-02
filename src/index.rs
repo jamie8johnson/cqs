@@ -18,8 +18,9 @@ use crate::store::{ClearHnswDirty, Store, StoreError};
 ///
 /// The metric is an **index-time** choice: it is resolved from
 /// `CQS_DISTANCE_METRIC` when an index is built, persisted alongside the
-/// index (HNSW: `{basename}.hnsw.meta`; CAGRA: the `.cagra.meta` sidecar),
-/// and the stored value wins on every subsequent load. Loading with
+/// index (HNSW: the `{basename}.hnsw.manifest` pointer; CAGRA: the
+/// `.cagra.meta` sidecar), and the stored value wins on every subsequent
+/// load. Loading with
 /// `CQS_DISTANCE_METRIC` explicitly set to a *different* metric is a typed
 /// error ([`crate::hnsw::HnswError::MetricMismatch`]) — never a silent
 /// reinterpretation. This mirrors how the embedding model is selected at

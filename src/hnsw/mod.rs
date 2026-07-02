@@ -29,7 +29,7 @@ mod search;
 mod stdout_gag;
 
 pub use persist::{
-    verify_hnsw_checksums, verify_hnsw_current, SaveOutcome, StoreStamp, HNSW_ALL_EXTENSIONS,
+    verify_hnsw_checksums, verify_hnsw_current, HnswArtifacts, SaveOutcome, StoreStamp,
 };
 
 use std::cell::UnsafeCell;
@@ -305,7 +305,7 @@ impl Distance<f32> for DistDotClamped {
 /// polymorphism is an enum over the concrete dist types with forwarding
 /// methods. One variant per [`DistanceMetric`] — both must stay
 /// buildable AND loadable, since the load path instantiates the variant
-/// from the persisted `{basename}.hnsw.meta` header.
+/// from the metric recorded in the `{basename}.hnsw.manifest` pointer.
 ///
 /// Also the dependent type of the `self_cell!` below, which is why it must
 /// carry exactly one lifetime parameter.
