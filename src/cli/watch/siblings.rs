@@ -319,6 +319,22 @@ impl SiblingSet {
         self.slots.is_empty()
     }
 
+    /// Snapshot the not-yet-drained delta queue of the named slot, if it is
+    /// tracked. Used by the idle-tick re-bind: when a slot is promoted to
+    /// active, its pending sibling deltas (files propagated to it while it was
+    /// a sibling but not yet drained into its index) must be carried into the
+    /// active `pending_files` before the sibling set is re-discovered — the
+    /// re-discovery drops the promoted slot's queue, so without the carry those
+    /// files stay stale in the now-active slot until a reconcile, which never
+    /// runs on a non-serve daemon or under `CQS_WATCH_RECONCILE=0`.
+    pub(super) fn queued_files_for(&self, name: &str) -> Vec<PathBuf> {
+        self.slots
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.queue.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Copy the active cycle's drained file set into every propagated
     /// sibling's queue. Called from `process_file_changes` on the
     /// success arm — propagation strictly follows the active reindex so

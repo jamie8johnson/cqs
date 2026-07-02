@@ -440,8 +440,10 @@ fn reopen_store_after_replacement(
 /// a different slot and, when the promote is hot-reloadable, swaps the watch
 /// loop's write side onto it: the RW `Store`, `cqs_dir` (HNSW / dirty-marker /
 /// index-lock root), `index_path`, `db_id`, `state.active_slot`, and the sibling
-/// set all move to the new slot before the next snapshot publish. The query side
-/// (the daemon's `BatchContext`) already self-heals via the per-check
+/// set all move to the new slot before the next snapshot publish, and the
+/// promoted slot's not-yet-drained sibling deltas are carried into the active
+/// reindex queue so a quiet non-serve daemon does not leave them stale. The
+/// query side (the daemon's `BatchContext`) already self-heals via the per-check
 /// `resolve_index_db(project_cqs_dir)`, so after this the two sides converge on
 /// the promoted slot with no restart.
 ///
@@ -582,6 +584,17 @@ fn maybe_rebind_active_slot(
 
     let old_slot = std::mem::replace(&mut state.active_slot, new_slot.clone());
 
+    // Carry the promoted slot's not-yet-drained sibling deltas into the active
+    // reindex queue BEFORE re-discovery drops them: while the slot was a
+    // sibling, active-cycle edits were propagated to its queue but may not have
+    // drained yet. Re-discovery (below) rebuilds the set without the promoted
+    // slot, so its queue would be lost — leaving those files stale in the
+    // now-active slot until a reconcile that never runs on a non-serve daemon
+    // or under `CQS_WATCH_RECONCILE=0`. The re-bind gate guarantees
+    // `pending_files` is empty here, so this is a clean transfer; the cap and
+    // the reconcile net still bound any overflow.
+    let carried = sibling_slots.queued_files_for(&new_slot);
+
     // Re-discover siblings against the new active slot: the old active becomes a
     // sibling, the promoted slot leaves the set.
     *sibling_slots = if cqs::slot::slots_root(project_cqs_dir).exists() {
@@ -594,6 +607,31 @@ fn maybe_rebind_active_slot(
     } else {
         SiblingSet::empty()
     };
+
+    if !carried.is_empty() {
+        let cap = max_pending_files();
+        let before = state.pending_files.len();
+        for f in carried {
+            if state.pending_files.len() >= cap {
+                break;
+            }
+            state.pending_files.insert(f);
+        }
+        let carried_in = state.pending_files.len() - before;
+        if carried_in > 0 {
+            // Arm the debounce clocks so the carried files flush into the new
+            // active slot on the next quiet-gap tick (and can't be starved past
+            // the max-latency cap by a continuous event stream).
+            state.last_event = std::time::Instant::now();
+            if state.first_pending_event.is_none() {
+                state.first_pending_event = Some(state.last_event);
+            }
+            info!(
+                carried = carried_in,
+                "carried promoted slot's pending sibling deltas into the active reindex queue"
+            );
+        }
+    }
 
     info!(
         old_slot = %old_slot,
