@@ -599,9 +599,9 @@ pub(super) fn drain_pending_rebuild(
                 .map(|(id, emb, _)| (id, emb))
                 .collect();
             if !to_replay.is_empty() {
-                let items: Vec<(String, &[f32])> = to_replay
+                let items: Vec<(&str, &[f32])> = to_replay
                     .iter()
-                    .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                    .map(|(id, emb)| (id.as_str(), emb.as_slice()))
                     .collect();
                 match new_index.insert_batch(&items) {
                     Ok(n) => {

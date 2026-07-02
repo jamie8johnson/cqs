@@ -732,12 +732,14 @@ pub(crate) fn reindex_files(
     // Unchanged chunks (cache hits) are already in the HNSW index from a prior cycle,
     // so re-inserting them would create duplicates (hnsw_rs has no dedup).
     //
-    // Pre-allocate to skip the `Vec` resize cost on the hot reindex path.
-    // TODO: change the downstream HNSW insert API to take `&[&str]` so the
-    // per-element clone disappears entirely; the pre-allocation is the cheap
-    // interim win.
-    let mut content_hashes: Vec<String> = Vec::with_capacity(to_embed.len());
-    content_hashes.extend(to_embed.iter().map(|(_, c)| c.content_hash.clone()));
+    // Owned `String`s: this Vec is returned to the caller, which looks up the
+    // embeddings by hash after `chunks` (which `to_embed` borrows) is consumed
+    // here — the hashes must outlive that borrow, so the copy is intrinsic.
+    // `collect` over the exact-size iterator pre-sizes the Vec in one shot.
+    let content_hashes: Vec<String> = to_embed
+        .iter()
+        .map(|(_, c)| c.content_hash.clone())
+        .collect();
 
     // Only embed chunks that don't have cached embeddings
     let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
