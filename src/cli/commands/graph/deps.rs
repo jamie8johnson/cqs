@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
+use cqs::normalize_path;
 use cqs::store::{ChunkSummary, ReadOnly, Store, TypeUsage};
 
 use super::notes_text;
@@ -15,9 +16,10 @@ use super::KindFallbackOutput;
 
 // ─── Args (surface-agnostic, MCP-ready) ────────────────────────────────────
 
-/// Input for [`deps_core`]. Cross-project deps is not yet supported (both
-/// surfaces warn and return the local result); the flag lives on the
-/// adapter side, so the core covers the single-project path.
+/// Input for [`deps_core`] and [`deps_cross_core`]. The single-project core
+/// runs the kind-routed local query; the cross-project core merges every
+/// project's type edges (no kind-fallback, mirroring the call-graph cross
+/// cores). Both surfaces share this shape.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub(crate) struct DepsArgs {
@@ -46,6 +48,10 @@ impl Default for DepsArgs {
 pub(crate) struct TypeUsageEntry {
     pub type_name: String,
     pub edge_kind: String,
+    /// Originating project name on the cross-project path; omitted (single
+    /// project) on the standard path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -61,6 +67,10 @@ pub(crate) struct DepsUserEntry {
     pub file: String,
     pub line_start: u32,
     pub chunk_type: String,
+    /// Originating project name on the cross-project path; omitted (single
+    /// project) on the standard path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 /// Single JSON-schema source for `cqs deps <name>`. Three happy-path
@@ -90,6 +100,8 @@ pub(crate) fn build_deps_reverse(name: &str, types: &[TypeUsage]) -> DepsReverse
             .map(|t| TypeUsageEntry {
                 type_name: t.type_name.clone(),
                 edge_kind: t.edge_kind.clone(),
+                // Single-project: project omitted (skip-when-empty).
+                project: String::new(),
             })
             .collect(),
         count: types.len(),
@@ -106,6 +118,8 @@ pub(crate) fn build_deps_forward(users: &[ChunkSummary], root: &Path) -> Vec<Dep
             file: cqs::rel_display(&c.file, root).to_string(),
             line_start: c.line_start,
             chunk_type: c.chunk_type.to_string(),
+            // Single-project: project omitted (skip-when-empty).
+            project: String::new(),
         })
         .collect()
 }
@@ -188,6 +202,97 @@ pub(crate) fn deps_core(
     }
 }
 
+// ─── Cross-project core ──────────────────────────────────────────────────────
+//
+// Like the call-graph cross cores, deps has its own (multi-index) retrieval
+// and no kind-fallback, so it gets its own core rather than a branch inside
+// `deps_core`. Type edges resolve by name — the same string-keyed resolution
+// the call cross cores use — so "who uses type T" / "what types does fn F use"
+// extend across store boundaries exactly as callers/callees do. Both surfaces
+// (CLI `cmd_deps --cross-project`, daemon `dispatch_deps` cross branch) call
+// this so the cap discipline and the project-tagged projection can't drift.
+
+/// Surface-agnostic core for `cqs deps <name> --cross-project`.
+///
+/// Reverse (`--reverse`): merges the types used by `name` across every
+/// project. Forward (default): merges the chunks that use type `name` across
+/// every project. Emits the same `DepsCoreOutput` shape the single-project
+/// core does (never the `Fallback` variant — the cross-project path has no
+/// kind-fallback), with each entry carrying its originating `project`. Per-
+/// store results are sorted on a stable key then truncated to the shared
+/// `1..=100` cap so `--limit` pages a deterministic merged window.
+pub(crate) fn deps_cross_core(
+    cross_ctx: &mut cqs::cross_project::CrossProjectContext,
+    args: &DepsArgs,
+) -> Result<DepsCoreOutput> {
+    let _span = tracing::info_span!(
+        "deps_cross_core",
+        name = %args.name,
+        reverse = args.reverse,
+        limit = args.limit
+    )
+    .entered();
+    let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
+
+    if args.reverse {
+        let mut usages = cross_ctx
+            .get_types_used_by_cross(&args.name, limit)
+            .context("Failed to load cross-project type dependencies")?;
+        // Stable merged order: (project, type_name, edge_kind). No trust rank
+        // on type edges (unlike the call cross cores), so project-then-name is
+        // the deterministic key. Sort BEFORE the cap so `--limit` keeps a
+        // stable page rather than raw store-iteration order.
+        usages.sort_by(|a, b| {
+            a.project
+                .cmp(&b.project)
+                .then_with(|| a.usage.type_name.cmp(&b.usage.type_name))
+                .then_with(|| a.usage.edge_kind.cmp(&b.usage.edge_kind))
+        });
+        usages.truncate(limit);
+        let types: Vec<TypeUsageEntry> = usages
+            .iter()
+            .map(|u| TypeUsageEntry {
+                type_name: u.usage.type_name.clone(),
+                edge_kind: u.usage.edge_kind.clone(),
+                project: u.project.clone(),
+            })
+            .collect();
+        let count = types.len();
+        Ok(DepsCoreOutput::Reverse(DepsReverseOutput {
+            name: args.name.clone(),
+            types,
+            count,
+        }))
+    } else {
+        let mut users = cross_ctx
+            .get_type_users_cross(&args.name, limit)
+            .context("Failed to load cross-project type users")?;
+        // Stable merged order: (project, file, line). Mirrors the single-
+        // project SQL `ORDER BY origin, line_start`, prefixed by project.
+        users.sort_by(|a, b| {
+            a.project
+                .cmp(&b.project)
+                .then_with(|| a.chunk.file.cmp(&b.chunk.file))
+                .then_with(|| a.chunk.line_start.cmp(&b.chunk.line_start))
+        });
+        users.truncate(limit);
+        // Cross-project has no single root to relativize against, so paths are
+        // normalized (slash-normalized) rather than made root-relative —
+        // mirroring the call cross cores' `normalize_path`.
+        let entries: Vec<DepsUserEntry> = users
+            .iter()
+            .map(|u| DepsUserEntry {
+                name: u.chunk.name.clone(),
+                file: normalize_path(&u.chunk.file).to_string(),
+                line_start: u.chunk.line_start,
+                chunk_type: u.chunk.chunk_type.to_string(),
+                project: u.project.clone(),
+            })
+            .collect();
+        Ok(DepsCoreOutput::Forward(entries))
+    }
+}
+
 // ─── CLI command (thin adapter over the core) ──────────────────────────────
 
 /// Show type dependencies.
@@ -209,11 +314,22 @@ pub(crate) fn cmd_deps(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_deps", name, reverse, limit, cross_project).entered();
-    if cross_project {
-        tracing::warn!("cross-project deps not yet supported, returning local result");
-    }
     let store = &ctx.store;
     let root = &ctx.root;
+
+    if cross_project {
+        let mut cross_ctx = cqs::cross_project::CrossProjectContext::from_config(root)?;
+        let output = deps_cross_core(
+            &mut cross_ctx,
+            &DepsArgs {
+                name: name.to_string(),
+                reverse,
+                limit,
+            },
+        )?;
+        render_deps_cross(name, &output, json)?;
+        return Ok(());
+    }
 
     let args = DepsArgs {
         name: name.to_string(),
@@ -260,6 +376,66 @@ pub(crate) fn cmd_deps(
                 }
                 println!();
                 println!("Total: {} user(s)", users.len());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Render the cross-project deps output. Mirrors the single-project text/JSON
+/// rendering but tags each entry with its originating project and adds a
+/// `(cross-project)` header. The core only ever returns `Reverse` / `Forward`
+/// (the cross path has no kind-fallback); the `Fallback` arm is defensive so
+/// the match stays total.
+fn render_deps_cross(name: &str, output: &DepsCoreOutput, json: bool) -> Result<()> {
+    match output {
+        DepsCoreOutput::Reverse(out) => {
+            if json {
+                crate::cli::json_envelope::emit_json(out)?;
+            } else if out.types.is_empty() {
+                println!("No type dependencies found for '{}' (cross-project)", name);
+            } else {
+                println!("Types used by '{}' (cross-project):", name.cyan());
+                println!();
+                for t in &out.types {
+                    let kind_suffix = if t.edge_kind.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", t.edge_kind.dimmed())
+                    };
+                    println!("  {}{} [{}]", t.type_name, kind_suffix, t.project.dimmed());
+                }
+                println!();
+                println!("Total: {} type(s)", out.count);
+            }
+        }
+        DepsCoreOutput::Forward(users) => {
+            if json {
+                crate::cli::json_envelope::emit_json(users)?;
+            } else if users.is_empty() {
+                println!("No users found for type '{}' (cross-project)", name);
+            } else {
+                println!("Chunks that use type '{}' (cross-project):", name.cyan());
+                println!();
+                for user in users {
+                    println!(
+                        "  {} ({}:{}) [{}]",
+                        user.name.cyan(),
+                        user.file,
+                        user.line_start,
+                        user.project.dimmed()
+                    );
+                }
+                println!();
+                println!("Total: {} user(s)", users.len());
+            }
+        }
+        DepsCoreOutput::Fallback(fb) => {
+            // Cross-project deps never produces a kind-fallback; emit it
+            // defensively (JSON only) so the match is total and no output is
+            // silently dropped should the invariant ever change.
+            if json {
+                crate::cli::json_envelope::emit_json(fb)?;
             }
         }
     }
@@ -317,12 +493,20 @@ mod tests {
             types: vec![TypeUsageEntry {
                 type_name: "Config".into(),
                 edge_kind: "Param".into(),
+                // Single-project entry: empty project ⇒ omitted on the wire.
+                project: String::new(),
             }],
             count: 1,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["name"], "my_func");
         assert!(json.get("function").is_none());
+        // Skip-when-empty: the single-project reverse shape carries no
+        // `project` key, so the flag-off wire shape is unchanged.
+        assert!(
+            json["types"][0].get("project").is_none(),
+            "single-project reverse entry must omit project: {json}"
+        );
     }
 
     #[test]
@@ -350,10 +534,25 @@ mod tests {
             file: "src/foo.rs".into(),
             line_start: 15,
             chunk_type: "function".into(),
+            // Single-project entry: empty project ⇒ omitted on the wire.
+            project: String::new(),
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("line_start").is_some());
         assert!(json.get("line").is_none());
+        // Skip-when-empty: the single-project forward shape carries no
+        // `project` key, so the flag-off wire shape is unchanged.
+        assert!(
+            json.get("project").is_none(),
+            "single-project forward entry must omit project: {json}"
+        );
+        // A populated project (cross-project path) serializes the key.
+        let cross = DepsUserEntry {
+            project: "proj_a".into(),
+            ..entry
+        };
+        let cross_json = serde_json::to_value(&cross).unwrap();
+        assert_eq!(cross_json["project"], "proj_a");
     }
 
     fn make_const_chunk(name: &str, line: u32) -> ChunkSummary {
@@ -477,6 +676,192 @@ mod tests {
         match deps_core(&store, dir.path(), &rev).unwrap() {
             DepsCoreOutput::Reverse(_) => {}
             other => panic!("reverse deps on a function must run normal flow, got: {other:?}"),
+        }
+    }
+
+    /// Build a `NamedStore` for a project, seeding each `(chunk_name, chunk_id,
+    /// uses_type, kind)` as a chunk plus one type edge to `uses_type`. Uses only
+    /// the public store API so it lives in the CLI crate's test module.
+    fn make_type_deps_store(
+        project: &str,
+        edges: &[(&str, &str, &str, cqs::parser::TypeEdgeKind)],
+    ) -> cqs::cross_project::NamedStore {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join(cqs::INDEX_DB_FILENAME);
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = cqs::Embedding::new(emb_vec);
+
+        let store = cqs::store::Store::open_readonly_after_init(&db, |s| {
+            s.init(&cqs::store::ModelInfo::default())?;
+            for (idx, (name, id, _type_name, _kind)) in edges.iter().enumerate() {
+                let line = idx as u32 + 1;
+                let content = format!("fn {name}() {{}}");
+                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                let chunk = cqs::parser::Chunk {
+                    id: id.to_string(),
+                    file: std::path::PathBuf::from(format!("src/{project}.rs")),
+                    language: cqs::parser::Language::Rust,
+                    chunk_type: cqs::parser::ChunkType::Function,
+                    name: name.to_string(),
+                    signature: format!("fn {name}()"),
+                    content,
+                    doc: None,
+                    line_start: line,
+                    line_end: line,
+                    byte_start: 0,
+                    content_hash: hash,
+                    canonical_hash: String::new(),
+                    parent_id: None,
+                    window_idx: None,
+                    parent_type_name: None,
+                    parser_version: 0,
+                };
+                s.upsert_chunks_batch(&[(chunk, embedding.clone())], Some(0))?;
+            }
+            for (_name, id, type_name, kind) in edges {
+                s.upsert_type_edges(
+                    id,
+                    &[cqs::parser::TypeRef {
+                        type_name: type_name.to_string(),
+                        line_number: 1,
+                        kind: Some(*kind),
+                    }],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // Keep the tempdir alive for the test duration (disables auto-cleanup).
+        let _keep = dir.keep();
+        cqs::cross_project::NamedStore::new(project.to_string(), store, db)
+    }
+
+    /// The cross core merges type edges across projects and labels every entry
+    /// with its originating project — the forward "who uses T" and reverse
+    /// "what types does F use" both span store boundaries. This is the shape
+    /// the stubbed adapters used to drop (they returned the local result with
+    /// no `project` field).
+    #[test]
+    fn deps_cross_core_merges_projects_with_labels() {
+        use cqs::cross_project::CrossProjectContext;
+        use cqs::parser::TypeEdgeKind;
+
+        // proj_a: func_a + shared_fn both use Config.
+        let a = make_type_deps_store(
+            "proj_a",
+            &[
+                ("func_a", "src/a.rs:1:fa", "Config", TypeEdgeKind::Param),
+                ("shared_fn", "src/a.rs:2:sa", "Config", TypeEdgeKind::Field),
+            ],
+        );
+        // proj_b: func_b uses Config; shared_fn uses Store.
+        let b = make_type_deps_store(
+            "proj_b",
+            &[
+                ("func_b", "src/b.rs:1:fb", "Config", TypeEdgeKind::Return),
+                ("shared_fn", "src/b.rs:2:sb", "Store", TypeEdgeKind::Field),
+            ],
+        );
+        let mut ctx = CrossProjectContext::new(vec![a, b]);
+
+        // Forward: who uses Config? Both projects' users surface, each tagged.
+        let fwd = deps_cross_core(
+            &mut ctx,
+            &DepsArgs {
+                name: "Config".into(),
+                reverse: false,
+                limit: 50,
+            },
+        )
+        .unwrap();
+        match fwd {
+            DepsCoreOutput::Forward(users) => {
+                assert!(
+                    users
+                        .iter()
+                        .any(|u| u.name == "func_a" && u.project == "proj_a"),
+                    "func_a@proj_a must appear cross-project: {users:?}"
+                );
+                assert!(
+                    users
+                        .iter()
+                        .any(|u| u.name == "func_b" && u.project == "proj_b"),
+                    "func_b@proj_b must appear cross-project: {users:?}"
+                );
+                assert!(
+                    users.iter().all(|u| !u.project.is_empty()),
+                    "every cross entry must carry a project label: {users:?}"
+                );
+            }
+            other => panic!("expected forward output, got: {other:?}"),
+        }
+
+        // Reverse: what types does shared_fn use? proj_a's copy → Config,
+        // proj_b's copy → Store — both surface with their project.
+        let rev = deps_cross_core(
+            &mut ctx,
+            &DepsArgs {
+                name: "shared_fn".into(),
+                reverse: true,
+                limit: 50,
+            },
+        )
+        .unwrap();
+        match rev {
+            DepsCoreOutput::Reverse(out) => {
+                assert_eq!(out.name, "shared_fn");
+                assert!(
+                    out.types
+                        .iter()
+                        .any(|t| t.type_name == "Config" && t.project == "proj_a"),
+                    "Config@proj_a must appear: {:?}",
+                    out.types
+                );
+                assert!(
+                    out.types
+                        .iter()
+                        .any(|t| t.type_name == "Store" && t.project == "proj_b"),
+                    "Store@proj_b must appear: {:?}",
+                    out.types
+                );
+            }
+            other => panic!("expected reverse output, got: {other:?}"),
+        }
+    }
+
+    /// The cross core never emits a kind-fallback (mirroring the call-graph
+    /// cross cores) — a const name that would fall back on the single-project
+    /// path just runs the forward type-user query and returns whatever uses it.
+    #[test]
+    fn deps_cross_core_has_no_kind_fallback() {
+        use cqs::cross_project::CrossProjectContext;
+        use cqs::parser::TypeEdgeKind;
+
+        let a = make_type_deps_store(
+            "proj_a",
+            &[("uses_max", "src/a.rs:1:um", "MAX_LEN", TypeEdgeKind::Field)],
+        );
+        let mut ctx = CrossProjectContext::new(vec![a]);
+        // `MAX_LEN` is const-shaped; single-project deps_core would fall back.
+        // Cross runs the forward query — no Fallback variant.
+        let out = deps_cross_core(
+            &mut ctx,
+            &DepsArgs {
+                name: "MAX_LEN".into(),
+                reverse: false,
+                limit: 50,
+            },
+        )
+        .unwrap();
+        match out {
+            DepsCoreOutput::Forward(users) => {
+                assert!(
+                    users.iter().any(|u| u.name == "uses_max"),
+                    "forward query must find the type user: {users:?}"
+                );
+            }
+            other => panic!("cross deps must never fall back, got: {other:?}"),
         }
     }
 }

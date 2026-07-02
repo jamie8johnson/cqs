@@ -19,7 +19,7 @@ pub(crate) use callers::{
 // routes through the `*_overlay` variants).
 #[cfg(test)]
 pub(crate) use callers::{callees_core, callers_core};
-pub(crate) use deps::{cmd_deps, deps_core, DepsArgs as DepsCoreArgs};
+pub(crate) use deps::{cmd_deps, deps_core, deps_cross_core, DepsArgs as DepsCoreArgs};
 pub(crate) use explain::cmd_explain;
 pub(crate) use impact::{
     cmd_impact, impact_cross_core, impact_overlay, ImpactArgs as ImpactCoreArgs,
