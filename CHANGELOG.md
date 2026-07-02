@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`cqs plan --tokens N` now applies the budget in text mode (#2121).** Text mode previously emitted a "not yet applied in text mode" warning and rendered the full, unbudgeted plan — the one command whose `--tokens` flag parsed but did nothing without `--json`. Text output now packs its sections to fit the budget, mirroring the sibling `cqs task`: the template deliverable (checklist, patterns) fills first, the supplementary scout file groups degrade first, each section shows a `(N more … truncated)` marker, and the header reports `(used of budget tokens)`. JSON output is unchanged (it still echoes `token_budget`). The stopgap warning is gone.
+
 ## [1.52.0] - 2026-07-02
 
 The worktree-overlay diff-subject truth campaign (three fixes closing the wrong-tree family: worktree-lane review/ci/impact-diff diffed the served parent; daemon impact-diff lacked overlay plumbing; `--no-overlay` diverged CLI vs daemon), plus serve/cache teardown-abort fixes, the pdf-script embed (TOCTOU removed), a windows-latest hard-error PR gate, and a repo-wide comment-archaeology sweep (15 new tracking issues, 12 truth fixes). Scoring is byte-identical to v1.51.0 — a same-corpus binary A/B (v1.51.0 cuda build vs current, same index, both fixtures) returned identical R@K; the snapshot shift (47.2/70.7/86.7 → 46.8/68.8/84.4 R@1/R@5/R@20 aggregate) is corpus growth at ~17.6k chunks.
