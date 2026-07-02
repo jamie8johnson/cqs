@@ -4494,16 +4494,44 @@ pub fn definition_nix() -> &'static LanguageDef {
 // Objc (objc)
 // ============================================================================
 
-/// Extracts the return type from a function signature.
-/// Currently returns `None` for all inputs as Objective-C method signatures use `- (ReturnType)methodName` syntax that is not amenable to simple text-based extraction.
+/// Extracts the return type from an Objective-C method signature.
+/// ObjC declares the return type in the first parenthesized group following the
+/// `-`/`+` method marker (`- (NSString *)name`); this captures that group with a
+/// balanced-paren scan and tokenizes it. A `void` return (or an unparseable
+/// signature) yields `None`.
 /// # Arguments
-/// * `_signature` - A function signature string to parse
+/// * `signature` - A method signature string to parse
 /// # Returns
-/// `None` in all cases, as return type extraction is not yet implemented.
-fn extract_return_objc(_signature: &str) -> Option<String> {
-    // ObjC methods use `- (ReturnType)methodName` syntax which doesn't lend itself
-    // to simple text-based extraction. Return None.
-    None
+/// `Some("Returns <tokens>")` for a non-`void` return type, `None` otherwise.
+fn extract_return_objc(signature: &str) -> Option<String> {
+    // The return type is the first `(...)` group after the method marker.
+    let after_marker = signature.trim().strip_prefix(['-', '+'])?.trim();
+    let inner = after_marker.strip_prefix('(')?;
+    // Balanced scan to the matching close paren; depth starts at 1 for the
+    // stripped opening paren.
+    let mut depth = 1usize;
+    let mut end = None;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let ret = inner[..end?].trim();
+    if ret.is_empty() || ret == "void" {
+        return None;
+    }
+    Some(format!(
+        "Returns {}",
+        crate::nl::tokenize_identifier(ret).join(" ")
+    ))
 }
 
 /// Post-process Objective-C chunks to reclassify categories as Extension.

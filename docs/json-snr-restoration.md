@@ -221,7 +221,7 @@ Memory says "no external users" but the eval harness, the chat REPL, and any cus
 
 Threading a parameter through `build_chunk_json_inner` is mechanical for the ~12 direct call sites. But the function is also called transitively from any code path that produces chunk-shaped output for serialization, and those call paths might not have a `Posture` available without further plumbing.
 
-**Mitigation:** if threading turns out to need 30+ call sites instead of ~12, accept the env-read-in-leaf style for this iteration; revisit later. The style smell is real but not load-bearing for SNR restoration.
+**Mitigation:** if threading turns out to need 30+ call sites instead of ~12, accept the env-read-in-leaf style for this iteration; revisit later (moot — the posture surface was later removed entirely: the env knob deleted and the _with_posture variants absorbed into the command cores). The style smell is real but not load-bearing for SNR restoration.
 
 ## Phase ordering inside the PR
 

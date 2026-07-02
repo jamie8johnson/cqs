@@ -167,6 +167,8 @@ The registry enumerates **39 commands** (32 `args_variants` + 3 `ctx_only` +
   `QueryArgs`). The 19 without one (§8) get a placeholder `inputSchema` (empty
   object `{"type":"object"}`) and a `// TODO(mcp-phase1-cores)` marker in P1, OR
   are excluded from the P1 read-only set — see §7.
+  (done: all 19 gained JsonSchema cores — tracked and closed as #2021; no
+  placeholder schemas or TODO markers remain)
 - `annotations` (mcp-spec Assessment §4: "untrusted hints", not enforcement):
   - `readOnlyHint`: `true` for all read commands; `false` only for the
     mutating set. From the registry + cores, the **only** mutator dispatched
@@ -217,6 +219,8 @@ Design §8).
    choice (b):** extend the socket to accept `"args": {object}` and have the
    daemon `from_value::<XArgs>` directly (the cleaner long-term path; mcp-spec
    OQ-3 recommendation). File (b) as the relay-format follow-up (§10).
+   (done: option (b) shipped as the daemon JSON-args dispatch frame — Lane 1;
+   the tools/call relay uses it, no argv round-trip)
    - *Fallback in-process path* (Design §2, mcp-spec reuse): if the socket is
      unreachable (`daemon_socket_path` doesn't exist / connect fails —
      `daemon_translate.rs:838-849`), a P1-optional in-process `BatchView` path

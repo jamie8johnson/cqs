@@ -383,8 +383,9 @@ proptest! {
 // daemon-down — a dash-leading value is not a clap-reachable invocation and is
 // therefore out of scope for "any invocation clap accepts". (The translator's
 // bare-query combined-short pre-expansion would in fact shred a dash-leading
-// value token — see the residual note in the lane report — but that input
-// can't reach this path through clap today.)
+// value token — a latent hazard that becomes reachable only if a forwarded
+// value flag ever gains `allow_hyphen_values`/`allow_negative_numbers`; until
+// then clap rejects the input before it reaches this path.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 proptest! {
