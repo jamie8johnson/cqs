@@ -296,7 +296,7 @@ fn test_diff_json_emits_envelope_baseline_to_project() {
         .filter_map(|e| e["name"].as_str())
         .collect();
     assert!(
-        removed.iter().any(|n| *n == "legacy_helper"),
+        removed.contains(&"legacy_helper"),
         "legacy_helper exists only in baseline → must appear in diff.removed. got: {removed:?}"
     );
 }
