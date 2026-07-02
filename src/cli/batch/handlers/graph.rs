@@ -20,8 +20,9 @@ use crate::cli::args::{
 };
 use crate::cli::commands::{
     callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
-    impact_overlay, parse_edge_kind, test_map_core, trace_core, CalleesArgs as CoreCalleesArgs,
-    CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs, TraceCoreArgs,
+    deps_cross_core, impact_overlay, parse_edge_kind, test_map_core, trace_core,
+    CalleesArgs as CoreCalleesArgs, CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, TestMapCoreArgs,
+    TraceCoreArgs,
 };
 // `callers_core` / `callees_core` are the no-overlay entry points; production
 // dispatch now routes through the `*_overlay` variants above, so the plain cores
@@ -78,7 +79,9 @@ pub(super) fn resolve_graph_overlay(
 ///
 /// The wire schema is `DepsCoreOutput` (in `cli::commands::graph::deps`),
 /// serialized as-is — see that type for the exact field names of the
-/// reverse, forward, and kind-fallback shapes.
+/// reverse, forward, and kind-fallback shapes. The cross-project branch goes
+/// through `deps_cross_core`, which projects to the same reverse/forward
+/// shapes with a `project` field per entry (and never the kind-fallback).
 ///
 /// # Errors
 ///
@@ -98,8 +101,19 @@ pub(in crate::cli::batch) fn dispatch_deps(
         cross_project
     )
     .entered();
+
     if cross_project {
-        tracing::warn!("cross-project deps not yet supported, returning local result");
+        let cross_ctx = ctx.cross_project()?;
+        let mut cross_ctx = cross_ctx.lock().unwrap_or_else(|p| p.into_inner());
+        let output = deps_cross_core(
+            &mut cross_ctx,
+            &DepsCoreArgs {
+                name: name.to_string(),
+                reverse,
+                limit: args.limit_arg.limit,
+            },
+        )?;
+        return Ok(serde_json::to_value(&output)?);
     }
 
     let core_args = DepsCoreArgs {
@@ -1421,6 +1435,95 @@ mod tests {
             }
             assert_eq!(daemon, core, "deps parity mismatch for {name}");
         }
+    }
+
+    /// Seed a corpus whose local store carries a type edge: `uses_config`
+    /// references type `Config`. Unlike `seed_call_graph_ctx` (call edges),
+    /// this exercises the deps `type_edges` query path.
+    fn seed_type_edge_ctx() -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+
+        let mut emb_vec = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb_vec[0] = 1.0;
+        let embedding = Embedding::new(emb_vec);
+
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            store
+                .upsert_chunks_batch(
+                    &[(make_chunk("src/lib.rs:1:uc", "uses_config"), embedding)],
+                    Some(0),
+                )
+                .expect("upsert chunks");
+            store
+                .upsert_type_edges(
+                    "src/lib.rs:1:uc",
+                    &[cqs::parser::TypeRef {
+                        type_name: "Config".to_string(),
+                        line_number: 2,
+                        kind: Some(cqs::parser::TypeEdgeKind::Param),
+                    }],
+                )
+                .expect("upsert type edge");
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn parity_deps_cross_daemon_matches_core() {
+        // Cross-project parity for deps over the single-project corpus (label
+        // "local"). Both surfaces route through `deps_cross_core`; pin the
+        // shared forward shape AND the RED/GREEN discriminator — the `project`
+        // field the warn-and-fallback stub dropped when it returned the
+        // local-only `deps_core` result.
+        use crate::cli::commands::deps_cross_core;
+        let (dir, ctx) = seed_type_edge_ctx();
+        let view = ctx.build_view(None);
+        let root = dir.path();
+
+        let wire = DepsArgs {
+            name: "Config".into(),
+            reverse: false,
+            cross_project: true,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let daemon = dispatch_deps(&view, &wire).expect("dispatch_deps cross");
+
+        let mut cross_ctx =
+            cqs::cross_project::CrossProjectContext::from_config(root).expect("from_config");
+        let core = serde_json::to_value(
+            deps_cross_core(
+                &mut cross_ctx,
+                &DepsCoreArgs {
+                    name: "Config".into(),
+                    reverse: false,
+                    limit: 5,
+                },
+            )
+            .expect("deps_cross_core"),
+        )
+        .unwrap();
+
+        // Fixture-grounded + RED/GREEN: the seeded type-user surfaces tagged
+        // with its project. The stub returned the local `deps_core` forward
+        // shape (a `{name,file,line_start,chunk_type}` array with NO `project`
+        // key), so both the value assert and the byte-equality below fail on
+        // the stub and pass once the adapter routes through the cross core.
+        let users = core
+            .as_array()
+            .unwrap_or_else(|| panic!("cross deps forward must be an array: {core}"));
+        assert!(
+            users
+                .iter()
+                .any(|u| u["name"] == "uses_config" && u["project"] == "local"),
+            "seeded cross-project uses_config@local must appear: {core}"
+        );
+        assert_eq!(daemon, core, "cross-project deps parity mismatch");
     }
 
     #[test]
