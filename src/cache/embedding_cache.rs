@@ -840,11 +840,30 @@ impl Drop for EmbeddingCache {
     /// [`EmbeddingCache::checkpoint_wal`] from the structured-shutdown path
     /// before drop.
     ///
-    /// `catch_unwind` guards against `block_on` panicking when dropped from
-    /// inside a tokio runtime.
+    /// The best-effort checkpoint is skipped entirely when a tokio runtime is
+    /// active on the drop thread (see [`should_wal_checkpoint_on_drop`]): its
+    /// `block_on` would panic ("Cannot start a runtime from within a runtime"),
+    /// and under `panic = "abort"` the surrounding `catch_unwind` is a no-op, so
+    /// the panic would abort the process. This guard prevents that on any thread
+    /// with an active runtime; whether the daemon's shared-runtime-held caches
+    /// actually drop in-runtime during teardown is unverified (the traced paths
+    /// drop on sync threads), so the guard is prophylactic and correct either
+    /// way. `catch_unwind` remains only as defense-in-depth for the non-runtime
+    /// path.
     ///
     /// [`SocketCleanupGuard`]: crate::cli::watch
     fn drop(&mut self) {
+        // A runtime could be active on this thread if a shared-runtime-held
+        // cache is dropped mid-async; block_on would then panic and, under
+        // panic=abort, abort the process. The guard skips on any such thread.
+        let in_runtime = tokio::runtime::Handle::try_current().is_ok();
+        if !should_wal_checkpoint_on_drop(in_runtime) {
+            tracing::debug!(
+                in_runtime,
+                "skipping best-effort WAL checkpoint on EmbeddingCache drop"
+            );
+            return;
+        }
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let res = self.rt.block_on(async {
                 tokio::time::timeout(
