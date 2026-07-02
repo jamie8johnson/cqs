@@ -2692,6 +2692,457 @@ mod tests {
         );
     }
 
+    // ─── Type::method-qualified overlay merge (active path) ─────────────────
+    //
+    // The bare-name helpers above set `parent_type_name: None`; the qualified
+    // merge resolves `Type::method` read-side from `chunks.parent_type_name`, so
+    // it needs typed fixtures. `type_method_chunk` builds a callable chunk under
+    // an enclosing type. These drive the qualified path of
+    // `callers_overlay`/`callees_overlay` directly, mirroring the bare-name
+    // `*_overlay_*` tests above: a method (or caller) added or removed in the
+    // delta must merge exactly as the bare-name path does.
+
+    /// Seed caller→callee edges `(caller, file, line, callee)` into a writable
+    /// store. All callers in one file are written in a SINGLE
+    /// `upsert_function_calls` call — that method DELETEs the file's rows first,
+    /// so a per-caller call would silently drop earlier same-file callers.
+    fn seed_edges_into(store: &Store<cqs::store::ReadWrite>, edges: &[(&str, &str, u32, &str)]) {
+        use std::collections::BTreeMap;
+        let mut by_file: BTreeMap<String, BTreeMap<(String, u32), Vec<CallSite>>> = BTreeMap::new();
+        for (caller, file, line, callee) in edges {
+            by_file
+                .entry(file.to_string())
+                .or_default()
+                .entry((caller.to_string(), *line))
+                .or_default()
+                .push(CallSite {
+                    callee_name: callee.to_string(),
+                    line_number: line + 1,
+                    kind: CallEdgeKind::Call,
+                });
+        }
+        for (file, callers) in by_file {
+            let fcs: Vec<FunctionCalls> = callers
+                .into_iter()
+                .map(|((name, line_start), calls)| FunctionCalls {
+                    name,
+                    line_start,
+                    calls,
+                })
+                .collect();
+            store
+                .upsert_function_calls(Path::new(&file), &fcs)
+                .expect("seed edges");
+        }
+    }
+
+    /// Build an in-memory overlay from typed chunks `(file, name, line,
+    /// parent_type)` + edges, masked at `masked`.
+    fn overlay_typed(
+        chunks: &[(&str, &str, u32, Option<&str>)],
+        edges: &[(&str, &str, u32, &str)],
+        masked: &[&str],
+    ) -> WorktreeOverlay {
+        let mut store = Store::open_memory().expect("open_memory");
+        store.init(&ModelInfo::default()).expect("init store");
+        store.set_dim(cqs::EMBEDDING_DIM);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        for (file, name, line, parent) in chunks {
+            let c = type_method_chunk(file, name, *line, *parent);
+            store
+                .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                .expect("seed typed overlay chunk");
+        }
+        seed_edges_into(&store, edges);
+        WorktreeOverlay {
+            store,
+            masked_origins: masked.iter().map(PathBuf::from).collect(),
+            fingerprint: [0u8; 32],
+            worktree_root: PathBuf::from("/wt"),
+            stats: OverlayStats {
+                files_in_delta: masked.len(),
+                chunks_indexed: chunks.len(),
+                build_ms: 0,
+            },
+        }
+    }
+
+    /// Seed a parent store with typed chunks + edges; return a read-only ctx.
+    fn parent_typed_with(
+        chunks: &[(&str, &str, u32, Option<&str>)],
+        edges: &[(&str, &str, u32, &str)],
+    ) -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            for (file, name, line, parent) in chunks {
+                let c = type_method_chunk(file, name, *line, *parent);
+                store
+                    .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                    .expect("seed typed parent chunk");
+            }
+            seed_edges_into(&store, edges);
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// callers(Type::method) active: a self-caller ADDED in a delta file appears
+    /// (parent-truth would miss it). End-to-end through `callers_overlay`.
+    #[test]
+    fn callers_qualified_overlay_added_method_appears() {
+        // Parent: `Store::search` (store.rs:10) with one self-caller.
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+            ],
+            &[("store_self", "store.rs", 20, "search")],
+        );
+        // Worktree edits store.rs: adds a NEW self-caller `fresh_self`.
+        let overlay = overlay_typed(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+                ("store.rs", "fresh_self", 30, Some("Store")),
+            ],
+            &[
+                ("store_self", "store.rs", 20, "search"),
+                ("fresh_self", "store.rs", 30, "search"),
+            ],
+            &["store.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "a qualified merge that adds a worktree caller must report participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert!(
+            got.contains(&"fresh_self".to_string()),
+            "worktree-added qualified self-caller must appear; got {got:?}"
+        );
+        assert!(
+            got.contains(&"store_self".to_string()),
+            "existing self-caller survives (re-served from the overlay); got {got:?}"
+        );
+    }
+
+    /// callers(Type::method) active: a self-caller whose delta-file edge vanished
+    /// drops; an untouched-file self-caller survives.
+    #[test]
+    fn callers_qualified_overlay_removed_caller_masked() {
+        // Parent: `Store::search` with two self-callers — `old_self` (store.rs)
+        // and `stable_self` (stable.rs, untouched).
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "old_self", 20, Some("Store")),
+                ("stable.rs", "stable_self", 20, Some("Store")),
+            ],
+            &[
+                ("old_self", "store.rs", 20, "search"),
+                ("stable_self", "stable.rs", 20, "search"),
+            ],
+        );
+        // Worktree edits store.rs: `old_self` no longer calls search (no overlay
+        // edge from it).
+        let overlay = overlay_typed(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "old_self", 20, Some("Store")),
+            ],
+            &[],
+            &["store.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "masking a delta-file qualified caller must report participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert!(
+            !got.contains(&"old_self".to_string()),
+            "self-caller whose delta-file edge vanished must drop; got {got:?}"
+        );
+        assert!(
+            got.contains(&"stable_self".to_string()),
+            "untouched-file self-caller survives; got {got:?}"
+        );
+    }
+
+    /// callees(Type::method) active — the method body was edited (its def-site
+    /// origin is in the delta): callees come from the overlay, the stale parent
+    /// callee drops.
+    #[test]
+    fn callees_qualified_overlay_body_change_reflected() {
+        // Parent: `Foo::run` (foo.rs:10) calls `parent_callee`.
+        let (_dir, ctx) = parent_typed_with(
+            &[("foo.rs", "run", 10, Some("Foo"))],
+            &[("run", "foo.rs", 10, "parent_callee")],
+        );
+        // Worktree edits foo.rs: `Foo::run` now calls `worktree_callee`.
+        let overlay = overlay_typed(
+            &[("foo.rs", "run", 10, Some("Foo"))],
+            &[("run", "foo.rs", 10, "worktree_callee")],
+            &["foo.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "Foo::run".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            participated,
+            "an edited qualified method body (masked def-site) must report participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert!(
+            got.contains(&"worktree_callee".to_string()),
+            "edited body's fresh callee must appear; got {got:?}"
+        );
+        assert!(
+            !got.contains(&"parent_callee".to_string()),
+            "edited body's stale callee must drop; got {got:?}"
+        );
+    }
+
+    /// callees(Type::method) active — the method was ADDED in the worktree (no
+    /// parent def-site): the overlay def-site resolves its callees where
+    /// parent-truth would return an unknown-qualifier redirect.
+    #[test]
+    fn callees_qualified_overlay_added_method_resolves() {
+        // Parent has no `Foo::run` at all.
+        let (_dir, ctx) = parent_typed_with(&[("lib.rs", "unrelated", 5, None)], &[]);
+        // Worktree ADDS new.rs defining `Foo::run`, which calls `new_callee`.
+        let overlay = overlay_typed(
+            &[("new.rs", "run", 10, Some("Foo"))],
+            &[("run", "new.rs", 10, "new_callee")],
+            &["new.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "Foo::run".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            participated,
+            "a worktree-added qualified method must report participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert!(
+            got.contains(&"new_callee".to_string()),
+            "worktree-added method's callee must resolve; got {got:?}"
+        );
+    }
+
+    /// callers(Type::method): an irrelevant delta must NOT claim participation —
+    /// the answer stays parent-truth and carries the honest absent marker.
+    #[test]
+    fn callers_qualified_overlay_irrelevant_delta_no_participation() {
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+            ],
+            &[("store_self", "store.rs", 20, "search")],
+        );
+        // The delta touches an unrelated file with no bearing on Store::search.
+        let overlay = overlay_typed(
+            &[("unrelated.rs", "noise", 1, None)],
+            &[("noise", "unrelated.rs", 1, "other")],
+            &["unrelated.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            !participated,
+            "an irrelevant delta must NOT claim qualified participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert_eq!(
+            got,
+            vec!["store_self".to_string()],
+            "parent-truth callers preserved on an irrelevant delta; got {got:?}"
+        );
+    }
+
+    /// Unknown qualifier: a worktree-ADDED owner type surfaces as a "did you
+    /// mean" candidate alongside the parent's owners. The caller set stays empty
+    /// (parent-truth, no marker) — only the advisory candidate list merges.
+    #[test]
+    fn callers_qualified_overlay_unknown_qualifier_merges_candidates() {
+        // Parent defines `run` only under `Apple`.
+        let (_dir, ctx) = parent_typed_with(&[("apple.rs", "run", 10, Some("Apple"))], &[]);
+        // Worktree adds a NEW type `Cherry` that also defines `run`.
+        let overlay = overlay_typed(
+            &[("cherry.rs", "run", 10, Some("Cherry"))],
+            &[],
+            &["cherry.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Banana::run".into(), // Banana defines nothing → unknown qualifier
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            !participated,
+            "an unknown qualifier has an empty (parent-truth) caller set — no participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let qualified: Vec<&str> = out["candidates"]
+            .as_array()
+            .expect("candidates array")
+            .iter()
+            .map(|c| c["qualified"].as_str().unwrap())
+            .collect();
+        assert!(
+            qualified.contains(&"Apple::run"),
+            "parent owner surfaces as a candidate; got {qualified:?}"
+        );
+        assert!(
+            qualified.contains(&"Cherry::run"),
+            "worktree-added owner surfaces as a candidate; got {qualified:?}"
+        );
+    }
+
+    /// callees(Type::method): an irrelevant delta stays parent-truth.
+    #[test]
+    fn callees_qualified_overlay_irrelevant_delta_no_participation() {
+        let (_dir, ctx) = parent_typed_with(
+            &[("foo.rs", "run", 10, Some("Foo"))],
+            &[("run", "foo.rs", 10, "parent_callee")],
+        );
+        let overlay = overlay_typed(
+            &[("unrelated.rs", "noise", 1, None)],
+            &[("noise", "unrelated.rs", 1, "other")],
+            &["unrelated.rs"],
+        );
+        let args = CoreCalleesArgs {
+            name: "Foo::run".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callees_overlay(&ctx.store(), &args, Some(&overlay)).expect("callees_overlay");
+        assert!(
+            !participated,
+            "an irrelevant delta must NOT claim qualified callee participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = callee_names_json(&out);
+        assert_eq!(
+            got,
+            vec!["parent_callee".to_string()],
+            "parent-truth callees preserved on an irrelevant delta; got {got:?}"
+        );
+    }
+
+    /// No-overlay parity for the qualified callers path: `callers_overlay(..,
+    /// None)` is byte-identical to `callers_core`, and the `excluded_other_owner`
+    /// heuristic (now carried by the excluded-origin list) still fires.
+    #[test]
+    fn callers_qualified_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+                ("index.rs", "search", 10, Some("Index")),
+                ("index.rs", "index_self", 20, Some("Index")),
+            ],
+            &[
+                ("store_self", "store.rs", 20, "search"),
+                ("index_self", "index.rs", 20, "search"),
+            ],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (none_out, participated) =
+            callers_overlay(&ctx.store(), &args, None).expect("callers_overlay none");
+        assert!(!participated, "None overlay never participates");
+        let with_none = serde_json::to_value(none_out).unwrap();
+        let core =
+            serde_json::to_value(callers_core(&ctx.store(), &args).expect("callers_core")).unwrap();
+        assert_eq!(
+            with_none, core,
+            "qualified callers_overlay(None) must equal callers_core"
+        );
+        assert_eq!(
+            core["excluded_other_owner"], 1,
+            "the Index self-caller is excluded + counted through the origin list: {core}"
+        );
+    }
+
+    /// No-overlay parity for the qualified callees path.
+    #[test]
+    fn callees_qualified_overlay_none_equals_core() {
+        let (_dir, ctx) = parent_typed_with(
+            &[("foo.rs", "run", 10, Some("Foo"))],
+            &[("run", "foo.rs", 10, "c1"), ("run", "foo.rs", 10, "c2")],
+        );
+        let args = CoreCalleesArgs {
+            name: "Foo::run".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (none_out, participated) =
+            callees_overlay(&ctx.store(), &args, None).expect("callees_overlay none");
+        assert!(!participated, "None overlay never participates");
+        let with_none = serde_json::to_value(none_out).unwrap();
+        let core =
+            serde_json::to_value(callees_core(&ctx.store(), &args).expect("callees_core")).unwrap();
+        assert_eq!(
+            with_none, core,
+            "qualified callees_overlay(None) must equal callees_core"
+        );
+        assert!(
+            core["calls"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|c| c["name"] == "c1")),
+            "seeded callee present: {core}"
+        );
+    }
+
     // ─── Marker honesty on the DAEMON path ─────────────────────────────────
     //
     // Invariant: `_meta.overlay_graph = "full"` is emitted ONLY when the overlay
@@ -2699,9 +3150,10 @@ mod tests {
     // worktree has some dirty file. These tests drive `dispatch_callers` /
     // `dispatch_callees` end-to-end with an injected overlay (the
     // `set_test_overlay_override` seam bypasses the embedder/git LRU build) and
-    // assert the marker is ABSENT on every parent-truth path (`Type::method`-
-    // qualified, kind-fallback, unedited-X callees) and PRESENT only on a
-    // genuine merge (masked-drop / overlay-add callers, edited-X callees).
+    // assert the marker is ABSENT on every parent-truth path (kind-fallback,
+    // unedited-X callees, and a `Type::method` query whose delta is irrelevant)
+    // and PRESENT only on a genuine merge (masked-drop / overlay-add callers,
+    // edited-X callees, and a `Type::method` query whose delta IS relevant).
 
     /// Convenience: marker value or `None` when absent, from a dispatcher's JSON.
     fn overlay_graph_marker(json: &serde_json::Value) -> Option<&str> {
@@ -2710,21 +3162,24 @@ mod tests {
             .and_then(|v| v.as_str())
     }
 
-    /// (a) `Type::method`-qualified callers — parent-truth in PR1, so even with
-    /// an active overlay the answer reflects main only. The marker must be
-    /// ABSENT (the old gate stamped `"full"`).
+    /// (a) `Type::method`-qualified callers with an IRRELEVANT delta — the
+    /// overlay merges the qualified path now, but a delta that touches nothing
+    /// bearing on `Store::search` leaves the answer parent-truth. The marker must
+    /// be ABSENT (participation is gated on a real merge, not `overlay.is_some()`).
     #[test]
-    fn dispatch_callers_type_method_no_full_marker_under_overlay() {
-        let (_dir, ctx) = parent_store_with(
-            &[("src/s.rs", "store_self"), ("src/s.rs", "Store")],
-            &[("store_self", "src/s.rs", 20, "search")],
+    fn dispatch_callers_type_method_irrelevant_delta_no_full_marker() {
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+            ],
+            &[("store_self", "store.rs", 20, "search")],
         );
-        // An active, non-trivial overlay (a masked origin + an overlay edge) —
-        // `overlay.is_some()` is true, so the OLD gate would stamp `"full"`.
-        let overlay = std::sync::Arc::new(overlay_with_edges(
-            &[("src/s.rs", "fresh")],
-            &[("fresh", "src/s.rs", 1, "search")],
-            &["src/s.rs"],
+        // Active overlay, but the delta touches an unrelated file.
+        let overlay = std::sync::Arc::new(overlay_typed(
+            &[("unrelated.rs", "noise", 1, None)],
+            &[("noise", "unrelated.rs", 1, "other")],
+            &["unrelated.rs"],
         ));
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let args = CallersArgs {
@@ -2735,10 +3190,72 @@ mod tests {
             overlay: Default::default(),
         };
         let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        // The parent self-caller survives (function path ran, parent-truth).
+        let names: Vec<&str> = json["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"store_self"),
+            "parent self-caller must survive an irrelevant delta: {json}"
+        );
         assert_eq!(
             overlay_graph_marker(&json),
             None,
-            "Type::method is parent-truth in PR1 — must NOT claim overlay_graph=full: {json}"
+            "an irrelevant delta on a qualified query must NOT claim overlay_graph=full: {json}"
+        );
+    }
+
+    /// (a2) `Type::method`-qualified callers with a RELEVANT delta — a worktree-
+    /// added self-caller in the queried type. The merged answer reflects the
+    /// delta, so the marker must be `"full"` on the daemon path.
+    #[test]
+    fn dispatch_callers_type_method_genuine_merge_carries_full_marker() {
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+            ],
+            &[("store_self", "store.rs", 20, "search")],
+        );
+        // Worktree edits store.rs and adds a new self-caller `fresh_self`.
+        let overlay = std::sync::Arc::new(overlay_typed(
+            &[
+                ("store.rs", "search", 10, Some("Store")),
+                ("store.rs", "store_self", 20, Some("Store")),
+                ("store.rs", "fresh_self", 30, Some("Store")),
+            ],
+            &[
+                ("store_self", "store.rs", 20, "search"),
+                ("fresh_self", "store.rs", 30, "search"),
+            ],
+            &["store.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "Store::search".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        let names: Vec<&str> = json["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"fresh_self"),
+            "worktree-added qualified self-caller present on the daemon path: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("full"),
+            "a genuine qualified merge must claim overlay_graph=full: {json}"
         );
     }
 
