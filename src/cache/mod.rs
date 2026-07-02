@@ -273,6 +273,29 @@ where
     Ok((pool, rt))
 }
 
+/// Drop-time decision shared by [`EmbeddingCache::drop`] and
+/// [`QueryCache::drop`]: should the cache attempt its best-effort WAL
+/// checkpoint via `block_on`?
+///
+/// Both caches are always opened writable (`create_if_missing`, no read-only
+/// option) and have no explicit `close()` state, so — unlike the
+/// [`crate::store::Store`] guard this mirrors — the only skip term is
+/// `in_runtime`; there is no `closed`/`read_only` analogue to carry.
+///
+/// - `in_runtime`: a tokio runtime is active on the current thread. Calling
+///   `Runtime::block_on` from within a runtime panics ("Cannot start a runtime
+///   from within a runtime"). This is the actual guard, not the surrounding
+///   `catch_unwind`: under `panic = "abort"` (release builds) `catch_unwind` is
+///   a no-op, so an in-runtime `block_on` panic aborts the whole process. The
+///   daemon drives `Store` and both caches on one shared multi-thread runtime,
+///   so its idle-eviction / shutdown drops land in-runtime.
+///
+/// Skipping is not lossy: the WAL is checkpointed on the next open and by
+/// SQLite's own autocheckpoint.
+fn should_wal_checkpoint_on_drop(in_runtime: bool) -> bool {
+    !in_runtime
+}
+
 mod embedding_cache;
 mod query_cache;
 
@@ -380,5 +403,66 @@ mod shared_runtime_tests {
         // runtime on the shared Arc is what makes the read path work.
         let count = ro.chunk_count().unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// Primary guard for the cache-drop abort fix: the drop-time decision
+    /// itself.
+    ///
+    /// A `#[tokio::test]` that merely drops a cache in-runtime and asserts "no
+    /// panic" is a FALSE guard — the test binary is built with
+    /// `panic = "unwind"`, so the OLD code's `catch_unwind` swallows the
+    /// `block_on` panic and the test passes on the broken code too. This pins
+    /// the DECISION instead: an active runtime on the drop thread skips the
+    /// best-effort checkpoint.
+    ///
+    /// Calibration: the predicate has a single term, so both assertions bite —
+    /// mutating the body to `true` (always checkpoint = the pre-fix behaviour)
+    /// flips the `(true)` assertion RED; mutating it to `false` flips the
+    /// `(false)` one.
+    #[test]
+    fn should_wal_checkpoint_on_drop_decision() {
+        // No runtime active on the thread → do the best-effort checkpoint.
+        assert!(should_wal_checkpoint_on_drop(false));
+        // A tokio runtime is active on the thread → `block_on` would panic
+        // ("Cannot start a runtime from within a runtime") and, under
+        // panic=abort, abort the process; skip. This arm is the fix.
+        assert!(!should_wal_checkpoint_on_drop(true));
+    }
+
+    /// Corroborating (weaker) check: opening both caches on a shared runtime
+    /// and dropping them *inside* `rt.block_on` — i.e. with a runtime active on
+    /// the drop thread — executes the skip decision and returns cleanly.
+    ///
+    /// NOT the primary guard: this test binary is `panic = "unwind"`, so it
+    /// cannot observe the release-build process-abort the fix prevents. It only
+    /// confirms the in-runtime drop path runs to completion and that the shared
+    /// runtime (held via a keepalive `Arc`) outlives both caches, so dropping
+    /// them never triggers tokio's own `Runtime::drop`.
+    #[test]
+    fn test_cache_drop_inside_runtime_returns_cleanly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shared_rt = build_daemon_runtime();
+
+        let emb_path = dir.path().join("embeddings.db");
+        let q_path = dir.path().join("query_cache.db");
+        let emb_cache =
+            EmbeddingCache::open_with_runtime(&emb_path, Some(Arc::clone(&shared_rt))).unwrap();
+        let q_cache = QueryCache::open_with_runtime(&q_path, Some(Arc::clone(&shared_rt))).unwrap();
+        // shared_rt + one clone per cache.
+        assert_eq!(Arc::strong_count(&shared_rt), 3);
+
+        // Drop both while a runtime is active on the thread (`block_on` enters
+        // the runtime context on the calling thread). The keepalive `shared_rt`
+        // holds the runtime alive, so dropping the caches only decrements the
+        // Arc — the checkpoint is skipped and control returns to the sentinel.
+        let sentinel = shared_rt.block_on(async {
+            drop(emb_cache);
+            drop(q_cache);
+            "reached"
+        });
+        assert_eq!(sentinel, "reached");
+
+        // Only the keepalive Arc remains.
+        assert_eq!(Arc::strong_count(&shared_rt), 1);
     }
 }

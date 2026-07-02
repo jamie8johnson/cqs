@@ -326,8 +326,22 @@ impl Drop for QueryCache {
     /// See [`EmbeddingCache::drop`] for the rationale. Best-effort
     /// `PRAGMA wal_checkpoint(PASSIVE)` with a 1 s timeout — caps
     /// daemon-shutdown WAL-copy stalls. Explicit truncate via
-    /// [`QueryCache::checkpoint_wal`].
+    /// [`QueryCache::checkpoint_wal`]. Skipped entirely when a tokio runtime is
+    /// active on the drop thread (see [`should_wal_checkpoint_on_drop`]), since
+    /// `block_on` from within a runtime would panic and abort under
+    /// `panic = "abort"`.
     fn drop(&mut self) {
+        // A runtime could be active on this thread if a shared-runtime-held
+        // cache is dropped mid-async; block_on would then panic and, under
+        // panic=abort, abort the process. The guard skips on any such thread.
+        let in_runtime = tokio::runtime::Handle::try_current().is_ok();
+        if !should_wal_checkpoint_on_drop(in_runtime) {
+            tracing::debug!(
+                in_runtime,
+                "skipping best-effort WAL checkpoint on QueryCache drop"
+            );
+            return;
+        }
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let res = self.rt.block_on(async {
                 tokio::time::timeout(
