@@ -28,18 +28,26 @@
 //! an ungated `fn`/`const`/`static` reachable only from a single-target cfg arm,
 //! which becomes `dead_code` on the sibling.
 //!
-//! The **hard-error** members of the family — the E0277 binding above and any
-//! other compile error specific to a sibling target — are caught by the
-//! `release.yml` cross-build: `cargo build --release --target <T>` on all three
-//! native runners. Fire it via `workflow_dispatch` on the release branch
-//! **before tagging** to validate; a hard error there is exactly the "release
-//! skips a binary" risk (v1.46.0). The **warning-only** member (dead-code on a
-//! sibling) is NOT yet enforced cross-target — a `-D warnings` gate was tried
-//! and reverted because Windows carries a large pre-existing dead_code backlog
-//! (daemon-client code, live only via the unix socket path, awaiting the
-//! named-pipe transport); enforcing it needs that swept first. Tracked
-//! separately. So this source scan stays the cheap PR-time tripwire for the one
-//! (hard-error) shape it knows, and the cross-build is the hard-error gate.
+//! The **hard-error** members of the family — an ungated unix-only API (E0432,
+//! the class that broke serve on Windows) and the E0277 unsized-cfg-arm binding
+//! (the class that skipped the v1.46.0 release) — are now caught at PR time by
+//! the `windows-check` job in `.github/workflows/ci.yml`: a native
+//! `windows-latest cargo check` (default features, matching `release.yml`'s
+//! Windows build). Real type info, every PR — no source-scan heuristics. That
+//! closes the *actually-costly* gap (a hard error is what skips a binary),
+//! before the tag rather than after it. The `release.yml` cross-build remains
+//! the full-matrix belt-and-suspenders gate before tagging.
+//!
+//! The **warning-only** member (dead-code on a sibling) is deliberately NOT
+//! enforced yet. The `windows-check` job runs WITHOUT `-D warnings` because
+//! Windows carries a large dead_code backlog (~100 items: daemon-client +
+//! MCP-bridge code, live only via the unix socket path). That code becomes live
+//! on Windows once the named-pipe daemon transport lands — so annotating it now
+//! would mean ~100 `#[cfg_attr(not(unix), allow)]` items that then invert. The
+//! dead-code-warning shape has never caused a realized cost (only hard errors
+//! skip releases), so enforcing it is deferred to the transport work. Until
+//! then this source scan stays the cheap PR-time tripwire for its one E0277
+//! shape, and the windows-check job covers the hard-error family.
 //!
 //! ## The exemplar (the bug this family is named for)
 //!
