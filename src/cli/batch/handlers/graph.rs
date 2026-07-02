@@ -3357,6 +3357,89 @@ mod tests {
         );
     }
 
+    /// (c) Multi-origin def survival: `Foo::method` is defined in TWO parent
+    /// files and the worktree deletes only ONE site. The surviving site keeps the
+    /// def alive, so a bare self-caller still attributes to `Foo::method` and the
+    /// query does NOT redirect. Pins the `.any()` over surviving sites — a single
+    /// masked origin must not neuter a def that lives elsewhere. RED if the mask
+    /// dropped the type on the first masked site rather than per-site.
+    #[test]
+    fn callers_qualified_overlay_multi_origin_def_survives_partial_deletion() {
+        // Parent: `Foo::method` defined in BOTH foo1.rs and foo2.rs, plus a Foo
+        // self-caller `user` (user.rs, unedited) calling `method` bare.
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("foo1.rs", "method", 10, Some("Foo")),
+                ("foo2.rs", "method", 10, Some("Foo")),
+                ("user.rs", "user", 20, Some("Foo")),
+            ],
+            &[("user", "user.rs", 20, "method")],
+        );
+        // Worktree edits foo1.rs, deleting THAT site of `Foo::method`; foo2.rs
+        // still defines it, so the def survives the partial deletion.
+        let overlay = overlay_typed(
+            &[("foo1.rs", "leftover", 5, Some("Foo"))],
+            &[],
+            &["foo1.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Foo::method".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, _participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        let out = serde_json::to_value(out).unwrap();
+        assert!(
+            out.get("fallback_from").is_none(),
+            "a surviving def must resolve, not redirect: {out}"
+        );
+        let got = caller_names_json(&out);
+        assert!(
+            got.contains(&"user".to_string()),
+            "the surviving foo2.rs def keeps Foo::method attributing its self-caller; got {got:?}"
+        );
+    }
+
+    /// (d) Bare-name full deletion: main defines `struct Foo` and nothing else
+    /// names it; the worktree DELETES it (masks types.rs, re-adds no `Foo`). The
+    /// merged classification landscape is EMPTY → `classify_hits` returns NotFound
+    /// → no kind fallback → the bare-name call-graph flow runs (empty callers, a
+    /// function-path shape), NOT a ghost "Foo is a type" redirect. RED with
+    /// parent-only classification: the parent struct still classifies `Foo` as a
+    /// type and blind-redirects.
+    #[test]
+    fn callers_overlay_bare_name_full_deletion_routes_to_call_graph() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        // Worktree deletes types.rs entirely (masked, nothing re-added).
+        let overlay = overlay_kind_chunks(&[], &[], &["types.rs"]);
+        let args = CallersCoreArgs {
+            name: "Foo".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            !participated,
+            "a deleted name with no callers is pure parent-truth (empty) — no participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        assert!(
+            out.get("fallback_from").is_none(),
+            "a fully-deleted name must NOT emit a ghost kind redirect: {out}"
+        );
+        assert!(
+            out.get("callers").is_some(),
+            "the bare-name call-graph flow ran (function-path shape): {out}"
+        );
+        assert_eq!(
+            out["callers"].as_array().map(|a| a.len()),
+            Some(0),
+            "no callers for a fully-deleted name: {out}"
+        );
+    }
+
     // ─── overlay-aware kind classification (kind-change footgun) ────────────
     //
     // The kind-fallback verdict used to classify from the PARENT store alone, so
@@ -3987,6 +4070,106 @@ mod tests {
         );
     }
 
+    // ----- overlay-aware kind classification: impact -----
+    //
+    // impact's kind-fallback verdict used to classify from the PARENT store
+    // alone — the same bug class the callers side carried, one command over — so
+    // a worktree kind change was invisible to impact's routing. These pin the
+    // overlay-merged classification: `fn Foo` added over main's `struct Foo`
+    // becomes ambiguous, and replacing the struct with the fn routes `impact Foo`
+    // to the real (overlay-merged) direct-callers analysis instead of a blind
+    // "Foo is a type" redirect.
+
+    /// Worktree ADDS `fn Foo` in a new file where main has only `struct Foo` →
+    /// the merged landscape sees both kinds → `impact Foo` classifies AMBIGUOUS
+    /// (redirect listing both defs), not the blind "Foo is a type". RED with
+    /// parent-only classification: kind stays `"type"` and the added fn is
+    /// invisible. The redirect is not a caller set, so participation stays
+    /// `false` (no marker).
+    #[test]
+    fn impact_overlay_kind_added_fn_classifies_ambiguous() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        // Worktree adds a NEW file defining `fn Foo`.
+        let overlay = overlay_kind_chunks(
+            &[("newfn.rs", "Foo", ChunkType::Function)],
+            &[],
+            &["newfn.rs"],
+        );
+        let args = ImpactCoreArgs {
+            name: "Foo".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact_overlay");
+        assert!(
+            !participated,
+            "an ambiguous redirect is not a caller set — impact must NOT claim participation"
+        );
+        let value = out.to_value().unwrap();
+        assert_eq!(
+            value["kind"], "ambiguous",
+            "worktree-added fn where main has a struct must classify ambiguous: {value}"
+        );
+        assert_eq!(
+            value["fallback_from"], "impact",
+            "the redirect must attribute to impact: {value}"
+        );
+        assert_eq!(
+            value["definitions"].as_array().map(|a| a.len()),
+            Some(2),
+            "the redirect surfaces BOTH the parent struct and the worktree fn: {value}"
+        );
+    }
+
+    /// Worktree REPLACES `struct Foo` with `fn Foo` (same file, a genuine kind
+    /// change) → the merged landscape sees only a function → `impact Foo` routes
+    /// to the real direct-callers analysis, which surfaces the worktree-added
+    /// caller. RED with parent-only classification: the struct wins, `impact Foo`
+    /// blind-redirects and never runs the call-graph query.
+    #[test]
+    fn impact_overlay_kind_change_routes_to_call_graph() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        // Worktree edits types.rs: the struct becomes a fn, with a caller.
+        let overlay = overlay_kind_chunks(
+            &[
+                ("types.rs", "Foo", ChunkType::Function),
+                ("types.rs", "caller_fn", ChunkType::Function),
+            ],
+            &[("caller_fn", "types.rs", 1, "Foo")],
+            &["types.rs"],
+        );
+        let args = ImpactCoreArgs {
+            name: "Foo".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact_overlay");
+        assert!(
+            participated,
+            "a kind change that routes to the overlay-merged direct-callers analysis must participate"
+        );
+        let value = out.to_value().unwrap();
+        assert!(
+            value.get("fallback_from").is_none(),
+            "the fn kind must route to the real impact analysis, NOT a fallback redirect: {value}"
+        );
+        assert_eq!(
+            value["kind"], "function",
+            "the routed impact answer carries the function-path kind label: {value}"
+        );
+        let got = impact_caller_names(&value);
+        assert!(
+            got.contains(&"caller_fn".to_string()),
+            "the worktree-added function's caller must surface in impact: {got:?}"
+        );
+    }
+
     // ----- dead_overlay core: dead⇄live flips over the merged graph -----
 
     /// Direction A: a worktree file adds a real caller to a parent-dead function,
@@ -4374,6 +4557,44 @@ mod tests {
             overlay_graph_marker(&json),
             None,
             "an unrelated dirty file must leave impact's marker absent: {json}"
+        );
+    }
+
+    /// Daemon-path marker honesty for the impact kind change: the
+    /// struct→fn swap resolves to a function from the overlay-merged landscape,
+    /// so `impact Foo` runs the real (overlay-merged) direct-callers analysis and
+    /// the answer reflects the delta — `_meta.overlay_graph = "callers-only"`
+    /// must be present (NOT "full": impact's tests/transitive/type sections stay
+    /// parent-truth). RED with parent-only classification: the struct blind-
+    /// redirects, the analysis never runs, and the marker is absent.
+    #[test]
+    fn dispatch_impact_kind_change_carries_callers_only_marker() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        let overlay = std::sync::Arc::new(overlay_kind_chunks(
+            &[
+                ("types.rs", "Foo", ChunkType::Function),
+                ("types.rs", "caller_fn", ChunkType::Function),
+            ],
+            &[("caller_fn", "types.rs", 1, "Foo")],
+            &["types.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json =
+            dispatch_impact(&ctx.build_view(None), &impact_args("Foo")).expect("dispatch_impact");
+        assert!(
+            json.get("fallback_from").is_none(),
+            "kind resolved to fn — the impact analysis ran, not a redirect: {json}"
+        );
+        let names = impact_caller_names(&json);
+        assert!(
+            names.contains(&"caller_fn".to_string()),
+            "worktree-added caller present in impact on the daemon path: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("callers-only"),
+            "a kind change routed to the overlay-merged direct-callers analysis must claim \
+             callers-only: {json}"
         );
     }
 
