@@ -1495,7 +1495,20 @@ pub(crate) fn cmd_query(
     // Shared with the seed family (`scout` / `gather` / `task`) so the two
     // surfaces cannot diverge; the return is the worktree eligibility reused by
     // the `QueryArgs::from_cli` overlay-active resolution below.
-    let overlay_eligible = mark_cli_direct_overlay_skip(root, cli.overlay, cli.no_overlay);
+    //
+    // Gated OUT of the pure `--ref` path: a ref-scoped query searches only the
+    // reference store (`retrieve_ref_scoped` never applies the worktree overlay —
+    // it stays parent-truth by construction, matching the daemon), so no
+    // degradation occurs and the marker would overclaim. This mirrors the seed
+    // family's `ref_name.is_none()` gate. `--include-refs` (ref_name is None) keeps
+    // the marker — its project half overlays for real. Overlay is not eligible for
+    // a ref-scoped query, so the `QueryArgs` resolution below sees `false`, the
+    // same value the daemon's ref fan-out uses.
+    let overlay_eligible = if cli.ref_name.is_none() {
+        mark_cli_direct_overlay_skip(root, cli.overlay, cli.no_overlay)
+    } else {
+        false
+    };
 
     // Name-only mode: search by function/struct name, skip embedding entirely.
     if cli.name_only {

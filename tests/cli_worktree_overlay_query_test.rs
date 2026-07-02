@@ -404,3 +404,129 @@ fn review_no_overlay_reverts_diff_subject_to_parent() {
          `alpha` edit must be ABSENT: {off}"
     );
 }
+
+/// A `cqs` invocation like [`cqs`] but with an isolated `XDG_DATA_HOME`, so a
+/// `cqs ref add` writes its reference index under the fixture
+/// (`data_local_dir()/cqs/refs/<name>`) instead of the developer's real
+/// `~/.local/share`. The reference entry recorded in `.cqs.toml` is an absolute
+/// path, so a later search resolves it regardless of this env — the isolation
+/// only keeps the index build (and the model classifier centroids) off the real
+/// home.
+fn cqs_ref(dir: &Path, xdg_data: &Path) -> Command {
+    let mut c = cqs(dir);
+    c.env("XDG_DATA_HOME", xdg_data);
+    c
+}
+
+/// [`fixture_with_parent_index`] plus a registered reference named `refname`
+/// whose one-function corpus is indexed into an isolated XDG data dir.
+///
+/// The reference is added FROM the worktree so its entry lands in
+/// `wt/.cqs.toml` — the config `find_reference` loads for a `--ref` /
+/// `--include-refs` query run from the worktree, since `find_project_root`
+/// resolves the worktree's own root (its `.git` link file) while the `.cqs/`
+/// INDEX still redirects to the parent. Returns the fixture tuple plus the
+/// persistent XDG data dir the caller keeps alive and stamps onto every
+/// invocation that must see the reference.
+fn fixture_with_parent_index_and_ref(
+    refname: &str,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (holder, parent, wt) = fixture_with_parent_index();
+    let xdg_data = holder.path().join("xdg-data");
+    std::fs::create_dir_all(&xdg_data).expect("mkdir xdg-data");
+
+    // Tiny reference corpus (one function), indexed into the isolated refs dir.
+    let ref_src = holder.path().join("refsrc");
+    std::fs::create_dir_all(&ref_src).expect("mkdir refsrc");
+    std::fs::write(
+        ref_src.join("reflib.rs"),
+        "pub fn reference_marker_symbol() -> i32 { 11 }\n",
+    )
+    .expect("write reflib.rs");
+
+    let added = cqs_ref(&wt, &xdg_data)
+        .args([
+            "ref",
+            "add",
+            refname,
+            ref_src.to_str().expect("utf8 refsrc"),
+        ])
+        .status()
+        .expect("spawn cqs ref add")
+        .success();
+    assert!(added, "cqs ref add must succeed");
+
+    (holder, parent, wt, xdg_data)
+}
+
+/// A pure `--ref` query searches ONLY the reference store
+/// (`retrieve_ref_scoped` never applies the worktree overlay — it is
+/// parent-truth by construction), so from an eligible worktree with the daemon
+/// disabled, `--overlay --ref <name>` degrades nothing and MUST emit no
+/// `_meta.worktree_overlay` marker. Previously the marker was recorded before
+/// the `--ref` branch, so a ref-scoped query overclaimed `skipped-no-daemon`.
+/// This matches the daemon (its ref-scoped path is parent-truth by
+/// construction) and the seed family's ref gate.
+///
+/// RED without the gate: the pre-fix `cmd_query` set the marker unconditionally,
+/// so this assertion fails (the ref envelope carries `skipped-no-daemon`).
+#[test]
+fn overlay_ref_scoped_cli_direct_no_marker() {
+    let (_holder, _parent, wt, xdg_data) = fixture_with_parent_index_and_ref("reflib");
+
+    // `--threshold 0` guarantees the single ref chunk returns (non-empty → a
+    // clean exit-0 result envelope for `run_json` to read); `--overlay` is the
+    // explicit request that made the pre-fix marker fire.
+    let v = run_json(cqs_ref(&wt, &xdg_data).args([
+        "reference marker symbol",
+        "--json",
+        "-n",
+        "5",
+        "--threshold",
+        "0",
+        "--overlay",
+        "--ref",
+        "reflib",
+    ]));
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "pure --ref searches only the reference store (no overlay applies) — the \
+         skipped-no-daemon marker must be ABSENT; got {v}"
+    );
+}
+
+/// Control for the ref gate: `--include-refs` must KEEP the marker. Its project
+/// half flows through `retrieve_project` (the overlay-capable path), so from an
+/// eligible worktree with no daemon the overlay was wanted-and-skipped and the
+/// marker fires. This pins the gate as specifically "ref-scoped only" — a
+/// broader gate that also suppressed `--include-refs` would hide honest
+/// degradation on the path that really does serve the parent for its project
+/// half.
+#[test]
+fn overlay_include_refs_cli_direct_marks_skipped_no_daemon() {
+    let (_holder, _parent, wt, xdg_data) = fixture_with_parent_index_and_ref("reflib");
+
+    // `alpha` is the parent corpus's committed symbol, so the project half
+    // returns results and the merged (project + reference) set is non-empty.
+    let v = run_json(cqs_ref(&wt, &xdg_data).args([
+        "alpha",
+        "--json",
+        "-n",
+        "5",
+        "--overlay",
+        "--include-refs",
+    ]));
+    assert_eq!(
+        v.get("_meta").and_then(|m| m.get("worktree_overlay")),
+        Some(&Value::String("skipped-no-daemon".into())),
+        "--include-refs degrades for real (its project half overlays) — the \
+         skipped-no-daemon marker must be PRESENT; got {v}"
+    );
+}
