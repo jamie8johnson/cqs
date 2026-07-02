@@ -224,7 +224,11 @@ pub mod error_codes {
 /// Standard envelope for all JSON-emitting commands.
 #[derive(Debug, Serialize)]
 pub struct Envelope<T: Serialize> {
+    // always-emit: v1 envelope contract — `data` is present-but-null on the
+    // error path; consumers branch on data-vs-error, so the key must exist.
     pub data: Option<T>,
+    // always-emit: v1 envelope contract — `error` is present-but-null on the
+    // success path; universal error handling gates on `.error` being present.
     pub error: Option<JsonError>,
     pub version: u32,
     /// Constant advisory block surfaced on every envelope. Named `_meta` on
