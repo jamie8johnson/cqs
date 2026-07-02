@@ -600,7 +600,7 @@ impl HnswIndex {
     ///
     /// This enables watch mode to add new embeddings without rebuilding the
     /// entire graph from scratch.
-    pub fn insert_batch(&mut self, items: &[(String, &[f32])]) -> Result<usize, HnswError> {
+    pub fn insert_batch(&mut self, items: &[(&str, &[f32])]) -> Result<usize, HnswError> {
         let _span = tracing::info_span!("hnsw_insert_batch", count = items.len()).entered();
         if items.is_empty() {
             return Ok(0);
@@ -643,9 +643,10 @@ impl HnswIndex {
         // positions, which the SQLite post-filter already tolerates.
         let base_idx = self.id_map.len();
         for (id, _) in items {
-            // `Box::from(id.as_str())` clones the bytes once into a tight
-            // `Box<str>` (no `cap` field).
-            self.id_map.push(Box::from(id.as_str()));
+            // `Box::from(&str)` copies the bytes once into a tight `Box<str>`
+            // (no `cap` field). The borrowed id means the caller keeps
+            // ownership — no per-element `String` clone on the insert path.
+            self.id_map.push(Box::from(*id));
         }
 
         let owned_vecs: Vec<Vec<f32>> = items.iter().map(|(_, emb)| emb.to_vec()).collect();
@@ -1200,9 +1201,9 @@ mod insert_batch_tests {
             let new_embeddings: Vec<(String, Embedding)> = (5..8)
                 .map(|i| (format!("chunk_{}", i), make_test_embedding(i)))
                 .collect();
-            let refs: Vec<(String, &[f32])> = new_embeddings
+            let refs: Vec<(&str, &[f32])> = new_embeddings
                 .iter()
-                .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                .map(|(id, emb)| (id.as_str(), emb.as_slice()))
                 .collect();
 
             let inserted = index.insert_batch(&refs).unwrap();
@@ -1247,7 +1248,7 @@ mod insert_batch_tests {
             HnswIndex::load_with_dim(dir.path(), "test", crate::EMBEDDING_DIM).unwrap();
 
         let new_emb = make_test_embedding(10);
-        let items = vec![("new_chunk".to_string(), new_emb.as_slice())];
+        let items = vec![("new_chunk", new_emb.as_slice())];
         let result = loaded.insert_batch(&items);
 
         assert!(result.is_err());
@@ -1269,7 +1270,7 @@ mod insert_batch_tests {
 
         // Try to insert with wrong dimension
         let bad_vec = vec![1.0f32; 10]; // wrong dimension
-        let items = vec![("bad".to_string(), bad_vec.as_slice())];
+        let items = vec![("bad", bad_vec.as_slice())];
         let result = index.insert_batch(&items);
 
         assert!(result.is_err());
@@ -1294,7 +1295,7 @@ mod insert_batch_tests {
         let before = index.len();
 
         let bad_vec = vec![1.0f32; 10];
-        let items = vec![("bad".to_string(), bad_vec.as_slice())];
+        let items = vec![("bad", bad_vec.as_slice())];
         let _ = index.insert_batch(&items);
 
         assert_eq!(
@@ -1319,9 +1320,9 @@ mod insert_batch_tests {
         let batch_a: Vec<(String, Embedding)> = (3..5)
             .map(|i| (format!("a{}", i), make_test_embedding(i)))
             .collect();
-        let refs_a: Vec<(String, &[f32])> = batch_a
+        let refs_a: Vec<(&str, &[f32])> = batch_a
             .iter()
-            .map(|(id, emb)| (id.clone(), emb.as_slice()))
+            .map(|(id, emb)| (id.as_str(), emb.as_slice()))
             .collect();
         index.insert_batch(&refs_a).unwrap();
         let after_a = index.len();
@@ -1330,9 +1331,9 @@ mod insert_batch_tests {
         let batch_b: Vec<(String, Embedding)> = (5..8)
             .map(|i| (format!("b{}", i), make_test_embedding(i)))
             .collect();
-        let refs_b: Vec<(String, &[f32])> = batch_b
+        let refs_b: Vec<(&str, &[f32])> = batch_b
             .iter()
-            .map(|(id, emb)| (id.clone(), emb.as_slice()))
+            .map(|(id, emb)| (id.as_str(), emb.as_slice()))
             .collect();
         index.insert_batch(&refs_b).unwrap();
         let after_b = index.len();
