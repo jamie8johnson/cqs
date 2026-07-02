@@ -254,6 +254,58 @@ fn fsync_dir(dir: &Path) {
     let _ = dir;
 }
 
+/// Best-effort parse of a retired `.hnsw.meta` header's `metric` field, used
+/// ONLY to warn on the manifest-migration GC path. Nothing in the load/read
+/// path opens `.hnsw.meta` anymore — the manifest is the sole metric source —
+/// so this is deliberately NOT a compat read path: it exists solely to surface
+/// a persisted non-default metric that migration discards.
+///
+/// Returns the discarded metric when the header parses AND carries a non-cosine
+/// metric; `None` on any parse miss (non-JSON, foreign magic, unparseable
+/// metric string) and on a cosine metric (no loss). Never errors: a corrupt
+/// legacy header must not block the GC that deletes it.
+fn legacy_meta_discarded_metric(meta_bytes: &[u8]) -> Option<DistanceMetric> {
+    #[derive(serde::Deserialize)]
+    struct LegacyMetaHeader {
+        magic: String,
+        metric: String,
+    }
+    let header: LegacyMetaHeader = serde_json::from_slice(meta_bytes).ok()?;
+    if header.magic != "CQSHNSW" {
+        return None;
+    }
+    match header.metric.parse::<DistanceMetric>().ok()? {
+        DistanceMetric::Cosine => None,
+        non_cosine => Some(non_cosine),
+    }
+}
+
+/// Emit the migration warn for a legacy `.hnsw.meta` about to be deleted, if it
+/// carries a non-cosine metric. Best-effort and size-capped: a stat/read miss
+/// or an oversized file yields no warn and never blocks the caller's GC.
+fn warn_on_discarded_legacy_metric(meta_path: &Path) {
+    // The header is a tiny JSON object; anything larger is not the file we
+    // wrote — cap the read so a garbage sidecar can't be slurped whole.
+    const MAX_LEGACY_META_BYTES: u64 = 64 * 1024;
+    let small = std::fs::metadata(meta_path)
+        .map(|m| m.len() <= MAX_LEGACY_META_BYTES)
+        .unwrap_or(false);
+    if !small {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(meta_path) else {
+        return;
+    };
+    if let Some(metric) = legacy_meta_discarded_metric(&bytes) {
+        tracing::warn!(
+            metric = metric.as_str(),
+            "Discarding legacy .hnsw.meta distance metric on manifest migration; the retired \
+             header is not honored (no compat read path). Set CQS_DISTANCE_METRIC before the \
+             first post-upgrade index/rebuild to preserve a non-default metric."
+        );
+    }
+}
+
 /// Remove every generation artifact for `basename` except `keep_gen`, plus any
 /// legacy fixed-name sidecars and `.bak` debris. Must run under the exclusive
 /// save lock (no concurrent saver can be mid-flight writing a generation).
@@ -279,7 +331,13 @@ fn gc_stale_generations(dir: &Path, basename: &str, keep_gen: u64) {
         }
     }
     for ext in LEGACY_HNSW_EXTENSIONS {
-        let _ = std::fs::remove_file(dir.join(format!("{}.{}", basename, ext)));
+        let path = dir.join(format!("{}.{}", basename, ext));
+        // Surface a discarded non-default metric before the header is deleted:
+        // the manifest reader never opens this file, so migration drops it.
+        if *ext == "hnsw.meta" {
+            warn_on_discarded_legacy_metric(&path);
+        }
+        let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(dir.join(format!("{}.{}.bak", basename, ext)));
     }
 }
@@ -2429,6 +2487,10 @@ mod tests {
     /// the observable half of a real migration lossiness — see the audit report
     /// (silent metric downgrade when un-normalized embeddings + a
     /// [metric-header, manifest) build window + an unset env var coincide).
+    ///
+    /// It ALSO pins that the drop is no longer silent: the GC warn decision
+    /// helper (`legacy_meta_discarded_metric`, what `gc_stale_generations`
+    /// consults before deleting the header) surfaces the discarded `dot` metric.
     #[test]
     fn legacy_dot_metric_header_is_dropped_by_manifest_reader() {
         let tmp = TempDir::new().unwrap();
@@ -2444,6 +2506,66 @@ mod tests {
              report cosine because it reads the (absent) manifest, not the legacy header"
         );
         assert!(!HnswIndex::exists(tmp.path(), basename));
+
+        // The drop is now surfaced: the exact on-disk header bytes the GC would
+        // read yield the discarded dot metric from the warn-decision helper.
+        let meta_bytes = std::fs::read(tmp.path().join(format!("{basename}.hnsw.meta"))).unwrap();
+        assert_eq!(
+            legacy_meta_discarded_metric(&meta_bytes),
+            Some(DistanceMetric::DotProduct),
+            "the GC warn decision must surface the discarded dot metric before deletion"
+        );
+    }
+
+    /// The GC warn decision, pinned across the cases the migration sweep hits:
+    /// a non-cosine header yields the discarded metric, a cosine header yields
+    /// none (no loss), and every best-effort parse miss (non-JSON, foreign
+    /// magic, unparseable metric string) yields none — a corrupt header must
+    /// never manufacture a warn nor block the GC. The end-to-end tail confirms
+    /// `gc_stale_generations` still deletes the full legacy set after the warn.
+    #[test]
+    fn legacy_gc_warn_decision_and_sweep() {
+        // Non-cosine (dot): the warn decision fires.
+        assert_eq!(
+            legacy_meta_discarded_metric(&legacy_meta_json("dot", Some((3, 5)))),
+            Some(DistanceMetric::DotProduct),
+            "a persisted dot metric is a discarded non-default → warn"
+        );
+        // Cosine: no warn (nothing is lost — cosine is the migration default).
+        assert_eq!(
+            legacy_meta_discarded_metric(&legacy_meta_json("cosine", Some((3, 5)))),
+            None,
+            "a cosine header loses nothing on migration → no warn"
+        );
+        // Best-effort parse misses: none of these warn, none error.
+        assert_eq!(
+            legacy_meta_discarded_metric(b"not json at all"),
+            None,
+            "a non-JSON header is a best-effort parse miss → no warn"
+        );
+        assert_eq!(
+            legacy_meta_discarded_metric(br#"{"magic":"CQSHNSW","version":1,"metric":"bogus"}"#),
+            None,
+            "an unparseable metric string is a best-effort parse miss → no warn"
+        );
+        assert_eq!(
+            legacy_meta_discarded_metric(br#"{"magic":"OTHER","version":1,"metric":"dot"}"#),
+            None,
+            "a foreign magic is not our legacy header → no warn"
+        );
+
+        // End-to-end: a full legacy dot set is swept by the GC regardless of the
+        // warn — inspecting the metric must not leave the sidecars behind.
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("dot"));
+        gc_stale_generations(tmp.path(), basename, u64::MAX);
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            assert!(
+                !tmp.path().join(format!("{basename}.{ext}")).exists(),
+                "GC must delete legacy {ext} even after inspecting its metric for the warn"
+            );
+        }
     }
 
     /// Mixed state: a valid new-format index (real build + manifest) with
