@@ -1860,3 +1860,20 @@ mentions = [
     "JSON_ARGS_CAPABLE_COMMANDS",
     "mcp/mod.rs",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "The freshness API can wedge on any code path where a completed background rebuild has no follow-up drain trigger: drain_pending_rebuild must be reachable from the IDLE tick, not just flush ticks. The v1.52.0 gate found rebuild_in_flight stuck true for 70min after a threshold rebuild completed cleanly on a quiet repo (WSL inotify made it worse). Fixed by drain_completed_rebuild_idle; the same orphaned-handle class has a residual on --force DB replacement."
+mentions = [
+    "src/cli/watch/mod.rs",
+    "src/cli/watch/rebuild.rs",
+    "freshness",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Release recall-gate A/B protocol: build the OLD tag from source with the SAME features (cuda-index) into a private target dir. The GitHub-release CPU tarball is the wrong instrument twice over: feature-asymmetric (CPU ORT vs CUDA, different index path) and it hits the freshness gate cold. Same-index + same-features + CQS_NO_DAEMON + CQS_CAGRA_THRESHOLD pin makes the comparison byte-clean."
+mentions = [
+    "evals",
+    "release",
+]
