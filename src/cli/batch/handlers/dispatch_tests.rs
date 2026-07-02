@@ -383,6 +383,21 @@ fn dispatch_deps_returns_envelope() {
 }
 
 #[test]
+fn dispatch_deps_cross_returns_envelope() {
+    let (_dir, ctx) = seed_ctx();
+    // `--cross-project` must parse through the batch line parser and route to
+    // the cross branch (no references configured → the single "local"
+    // project). No type edges are seeded, so forward "SomeType" returns an
+    // empty array — the smoke is that the flag routes without a warn-and-drop.
+    let env = dispatch(&ctx, "deps SomeType --cross-project");
+    let data = assert_ok_envelope(&env, "deps SomeType --cross-project");
+    assert!(
+        data.is_array(),
+        "cross deps forward payload should be a JSON array: {data}"
+    );
+}
+
+#[test]
 fn dispatch_related_returns_envelope_with_target() {
     let (_dir, ctx) = seed_ctx();
     let env = dispatch(&ctx, "related foo --limit 5");

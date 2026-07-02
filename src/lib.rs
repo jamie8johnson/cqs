@@ -221,7 +221,7 @@ pub mod cross_project {
     };
     pub use crate::store::calls::cross_project::{
         CrossProjectCallee, CrossProjectCaller, CrossProjectContext, CrossProjectTestChunk,
-        NamedStore,
+        CrossProjectTypeUsage, CrossProjectTypeUser, NamedStore,
     };
 }
 pub use impact::{

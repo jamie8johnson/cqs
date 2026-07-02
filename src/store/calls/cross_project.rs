@@ -170,6 +170,26 @@ pub struct CrossProjectTestChunk {
     pub chunk: ChunkSummary,
 }
 
+/// A chunk that uses a queried type (forward deps), enriched with the
+/// originating project name. The `deps_cross_core` remaps this into the
+/// surface-facing `DepsUserEntry` JSON shape, so no `Serialize` derive.
+#[derive(Debug, Clone)]
+pub struct CrossProjectTypeUser {
+    /// Which project this type-user chunk lives in.
+    pub project: String,
+    pub chunk: ChunkSummary,
+}
+
+/// A type-usage relationship (reverse deps), enriched with the originating
+/// project name. Remapped into `TypeUsageEntry` by `deps_cross_core` rather
+/// than serialized directly — no `Serialize` derive.
+#[derive(Debug, Clone)]
+pub struct CrossProjectTypeUsage {
+    /// Which project the using chunk lives in.
+    pub project: String,
+    pub usage: crate::store::TypeUsage,
+}
+
 /// Context holding multiple project stores for cross-project graph queries.
 ///
 /// Lazily loads and caches call graphs per store on first access.
@@ -438,6 +458,80 @@ impl CrossProjectContext {
             }
         }
         Ok(all_tests)
+    }
+
+    /// Get chunks that use `type_name` across all projects (forward deps).
+    ///
+    /// Type edges resolve by type NAME — the same string-keyed resolution the
+    /// call-graph cross methods use — so a chunk in project B that references a
+    /// type named in project A surfaces here, tagged with its own project. Each
+    /// per-store query is capped at `limit` (bounds the fetch of a popular
+    /// type); the caller re-caps the merged set. A per-store query failure is
+    /// warned and skipped so one broken reference can't fail the whole query —
+    /// mirroring [`find_test_chunks_cross`].
+    pub fn get_type_users_cross(
+        &self,
+        type_name: &str,
+        limit: usize,
+    ) -> Result<Vec<CrossProjectTypeUser>, StoreError> {
+        let _span = tracing::info_span!(
+            "get_type_users_cross",
+            type_name,
+            projects = self.stores.len()
+        )
+        .entered();
+        let mut all = Vec::new();
+        for ns in &self.stores {
+            match ns.store.get_type_users(type_name, limit) {
+                Ok(chunks) => {
+                    for chunk in chunks {
+                        all.push(CrossProjectTypeUser {
+                            project: ns.name.clone(),
+                            chunk,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(project = %ns.name, error = %e, "Failed to load cross-project type users");
+                }
+            }
+        }
+        Ok(all)
+    }
+
+    /// Get the types used by chunks named `chunk_name` across all projects
+    /// (reverse deps). When the same function name lives in more than one
+    /// project, the type edges from every project's copy merge, each tagged
+    /// with its originating project. Cap + error handling mirror
+    /// [`Self::get_type_users_cross`].
+    pub fn get_types_used_by_cross(
+        &self,
+        chunk_name: &str,
+        limit: usize,
+    ) -> Result<Vec<CrossProjectTypeUsage>, StoreError> {
+        let _span = tracing::info_span!(
+            "get_types_used_by_cross",
+            chunk_name,
+            projects = self.stores.len()
+        )
+        .entered();
+        let mut all = Vec::new();
+        for ns in &self.stores {
+            match ns.store.get_types_used_by(chunk_name, limit) {
+                Ok(usages) => {
+                    for usage in usages {
+                        all.push(CrossProjectTypeUsage {
+                            project: ns.name.clone(),
+                            usage,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(project = %ns.name, error = %e, "Failed to load cross-project type dependencies");
+                }
+            }
+        }
+        Ok(all)
     }
 
     /// Build a merged call graph from all projects.
