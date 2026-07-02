@@ -101,7 +101,7 @@ use reindex::count_watchable_dirs;
 use reindex::splade_batch_size;
 use reindex::{
     build_splade_encoder_for_watch, db_file_identity, encode_splade_for_changed_files,
-    reindex_files, reindex_notes, DbFileId,
+    reindex_files, reindex_notes,
 };
 
 // Re-export the incremental pipeline entry so the worktree overlay builder
@@ -339,6 +339,51 @@ fn publish_watch_snapshot(
     fresh_notifier.set_fresh(next_snap.is_fresh());
 }
 
+/// Recover the watch loop's Store handle after a `cqs index --force` replaced
+/// `index.db` out from under it (new inode). Drops the orphaned handle, re-opens
+/// on the fresh file (reusing `shared_rt` so the replacement runs on the same
+/// worker pool as its predecessor), re-stamps the per-instance vendored-prefix
+/// cache (the `OnceLock` starts empty on a brand-new Store), resets the
+/// in-memory HNSW index and incremental counter, re-seeds the observed write
+/// stamp from the replacement, and discards any in-flight rebuild whose delta
+/// references old-DB chunk IDs (its worker sends into a dropped receiver — a
+/// no-op; a fresh threshold tick rebuilds against the new DB).
+///
+/// The three watch-loop sites that can observe a `--force` rotation — the flush
+/// tick, the reconcile tick, and the idle tick — all funnel their recovery
+/// through here so the reopen and state reset live in one place. Each caller
+/// gates the call on a `db_file_identity` mismatch; this performs the recovery
+/// unconditionally and returns the fresh Store (the caller updates its own
+/// `db_id` to the new identity after).
+fn reopen_store_after_replacement(
+    store: Store,
+    state: &mut WatchState,
+    index_path: &Path,
+    shared_rt: &Arc<tokio::runtime::Runtime>,
+    vendored_prefixes: &[String],
+) -> Result<Store> {
+    drop(store);
+    // Reuse the shared runtime on re-open so the replacement store keeps running
+    // on the same multi-thread worker pool as its predecessor.
+    let store = Store::open_with_runtime(index_path, Arc::clone(shared_rt)).with_context(|| {
+        format!(
+            "Failed to re-open store at {} after DB replacement",
+            index_path.display()
+        )
+    })?;
+    store.set_vendored_prefixes(vendored_prefixes.to_vec());
+    state.hnsw_index = None;
+    state.incremental_count = 0;
+    state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
+    if state.pending_rebuild.take().is_some() {
+        tracing::info!(
+            "discarded in-flight HNSW rebuild after DB replacement; next threshold \
+             tick will rebuild against the new DB",
+        );
+    }
+    Ok(store)
+}
+
 /// Drain a completed background HNSW rebuild from the watch loop's periodic
 /// (idle) path, so freshness never wedges when the repo goes quiet.
 ///
@@ -364,37 +409,17 @@ fn publish_watch_snapshot(
 /// `Cleared` outcome re-spawns naturally on the next file event's threshold
 /// check.
 ///
-/// Guards the DB-replacement race before draining: if `index.db`'s identity no
-/// longer matches `db_id` (a `cqs index --force` landed while the rebuild ran),
-/// the pending rebuild was built against the now-orphaned inode, so it is
-/// discarded (returns `Cleared`) rather than drained. Without this the idle
-/// path would swap an old-DB index in and let its stale sidecar overwrite the
-/// replacement's — the flush path has this discard, the idle path did not.
+/// The DB-replacement race is handled by the caller: the idle block runs
+/// [`reopen_store_after_replacement`] on an `index.db` identity mismatch
+/// *before* this drain, which discards any pending rebuild built against the
+/// orphaned inode. By the time the drain runs, the Store and `pending_rebuild`
+/// are consistent with the live `index.db`, so this only ever drains a rebuild
+/// built against the current DB.
 fn drain_completed_rebuild_idle(
     cfg: &WatchConfig,
     store: &Store,
     state: &mut WatchState,
-    index_path: &std::path::Path,
-    db_id: Option<DbFileId>,
 ) -> DrainOutcome {
-    // `cqs index --force` can replace index.db (new inode) while a rebuild is
-    // in flight. The rebuild worker — and this loop's `store` handle — are then
-    // orphaned on the old inode. Draining here would swap that stale, old-DB
-    // index into memory and stamp-save its sidecar over the replacement's fresh
-    // one: `save_stamped`'s under-lock stamp re-read goes through the orphaned
-    // handle and cannot observe the new inode, so the stamps match and the
-    // stale write "succeeds". Discard the pending rebuild instead; the next
-    // flush tick reopens the store and a fresh threshold rebuild runs against
-    // the new DB. Mirrors the flush path's DB-replacement discard. The identity
-    // syscall is only paid while a rebuild is actually pending.
-    if state.pending_rebuild.is_some() && db_file_identity(index_path) != db_id {
-        state.pending_rebuild = None;
-        tracing::info!(
-            "discarded in-flight HNSW rebuild after DB replacement (idle tick); \
-             next threshold tick will rebuild against new DB",
-        );
-        return DrainOutcome::Cleared;
-    }
     let outcome = drain_pending_rebuild(cfg, store, state);
     match outcome {
         DrainOutcome::Swapped => {
@@ -1592,20 +1617,44 @@ pub fn cmd_watch(
                 // arrivals too, not just on quiet ticks. The idle
                 // housekeeping here only runs when no flush is due.
                 if !flush_due(&state, &debounce) {
-                    // Drain a background HNSW rebuild that completed while the
-                    // repo was quiet. Runs before the sibling `drain_one` below
-                    // so foreign sibling slots — gated on
-                    // `pending_rebuild.is_some()` to defer while a rebuild may
-                    // hold GPU memory — un-defer in the same tick the rebuild
-                    // lands, and before the end-of-loop snapshot publish so
-                    // `rebuild_in_flight` reflects the drained state this tick.
-                    drain_completed_rebuild_idle(
-                        &watch_cfg,
-                        &store,
-                        &mut state,
-                        &index_path,
-                        db_id,
-                    );
+                    // Detect a `cqs index --force` rotation that replaced
+                    // index.db while the repo was quiet. The flush path only
+                    // reopens on a file event and the reconcile tick only when
+                    // reconcile is enabled and its interval elapses, so on a
+                    // fully idle daemon (e.g. CQS_WATCH_RECONCILE=0) this loop's
+                    // Store handle would stay orphaned on the old inode — reindex
+                    // writes, GC, and the rebuild worker all operating on the
+                    // wrong DB. One stat per idle tick; the reopen fires only on
+                    // an actual identity mismatch. Placed before the drain / GC /
+                    // reconcile blocks so `db_id` and the live Store never desync
+                    // (the GC tick advances `db_id` after pruning, which would
+                    // otherwise mask the mismatch from the reconcile tick).
+                    let current_id = db_file_identity(&index_path);
+                    if current_id != db_id {
+                        info!(
+                            "index.db replaced (likely cqs index --force) observed on idle tick, \
+                             reopening store"
+                        );
+                        store = reopen_store_after_replacement(
+                            store,
+                            &mut state,
+                            &index_path,
+                            &shared_rt,
+                            &vendored_prefixes_for_store,
+                        )?;
+                        db_id = current_id;
+                    } else {
+                        // Drain a background HNSW rebuild that completed while the
+                        // repo was quiet. Runs before the sibling `drain_one`
+                        // below so foreign sibling slots — gated on
+                        // `pending_rebuild.is_some()` to defer while a rebuild may
+                        // hold GPU memory — un-defer in the same tick the rebuild
+                        // lands, and before the end-of-loop snapshot publish so
+                        // `rebuild_in_flight` reflects the drained state this tick.
+                        // Skipped on the reopen branch above: that path already
+                        // discarded any pending rebuild built against the old DB.
+                        drain_completed_rebuild_idle(&watch_cfg, &store, &mut state);
+                    }
 
                     // Age-only prune fires hourly on idle ticks regardless of
                     // map size. The size-gated `prune_last_indexed_mtime`
@@ -1768,81 +1817,44 @@ pub fn cmd_watch(
                     // needed. The `process_file_changes` drain on the next
                     // tick takes its own lock per its existing contract.
                     if reconcile_due {
-                        // Detect a `cqs index --force` rotation that happened
-                        // between idle ticks — the inotify branch only fires
-                        // on actual filesystem events, and a long quiet period
-                        // followed by a forced reindex would land us here with
-                        // `store` pointing at the orphaned inode. Reopen on
-                        // mismatch and skip this tick; the next interval will
-                        // reconcile against the fresh DB.
-                        let current_id = db_file_identity(&index_path);
-                        if current_id != db_id {
-                            info!(
-                                "index.db replaced before reconcile tick — reopening store and \
-                                 skipping this pass; next interval will fire against fresh DB"
-                            );
-                            drop(store);
-                            store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
-                                .with_context(|| {
-                                format!(
-                                    "Failed to re-open store at {} after DB replacement",
-                                    index_path.display()
-                                )
-                            })?;
-                            // Re-stamp vendored prefixes on the fresh Store —
-                            // OnceLock is per-instance.
-                            store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
-                            db_id = current_id;
-                            state.hnsw_index = None;
-                            state.incremental_count = 0;
-                            // Fresh DB, fresh write history — re-seed the
-                            // observed stamp from the replacement store.
-                            state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
-                            if state.pending_rebuild.take().is_some() {
-                                tracing::info!(
-                                    "discarded in-flight HNSW rebuild after DB replacement \
-                                     observed at reconcile tick"
-                                );
-                            }
-                            last_reconcile = std::time::Instant::now();
-                        } else {
-                            let queued = reconcile::run_daemon_reconcile_with_walk(
-                                &store,
+                        // A `cqs index --force` rotation between idle ticks is
+                        // already handled at the top of this idle block (the
+                        // Store is reopened before we reach here), so reconcile
+                        // always walks against the live DB.
+                        let queued = reconcile::run_daemon_reconcile_with_walk(
+                            &store,
+                            &root,
+                            &parser,
+                            no_ignore,
+                            &mut state.pending_files,
+                            max_pending_files(),
+                            shared_disk_files.as_ref(),
+                        );
+                        // Slot-aware pass (durability net for the in-memory
+                        // sibling delta queues): every propagated sibling gets
+                        // the same fingerprint reconciliation, sharing the
+                        // pre-walked disk set when available.
+                        if !sibling_slots.is_empty() {
+                            sibling_slots.reconcile_siblings(
                                 &root,
                                 &parser,
                                 no_ignore,
-                                &mut state.pending_files,
                                 max_pending_files(),
                                 shared_disk_files.as_ref(),
+                                &shared_rt,
                             );
-                            // Slot-aware pass (durability net for the
-                            // in-memory sibling delta queues): every
-                            // propagated sibling gets the same
-                            // fingerprint reconciliation, sharing the
-                            // pre-walked disk set when available.
-                            if !sibling_slots.is_empty() {
-                                sibling_slots.reconcile_siblings(
-                                    &root,
-                                    &parser,
-                                    no_ignore,
-                                    max_pending_files(),
-                                    shared_disk_files.as_ref(),
-                                    &shared_rt,
-                                );
-                            }
-                            if queued > 0 {
-                                // Reset `last_event` so the synthetic
-                                // pending entries flush one quiet-gap
-                                // from queue time; arm the max-latency
-                                // clock so a continuous event stream
-                                // can't starve them past the cap.
-                                state.last_event = std::time::Instant::now();
-                                if state.first_pending_event.is_none() {
-                                    state.first_pending_event = Some(state.last_event);
-                                }
-                            }
-                            last_reconcile = std::time::Instant::now();
                         }
+                        if queued > 0 {
+                            // Reset `last_event` so the synthetic pending
+                            // entries flush one quiet-gap from queue time; arm
+                            // the max-latency clock so a continuous event stream
+                            // can't starve them past the cap.
+                            state.last_event = std::time::Instant::now();
+                            if state.first_pending_event.is_none() {
+                                state.first_pending_event = Some(state.last_event);
+                            }
+                        }
+                        last_reconcile = std::time::Instant::now();
                     }
 
                     // Sibling slot drains run strictly on idle ticks —
@@ -1910,41 +1922,17 @@ pub fn cmd_watch(
             // Detect if `cqs index --force` replaced the database
             // while we were waiting. If so, reopen the Store before processing
             // any changes — otherwise writes go to the orphaned inode.
+            // `db_id` is refreshed below in the cache-clear path.
             let current_id = db_file_identity(&index_path);
             if current_id != db_id {
                 info!("index.db replaced (likely cqs index --force), reopening store");
-                drop(store);
-                // Reuse the shared runtime on re-open so the
-                // replacement store keeps running on the same
-                // multi-thread worker pool as its predecessor.
-                store = Store::open_with_runtime(&index_path, Arc::clone(&shared_rt))
-                    .with_context(|| {
-                        format!(
-                            "Failed to re-open store at {} after DB replacement",
-                            index_path.display()
-                        )
-                    })?;
-                // Re-stamp the vendored prefix list on the fresh Store
-                // — the OnceLock is per-instance and a brand-new Store
-                // starts empty. Use the cached resolution from startup
-                // so we don't re-read .cqs.toml mid-watch.
-                store.set_vendored_prefixes(vendored_prefixes_for_store.clone());
-                // db_id updated below in the cache-clear path.
-                state.hnsw_index = None;
-                state.incremental_count = 0;
-                // Fresh DB, fresh write history — re-seed the observed
-                // stamp from the replacement store.
-                state.observed_stamp = cqs::hnsw::StoreStamp::read(&store).ok();
-                // Drop in-flight rebuild whose pending delta references
-                // OLD DB chunk IDs. The rebuild thread sends into a
-                // dropped receiver (no-op). Force a fresh rebuild on
-                // the next threshold tick against the new DB.
-                if state.pending_rebuild.take().is_some() {
-                    tracing::info!(
-                        "discarded in-flight HNSW rebuild after DB replacement; \
-                         next threshold tick will rebuild against new DB",
-                    );
-                }
+                store = reopen_store_after_replacement(
+                    store,
+                    &mut state,
+                    &index_path,
+                    &shared_rt,
+                    &vendored_prefixes_for_store,
+                )?;
             }
 
             if !state.pending_files.is_empty() {
