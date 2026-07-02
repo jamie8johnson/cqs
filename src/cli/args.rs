@@ -804,6 +804,12 @@ pub(crate) struct ImpactDiffArgs {
     /// Read diff from stdin instead of running git
     #[arg(long)]
     pub stdin: bool,
+    /// Worktree-overlay tri-state for the direct-callers section. Only the
+    /// `all_callers` section reflects the worktree delta; the affected-tests
+    /// section stays parent-truth, so the `_meta.overlay_graph` marker is
+    /// `"callers-only"` (mirroring `review`).
+    #[command(flatten)]
+    pub overlay: OverlayArgs,
 }
 
 /// Arguments shared between CLI `notes` (list subcommand) and batch `notes`.

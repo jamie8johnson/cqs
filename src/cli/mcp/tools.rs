@@ -884,7 +884,7 @@ command_core_map! {
     "stale" => StaleCore, plain;
     "notes" => NotesListCore, plain;
     "suggest" => SuggestCore, plain;
-    "impact-diff" => ImpactDiffCoreArgs, plain;
+    "impact-diff" => ImpactDiffCoreArgs, overlay;
     "stats" => StatsCore, plain;
     "health" => HealthCore, plain;
     "notes-add" => NotesAddArgs, plain;
@@ -1355,9 +1355,9 @@ mod tests {
 
     /// The MCP tool names whose daemon command consumes the worktree-overlay
     /// tri-state via `overlay_from_args` (search/gather/scout/task/callers/
-    /// callees/impact/dead/ci/review). The list mirrors the
+    /// callees/impact/dead/ci/review/impact-diff). The list mirrors the
     /// `overlay_from_args(arguments)` call sites in `json_args::build_batch_cmd`.
-    const OVERLAY_CAPABLE_TOOLS: [&str; 10] = [
+    const OVERLAY_CAPABLE_TOOLS: [&str; 11] = [
         "cqs_search",
         "cqs_gather",
         "cqs_scout",
@@ -1368,6 +1368,7 @@ mod tests {
         "cqs_dead",
         "cqs_ci",
         "cqs_review",
+        "cqs_impact_diff",
     ];
 
     /// Schema honesty (schema≠wire): every overlay key the daemon's

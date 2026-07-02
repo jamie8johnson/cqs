@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Daemon `impact-diff` gets real worktree-overlay plumbing; the #2102 stay-on-CLI gate is removed (#2107).** From a `.claude/worktrees/` checkout the daemon `impact-diff` fast path previously diffed the served parent root — #2102 worked around it with a client-side gate that forced worktree impact-diff onto the CLI path instead of fixing the daemon. The daemon handler now resolves the overlay first, diffs the worktree root (`run_git_diff_for_overlay`), and applies the existing caller-graph overlay core, attaching a `callers-only` `_meta.overlay_graph` marker gated on actual overlay participation (direct callers reflect the worktree; affected-tests stays parent-truth). The MCP `cqs_impact_diff` tool honestly advertises the `overlay`/`no_overlay`/`overlay_root` keys and joins `OVERLAY_CAPABLE_TOOLS` (10 → 11); the `is_impact_diff` gate predicate is deleted. A two-tree fixture pins the diff subject (worktree, not parent) and both marker directions; CLI==daemon parity pinned.
+
 ## [1.51.0] - 2026-06-28
 
 The SPLADE-viz Stage 2b feature plus four security fixes from a post-v1.50.1 red-team pass (4 confirmed findings / 0 false positives across serve / MCP / relay / parse / path). The scoring path is byte-identical to v1.50.1 (the diff touches only the injection scanner, the read/serve relay surfaces, and docs) — retrieval is unchanged (47.2 / 70.7 / 86.7 R@1/R@5/R@20).

@@ -34,9 +34,10 @@ pub(crate) fn cmd_impact_diff(
     let root = &ctx.root;
 
     // 1. Get diff text. The non-stdin branch diffs the worktree when this
-    // invocation lives in one (see `cmd_review`); the daemon `dispatch_impact_diff`
-    // has no overlay plumbing, so a worktree `impact-diff` is kept on THIS CLI path
-    // by the client dispatch gate. `--stdin` stays byte-identical.
+    // invocation lives in one (see `cmd_review`), so this CLI path (no-daemon +
+    // text-mode) diffs the correct subject. The daemon `dispatch_impact_diff` now
+    // has its own overlay plumbing and diffs the same worktree on the JSON fast
+    // path. `--stdin` stays byte-identical.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
