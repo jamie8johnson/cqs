@@ -858,7 +858,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_FTS_NORMALIZE_MAX` | `16384` | Max bytes of `normalize_for_fts` output per chunk. Truncation is emitted at warn level; bump if FTS recall on long chunks (large generated tables, monolithic functions) is degraded. |
 | `CQS_GATHER_MAX_NODES` | `200` | Max BFS nodes in `gather` context assembly |
 | `CQS_HNSW_EF_CONSTRUCTION` | corpus-tiered: `100`/`200`/`400` | HNSW construction-time search width (see HNSW Index Tuning) |
-| `CQS_DISTANCE_METRIC` | `cosine` | Distance metric at index build (`cosine`, `dot`). Stored in the index; a conflicting value at load is a typed error |
+| `CQS_DISTANCE_METRIC` | `cosine` | Distance metric at index build (`cosine`, `dot`). Stored per-generation in the HNSW manifest; a conflicting value at load is a typed error. Upgrading a pre-manifest index re-resolves the metric from this env var (the retired `.hnsw.meta` header is not honored) — set it before the first post-upgrade index/rebuild if you built with a non-default metric |
 | `CQS_HNSW_EF_SEARCH` | corpus-tiered: `50`/`100`/`200` | HNSW query-time search width (see HNSW Index Tuning) |
 | `CQS_HNSW_BATCH_SIZE` | `10000` | Vectors per HNSW build batch |
 | `CQS_HNSW_M` | corpus-tiered: `16`/`24`/`32` | HNSW connections per node (see HNSW Index Tuning) |
