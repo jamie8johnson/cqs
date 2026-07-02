@@ -304,12 +304,10 @@ fn cmd_model_show(json: bool) -> Result<()> {
     };
 
     let index_db_size = file_size_or_zero(&index_path);
-    // Sum the four enriched HNSW files (graph/data/ids/checksum). The split
-    // mirrors `HnswIndex::save("index")`.
-    let hnsw_size = ["graph", "data", "ids", "checksum"]
-        .iter()
-        .map(|suffix| file_size_or_zero(&cqs_dir.join(format!("index.hnsw.{suffix}"))))
-        .sum::<u64>();
+    // Enriched HNSW: current generation's artifacts + the manifest pointer,
+    // resolved via the manifest (the fixed `index.hnsw.*` names no longer
+    // exist under the generation scheme).
+    let hnsw_size = hnsw_size_bytes(&cqs_dir);
     let cagra_size = file_size_or_zero(&cqs_dir.join("index.cagra"))
         + file_size_or_zero(&cqs_dir.join("index.cagra.meta"));
 
@@ -1049,6 +1047,22 @@ fn file_size_or_zero(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Total on-disk size of the enriched HNSW: the current generation's three
+/// artifacts plus the manifest pointer. Resolves the generation via the
+/// manifest (`index.gen<N>.hnsw.*`), so it tracks the live generation rather
+/// than fixed names that no longer exist. `None`/missing → 0.
+fn hnsw_size_bytes(cqs_dir: &Path) -> u64 {
+    match cqs::HnswIndex::artifact_paths(cqs_dir, "index") {
+        Some(a) => {
+            file_size_or_zero(&a.graph)
+                + file_size_or_zero(&a.data)
+                + file_size_or_zero(&a.ids)
+                + file_size_or_zero(&a.manifest)
+        }
+        None => 0,
+    }
+}
+
 /// Pretty-print a byte count as KiB / MiB / GiB. Used for `cqs model show`
 /// human output.
 fn human_bytes(n: u64) -> String {
@@ -1132,6 +1146,40 @@ mod tests {
     #[test]
     fn file_size_or_zero_missing_path() {
         assert_eq!(file_size_or_zero(Path::new("/nonexistent/file/path/x")), 0);
+    }
+
+    /// `hnsw_size_bytes` reports 0 when no index exists and a non-zero sum for
+    /// a real new-format generation (artifacts + manifest) — the report must
+    /// track `index.gen<N>.hnsw.*`, not the retired fixed names.
+    #[test]
+    fn hnsw_size_bytes_sums_current_generation_and_manifest() {
+        fn tiny_embedding(seed: usize) -> cqs::embedder::Embedding {
+            let mut v = vec![0.01f32; cqs::EMBEDDING_DIM];
+            v[seed % cqs::EMBEDDING_DIM] = 1.0;
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in &mut v {
+                *x /= norm;
+            }
+            cqs::embedder::Embedding::new(v)
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cqs_dir = tmp.path();
+
+        // No index yet → zero.
+        assert_eq!(hnsw_size_bytes(cqs_dir), 0);
+
+        // A real save writes the generation artifacts + manifest.
+        let embeddings: Vec<(String, cqs::embedder::Embedding)> = (0..4)
+            .map(|i| (format!("v{i}"), tiny_embedding(i)))
+            .collect();
+        let index = cqs::HnswIndex::build_with_dim(embeddings, cqs::EMBEDDING_DIM).unwrap();
+        index.save(cqs_dir, "index").unwrap();
+
+        assert!(
+            hnsw_size_bytes(cqs_dir) > 0,
+            "size report must sum the new-format generation artifacts + manifest"
+        );
     }
 
     /// Zero chunks (empty project) emits `0` with no `count_error` field —

@@ -1350,7 +1350,10 @@ impl HnswIndex {
                 return None;
             }
         };
-        // Acquire shared lock for consistency with load()
+        // Best-effort shared lock on the id-map file itself (advisory). This
+        // is NOT the save/load `.hnsw.lock` — count_vectors is a cheap stats
+        // read that only needs the id-map bytes to be internally consistent,
+        // not full serialization against a concurrent generation swap.
         if let Err(e) = file.lock_shared() {
             tracing::debug!(error = %e, "Could not lock HNSW id map");
             return None;

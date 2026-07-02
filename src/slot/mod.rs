@@ -1079,11 +1079,13 @@ fn checkpoint_legacy_index(legacy_index: &Path) -> Result<(), SlotError> {
 /// in the rest of the codebase.
 fn collect_migration_files(project_cqs_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    // Include the full HNSW sidecar set, including `hnsw.ids` and
-    // `hnsw.checksum` for both basenames. verify_hnsw_checksums treats a
-    // checksum sidecar referencing files that don't exist as a hard error —
-    // leaving .ids/.checksum behind in `.cqs/` would make the next search
-    // fail to verify or rebuild from scratch (losing all enrichment work).
+    // Legacy fixed-name HNSW sidecars for both basenames. This is a one-time
+    // migration of a pre-slot `.cqs/` layout, which predates the manifest-
+    // generation scheme — so only the five-file set can exist at the top
+    // level (a slot-aware binary migrates before it ever writes an index, so
+    // generation artifacts / manifests only live inside slot dirs). HNSW is
+    // derived data regardless: a set that failed to migrate cleanly just
+    // rebuilds, never corrupts.
     let candidates = [
         crate::INDEX_DB_FILENAME,
         "index.db-wal",
