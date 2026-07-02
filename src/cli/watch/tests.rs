@@ -1706,8 +1706,11 @@ fn idle_tick_drains_completed_rebuild_and_unwedges_freshness() {
     );
 
     // The idle-tick drain — no pending files, no pairs, just the periodic
-    // drain the fix adds to the watch loop.
-    let outcome = drain_completed_rebuild_idle(&cfg, &fix.store, &mut state);
+    // drain the fix adds to the watch loop. The DB is unchanged since startup,
+    // so the DB-replacement guard passes through and the rebuild drains.
+    let index_path = fix.tmp.path().join(cqs::INDEX_DB_FILENAME);
+    let db_id = db_file_identity(&index_path);
+    let outcome = drain_completed_rebuild_idle(&cfg, &fix.store, &mut state, &index_path, db_id);
 
     assert_eq!(
         outcome,
@@ -1726,6 +1729,85 @@ fn idle_tick_drains_completed_rebuild_and_unwedges_freshness() {
     assert!(
         !snapshot_rebuild_in_flight(&state),
         "after the idle drain the snapshot must no longer report rebuild_in_flight"
+    );
+}
+
+/// Regression guard for the `--force`-vs-idle-drain race: a `cqs index --force`
+/// that replaces `index.db` while a rebuild is in flight leaves the rebuild
+/// worker (and this loop's Store handle) orphaned on the old inode. The idle
+/// drain must DISCARD the pending rebuild instead of swapping the old-DB index
+/// into memory and letting its stale sidecar overwrite the replacement's fresh
+/// one — the flush path already discards on replacement, the idle path did not.
+///
+/// RED without the guard in `drain_completed_rebuild_idle`: the completed
+/// rebuild swaps in (Swapped, `hnsw_index` populated) against a replaced DB.
+#[test]
+fn idle_tick_discards_rebuild_when_db_replaced() {
+    let dim = 4;
+    let new_idx = synthetic_owned_index(3, dim);
+
+    // A completed background rebuild waiting to be drained.
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Ok(Some(RebuildResult {
+        index: new_idx,
+        snapshot_keys: std::collections::HashSet::new(),
+    })))
+    .unwrap();
+    drop(tx);
+
+    let mut state = test_watch_state();
+    state.incremental_count = 5;
+    state.pending_rebuild = Some(PendingRebuild {
+        rx,
+        delta: Vec::new(),
+        started_at: std::time::Instant::now(),
+        handle: None,
+        delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+
+    let fix = drain_test_fixture(dim);
+    let index_path = fix.tmp.path().join(cqs::INDEX_DB_FILENAME);
+    // The identity the watch loop recorded when it opened its Store.
+    let db_id = db_file_identity(&index_path);
+
+    // Simulate `cqs index --force`: atomically replace index.db with a new
+    // inode. The loop's `fix.store` handle is now orphaned on the old inode,
+    // exactly as in the real race.
+    let replacement = fix.tmp.path().join("index.db.replacement");
+    std::fs::write(&replacement, b"fresh replacement db bytes").unwrap();
+    std::fs::rename(&replacement, &index_path).unwrap();
+    assert_ne!(
+        db_file_identity(&index_path),
+        db_id,
+        "the atomic replace must change the file identity (unix inode)"
+    );
+
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    let outcome = drain_completed_rebuild_idle(&cfg, &fix.store, &mut state, &index_path, db_id);
+
+    assert_eq!(
+        outcome,
+        DrainOutcome::Cleared,
+        "a replaced DB must discard the pending rebuild, not swap it in"
+    );
+    assert!(
+        state.pending_rebuild.is_none(),
+        "pending must be discarded after DB replacement"
+    );
+    assert!(
+        state.hnsw_index.is_none(),
+        "the old-DB rebuild must NOT be swapped into memory"
+    );
+    assert!(
+        !cqs::HnswIndex::exists(fix.tmp.path(), "index"),
+        "the discarded rebuild must not have written sidecars"
     );
 }
 

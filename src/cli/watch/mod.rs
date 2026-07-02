@@ -101,7 +101,7 @@ use reindex::count_watchable_dirs;
 use reindex::splade_batch_size;
 use reindex::{
     build_splade_encoder_for_watch, db_file_identity, encode_splade_for_changed_files,
-    reindex_files, reindex_notes,
+    reindex_files, reindex_notes, DbFileId,
 };
 
 // Re-export the incremental pipeline entry so the worktree overlay builder
@@ -363,11 +363,38 @@ fn publish_watch_snapshot(
 /// `Swapped` outcome resets `incremental_count` (no threshold re-arm), and a
 /// `Cleared` outcome re-spawns naturally on the next file event's threshold
 /// check.
+///
+/// Guards the DB-replacement race before draining: if `index.db`'s identity no
+/// longer matches `db_id` (a `cqs index --force` landed while the rebuild ran),
+/// the pending rebuild was built against the now-orphaned inode, so it is
+/// discarded (returns `Cleared`) rather than drained. Without this the idle
+/// path would swap an old-DB index in and let its stale sidecar overwrite the
+/// replacement's — the flush path has this discard, the idle path did not.
 fn drain_completed_rebuild_idle(
     cfg: &WatchConfig,
     store: &Store,
     state: &mut WatchState,
+    index_path: &std::path::Path,
+    db_id: Option<DbFileId>,
 ) -> DrainOutcome {
+    // `cqs index --force` can replace index.db (new inode) while a rebuild is
+    // in flight. The rebuild worker — and this loop's `store` handle — are then
+    // orphaned on the old inode. Draining here would swap that stale, old-DB
+    // index into memory and stamp-save its sidecar over the replacement's fresh
+    // one: `save_stamped`'s under-lock stamp re-read goes through the orphaned
+    // handle and cannot observe the new inode, so the stamps match and the
+    // stale write "succeeds". Discard the pending rebuild instead; the next
+    // flush tick reopens the store and a fresh threshold rebuild runs against
+    // the new DB. Mirrors the flush path's DB-replacement discard. The identity
+    // syscall is only paid while a rebuild is actually pending.
+    if state.pending_rebuild.is_some() && db_file_identity(index_path) != db_id {
+        state.pending_rebuild = None;
+        tracing::info!(
+            "discarded in-flight HNSW rebuild after DB replacement (idle tick); \
+             next threshold tick will rebuild against new DB",
+        );
+        return DrainOutcome::Cleared;
+    }
     let outcome = drain_pending_rebuild(cfg, store, state);
     match outcome {
         DrainOutcome::Swapped => {
@@ -1572,7 +1599,13 @@ pub fn cmd_watch(
                     // hold GPU memory — un-defer in the same tick the rebuild
                     // lands, and before the end-of-loop snapshot publish so
                     // `rebuild_in_flight` reflects the drained state this tick.
-                    drain_completed_rebuild_idle(&watch_cfg, &store, &mut state);
+                    drain_completed_rebuild_idle(
+                        &watch_cfg,
+                        &store,
+                        &mut state,
+                        &index_path,
+                        db_id,
+                    );
 
                     // Age-only prune fires hourly on idle ticks regardless of
                     // map size. The size-gated `prune_last_indexed_mtime`
