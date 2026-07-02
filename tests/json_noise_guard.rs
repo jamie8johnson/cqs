@@ -10,8 +10,8 @@
 //!
 //! # What it checks
 //!
-//! Every `Option<T>` field on a `Serialize`-deriving struct in the in-scope
-//! JSON-emission modules must carry EITHER:
+//! Every `Option<T>` field on a `Serialize`-deriving struct in the GUARDED
+//! modules must carry EITHER:
 //!   - `#[serde(skip_serializing_if = ...)]` / `#[serde(skip)]` / `#[serde(flatten)]`
 //!     (the field is omitted when it carries no information), OR
 //!   - an explicit `// always-emit: <reason>` marker comment in the field's
@@ -24,17 +24,53 @@
 //! skip-or-always-emit decision, which is exactly the discipline that stops the
 //! noise from re-accreting.
 //!
-//! # Scope rule (stated so silent scope-shrink is visible)
+//! # Scope (stated so silent scope-shrink is visible)
 //!
-//! In scope: `Serialize`-deriving, non-`#[cfg(test)]` structs defined under
-//! `src/cli/commands/**`, `src/cli/batch/**`, plus `src/cli/json_envelope.rs`
-//! and `src/cli/display.rs` — the CLI / batch / daemon JSON-emission layer and
-//! its shared envelope + search-output types. The test enumerates every file it
-//! scans and asserts a floor count plus the presence of anchor files, so a glob
-//! that silently stops matching (a moved/renamed module) fails the guard rather
-//! than passing vacuously.
+//! Two tiers, both anchored so a moved/renamed module fails loudly rather than
+//! passing vacuously:
 //!
-//! Deliberately OUT of scope, with rationale:
+//! 1. **GUARDED** (`GUARDED_SCOPE`) — the `Serialize`-deriving, non-`#[cfg(test)]`
+//!    structs whose `Option` fields MUST be skip-or-marked:
+//!    - the CLI / batch / daemon JSON-emission layer: `src/cli/commands/**`,
+//!      `src/cli/batch/**`, `src/cli/json_envelope.rs`, `src/cli/display.rs`.
+//!    - the **lib payload types** that the adapters serialize: `src/gather.rs`,
+//!      `src/review.rs`, `src/scout.rs`, `src/health.rs`, `src/impact/**`,
+//!      `src/store/helpers/types.rs`. These are the ACTUAL serialized payloads —
+//!      the adapters project them through `serde_json::to_value` / lib transforms
+//!      (`impact_to_json`) / erasure to `Vec<serde_json::Value>`, so the field
+//!      link from an adapter's `*Output` struct is severed at the `to_value`
+//!      boundary and a field-reachability walker can't chase it (see the
+//!      "why not reachability" note below). The curated list is the honest shape.
+//!
+//! 2. **A whole-`src/` completeness tripwire.** The walk covers EVERY `.rs` file
+//!    under `src/`, not just the GUARDED set. Any unhandled `Serialize` `Option`
+//!    OUTSIDE the GUARDED set must have its module listed in `OUT_OF_SCOPE_LEDGER`
+//!    with a rationale. A new module (or a currently-clean module that grows a
+//!    noisy `Option`) that is neither guarded nor ledgered is a NAMED failure:
+//!    "guard it (annotate) or ledger it (document why its null is acceptable)".
+//!    This makes the "curated allowlist needs maintenance" cost fail-closed and
+//!    checkable — a new lib payload module cannot re-decay the surface invisibly.
+//!    The ledger is a deferral record, NOT a blessing: entries name surfaces that
+//!    have not yet been through the SNR discipline (or serialize under a different
+//!    contract), and each is a candidate for a future coverage extension.
+//!
+//! # Why the curated allowlist, not type-reachability
+//!
+//! The proper shape would chase the lib payload types from the command adapters'
+//! `*Output` structs. It is not viable here without rust-analyzer-grade type
+//! resolution: the payloads reach the wire through paths that sever the field
+//! type link — erasure to `serde_json::Value` before landing in the `*Output`
+//! struct (`gather`: `GatherOutput.chunks: Vec<serde_json::Value>` built from
+//! `to_value(&GatheredChunk)`), lib transform functions rather than field
+//! projection (`impact`: `impact_to_json(&ImpactResult)`, which even hand-rolls
+//! `impl Serialize`), and direct serialization of the lib type where the
+//! adapter's own struct is not the payload (`health`: `to_value(&HealthReport)`).
+//! In every case the `*Output` fields name `serde_json::Value`, not the lib type,
+//! so chasing them needs local-variable type inference across `use` re-exports.
+//! The curated `GUARDED_SCOPE` list plus the whole-`src/` ledger tripwire is the
+//! honest middle: enumerated coverage, fail-closed on new modules.
+//!
+//! # Deliberately OUT of scope (field-type level), with rationale
 //!   - **Field types other than `Option<T>`.** `Vec`/map/set fields serialize
 //!     `[]`/`{}` and `String` serializes `""`; those empty states are frequently
 //!     load-bearing ("we computed this and it is empty" is distinct from "we did
@@ -43,48 +79,99 @@
 //!     would bury the signal. `Option<T>` is the one category where `null` and
 //!     absence are near-synonyms, i.e. the canonical noise vector. Extending the
 //!     guard to collections is a possible follow-up.
-//!   - **Lib payload types** (`src/gather.rs`, `src/impact/`, `src/review.rs`,
-//!     `src/store/helpers/types.rs`, ...). They are the actual serialized
-//!     payloads but reachability from the command adapters is not resolved here;
-//!     extending the walker to them is a possible follow-up.
-//!   - **Persistence / API-request / web-viz types** (`src/config.rs`,
-//!     `src/note.rs`, `src/eval/schema.rs`, `src/llm/`, `src/serve/data.rs`).
-//!     These derive `Serialize` for on-disk formats, outbound Anthropic API
-//!     bodies, or the SPLADE-viz web UI — different contracts where
-//!     skip-when-default can be semantically wrong.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use syn::{Attribute, Fields, Item, ItemStruct, Meta, Type};
 
-/// Files and directories that make up the in-scope JSON-emission surface,
-/// relative to the crate root. Directories are walked recursively.
-const SCOPE: &[&str] = &[
+/// GUARDED modules whose `Serialize` `Option` fields MUST be skip-or-marked,
+/// relative to the crate root. Directories are walked recursively; file entries
+/// match exactly (path components, so `gather.rs` never matches `gather_x.rs`).
+const GUARDED_SCOPE: &[&str] = &[
+    // CLI / batch / daemon JSON-emission layer.
     "src/cli/commands",
     "src/cli/batch",
     "src/cli/json_envelope.rs",
     "src/cli/display.rs",
+    // Lib payload types the adapters serialize.
+    "src/gather.rs",
+    "src/review.rs",
+    "src/scout.rs",
+    "src/health.rs",
+    "src/impact",
+    "src/store/helpers/types.rs",
 ];
 
-/// Anchor files that must always be in the scanned set. If any of these stops
-/// being discovered (moved, renamed, or the glob broke), the guard fails loudly
-/// instead of silently shrinking its coverage.
-const ANCHORS: &[&str] = &[
+/// Modules that serialize a `Serialize` `Option` OUTSIDE the GUARDED set and are
+/// deliberately deferred, each with a rationale. This is the completeness
+/// tripwire's escape hatch: an unhandled `Option` here is accepted, an unhandled
+/// `Option` in an UNlisted, UNguarded module fails the walk. A deferral record,
+/// not a blessing — every entry is a candidate for a future coverage extension.
+const OUT_OF_SCOPE_LEDGER: &[(&str, &str)] = &[
+    // On-disk config format — a persistence contract where skip-when-default can
+    // be semantically wrong (an absent key ≠ its default). Named out-of-scope by
+    // the SNR audit.
+    ("src/config.rs", "on-disk config persistence contract"),
+    // Eval fixture schema — on-disk test-data format, not an agent wire shape.
+    ("src/eval/schema.rs", "on-disk eval fixture format"),
+    // SPLADE-viz web UI payloads — a browser contract, not the agent surface.
+    ("src/serve/data.rs", "SPLADE-viz web UI payload"),
+    // HNSW sidecar header — on-disk binary index metadata, not agent JSON.
+    ("src/hnsw/persist.rs", "on-disk HNSW sidecar header"),
+    // Diff lib type — re-projected by `src/cli/commands/io/diff.rs` into its own
+    // (GUARDED) `DiffEntryOutput`; the lib derive is not the agent wire shape.
+    (
+        "src/diff.rs",
+        "re-projected into cli::commands::io::diff::DiffEntryOutput (guarded)",
+    ),
+    // Daemon socket ping-protocol framing — agent-adjacent but a protocol type,
+    // not a command payload. Deferred follow-up, not yet SNR-audited.
+    (
+        "src/daemon_translate.rs",
+        "daemon ping-protocol framing; deferred follow-up",
+    ),
+    // `cqs watch status --json` payload — genuinely agent-facing JSON that has
+    // NOT been through the SNR discipline. Deferred follow-up (a real extension
+    // target), NOT blessed as noise-free.
+    (
+        "src/watch_status.rs",
+        "watch-status JSON; NOT yet SNR-audited, deferred follow-up",
+    ),
+];
+
+/// Anchor files/dirs that must always be in the scanned set. If any stops being
+/// discovered (moved, renamed, or the glob broke), the guard fails loudly
+/// instead of silently shrinking its coverage. Covers both GUARDED tiers.
+const GUARDED_ANCHORS: &[&str] = &[
+    // CLI-layer anchors.
     "src/cli/json_envelope.rs",
     "src/cli/display.rs",
     "src/cli/commands/index/stats.rs",
     "src/cli/commands/infra/doctor.rs",
     "src/cli/commands/search/query.rs",
+    // Lib-payload anchors.
+    "src/gather.rs",
+    "src/review.rs",
+    "src/scout.rs",
+    "src/health.rs",
+    "src/impact/types.rs",
+    "src/store/helpers/types.rs",
 ];
 
-/// Floor on the number of files scanned. Well below the current count; a drop
-/// past this means the scope glob broke.
-const MIN_FILES_SCANNED: usize = 40;
+/// Floor on the number of `.rs` files scanned across `src/`. Well below the
+/// current count; a drop past this means the walk broke.
+const MIN_FILES_SCANNED: usize = 200;
 
-/// Floor on the number of in-scope `Option<T>` fields the walker classifies
-/// (marked-or-skipped). If detection silently breaks (e.g. stops recognizing
-/// the fully-qualified `#[derive(serde::Serialize)]` form), this count collapses
-/// and the guard fails rather than passing vacuously.
-const MIN_OPTION_FIELDS_SEEN: usize = 40;
+/// Floor on the number of `Option<T>` fields the whole-`src/` walk classifies
+/// (marked-or-skipped-or-violation). If detection silently breaks (e.g. stops
+/// recognizing the fully-qualified `#[derive(serde::Serialize)]` form), this
+/// count collapses and the guard fails rather than passing vacuously.
+const MIN_OPTION_FIELDS_SEEN: usize = 100;
+
+/// Floor on the number of `Option<T>` fields seen inside the GUARDED set
+/// specifically. Pins that the GUARDED walk (CLI + the lib payloads) is
+/// non-trivially covered — if guarded-struct detection breaks, this collapses.
+const MIN_GUARDED_OPTION_FIELDS: usize = 75;
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -215,27 +302,38 @@ fn flatten_structs(items: &[Item], out: &mut Vec<ItemStruct>) {
     }
 }
 
+/// True when `file` is under one of `scope`'s entries (component-wise prefix, so
+/// a file entry matches only its exact path and a dir entry matches its subtree).
+fn under_any(file: &Path, root: &Path, scope: &[&str]) -> bool {
+    scope.iter().any(|e| file.starts_with(root.join(e)))
+}
+
+/// The `OUT_OF_SCOPE_LEDGER` module `file` falls under, if any.
+fn ledger_module_of(file: &Path, root: &Path) -> Option<&'static str> {
+    OUT_OF_SCOPE_LEDGER
+        .iter()
+        .find(|(m, _)| file.starts_with(root.join(m)))
+        .map(|(m, _)| *m)
+}
+
 #[test]
 fn json_emitting_option_fields_are_skip_or_marked() {
     let root = crate_root();
 
     let mut files = Vec::new();
-    for entry in SCOPE {
-        collect_rs(&root.join(entry), &mut files);
-    }
+    collect_rs(&root.join("src"), &mut files);
     files.sort();
     files.dedup();
 
-    // Scope-shrink tripwires: the glob must still be finding the surface.
+    // Scope-shrink tripwires: the walk must still be finding the surface.
     assert!(
         files.len() >= MIN_FILES_SCANNED,
-        "JSON-noise guard scanned only {} files (floor {}); the scope glob \
-         likely broke — check {:?}",
+        "JSON-noise guard scanned only {} files (floor {}); the src/ walk \
+         likely broke",
         files.len(),
         MIN_FILES_SCANNED,
-        SCOPE,
     );
-    for anchor in ANCHORS {
+    for anchor in GUARDED_ANCHORS {
         let want = root.join(anchor);
         assert!(
             files.contains(&want),
@@ -245,7 +343,15 @@ fn json_emitting_option_fields_are_skip_or_marked() {
     }
 
     let mut option_fields_seen = 0usize;
-    let mut violations: Vec<String> = Vec::new();
+    let mut guarded_option_fields_seen = 0usize;
+    // Unhandled Option in the GUARDED set — must be annotated (primary guard).
+    let mut guarded_violations: Vec<String> = Vec::new();
+    // Unhandled Option outside GUARDED and not ledgered — must be guarded or
+    // ledgered (completeness tripwire).
+    let mut unclassified_violations: Vec<String> = Vec::new();
+    // Per-ledger-module hit count — a ledger entry with zero hits is stale.
+    let mut ledger_hits: HashMap<&str, usize> =
+        OUT_OF_SCOPE_LEDGER.iter().map(|(m, _)| (*m, 0)).collect();
 
     for f in &files {
         let src =
@@ -255,6 +361,8 @@ fn json_emitting_option_fields_are_skip_or_marked() {
 
         let mut structs = Vec::new();
         flatten_structs(&ast.items, &mut structs);
+
+        let guarded = under_any(f, &root, GUARDED_SCOPE);
 
         for s in &structs {
             if !derives_serialize(&s.attrs) || has_cfg_test(&s.attrs) {
@@ -268,6 +376,9 @@ fn json_emitting_option_fields_are_skip_or_marked() {
                     continue;
                 }
                 option_fields_seen += 1;
+                if guarded {
+                    guarded_option_fields_seen += 1;
+                }
                 if serde_handles_absence(&field.attrs) {
                     continue;
                 }
@@ -277,33 +388,82 @@ fn json_emitting_option_fields_are_skip_or_marked() {
                     continue;
                 }
                 let rel = f.strip_prefix(&root).unwrap_or(f).display();
-                violations.push(format!(
+                let entry = format!(
                     "  {}: {}::{} (Option field @ line {})",
-                    rel, s.ident, ident, line,
-                ));
+                    rel, s.ident, ident, line
+                );
+                if guarded {
+                    guarded_violations.push(entry);
+                } else if let Some(m) = ledger_module_of(f, &root) {
+                    *ledger_hits.get_mut(m).expect("ledger module pre-seeded") += 1;
+                } else {
+                    unclassified_violations.push(entry);
+                }
             }
         }
     }
 
-    // Anti-vacuous floor: if detection breaks, the count collapses.
+    // Anti-vacuous floors: if detection breaks, these collapse.
     assert!(
         option_fields_seen >= MIN_OPTION_FIELDS_SEEN,
-        "JSON-noise guard saw only {} Option fields (floor {}); struct/field \
-         detection likely broke and the guard would pass vacuously",
+        "JSON-noise guard saw only {} Option fields across src/ (floor {}); \
+         struct/field detection likely broke and the guard would pass vacuously",
         option_fields_seen,
         MIN_OPTION_FIELDS_SEEN,
     );
-
     assert!(
-        violations.is_empty(),
-        "JSON-noise re-decay guard: {} Option field(s) on a JSON-emitting path \
-         neither skip-when-none nor carry an explicit always-emit marker.\n\n\
+        guarded_option_fields_seen >= MIN_GUARDED_OPTION_FIELDS,
+        "JSON-noise guard saw only {} Option fields in the GUARDED set (floor \
+         {}); guarded-struct detection likely broke",
+        guarded_option_fields_seen,
+        MIN_GUARDED_OPTION_FIELDS,
+    );
+
+    // Anti-stale ledger: an entry that no longer matches any unhandled Option is
+    // dead weight that quietly widens the escape hatch — force its removal.
+    let stale_ledger: Vec<&str> = OUT_OF_SCOPE_LEDGER
+        .iter()
+        .map(|(m, _)| *m)
+        .filter(|m| ledger_hits.get(m).copied().unwrap_or(0) == 0)
+        .collect();
+    assert!(
+        stale_ledger.is_empty(),
+        "JSON-noise guard: OUT_OF_SCOPE_LEDGER has stale entries with no \
+         matching unhandled Option (module handled its Options, moved, or was \
+         renamed). Remove them so the escape hatch stays tight:\n{}",
+        stale_ledger.join("\n"),
+    );
+
+    // Completeness tripwire: a new payload module cannot re-decay the surface
+    // invisibly.
+    assert!(
+        unclassified_violations.is_empty(),
+        "JSON-noise completeness tripwire: {} Option field(s) on a Serialize \
+         struct live in a module that is neither GUARDED nor in \
+         OUT_OF_SCOPE_LEDGER.\n\n\
+         A new (or newly-noisy) serialized module escaped coverage. For each, \
+         either:\n\
+         \x20 - add its module to GUARDED_SCOPE and annotate the field \
+         (skip-when-none / // always-emit), if it reaches an agent, OR\n\
+         \x20 - add its module to OUT_OF_SCOPE_LEDGER with a rationale, if its \
+         null is acceptable under a different contract.\n\n\
+         Unclassified:\n{}",
+        unclassified_violations.len(),
+        unclassified_violations.join("\n"),
+    );
+
+    // Primary guard: unhandled Option in the GUARDED set.
+    assert!(
+        guarded_violations.is_empty(),
+        "JSON-noise re-decay guard: {} Option field(s) on a GUARDED \
+         JSON-emitting path neither skip-when-none nor carry an explicit \
+         always-emit marker.\n\n\
          Each field below emits `\"<name>\": null` when None, rebuilding the \
          noise the SNR audit removed. Fix each by adding either:\n\
          \x20 #[serde(skip_serializing_if = \"Option::is_none\")]   (if null carries no info)\n\
          \x20 // always-emit: <reason>                              (if null is load-bearing)\n\n\
          Violations:\n{}",
-        violations.len(),
-        violations.join("\n"),
+        guarded_violations.len(),
+        guarded_violations.join("\n"),
     );
 }
