@@ -187,10 +187,6 @@ macro_rules! define_languages {
 #[allow(clippy::ptr_arg)] // &mut String required: 14 implementations mutate the name (push_str, replace, etc.)
 pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node, &str) -> bool;
 
-/// Function signature for language-specific structural pattern matchers.
-/// Takes `(content, name)` and returns true if the pattern matches.
-pub type StructuralMatcherFn = fn(&str, &str) -> bool;
-
 /// Function signature for a custom chunk extractor on a grammar-less language.
 /// Invoked from `Parser::parse_source` when `LanguageDef::grammar` is `None`
 /// and `LanguageDef::custom_chunk_parser` is set.
@@ -366,11 +362,6 @@ pub struct LanguageDef {
     /// JUnit5 `@DisplayName`, Go's loose `Test%`, BDD `_when_should_*`) add
     /// rows here so adding a new convention is one line in the language module.
     pub test_name_patterns: &'static [&'static str],
-    /// Language-specific structural pattern matchers.
-    /// Keyed by pattern name (e.g., "error_swallow", "async", "mutex", "unsafe").
-    /// When present, `Pattern::matches` uses these instead of generic heuristics.
-    /// `None` = fall through to generic pattern matching in `structural.rs`.
-    pub structural_matchers: Option<&'static [(&'static str, StructuralMatcherFn)]>,
     /// Per-language substring markers used by `Pattern::ErrorSwallow`.
     /// Any single hit triggers the pattern. Empty = use the generic fallback
     /// in `structural.rs::GENERIC_ERROR_SWALLOW`.
@@ -2568,15 +2559,6 @@ mod tests {
         let def = Language::Rust.def();
         assert!(def.test_markers.contains(&"#[test]"));
         assert!(def.test_markers.contains(&"#[cfg(test)]"));
-    }
-
-    #[test]
-    fn test_structural_matchers_default_none() {
-        // Most languages should default to None for structural_matchers
-        for lang in Language::all_variants() {
-            // Just verify the field is accessible without panicking
-            let _matchers = lang.def().structural_matchers;
-        }
     }
 
     // ===== TC-23: capture_name_to_chunk_type for newer chunk types =====
