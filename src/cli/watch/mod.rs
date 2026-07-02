@@ -390,7 +390,7 @@ fn drain_completed_rebuild_idle(
     if state.pending_rebuild.is_some() && db_file_identity(index_path) != db_id {
         state.pending_rebuild = None;
         tracing::info!(
-            "discarded in-flight HNSW rebuild after DB replacement; \
+            "discarded in-flight HNSW rebuild after DB replacement (idle tick); \
              next threshold tick will rebuild against new DB",
         );
         return DrainOutcome::Cleared;
