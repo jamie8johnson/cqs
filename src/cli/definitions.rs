@@ -495,6 +495,13 @@ pub(super) enum Commands {
         /// git, in line with `review`, `ci`, and `impact-diff`.
         #[arg(long)]
         stdin: bool,
+        /// Worktree-overlay tri-state for the diff subject (opt-out reverts to
+        /// parent-truth). `affected` is CLI-only (never daemon-forwarded), so
+        /// these flags are consumed in-process by `cmd_affected` and are NOT on
+        /// `overlay_tristate` (the daemon-forward accessor) — hence absent from
+        /// the wire-key schema guard.
+        #[command(flatten)]
+        overlay: args::OverlayArgs,
         #[command(flatten)]
         output: TextJsonArgs,
     },

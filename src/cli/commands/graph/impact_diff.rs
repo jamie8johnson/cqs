@@ -28,23 +28,26 @@ pub(crate) fn cmd_impact_diff(
     base: Option<&str>,
     from_stdin: bool,
     json: bool,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact_diff").entered();
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text. The non-stdin branch diffs the worktree when this
-    // invocation lives in one (see `cmd_review`), so this CLI path (no-daemon +
-    // text-mode) diffs the correct subject. The daemon `dispatch_impact_diff` now
-    // has its own overlay plumbing and diffs the same worktree on the JSON fast
-    // path. `--stdin` stays byte-identical.
+    // 1. Get diff text. The non-stdin branch resolves the diff subject through the
+    // overlay tri-state: an active worktree overlay diffs the worktree, `--no-overlay`
+    // reverts to parent-truth (see `cmd_review`). The daemon `dispatch_impact_diff`
+    // has its own overlay plumbing and diffs the same subject on the JSON fast path.
+    // `--stdin` stays byte-identical.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
-        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
+        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
+        crate::cli::commands::run_git_diff_for_overlay(
+            base,
+            &crate::cli::commands::cli_parent_diff_root(root),
+            overlay_root.as_deref(),
+        )?
     };
 
     // 2. Parse hunks

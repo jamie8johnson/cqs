@@ -286,3 +286,62 @@ fn overlay_callers_callees_cli_direct_serves_parent() {
         );
     }
 }
+
+/// `changed_functions` names from a v1-envelope `cqs review --json` payload
+/// (under `data`; falls back to a bare top-level array for envelope robustness).
+fn review_changed_fn_names(v: &Value) -> Vec<String> {
+    v.get("data")
+        .and_then(|d| d.get("changed_functions"))
+        .or_else(|| v.get("changed_functions"))
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// #2110 — `--no-overlay` diff-subject parity (CLI-direct). From an
+/// (out-of-tree) worktree holding an uncommitted edit to `alpha`, the diff
+/// subject the review describes must follow the overlay tri-state, matching the
+/// daemon:
+///
+/// - **default-on** (worktree eligible): the diff comes from the WORKTREE, so
+///   the lane's `alpha` edit appears in `changed_functions`.
+/// - **`--no-overlay`**: full parent-truth — the diff subject reverts to the
+///   served/main root (the parent is clean), so `alpha` is ABSENT.
+///
+/// Pre-fix the CLI-direct sites probed the cwd unconditionally and diffed the
+/// worktree even under `--no-overlay`, so `alpha` leaked in — the divergence vs
+/// the daemon this pins shut. The out-of-tree worktree also exercises
+/// `cli_parent_diff_root` resolving main's root (`find_project_root` returns the
+/// worktree root there).
+#[test]
+fn review_no_overlay_reverts_diff_subject_to_parent() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+
+    // Worktree-only edit to `alpha` (parent stays clean).
+    std::fs::write(
+        wt.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 99 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("edit worktree lib.rs");
+
+    // Overlay-ON control (default-on from an eligible worktree): the review
+    // diffs the worktree, so the lane's `alpha` edit is present.
+    let on = run_json(cqs(&wt).args(["review", "--json"]));
+    assert!(
+        review_changed_fn_names(&on).iter().any(|n| n == "alpha"),
+        "default-on review from a worktree must diff the worktree (edits `alpha`): {on}"
+    );
+
+    // `--no-overlay`: parent-truth. The served/main root is clean, so `alpha`
+    // (the worktree-only edit) must NOT appear.
+    let off = run_json(cqs(&wt).args(["review", "--json", "--no-overlay"]));
+    assert!(
+        !review_changed_fn_names(&off).iter().any(|n| n == "alpha"),
+        "--no-overlay review must diff the served parent (clean), so the worktree's \
+         `alpha` edit must be ABSENT: {off}"
+    );
+}

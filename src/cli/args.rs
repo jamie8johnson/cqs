@@ -94,28 +94,36 @@ pub(crate) struct LimitArg {
     pub limit: usize,
 }
 
-/// The worktree-overlay tri-state flags, flattened into every command whose
-/// retrieval the overlay shadows: `search` (whole-result overlay) and the
-/// seed-overlaid graph-adjacent commands `scout`, `gather`, `task` (Part A).
-/// Each resolves activation through the same `resolve_overlay_active`
-/// precedence, so no two surfaces can diverge — `search` now flattens this
-/// shared struct rather than duplicating the three fields inline.
+/// The worktree-overlay tri-state flags, flattened into every command the
+/// overlay touches: `search` (whole-result overlay), the seed-overlaid
+/// graph-adjacent commands `scout`, `gather`, `task` (Part A), and the diff
+/// commands `review` / `ci` / `impact-diff` / `affected` (overlay root + diff
+/// subject). Each resolves activation through the same
+/// `resolve_overlay_active` precedence, so no two surfaces can diverge —
+/// `search` now flattens this shared struct rather than duplicating the three
+/// fields inline.
 #[derive(Args, Debug, Clone, Default)]
 pub(crate) struct OverlayArgs {
     /// Overlay the worktree's uncommitted/committed delta on top of the parent
-    /// index so the SEED search reflects this checkout's edits, not main's.
-    /// Default-on when run from a worktree; off in the main checkout. Tri-state
-    /// env `CQS_WORKTREE_OVERLAY`: `1` forces on, `0` forces off, unset =
-    /// default. `--overlay` forces on; `--no-overlay` forces off (opt-out wins).
-    /// Phase 1 builds overlays on the daemon path only. The call-graph
-    /// expansion stays on parent-truth — a `_meta.overlay_graph = "seed-only"`
-    /// marker says so. Requires `--json` to forward to the daemon.
+    /// index so results reflect this checkout's edits, not main's. Coverage is
+    /// per-command — read the `_meta.overlay_graph` marker: the seed search for
+    /// `scout`/`gather`/`task` (`seed-only`), the whole result for `search`,
+    /// and the caller-graph section + diff subject for the diff commands
+    /// (`callers-only`). Default-on when run from a worktree; off in the main
+    /// checkout. Tri-state env `CQS_WORKTREE_OVERLAY`: `1` forces on, `0`
+    /// forces off, unset = default. `--overlay` forces on; `--no-overlay`
+    /// forces off (opt-out wins). Search-family overlays build on the daemon
+    /// path (JSON forward); the diff commands also honor the overlay CLI-direct.
     #[arg(long, conflicts_with = "no_overlay")]
     pub overlay: bool,
 
     /// Opt out of the worktree seed overlay even when run from a worktree
     /// (where it is default-on). The explicit-off counterpart of `--overlay`;
     /// equivalent to `CQS_WORKTREE_OVERLAY=0`. Opt-out wins over every opt-in.
+    /// For the diff commands (`review` / `ci` / `impact-diff` / `affected`) this
+    /// also reverts the DIFF SUBJECT to full parent-truth: the served/project
+    /// root is diffed on both the CLI-direct and daemon surfaces (no worktree
+    /// subject, no `_meta.overlay_graph` marker), so the two paths agree.
     #[arg(long, conflicts_with = "overlay")]
     pub no_overlay: bool,
 

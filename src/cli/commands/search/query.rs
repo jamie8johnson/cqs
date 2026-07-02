@@ -212,7 +212,11 @@ pub(crate) fn resolve_overlay_active(
 /// Pure precedence core of [`resolve_overlay_active`], with the env signal
 /// passed in so the resolution can be unit-tested without mutating the
 /// process-global `CQS_WORKTREE_OVERLAY` (a race in parallel test runs).
-fn resolve_overlay_active_with(
+///
+/// `pub(crate)` so the CLI-direct diff-subject resolver
+/// ([`crate::cli::commands::cli_diff_overlay_root`]) folds the same precedence
+/// with an injected probe/env rather than duplicating it.
+pub(crate) fn resolve_overlay_active_with(
     flag_on: bool,
     flag_off: bool,
     overlay_eligible: bool,
