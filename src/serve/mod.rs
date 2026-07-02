@@ -137,8 +137,22 @@ pub fn run_server(
     // Prime the idle clock to "now" so a startup that immediately backgrounds
     // doesn't fire eviction before the first request arrives.
     let last_request_epoch = Arc::new(std::sync::atomic::AtomicU64::new(now_epoch_secs()));
+    // Wrap the read-only Store in an Arc and keep this clone alive in
+    // `run_server`'s scope, declared before `runtime` below. Locals drop in
+    // reverse declaration order at scope exit, so `runtime` drops first (on
+    // this plain, non-runtime thread) and `store` drops after it — releasing
+    // the final Store handle OUTSIDE any runtime context.
+    //
+    // Without this keepalive the last `Arc<Store>` drops inside
+    // `runtime.block_on` (the router holds it through teardown). serve opens
+    // the Store via `open_readonly` with no shared runtime, so the Store
+    // exclusively owns its tokio runtime; dropping that last handle inside the
+    // serve runtime makes tokio's own `Runtime::drop` block and panic ("Cannot
+    // drop a runtime in a context where blocking is not allowed"), aborting the
+    // process under panic=abort on idle-eviction / SIGTERM shutdown.
+    let store = Arc::new(store);
     let state = AppState {
-        store: Arc::new(store),
+        store: Arc::clone(&store),
         blocking_permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         last_request_epoch: Arc::clone(&last_request_epoch),
         daemon_socket: daemon_socket.map(Arc::new),
