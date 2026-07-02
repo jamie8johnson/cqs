@@ -154,10 +154,17 @@ pub(crate) fn cmd_review(
     let root = &ctx.root;
 
     // 1. Get diff text — adapter owns I/O (CLI supports stdin; daemon git only).
+    // The `--stdin` branch stays byte-identical. The non-stdin branch acquires the
+    // diff from the worktree when this invocation lives in one (`find_project_root`
+    // redirects a nested/out-of-tree worktree to the parent index, so `root` is the
+    // parent — diffing it would review the wrong tree). See `run_git_diff_for_overlay`.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base, root)?
+        let overlay_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
+        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
     };
 
     if json {

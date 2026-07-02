@@ -693,6 +693,35 @@ pub(crate) fn run_git_diff(base: Option<&str>, cwd: &std::path::Path) -> anyhow:
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Acquire the review/ci/impact diff from the tree the analysis will describe.
+///
+/// INVARIANT: when `overlay_root` is `Some`, the diff MUST come from the
+/// worktree the overlay was built for — never the served parent root. A worktree
+/// overlay splices the worktree's caller-graph delta on top of the parent index;
+/// the overlay activates ONLY when the invocation lives in a worktree whose reads
+/// were redirected to the parent index, which is exactly the config where the
+/// parent working tree (`ctx.root`) and the worktree working tree are DISJOINT.
+/// The parent's `git diff` cannot contain the lane's edits (parent HEAD is the
+/// mainline), so diffing `ctx.root` there reviews the wrong tree — usually an
+/// empty diff, worse the user's unrelated parent edits — while the spliced
+/// overlay stamps it worktree-aware. Routing every diff-acquisition site through
+/// this one helper makes that diff-tree/overlay-tree mismatch unrepresentable at
+/// the call site.
+///
+/// `overlay_root` is the worktree root ([`crate::worktree_overlay::WorktreeOverlay::worktree_root`],
+/// registry-validated on the daemon path) when a worktree overlay is active,
+/// else `None` (diff `ctx_root`, the served project). The `--relative` frame
+/// invariant [`run_git_diff`] documents holds either way: a worktree shares the
+/// repo-relative layout, so its toplevel-relative paths match the overlay's
+/// `masked_origins` and the parent index chunk paths without re-basing.
+pub(crate) fn run_git_diff_for_overlay(
+    base: Option<&str>,
+    ctx_root: &std::path::Path,
+    overlay_root: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    run_git_diff(base, overlay_root.unwrap_or(ctx_root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

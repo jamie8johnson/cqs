@@ -194,13 +194,22 @@ pub(in crate::cli::batch) fn dispatch_review(
     cqs::worktree_overlay::clear_overlay_meta();
 
     // Thin adapter over the shared `review_overlay` — same schema + budgeting as
-    // the CLI JSON surface. Adapter owns diff I/O (git only, no stdin). The diff
-    // runs in the served project (`ctx.root`), NOT the daemon's launch cwd, so a
-    // daemon serving a project from elsewhere reviews the right tree.
-    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
-    // Resolve the worktree overlay (Part B PR3): merges the direct-callers
-    // section. `None` ⇒ parent-truth (the default).
+    // the CLI JSON surface. Adapter owns diff I/O (git only, no stdin).
+    //
+    // Resolve the worktree overlay (Part B PR3) FIRST, then acquire the diff from
+    // the SAME tree the overlay describes: `run_git_diff_for_overlay` diffs
+    // `overlay.worktree_root` when present, else the served project (`ctx.root`).
+    // Order matters — the diff-tree must track the overlay-tree or the review is a
+    // chimera (parent diff spliced with the worktree's caller-graph delta). The
+    // worktree root is registry-validated by `set_validated_overlay_request`, so
+    // git runs only in a vetted root; a `None` overlay ⇒ parent-truth (the
+    // default), diffing `ctx.root` NOT the daemon's launch cwd.
     let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
+    let diff_text = crate::cli::commands::run_git_diff_for_overlay(
+        base,
+        &ctx.root,
+        overlay.as_ref().map(|o| o.worktree_root.as_path()),
+    )?;
     let (output, overlay_participated) = crate::cli::commands::review_overlay(
         &ctx.store(),
         &ctx.root,
@@ -240,12 +249,19 @@ pub(in crate::cli::batch) fn dispatch_ci(
 
     // Thin adapter over the shared `ci_overlay` — same schema + budgeting as the
     // CLI JSON surface. Gate failure is reported in the JSON (no exit) because
-    // the batch session must continue. Adapter owns diff I/O (git only). The diff
-    // runs in the served project (`ctx.root`), NOT the daemon's launch cwd.
-    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
-    // Resolve the worktree overlay: merges BOTH the embedded review's
-    // direct-callers section and the dead_in_diff set. `None` ⇒ parent-truth.
+    // the batch session must continue. Adapter owns diff I/O (git only).
+    //
+    // Resolve the worktree overlay FIRST, then acquire the diff from the SAME tree
+    // the overlay describes (see `dispatch_review`): `run_git_diff_for_overlay`
+    // diffs `overlay.worktree_root` when present, else `ctx.root`. A parent diff
+    // spliced with the worktree's caller-graph + dead delta would gate the wrong
+    // tree. `None` overlay ⇒ parent-truth, diffing `ctx.root` NOT the launch cwd.
     let overlay = super::graph::resolve_graph_overlay(ctx, &args.overlay)?;
+    let diff_text = crate::cli::commands::run_git_diff_for_overlay(
+        base,
+        &ctx.root,
+        overlay.as_ref().map(|o| o.worktree_root.as_path()),
+    )?;
     let (output, overlay_participated) = crate::cli::commands::ci_overlay(
         &ctx.store(),
         &ctx.root,
