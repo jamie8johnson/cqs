@@ -405,14 +405,18 @@ pub(crate) fn get_all_refs_via_refs_lru(
 /// ops actually run against — the caller passes the pinned `/proc/self/fd/<n>`
 /// path so `discover_delta` / `build_overlay` follow the held fd to the
 /// validated inode, immune to a post-validation path-component swap (the TOCTOU
-/// defense; see `BatchView::overlay_pin`). The fingerprint is path-independent
-/// (it hashes file *content* + records, not the root path), so re-validation
-/// across dispatches still matches even though `ops_root`'s fd number varies.
+/// defense; see `BatchView::overlay_pin`). `pin_fd` is that pin's raw fd (held
+/// `O_CLOEXEC`), passed to the git children so they clear `FD_CLOEXEC` and can
+/// resolve the `/proc/self/fd/<n>` ops path; `None` when `ops_root` is a real
+/// path. The fingerprint is path-independent (it hashes file *content* +
+/// records, not the root path), so re-validation across dispatches still
+/// matches even though `ops_root`'s fd number varies.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_overlay_via_lru<M>(
     overlays: &Mutex<lru::LruCache<PathBuf, Arc<super::OverlayCacheEntry>>>,
     worktree_root: &Path,
     ops_root: &Path,
+    pin_fd: Option<cqs::worktree_overlay::PinFd>,
     parent_root: &Path,
     parser: &cqs::parser::Parser,
     embedder: &Embedder,
@@ -450,7 +454,7 @@ pub(crate) fn get_overlay_via_lru<M>(
         // stamp and reuse the cached store (no rebuild). A mismatch (or a
         // discovery error) falls through to a rebuild below. Run discover
         // against the PINNED `ops_root`, not the canonical path string.
-        match cqs::worktree_overlay::discover_delta(ops_root, parent_root) {
+        match cqs::worktree_overlay::discover_delta(ops_root, parent_root, pin_fd) {
             Ok(delta) => {
                 // Recompute the same fingerprint the build stamped — including
                 // the notes-revision token, so a parent notes mutation since the
@@ -493,6 +497,7 @@ pub(crate) fn get_overlay_via_lru<M>(
     // meaningless once the fd closes).
     let built = crate::cli::worktree_overlay_build::build_overlay(
         ops_root,
+        pin_fd,
         worktree_root,
         parent_root,
         parser,
@@ -1357,12 +1362,17 @@ impl BatchView {
         // Annotated `PathBuf` so non-Linux unix targets (macOS/BSD), where every
         // arm below diverges (`ops_path` is Linux-only), don't back-infer the
         // unsized `Path` from the `&ops_root: &Path` use site downstream.
+        // Pair the ops path with the pin's raw fd: the fd is held `O_CLOEXEC`,
+        // so the git children (`discover_delta`) must clear `FD_CLOEXEC` on it
+        // to resolve the `/proc/self/fd/<n>` ops path. Threading the fd makes
+        // "closed-on-exec" the structural default and confines the one exception
+        // to the git spawn.
         #[cfg(unix)]
-        let ops_root: std::path::PathBuf = {
+        let (ops_root, pin_fd): (std::path::PathBuf, Option<cqs::worktree_overlay::PinFd>) = {
             let pin = self.overlay_pin.borrow();
             match pin.as_ref() {
                 #[cfg(target_os = "linux")]
-                Some(p) => p.ops_path(),
+                Some(p) => (p.ops_path(), Some(p.ops_fd())),
                 #[cfg(not(target_os = "linux"))]
                 Some(_) => {
                     tracing::warn!(
@@ -1380,7 +1390,8 @@ impl BatchView {
             }
         };
         #[cfg(not(unix))]
-        let ops_root = worktree_root.clone();
+        let (ops_root, pin_fd): (std::path::PathBuf, Option<cqs::worktree_overlay::PinFd>) =
+            (worktree_root.clone(), None);
 
         let embedder = match self.embedder() {
             Ok(e) => e,
@@ -1406,6 +1417,7 @@ impl BatchView {
             &self.overlays,
             &worktree_root,
             &ops_root,
+            pin_fd,
             &self.root,
             &parser,
             embedder,

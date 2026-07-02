@@ -33,7 +33,7 @@ fn parses(delta: &cqs::worktree_overlay::Delta, rel: &str) -> bool {
 #[test]
 fn clean_worktree_has_empty_delta() {
     let (_tmp, parent, wt) = worktree_fixture();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(
         delta.masked_origins.is_empty(),
         "a freshly-added worktree at the same commit has no delta, got {:?}",
@@ -51,7 +51,7 @@ fn modified_file_masks_and_parses() {
         "pub fn alpha() -> i32 { 100 }\npub fn beta() -> i32 { 2 }\n",
     )
     .unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(masks(&delta, "src/lib.rs"), "modified file masked");
     assert!(parses(&delta, "src/lib.rs"), "modified file parsed");
     // The untouched file is neither masked nor parsed.
@@ -62,7 +62,7 @@ fn modified_file_masks_and_parses() {
 fn deleted_file_masks_only() {
     let (_tmp, parent, wt) = worktree_fixture();
     std::fs::remove_file(wt.join("src/util.rs")).unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(masks(&delta, "src/util.rs"), "deleted file masked");
     assert!(
         !parses(&delta, "src/util.rs"),
@@ -88,7 +88,7 @@ fn committed_change_in_worktree_is_in_delta() {
     .unwrap();
     git_in(&wt, &["add", "src/lib.rs"]);
     git_in(&wt, &["commit", "-q", "-m", "lane edit"]);
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(
         masks(&delta, "src/lib.rs"),
         "a committed lane edit is in the delta (parent-HEAD diff base)"
@@ -102,7 +102,7 @@ fn renamed_file_masks_old_and_new() {
     // git-tracked rename (commit it so --find-renames sees a clean R).
     git_in(&wt, &["mv", "src/util.rs", "src/renamed.rs"]);
     git_in(&wt, &["commit", "-q", "-m", "rename util"]);
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(masks(&delta, "src/util.rs"), "old rename path masked");
     assert!(masks(&delta, "src/renamed.rs"), "new rename path masked");
     assert!(
@@ -116,7 +116,7 @@ fn renamed_file_masks_old_and_new() {
 fn untracked_file_masks_and_parses() {
     let (_tmp, parent, wt) = worktree_fixture();
     std::fs::write(wt.join("src/fresh.rs"), "pub fn fresh() -> i32 { 9 }\n").unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(masks(&delta, "src/fresh.rs"), "untracked file masked");
     assert!(parses(&delta, "src/fresh.rs"), "untracked file parsed");
     let rec = delta
@@ -132,7 +132,7 @@ fn gitignored_file_absent_from_delta() {
     let (_tmp, parent, wt) = worktree_fixture();
     std::fs::write(wt.join(".gitignore"), "ignored.rs\n").unwrap();
     std::fs::write(wt.join("ignored.rs"), "pub fn nope() {}\n").unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(
         !masks(&delta, "ignored.rs"),
         "a .gitignore'd file is excluded from the untracked delta"
@@ -145,7 +145,7 @@ fn unsupported_extension_masks_but_does_not_parse() {
     // A modified tracked file with no supported extension: still masked
     // (origin-level), but excluded from the parse set.
     std::fs::write(wt.join("README.unknownext"), "data\n").unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(
         masks(&delta, "README.unknownext"),
         "unsupported-extension origin still masked"
@@ -163,7 +163,7 @@ fn symlink_masks_but_does_not_parse() {
     // An untracked symlink with a supported-looking extension: masked but
     // filtered from the parse set (symlink_metadata skips it).
     std::os::unix::fs::symlink("src/lib.rs", wt.join("link.rs")).unwrap();
-    let delta = discover_delta(&wt, &parent).expect("discover");
+    let delta = discover_delta(&wt, &parent, None).expect("discover");
     assert!(masks(&delta, "link.rs"), "symlink origin masked");
     assert!(
         !parses(&delta, "link.rs"),
@@ -179,9 +179,9 @@ fn fingerprint_stable_across_repeated_discovery() {
         "pub fn alpha() -> i32 { 5 }\npub fn beta() -> i32 { 2 }\n",
     )
     .unwrap();
-    let d1 = discover_delta(&wt, &parent).expect("discover 1");
+    let d1 = discover_delta(&wt, &parent, None).expect("discover 1");
     let fp1 = fingerprint(&wt, &d1, &NO_NOTES);
-    let d2 = discover_delta(&wt, &parent).expect("discover 2");
+    let d2 = discover_delta(&wt, &parent, None).expect("discover 2");
     let fp2 = fingerprint(&wt, &d2, &NO_NOTES);
     assert_eq!(fp1, fp2, "fingerprint stable when nothing changed");
 }
@@ -193,7 +193,7 @@ fn fingerprint_changes_on_edit_and_reverts() {
     let original = std::fs::read_to_string(&lib).unwrap();
 
     // Clean baseline.
-    let d_clean = discover_delta(&wt, &parent).expect("discover clean");
+    let d_clean = discover_delta(&wt, &parent, None).expect("discover clean");
     let fp_clean = fingerprint(&wt, &d_clean, &NO_NOTES);
 
     // Edit → fingerprint moves.
@@ -202,14 +202,14 @@ fn fingerprint_changes_on_edit_and_reverts() {
         "pub fn alpha() -> i32 { 99 }\npub fn beta() -> i32 { 2 }\n",
     )
     .unwrap();
-    let d_edit = discover_delta(&wt, &parent).expect("discover edit");
+    let d_edit = discover_delta(&wt, &parent, None).expect("discover edit");
     let fp_edit = fingerprint(&wt, &d_edit, &NO_NOTES);
     assert_ne!(fp_clean, fp_edit, "edit must move the fingerprint");
 
     // Revert to byte-identical original → back to the clean fingerprint
     // (working tree == parent HEAD → file falls out of the delta).
     std::fs::write(&lib, original).unwrap();
-    let d_revert = discover_delta(&wt, &parent).expect("discover revert");
+    let d_revert = discover_delta(&wt, &parent, None).expect("discover revert");
     let fp_revert = fingerprint(&wt, &d_revert, &NO_NOTES);
     assert!(
         d_revert.masked_origins.is_empty(),
@@ -233,7 +233,7 @@ fn fingerprint_content_sensitive_for_same_record_set() {
         "pub fn alpha() -> i32 { 1 }\npub fn beta() -> i32 { 20 }\n",
     )
     .unwrap();
-    let d1 = discover_delta(&wt, &parent).expect("discover 1");
+    let d1 = discover_delta(&wt, &parent, None).expect("discover 1");
     let fp1 = fingerprint(&wt, &d1, &NO_NOTES);
 
     std::fs::write(
@@ -241,7 +241,7 @@ fn fingerprint_content_sensitive_for_same_record_set() {
         "pub fn alpha() -> i32 { 1 }\npub fn beta() -> i32 { 30 }\n",
     )
     .unwrap();
-    let d2 = discover_delta(&wt, &parent).expect("discover 2");
+    let d2 = discover_delta(&wt, &parent, None).expect("discover 2");
     let fp2 = fingerprint(&wt, &d2, &NO_NOTES);
 
     assert_ne!(
