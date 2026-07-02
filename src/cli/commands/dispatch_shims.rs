@@ -476,8 +476,8 @@ pub fn cmd_affected_dispatch(
     cmd: &Commands,
 ) -> Result<()> {
     let ctx = group_b_ctx!(ctx);
-    must_be!(cmd, Commands::Affected { base, stdin, output } => {
-        commands::cmd_affected(ctx, base.as_deref(), *stdin, cli.json || output.json)
+    must_be!(cmd, Commands::Affected { base, stdin, output, overlay } => {
+        commands::cmd_affected(ctx, base.as_deref(), *stdin, cli.json || output.json, overlay)
     })
 }
 
@@ -702,6 +702,7 @@ pub fn cmd_impact_diff_dispatch(
             args.base.as_deref(),
             args.stdin,
             cli.json || output.json,
+            &args.overlay,
         )
     })
 }
@@ -719,7 +720,7 @@ pub fn cmd_review_dispatch(
         } else {
             output.effective_format()
         };
-        commands::cmd_review(ctx, args.base.as_deref(), args.stdin, &format, args.tokens)
+        commands::cmd_review(ctx, args.base.as_deref(), args.stdin, &format, args.tokens, &args.overlay)
     })
 }
 
@@ -743,6 +744,7 @@ pub fn cmd_ci_dispatch(
             &format,
             &args.gate,
             args.tokens,
+            &args.overlay,
         )
     })
 }

@@ -116,6 +116,10 @@ pub(crate) struct OverlayArgs {
     /// Opt out of the worktree seed overlay even when run from a worktree
     /// (where it is default-on). The explicit-off counterpart of `--overlay`;
     /// equivalent to `CQS_WORKTREE_OVERLAY=0`. Opt-out wins over every opt-in.
+    /// For the diff commands (`review` / `ci` / `impact-diff` / `affected`) this
+    /// also reverts the DIFF SUBJECT to full parent-truth: the served/project
+    /// root is diffed on both the CLI-direct and daemon surfaces (no worktree
+    /// subject, no `_meta.overlay_graph` marker), so the two paths agree.
     #[arg(long, conflicts_with = "overlay")]
     pub no_overlay: bool,
 

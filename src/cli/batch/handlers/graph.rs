@@ -4466,4 +4466,107 @@ mod tests {
             "ci review must diff the worktree (which edits `target`), not the clean parent: {json}"
         );
     }
+
+    // ─── opt-out parity: --no-overlay reverts the diff subject to the parent ─────
+    //
+    // The daemon reference for semantics (b): `no_overlay: true` on the wire ⇒
+    // full parent-truth ⇒ the diff subject is the SERVED root (`ctx.root`), NOT
+    // the worktree — even though the fixture's worktree holds an edit. NO
+    // `set_test_overlay_override` (`resolve_graph_overlay` resolves inactive on
+    // opt-out). The parent is dirtied on an UNRELATED tracked file so parent-truth
+    // has a positive subject: `unrelated` appears, the worktree's `target` does
+    // not. These pin the surface the CLI-direct fix now matches.
+
+    /// Dirty the parent on `src/other.rs` (`unrelated`) and index both functions,
+    /// so an opted-out diff of the parent names `unrelated` and never `target`.
+    fn two_tree_repo_dirty_parent() -> (TempDir, PathBuf, PathBuf, crate::cli::batch::BatchContext)
+    {
+        let (holder, parent, wt) = two_tree_repo();
+        std::fs::write(
+            parent.join("src/other.rs"),
+            "fn unrelated() { let y = 2; }\n",
+        )
+        .expect("dirty parent");
+        let ctx = parent_store_in(
+            &parent,
+            &[("src/lib.rs", "target"), ("src/other.rs", "unrelated")],
+            &[],
+        );
+        (holder, parent, wt, ctx)
+    }
+
+    fn no_overlay() -> crate::cli::args::OverlayArgs {
+        crate::cli::args::OverlayArgs {
+            no_overlay: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dispatch_review_no_overlay_diffs_parent_not_worktree() {
+        let (_holder, _parent, _wt, ctx) = two_tree_repo_dirty_parent();
+        let args = crate::cli::args::ReviewArgs {
+            base: None,
+            stdin: false,
+            tokens: None,
+            overlay: no_overlay(),
+        };
+        let json = super::super::analysis::dispatch_review(&ctx.build_view(None), &args)
+            .expect("dispatch_review");
+        let names = changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "unrelated"),
+            "--no-overlay review must diff the served parent (dirty `unrelated`): {json}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "target"),
+            "--no-overlay must NOT diff the worktree's `target`: {json}"
+        );
+    }
+
+    #[test]
+    fn dispatch_ci_no_overlay_diffs_parent_not_worktree() {
+        let (_holder, _parent, _wt, ctx) = two_tree_repo_dirty_parent();
+        let args = crate::cli::args::CiArgs {
+            base: None,
+            stdin: false,
+            gate: cqs::ci::GateThreshold::Off,
+            tokens: None,
+            overlay: no_overlay(),
+        };
+        let json =
+            super::super::analysis::dispatch_ci(&ctx.build_view(None), &args).expect("dispatch_ci");
+        let names = ci_changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "unrelated"),
+            "--no-overlay ci must diff the served parent (dirty `unrelated`): {json}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "target"),
+            "--no-overlay ci must NOT diff the worktree's `target`: {json}"
+        );
+    }
+
+    #[test]
+    fn dispatch_impact_diff_no_overlay_diffs_parent_not_worktree() {
+        let (_holder, _parent, _wt, ctx) = two_tree_repo_dirty_parent();
+        let args = ImpactDiffArgs {
+            base: None,
+            stdin: false,
+            overlay: no_overlay(),
+        };
+        let json =
+            dispatch_impact_diff(&ctx.build_view(None), &args).expect("dispatch_impact_diff");
+        // `changed_function_names` reads the top-level `changed_functions` array
+        // `DiffImpactResult` and `ReviewOutput` share.
+        let names = changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "unrelated"),
+            "--no-overlay impact-diff must diff the served parent (dirty `unrelated`): {json}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "target"),
+            "--no-overlay impact-diff must NOT diff the worktree's `target`: {json}"
+        );
+    }
 }

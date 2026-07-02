@@ -714,12 +714,238 @@ pub(crate) fn run_git_diff(base: Option<&str>, cwd: &std::path::Path) -> anyhow:
 /// invariant [`run_git_diff`] documents holds either way: a worktree shares the
 /// repo-relative layout, so its toplevel-relative paths match the overlay's
 /// `masked_origins` and the parent index chunk paths without re-basing.
+///
+/// OPT-OUT INVARIANT: `--no-overlay` / `CQS_WORKTREE_OVERLAY=0` means full
+/// parent-truth on EVERY surface — `overlay_root` is `None`, so the diff subject
+/// is `ctx_root` (the served/project root), matching the daemon path (which
+/// never auto-activates and passes `None` here on opt-out). The CLI-direct sites
+/// resolve `overlay_root` through [`cli_diff_overlay_root`] and `ctx_root`
+/// through [`cli_parent_diff_root`] so an opted-out worktree invocation describes
+/// the same tree the daemon would — no marker, no worktree subject.
 pub(crate) fn run_git_diff_for_overlay(
     base: Option<&str>,
     ctx_root: &std::path::Path,
     overlay_root: Option<&std::path::Path>,
 ) -> anyhow::Result<String> {
     run_git_diff(base, overlay_root.unwrap_or(ctx_root))
+}
+
+/// Resolve the worktree-overlay root the CLI-direct diff sites (`review` / `ci`
+/// / `impact-diff` / `affected`) should splice onto the parent index, honoring
+/// the overlay tri-state. `Some(worktree)` when the overlay resolves active
+/// (default-on in an eligible worktree, or `--overlay`) AND a worktree was
+/// probed; `None` when opted out (`--no-overlay` / `CQS_WORKTREE_OVERLAY=0`),
+/// outside a worktree, or `--overlay` with no worktree to overlay — the
+/// parent-truth cases whose diff subject is the served project, matching the
+/// daemon path.
+///
+/// Force-off short-circuits BEFORE the filesystem probe — the opted-out hot
+/// path never stats `.git`. The probe + tri-state resolution then live in the
+/// pure [`cli_diff_overlay_root_resolve`] so the matrix is unit-testable
+/// without touching the process cwd or the global `CQS_WORKTREE_OVERLAY`.
+pub(crate) fn cli_diff_overlay_root(
+    overlay: &crate::cli::args::OverlayArgs,
+    root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    use crate::cli::commands::search::query::{overlay_env_signal, overlay_force_off};
+    // Force-off wins before any probe (the opted-out fast path).
+    if overlay_force_off(overlay.no_overlay) {
+        return None;
+    }
+    let probe = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
+    cli_diff_overlay_root_resolve(
+        overlay.overlay,
+        overlay.no_overlay,
+        probe,
+        overlay_env_signal(),
+    )
+}
+
+/// Pure resolution core of [`cli_diff_overlay_root`]: given the tri-state flags,
+/// the probed worktree root, and the env signal, return the overlay root to
+/// diff. `Some` only when the overlay resolves active (same precedence as
+/// [`crate::cli::commands::search::query::resolve_overlay_active`]) AND a
+/// worktree was probed — an explicit `--overlay` outside a worktree still yields
+/// `None` (nothing to overlay), so the diff subject stays the served project.
+fn cli_diff_overlay_root_resolve(
+    overlay: bool,
+    no_overlay: bool,
+    probe: Option<std::path::PathBuf>,
+    env: Option<bool>,
+) -> Option<std::path::PathBuf> {
+    if crate::cli::commands::search::query::resolve_overlay_active_with(
+        overlay,
+        no_overlay,
+        probe.is_some(),
+        env,
+    ) {
+        probe
+    } else {
+        None
+    }
+}
+
+/// The parent-truth diff subject for a CLI-direct diff site. Normally `root`
+/// (`find_project_root`'s output). For a redirected OUT-OF-TREE worktree
+/// `find_project_root` returns the WORKTREE root — its index is redirected to
+/// main, its project root is not — so an opted-out diff would still describe the
+/// worktree, diverging from the daemon (which always diffs its served/main
+/// root). Resolve main's root there so "parent-truth" names the same tree on
+/// both surfaces. A nested worktree already resolves `root` to the parent, and a
+/// regular repo has its own `.cqs/` — both return `OwnIndex` from
+/// [`cqs::worktree::lookup_main_cqs_dir`] and leave `root` unchanged.
+pub(crate) fn cli_parent_diff_root(root: &std::path::Path) -> std::path::PathBuf {
+    if let cqs::worktree::MainIndexLookup::WorktreeUseMain {
+        worktree_root,
+        main_root,
+        ..
+    } = cqs::worktree::lookup_main_cqs_dir(root)
+    {
+        if worktree_root != main_root {
+            return main_root;
+        }
+    }
+    root.to_path_buf()
+}
+
+#[cfg(test)]
+mod cli_diff_overlay_root_tests {
+    use super::{cli_diff_overlay_root, cli_diff_overlay_root_resolve, cli_parent_diff_root};
+    use crate::cli::args::OverlayArgs;
+    use std::path::{Path, PathBuf};
+
+    fn wt() -> PathBuf {
+        PathBuf::from("/tmp/some-worktree")
+    }
+
+    // ─── cli_diff_overlay_root_resolve: tri-state × probe (hermetic) ───────────
+    //
+    // The precedence (which flag/env combos are "active") is exhaustively pinned
+    // by the `resolve_overlay_active_with` tests; these pin the diff-subject
+    // decision layered on top: active ⇒ the probed worktree, inactive ⇒ None.
+
+    #[test]
+    fn resolve_default_on_in_worktree_returns_probe() {
+        // No flags, no env, probed a worktree ⇒ default-on ⇒ Some(worktree).
+        assert_eq!(
+            cli_diff_overlay_root_resolve(false, false, Some(wt()), None),
+            Some(wt())
+        );
+    }
+
+    #[test]
+    fn resolve_opt_out_flag_beats_probed_worktree() {
+        // THE FIX: `--no-overlay` returns None even though a worktree was probed —
+        // parent-truth, not the worktree. (Pre-fix the probe was diffed regardless.)
+        assert_eq!(
+            cli_diff_overlay_root_resolve(false, true, Some(wt()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_opt_out_env_beats_probed_worktree() {
+        // `CQS_WORKTREE_OVERLAY=0` likewise reverts to parent-truth.
+        assert_eq!(
+            cli_diff_overlay_root_resolve(false, false, Some(wt()), Some(false)),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_overlay_outside_worktree_is_none() {
+        // `--overlay` resolves active, but with no worktree probed there is
+        // nothing to overlay ⇒ None ⇒ diff the served project.
+        assert_eq!(cli_diff_overlay_root_resolve(true, false, None, None), None);
+    }
+
+    #[test]
+    fn resolve_explicit_overlay_in_worktree_returns_probe() {
+        assert_eq!(
+            cli_diff_overlay_root_resolve(true, false, Some(wt()), None),
+            Some(wt())
+        );
+    }
+
+    #[test]
+    fn resolve_env_on_in_worktree_returns_probe() {
+        assert_eq!(
+            cli_diff_overlay_root_resolve(false, false, Some(wt()), Some(true)),
+            Some(wt())
+        );
+    }
+
+    #[test]
+    fn resolve_non_worktree_default_is_none() {
+        assert_eq!(
+            cli_diff_overlay_root_resolve(false, false, None, None),
+            None
+        );
+    }
+
+    // ─── cli_diff_overlay_root (public wiring): force-off skips the probe ───────
+
+    #[test]
+    fn public_force_off_flag_returns_none() {
+        // `--no-overlay` short-circuits to None BEFORE probing the cwd, so the
+        // result is deterministic regardless of where the test binary runs (even
+        // from inside this worktree checkout). Pins the opted-out fast path.
+        let overlay = OverlayArgs {
+            no_overlay: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            cli_diff_overlay_root(&overlay, Path::new("/nonexistent/root")),
+            None
+        );
+    }
+
+    // ─── cli_parent_diff_root: out-of-tree worktree → main's root ───────────────
+
+    #[test]
+    fn parent_diff_root_non_worktree_is_unchanged() {
+        // A plain directory (no `.git`, no `.cqs`) is `NotWorktree` ⇒ root passes
+        // through untouched.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        assert_eq!(cli_parent_diff_root(dir.path()), dir.path());
+    }
+
+    #[test]
+    fn parent_diff_root_out_of_tree_worktree_resolves_main() {
+        // An out-of-tree worktree redirected to main's index: `find_project_root`
+        // returns the WORKTREE root, so parent-truth must resolve main's root — the
+        // subject the daemon diffs. Mirrors the `worktree_fixture` layout.
+        let holder = tempfile::TempDir::new().expect("tempdir");
+        let parent = holder.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir parent/src");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&parent)
+                .output()
+                .expect("git")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        std::fs::write(parent.join("src/lib.rs"), "fn a() {}\n").expect("write");
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@e.com"]);
+        git(&["config", "user.name", "T"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        // The parent has an index; the out-of-tree worktree does not (redirects).
+        std::fs::create_dir_all(parent.join(".cqs")).expect("mkdir parent/.cqs");
+        let wt = holder.path().join("wt");
+        git(&["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()]);
+
+        let main_root = dunce::canonicalize(&parent).unwrap_or(parent);
+        // `cli_parent_diff_root(worktree_root)` must return main's root, NOT the
+        // worktree — the out-of-tree divergence step 4 closes.
+        assert_eq!(cli_parent_diff_root(&wt), main_root);
+    }
 }
 
 #[cfg(test)]

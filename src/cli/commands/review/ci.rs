@@ -110,6 +110,7 @@ pub(crate) fn cmd_ci(
     format: &crate::cli::OutputFormat,
     gate: &crate::cli::GateThreshold,
     max_tokens: Option<usize>,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_ci", ?format, ?gate, ?max_tokens).entered();
 
@@ -127,15 +128,18 @@ pub(crate) fn cmd_ci(
     let root = &ctx.root;
 
     // Get diff text — adapter owns I/O (CLI supports stdin; daemon git only). The
-    // `--stdin` branch stays byte-identical; the non-stdin branch diffs the
-    // worktree when this invocation lives in one (see `cmd_review`).
+    // `--stdin` branch stays byte-identical; the non-stdin branch resolves the diff
+    // subject through the overlay tri-state (worktree when active, parent-truth on
+    // `--no-overlay`), matching the daemon — see `cmd_review`.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
-        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
+        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
+        crate::cli::commands::run_git_diff_for_overlay(
+            base,
+            &crate::cli::commands::cli_parent_diff_root(root),
+            overlay_root.as_deref(),
+        )?
     };
 
     // The gate `passed` flag drives the process exit code below, so both

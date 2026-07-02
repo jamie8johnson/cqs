@@ -80,6 +80,7 @@ pub(crate) fn cmd_affected(
     base: Option<&str>,
     from_stdin: bool,
     json: bool,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_affected", from_stdin).entered();
     let store = &ctx.store;
@@ -89,15 +90,18 @@ pub(crate) fn cmd_affected(
     // (`git diff main | cqs affected --stdin --json`) without re-shelling
     // git. Mirrors the path in `cmd_review`/`cmd_ci`/`cmd_impact_diff`.
     // Adapter owns I/O. `affected` is CLI-only (no daemon dispatcher), so the
-    // non-stdin branch diffs the worktree directly when this invocation lives in
-    // one — same worktree-subject fix the review/ci/impact-diff siblings apply.
+    // non-stdin branch resolves the diff subject through the overlay tri-state:
+    // worktree when active, parent-truth on `--no-overlay` — same subject fix the
+    // review/ci/impact-diff siblings apply.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
-        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
+        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
+        crate::cli::commands::run_git_diff_for_overlay(
+            base,
+            &crate::cli::commands::cli_parent_diff_root(root),
+            overlay_root.as_deref(),
+        )?
     };
 
     if json {
