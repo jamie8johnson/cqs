@@ -89,23 +89,11 @@ define_patterns! {
 impl Pattern {
     /// Check if a code chunk matches this pattern.
     ///
-    /// If the language provides a specific structural matcher for this pattern
-    /// (via `LanguageDef::structural_matchers`), uses that. Otherwise falls
-    /// through to the generic heuristics.
+    /// The marker-driven patterns (ErrorSwallow/Async/Mutex/Unsafe) consult the
+    /// language's per-language marker slice (`LanguageDef::error_swallow_patterns`
+    /// etc.), falling back to the generic markers when the language sets none or
+    /// `language` is `None`. Builder/Recursion use structural heuristics.
     pub fn matches(&self, content: &str, name: &str, language: Option<Language>) -> bool {
-        // Check for language-specific matcher first
-        if let Some(lang) = language {
-            if let Some(matchers) = lang.def().structural_matchers {
-                let pattern_name = self.to_string();
-                for (matcher_name, matcher_fn) in matchers {
-                    if *matcher_name == pattern_name {
-                        return matcher_fn(content, name);
-                    }
-                }
-            }
-        }
-
-        // Fall through to generic heuristics
         match self {
             Self::Builder => matches_builder(content, name),
             Self::ErrorSwallow => matches_error_swallow(content, language),
@@ -411,12 +399,14 @@ mod tests {
     }
 
     #[test]
-    fn test_structural_matchers_fallback() {
-        // When no language-specific matcher exists, generic heuristics are used
+    fn test_marker_slice_generic_fallback() {
+        // A Some(language) whose per-language marker slice is empty falls
+        // through to the generic markers (the matches_any_marker fallback
+        // branch). Python defines no unsafe_markers, so Pattern::Unsafe uses
+        // GENERIC_UNSAFE_MARKERS.
         let pat = Pattern::Unsafe;
-        // Rust has no structural_matchers set (None), so it falls through
-        assert!(pat.matches("unsafe { ptr::read(p) }", "read_ptr", Some(Language::Rust)));
-        assert!(!pat.matches("fn safe() -> i32 { 42 }", "safe", Some(Language::Rust)));
+        assert!(pat.matches("x = unsafe_thing()", "read_ptr", Some(Language::Python)));
+        assert!(!pat.matches("def safe(): return 42", "safe", Some(Language::Python)));
     }
 
     #[test]
