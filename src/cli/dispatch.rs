@@ -574,30 +574,6 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     }
 
-    // `impact-diff` invoked from a worktree stays on the CLI path (same bypass
-    // shape as the `--stdin` gate above). The daemon `dispatch_impact_diff` has no
-    // worktree-overlay plumbing and acquires its diff from the served PARENT root,
-    // so forwarding a worktree-originated invocation would review the parent tree —
-    // disjoint from the lane's edits, the wrong subject. The CLI path's
-    // `cmd_impact_diff` acquires the diff from the worktree, so keeping it local is
-    // the correct-subject route.
-    if let Some(cmd) = cli.command.as_ref() {
-        if cmd.is_impact_diff() {
-            let resolved_root = find_project_root();
-            let from_worktree = std::env::current_dir()
-                .ok()
-                .and_then(|cwd| cqs::worktree::overlay_root(&cwd, &resolved_root))
-                .is_some();
-            if from_worktree {
-                tracing::debug!(
-                    cmd = cmd_label,
-                    "impact-diff from a worktree kept on CLI path: daemon diffs the parent root"
-                );
-                return Ok(None);
-            }
-        }
-    }
-
     let sock_path = super::daemon_socket_path(cqs_dir);
     if !sock_path.exists() {
         return Ok(None);
@@ -679,13 +655,13 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // Forwards for `search` (whole-result overlay), `scout` / `gather` /
     // `task` (seed-only overlay), `callers` / `callees` (full call-graph
     // overlay), `impact` (direct-callers-only overlay), `dead` (merged-graph
-    // overlay), `review` (direct-callers-only diff overlay), and `ci` (bundled
-    // review + dead overlay, composite `"callers-only"` marker), and only from
-    // an eligible worktree. The overlay flags live in two places: top-level
-    // `Cli.overlay`/`no_overlay` for the default `cqs "query"` search form, and
-    // on the subcommand's flattened `OverlayArgs` for the rest (so `cqs callers f
-    // --overlay` binds to the subcommand, not the top-level flag). We read the
-    // effective tri-state from whichever applies.
+    // overlay), `review` and `impact-diff` (direct-callers-only diff overlay),
+    // and `ci` (bundled review + dead overlay, composite `"callers-only"`
+    // marker), and only from an eligible worktree. The overlay flags live in two
+    // places: top-level `Cli.overlay`/`no_overlay` for the default `cqs "query"`
+    // search form, and on the subcommand's flattened `OverlayArgs` for the rest
+    // (so `cqs callers f --overlay` binds to the subcommand, not the top-level
+    // flag). We read the effective tri-state from whichever applies.
     //
     // Activation is the shared tri-state resolution (the default-on flip):
     // default-on requires eligibility (`overlay_root.is_some()`), so we resolve
@@ -712,9 +688,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             | "dead"
             | "review"
             | "ci"
+            | "impact-diff"
     ) {
         // Effective overlay tri-state: the subcommand's flattened flags for
-        // scout/gather/task/callers/callees/impact/dead/review/ci, else the
+        // scout/gather/task/callers/callees/impact/dead/review/ci/impact-diff, else the
         // top-level Cli flags (default search).
         let (flag_on, flag_off) = cli
             .command

@@ -480,14 +480,25 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     let base = args.base.as_deref();
     let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
 
-    // `dispatch_impact_diff` has NO worktree-overlay plumbing (impact-diff is not
-    // in the daemon overlay-forward list), so it acquires the diff from the served
-    // project (`ctx.root`), NOT the daemon's launch cwd. That is correct ONLY
-    // because the client keeps a worktree-originated `impact-diff` on the CLI path
-    // (dispatch.rs) — mirroring the `--stdin` gate — so this daemon handler never
-    // sees a worktree invocation whose parent diff would be the wrong subject.
-    // `None` overlay-root ⇒ diff `ctx.root`.
-    let diff_text = crate::cli::commands::run_git_diff_for_overlay(base, &ctx.root, None)?;
+    // See `dispatch_dead`: clear leftover per-thread overlay meta before any
+    // branch can return, so a reused daemon worker never leaks a prior query's
+    // `_meta.worktree_overlay`.
+    cqs::worktree_overlay::clear_overlay_meta();
+
+    // Resolve the worktree overlay FIRST, then acquire the diff from the SAME tree
+    // the overlay describes (mirroring `dispatch_review`): `run_git_diff_for_overlay`
+    // diffs `overlay.worktree_root` when present, else the served project
+    // (`ctx.root`). Order matters — the diff-tree must track the overlay-tree or the
+    // impact is a chimera (parent diff spliced with the worktree's caller-graph
+    // delta). The worktree root is registry-validated by
+    // `set_validated_overlay_request`, so git runs only in a vetted root; a `None`
+    // overlay ⇒ parent-truth, diffing `ctx.root` NOT the daemon's launch cwd.
+    let overlay = resolve_graph_overlay(ctx, &args.overlay)?;
+    let diff_text = crate::cli::commands::run_git_diff_for_overlay(
+        base,
+        &ctx.root,
+        overlay.as_ref().map(|o| o.worktree_root.as_path()),
+    )?;
     let hunks = cqs::parse_unified_diff(&diff_text);
 
     if hunks.is_empty() {
@@ -495,13 +506,37 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
         return Ok(cqs::diff_impact_empty_json());
     }
 
-    let changed = cqs::map_hunks_to_functions(&ctx.store(), &hunks);
+    let store = ctx.store();
+    let changed = cqs::map_hunks_to_functions(&store, &hunks);
     if changed.is_empty() {
         return Ok(cqs::diff_impact_empty_json());
     }
 
-    let result = cqs::analyze_diff_impact(&ctx.store(), changed, &ctx.root)?;
-    Ok(cqs::diff_impact_to_json(&result)?)
+    // Overlay-aware core: ONLY the direct `all_callers` section reflects the
+    // worktree delta; the affected-tests section (reverse-BFS over the parent call
+    // graph) stays parent-truth. The core needs the graph + test chunks preloaded
+    // (the same fetch the plain `analyze_diff_impact` does internally).
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    let (result, overlay_participated) = cqs::analyze_diff_impact_with_graph_overlay(
+        &store,
+        changed,
+        &graph,
+        &test_chunks,
+        &ctx.root,
+        overlay.as_deref(),
+    )?;
+    let mut value = cqs::diff_impact_to_json(&result)?;
+    if overlay_participated {
+        // The overlay changed the direct-callers section for this diff.
+        // `"callers-only"`, NOT `"full"`: the affected-tests section stays
+        // parent-truth, so claiming `"full"` would let a consumer mistake it for
+        // delta-aware. Gated on participation, not `overlay.is_some()`: a dirty
+        // worktree whose delta touches no caller of any changed function returns
+        // the parent impact untouched, NO marker.
+        super::attach_overlay_graph_meta_callers_only(&mut value);
+    }
+    Ok(value)
 }
 
 // Happy-path coverage for the call-graph batch dispatchers
@@ -812,6 +847,7 @@ mod tests {
         let args = ImpactDiffArgs {
             base: None,
             stdin: false,
+            overlay: Default::default(),
         };
         let _ = dispatch_impact_diff(&ctx.build_view(None), &args);
     }
@@ -3705,6 +3741,78 @@ mod tests {
         }
     }
 
+    /// Wire `args::ImpactDiffArgs` with default (inactive) overlay flags — the
+    /// overlay is injected via `set_test_overlay_override`, not the wire flags.
+    fn impact_diff_wire_args() -> ImpactDiffArgs {
+        ImpactDiffArgs {
+            base: None,
+            stdin: false,
+            overlay: Default::default(),
+        }
+    }
+
+    /// PRESENT: impact-diff's direct-callers section genuinely merges (a parent
+    /// caller of `target` is masked, a worktree caller is added) →
+    /// `_meta.overlay_graph = "callers-only"` (NOT "full": the affected-tests
+    /// section stays parent-truth). Mirrors the `review` marker test.
+    #[test]
+    fn dispatch_impact_diff_genuine_merge_carries_callers_only_marker() {
+        let repo = temp_git_repo_with_lib_edit();
+        // Store lives INSIDE the repo → `ctx.root` == repo, so `run_git_diff`
+        // diffs the repo without any chdir.
+        let ctx = parent_store_in(
+            repo.path(),
+            &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
+            &[("old_caller", "src/edited.rs", 1, "target")],
+        );
+        // One-tree marker-honesty test: re-point worktree_root at the test repo so
+        // the diff-acquisition helper (which diffs `overlay.worktree_root`) reads
+        // the tree that holds the edit.
+        let mut overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact_diff(&ctx.build_view(None), &impact_diff_wire_args())
+            .expect("dispatch_impact_diff");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("callers-only"),
+            "a real impact-diff direct-callers merge must claim overlay_graph=callers-only \
+             (NOT full — the affected-tests section is parent-truth): {json}"
+        );
+    }
+
+    /// ABSENT: an unrelated dirty file masks no caller of `target` → no
+    /// participation → marker ABSENT. RED under a naive `overlay.is_some()` gate.
+    #[test]
+    fn dispatch_impact_diff_unrelated_delta_no_marker() {
+        let repo = temp_git_repo_with_lib_edit();
+        let ctx = parent_store_in(
+            repo.path(),
+            &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
+            &[("the_caller", "src/stable.rs", 1, "target")],
+        );
+        let mut overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact_diff(&ctx.build_view(None), &impact_diff_wire_args())
+            .expect("dispatch_impact_diff");
+        assert_eq!(
+            overlay_graph_marker(&json),
+            None,
+            "an unrelated dirty file must leave impact-diff's marker absent: {json}"
+        );
+    }
+
     /// PRESENT: review's direct-callers section genuinely merges (a parent caller
     /// of `target` is masked, a worktree caller is added) → `_meta.overlay_graph =
     /// "callers-only"` (NOT "full": tests + risk-scoring stay parent-truth).
@@ -4274,6 +4382,31 @@ mod tests {
         assert!(
             names.iter().any(|n| n == "target"),
             "review must diff the worktree (which edits `target`), not the clean parent: {json}"
+        );
+    }
+
+    /// RED/GREEN mirror for `impact-diff`: with an active overlay,
+    /// `dispatch_impact_diff` must acquire the diff from `overlay.worktree_root`
+    /// (the worktree, holding the lane's edit), NOT ctx.root (the CLEAN served
+    /// parent). Pre-fix (handler passes `None` worktree_root) the parent diff is
+    /// empty → `changed_functions == []`; post-fix the impact names the lane's
+    /// `target`.
+    #[test]
+    fn dispatch_impact_diff_diffs_worktree_not_parent() {
+        let (_holder, parent, wt) = two_tree_repo();
+        let ctx = parent_store_in(&parent, &[("src/lib.rs", "target")], &[]);
+        let mut overlay = overlay_with_edges(&[("src/lib.rs", "target")], &[], &["src/lib.rs"]);
+        overlay.worktree_root = wt.clone();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = dispatch_impact_diff(&ctx.build_view(None), &impact_diff_wire_args())
+            .expect("dispatch_impact_diff");
+        // `changed_function_names` reads the top-level `changed_functions` array,
+        // which `DiffImpactResult` and `ReviewOutput` share.
+        let names = changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "target"),
+            "impact-diff must diff the worktree (which edits `target`), not the clean parent: {json}"
         );
     }
 

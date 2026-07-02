@@ -476,16 +476,18 @@ pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
                 output: text_json(),
             }
         }
-        // `impact-diff` exposes ONLY `base` (the git ref); the wire core omits
+        // `impact-diff` exposes `base` (the git ref) plus the worktree-overlay
+        // tri-state keys, which ride as top-level wire keys read by
+        // `overlay_from_args` (mirroring `review` / `ci`). The wire core omits
         // `--stdin` (the daemon has no agent stdin), so the arm forces
-        // `stdin: false`. `dispatch_impact_diff` ignores `stdin` anyway (it always
-        // reads via `run_git_diff`), so the read-only diff+impact compute is the
-        // only reachable behavior. The JSON OUTPUT is the separate
-        // `diff_impact_to_json` shape, unchanged by this input-only core.
+        // `stdin: false`; `dispatch_impact_diff` acquires the diff from the
+        // overlay's worktree root when an overlay is active, else `ctx.root`. The
+        // JSON OUTPUT is the separate `diff_impact_to_json` shape, unchanged by
+        // this input-only core.
         "impact-diff" => {
             let c: ImpactDiffCoreArgs = parse_core(command, arguments)?;
             BatchCmd::ImpactDiff {
-                args: impact_diff_args_from_core(c),
+                args: impact_diff_args_from_core(c, overlay_from_args(arguments)),
                 output: text_json(),
             }
         }
@@ -713,11 +715,15 @@ fn impact_args_from_core(c: ImpactCoreArgs, overlay: OverlayArgs) -> ImpactArgs 
 
 /// Build the argv-side `ImpactDiffArgs` from the wire core. `stdin` is WITHHELD
 /// from the wire (the daemon has no agent stdin), so it is forced `false` — the
-/// same by-absence withhold as `cqs_index`'s `--force`. Only `base` round-trips.
-fn impact_diff_args_from_core(c: ImpactDiffCoreArgs) -> ImpactDiffArgs {
+/// same by-absence withhold as `cqs_index`'s `--force`. `base` round-trips; the
+/// worktree-overlay tri-state rides as top-level wire keys read by
+/// `overlay_from_args` (the agent passes `overlay_root` explicitly), mirroring
+/// the `review` / `ci` arms.
+fn impact_diff_args_from_core(c: ImpactDiffCoreArgs, overlay: OverlayArgs) -> ImpactDiffArgs {
     ImpactDiffArgs {
         base: c.base,
         stdin: false,
+        overlay,
     }
 }
 

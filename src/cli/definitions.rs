@@ -1150,29 +1150,16 @@ impl Commands {
         }
     }
 
-    /// `true` when this invocation is `impact-diff`.
-    ///
-    /// `impact-diff` is daemon-marked but — unlike `review` / `ci` — carries NO
-    /// worktree-overlay plumbing (it is absent from the daemon overlay-forward
-    /// list). The daemon `dispatch_impact_diff` therefore always diffs the served
-    /// PARENT root; forwarding a worktree-originated invocation would review the
-    /// wrong tree (the parent working tree, disjoint from the lane's edits). The
-    /// dispatch-forward gate uses this to keep a worktree `impact-diff` on the CLI
-    /// path, where `cmd_impact_diff` diffs the worktree — the same bypass shape the
-    /// `--stdin` and text-mode invocations use.
-    pub(crate) fn is_impact_diff(&self) -> bool {
-        matches!(self, Commands::ImpactDiff { .. })
-    }
-
     /// The worktree-overlay tri-state `(overlay, no_overlay)` for the
     /// overlay-capable subcommands — the seed-overlaid graph-adjacent commands
     /// (`scout` / `gather` / `task`, Part A) plus the call-graph commands
-    /// (`callers` / `callees`, #1858 Part B) — or `None` for every other
-    /// command. The `search` overlay flags live on the top-level `Cli` (the
-    /// default `cqs "query"` form), so the dispatch-forward path reads those
-    /// directly; this accessor covers only the subcommand-bound overlays.
-    /// Returns the raw flags — the caller folds them through
-    /// `resolve_overlay_active` with worktree eligibility.
+    /// (`callers` / `callees` / `impact` / `dead`) and the diff-overlay commands
+    /// (`review` / `ci` / `impact-diff`) — or `None` for every other command. The
+    /// `search` overlay flags live on the top-level `Cli` (the default `cqs
+    /// "query"` form), so the dispatch-forward path reads those directly; this
+    /// accessor covers only the subcommand-bound overlays. Returns the raw flags —
+    /// the caller folds them through `resolve_overlay_active` with worktree
+    /// eligibility.
     pub(crate) fn overlay_tristate(&self) -> Option<(bool, bool)> {
         match self {
             Commands::Scout { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
@@ -1184,6 +1171,9 @@ impl Commands {
             Commands::Dead { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Review { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
             Commands::Ci { args, .. } => Some((args.overlay.overlay, args.overlay.no_overlay)),
+            Commands::ImpactDiff { args, .. } => {
+                Some((args.overlay.overlay, args.overlay.no_overlay))
+            }
             _ => None,
         }
     }
@@ -1536,6 +1526,22 @@ mod tests {
             Some((false, true)),
             "review: overlay_tristate must report --no-overlay"
         );
+        // `impact-diff` takes no positional (diff via --base/--stdin) but is
+        // overlay-capable (direct-callers diff overlay, mirroring `review`).
+        let impact_diff_on = Cli::try_parse_from(["cqs", "impact-diff", "--overlay"])
+            .unwrap_or_else(|e| panic!("impact-diff --overlay must parse: {e}"));
+        assert_eq!(
+            impact_diff_on.command.as_ref().unwrap().overlay_tristate(),
+            Some((true, false)),
+            "impact-diff: overlay_tristate must report the subcommand flags"
+        );
+        let impact_diff_off = Cli::try_parse_from(["cqs", "impact-diff", "--no-overlay"])
+            .unwrap_or_else(|e| panic!("impact-diff --no-overlay must parse: {e}"));
+        assert_eq!(
+            impact_diff_off.command.as_ref().unwrap().overlay_tristate(),
+            Some((false, true)),
+            "impact-diff: overlay_tristate must report --no-overlay"
+        );
         // A non-overlay command has no tri-state.
         let cli = Cli::try_parse_from(["cqs", "trace", "a", "b"]).unwrap();
         assert_eq!(cli.command.unwrap().overlay_tristate(), None);
@@ -1669,35 +1675,6 @@ mod tests {
         match cli.command {
             Some(Commands::Affected { stdin, .. }) => assert!(stdin),
             _ => panic!("expected Affected command"),
-        }
-    }
-
-    /// `Commands::is_impact_diff()` classifies ONLY `impact-diff`. The
-    /// daemon-forward gate composes this predicate with a worktree probe to keep a
-    /// worktree-originated `impact-diff` on the CLI path (the daemon handler has no
-    /// overlay plumbing and would diff the served parent tree — the wrong subject).
-    /// A false positive would strand review/ci on the CLI; a false negative would
-    /// re-expose the wrong-tree bug for impact-diff.
-    #[test]
-    fn is_impact_diff_classifies_only_impact_diff() {
-        use clap::Parser;
-        let yes = Cli::try_parse_from(["cqs", "impact-diff"]).unwrap();
-        assert!(
-            yes.command.unwrap().is_impact_diff(),
-            "impact-diff must classify as is_impact_diff"
-        );
-        for argv in [
-            vec!["cqs", "review"],
-            vec!["cqs", "ci"],
-            vec!["cqs", "affected"],
-            vec!["cqs", "impact", "foo"],
-            vec!["cqs", "scout", "foo"],
-        ] {
-            let cli = Cli::try_parse_from(&argv).unwrap();
-            assert!(
-                !cli.command.unwrap().is_impact_diff(),
-                "is_impact_diff must be false for {argv:?}"
-            );
         }
     }
 
