@@ -243,6 +243,10 @@ pub(crate) struct GatherContext<'a> {
     pub max_tokens: Option<usize>,
     pub ref_name: Option<&'a str>,
     pub json: bool,
+    /// Worktree-overlay tri-state (`--overlay` / `--no-overlay`) for the seed
+    /// search, threaded to the CLI-direct `skipped-no-daemon` degradation marker.
+    pub overlay_on: bool,
+    pub overlay_off: bool,
 }
 
 pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
@@ -268,6 +272,21 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
     let root = &ctx.root;
     let cqs_dir = &ctx.cqs_dir;
     let embedder = ctx.embedder()?;
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Gather's
+    // seed overlay builds daemon-side only (phase 1); reaching this in-process CLI
+    // path means no daemon answered, so the seed serves the parent index. Mark the
+    // envelope `skipped-no-daemon` when the overlay was wanted-and-skipped. Only
+    // the PROJECT seed is overlay-capable — a `--ref` cross-index gather seeds from
+    // the reference (the overlay never applies, daemon or not), so it emits no
+    // marker, matching the daemon path's `overlaid = false` for `--ref`.
+    if ref_name.is_none() {
+        let _ = crate::cli::commands::mark_cli_direct_overlay_skip(
+            root,
+            gctx.overlay_on,
+            gctx.overlay_off,
+        );
+    }
 
     let json_overhead = if json {
         crate::cli::commands::JSON_OVERHEAD_PER_RESULT
@@ -296,7 +315,8 @@ pub(crate) fn cmd_gather(gctx: &GatherContext<'_>) -> Result<()> {
             &args,
             Some(&ref_idx),
             index.as_deref(),
-            // CLI surface serves the parent index (overlay is daemon-only, ).
+            // Cross-index gather seeds from the reference; the overlay never
+            // applies (parent-truth in Part A), so no seed overlay here.
             None,
         )?
     } else {

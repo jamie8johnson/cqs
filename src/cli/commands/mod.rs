@@ -55,6 +55,7 @@ pub(crate) use search::cmd_related;
 pub(crate) use search::cmd_scout;
 pub(crate) use search::cmd_similar;
 pub(crate) use search::cmd_where;
+pub(crate) use search::mark_cli_direct_overlay_skip;
 pub(crate) use search::GatherContext;
 
 // -- graph --

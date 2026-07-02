@@ -252,6 +252,57 @@ pub(crate) fn overlay_explicitly_requested(flag_on: bool) -> bool {
     flag_on || overlay_env_signal() == Some(true)
 }
 
+/// CLI-direct worktree-overlay degradation marker (result-trust §3, plan §8),
+/// shared by `search` (whole-result overlay) and the seed-overlay family
+/// (`scout` / `gather` / `task`). All build their overlay daemon-side only
+/// (phase 1); a CLI-direct invocation (no daemon answered) cannot build one, so
+/// it serves the parent index and must say so.
+///
+/// Resets any per-thread overlay meta left over from a prior in-process query
+/// (chat REPL / batch stdin), then — when the overlay would be active for THIS
+/// eligible worktree (the shared [`resolve_overlay_active`] tri-state over the
+/// injected `flag_on` / `flag_off`) — records
+/// [`cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon`] so the JSON envelope
+/// surfaces `_meta.worktree_overlay = "skipped-no-daemon"`. The agent then knows
+/// results reflect the parent index, not the worktree.
+///
+/// Chattiness (plan §8): an EXPLICIT request the daemon couldn't honor warns; a
+/// DEFAULT activation degrades quietly at debug level (a default-on feature must
+/// not spew a warning on every worktree query when the daemon is down). Both set
+/// the meta.
+///
+/// Fires ONLY when the overlay was wanted-and-skipped: opt-out (`--no-overlay` /
+/// `CQS_WORKTREE_OVERLAY=0`) and non-worktree runs record no meta, so the
+/// skip-when-empty `_meta` stays keyless on those paths. Returns whether the CWD
+/// is an overlay-eligible worktree so `search` can reuse it for
+/// `QueryArgs::from_cli`; seed-family callers ignore the return.
+pub(crate) fn mark_cli_direct_overlay_skip(
+    root: &std::path::Path,
+    flag_on: bool,
+    flag_off: bool,
+) -> bool {
+    let overlay_eligible = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root))
+        .is_some();
+    cqs::worktree_overlay::clear_overlay_meta();
+    if overlay_eligible && resolve_overlay_active(flag_on, flag_off, overlay_eligible) {
+        if overlay_explicitly_requested(flag_on) {
+            tracing::warn!(
+                "overlay skipped: daemon not running (results reflect the parent index)"
+            );
+        } else {
+            tracing::debug!(
+                "overlay default-on in worktree skipped: daemon not running (results reflect the parent index)"
+            );
+        }
+        cqs::worktree_overlay::set_overlay_meta(
+            cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon,
+        );
+    }
+    overlay_eligible
+}
+
 impl QueryArgs {
     /// Build `QueryArgs` from the top-level CLI struct, resolving the
     /// `CQS_FORCE_BASE_INDEX` env override and the format-dependent JSON
@@ -1435,45 +1486,16 @@ pub(crate) fn cmd_query(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Overlay eligibility: `Some(worktree_root)` iff this CWD is an
-    // overlay-eligible worktree (nested or out-of-tree) whose reads redirect to
-    // the parent index. Computed once and reused for the activation decision and
-    // the no-daemon degradation below.
-    let overlay_eligible = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root))
-        .is_some();
-
-    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Reset
-    // any per-thread overlay meta left over from a prior in-process search
-    // (chat REPL / batch stdin), then — when an overlay would be active for an
-    // eligible worktree but we reached the in-process CLI path (no daemon
-    // answered; phase 1 builds overlays daemon-side only) — mark the envelope so
-    // the agent knows results reflect the parent index, not the worktree. The
-    // CLI `SearchCtx::overlay()` returns `None`, so no overlay merge happens
-    // here; this is purely the honest-skip signal.
-    //
-    // Chattiness (plan §8, the default-on flip): an EXPLICIT request the
-    // daemon couldn't honor warns (the agent asked — tell them it didn't
-    // happen). A DEFAULT activation (default-on in a worktree, no explicit flag)
-    // degrades QUIETLY at debug level — a default-on feature must not spew a
-    // warning on every worktree query when the daemon is down. Both still set
-    // `SkippedNoDaemon` so JSON consumers can see it either way.
-    cqs::worktree_overlay::clear_overlay_meta();
-    if overlay_eligible && resolve_overlay_active(cli.overlay, cli.no_overlay, overlay_eligible) {
-        if overlay_explicitly_requested(cli.overlay) {
-            tracing::warn!(
-                "overlay skipped: daemon not running (results reflect the parent index)"
-            );
-        } else {
-            tracing::debug!(
-                "overlay default-on in worktree skipped: daemon not running (results reflect the parent index)"
-            );
-        }
-        cqs::worktree_overlay::set_overlay_meta(
-            cqs::worktree_overlay::OverlayMeta::SkippedNoDaemon,
-        );
-    }
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). When an
+    // overlay would be active for this eligible worktree but we reached the
+    // in-process CLI path (no daemon answered; phase 1 builds overlays daemon-side
+    // only), mark the envelope so the agent knows results reflect the parent
+    // index, not the worktree. The CLI `SearchCtx::overlay()` returns `None`, so
+    // no overlay merge happens here — this is purely the honest-skip signal.
+    // Shared with the seed family (`scout` / `gather` / `task`) so the two
+    // surfaces cannot diverge; the return is the worktree eligibility reused by
+    // the `QueryArgs::from_cli` overlay-active resolution below.
+    let overlay_eligible = mark_cli_direct_overlay_skip(root, cli.overlay, cli.no_overlay);
 
     // Name-only mode: search by function/struct name, skip embedding entirely.
     if cli.name_only {

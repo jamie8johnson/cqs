@@ -13,7 +13,7 @@ pub(crate) mod where_cmd;
 pub(crate) use gather::{build_gather_output, cmd_gather, GatherContext};
 pub(crate) use neighbors::cmd_neighbors;
 pub(crate) use onboard::cmd_onboard;
-pub(crate) use query::cmd_query;
+pub(crate) use query::{cmd_query, mark_cli_direct_overlay_skip};
 pub(crate) use related::{build_related_output, cmd_related};
 pub(crate) use scout::cmd_scout;
 pub(crate) use similar::cmd_similar;

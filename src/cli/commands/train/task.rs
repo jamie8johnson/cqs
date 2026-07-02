@@ -351,6 +351,7 @@ fn waterfall_placement() -> f64 {
     waterfall_weight("PLACEMENT", WATERFALL_PLACEMENT_DEFAULT)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_task(
     ctx: &crate::cli::CommandContext<'_, cqs::store::ReadOnly>,
     description: &str,
@@ -358,12 +359,21 @@ pub(crate) fn cmd_task(
     json: bool,
     max_tokens: Option<usize>,
     brief: bool,
+    overlay_on: bool,
+    overlay_off: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_task", ?max_tokens, brief).entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, crate::cli::PLACEMENT_LIMIT_CAP);
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Task's
+    // scout-seed overlay builds daemon-side only (phase 1); reaching this
+    // in-process CLI path means no daemon answered, so the seed serves the parent
+    // index. Mark the envelope `skipped-no-daemon` when the overlay was
+    // wanted-and-skipped — the shared helper `search` uses.
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(root, overlay_on, overlay_off);
 
     let result = task(store, embedder, description, root, limit)?;
 
