@@ -1877,3 +1877,11 @@ mentions = [
     "evals",
     "release",
 ]
+
+[[note]]
+sentiment = 1.0
+text = "The manifest-generation HNSW scheme survived its first production migration cleanly: both indexes converted (gen numbering advanced through a --force), legacy files GC'd, daemon healthy, and the freshness gate ran a release eval with --require-fresh for the first time since the wedge fix. The 27-PR day's pattern held: investigator brief -> lane -> fable review -> orthogonal audits; reviews caught 5 substantive defects the lanes' green gates missed (ordering pin, changelog clobber, live-WAL-tail cell, model-show sizing straggler, impact kind variant)."
+mentions = [
+    "src/hnsw/persist.rs",
+    "release",
+]
