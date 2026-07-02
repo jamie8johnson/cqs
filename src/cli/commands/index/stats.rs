@@ -171,6 +171,11 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
         None
     };
 
+    // Resolve the current HNSW generation's artifact paths so the graph/data
+    // size fields report the live generation (`index.gen<N>.hnsw.*`), not a
+    // fixed name that no longer exists.
+    let hnsw_artifacts = HnswIndex::artifact_paths(cqs_dir, "index");
+
     Ok(StatsOutput {
         total_chunks: total_chunks as usize,
         total_files: stats.total_files as usize,
@@ -199,8 +204,12 @@ pub(crate) fn build_stats<Mode>(store: &cqs::Store<Mode>, cqs_dir: &Path) -> Res
         splade_model: store.stored_splade_model(),
         splade_index_size_bytes: file_size_bytes(&cqs_dir.join(SPLADE_INDEX_FILENAME)),
         splade_coverage_pct,
-        hnsw_data_bytes: file_size_bytes(&cqs_dir.join("index.hnsw.data")),
-        hnsw_graph_bytes: file_size_bytes(&cqs_dir.join("index.hnsw.graph")),
+        hnsw_data_bytes: hnsw_artifacts
+            .as_ref()
+            .and_then(|a| file_size_bytes(&a.data)),
+        hnsw_graph_bytes: hnsw_artifacts
+            .as_ref()
+            .and_then(|a| file_size_bytes(&a.graph)),
         cagra_size_bytes: file_size_bytes(&cqs_dir.join("index.cagra")),
         llm_summary_count,
         llm_summary_chunks_covered,

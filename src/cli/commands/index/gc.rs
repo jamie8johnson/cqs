@@ -120,24 +120,13 @@ pub(crate) fn gc_core(
         store
             .set_hnsw_dirty(HnswKind::Enriched, true)
             .context("Failed to mark enriched HNSW dirty before GC rebuild")?;
-        let hnsw_path = cqs_dir.join("index.hnsw.graph");
-        if hnsw_path.exists() {
-            for file_name in cqs::hnsw::HNSW_ALL_EXTENSIONS
-                .iter()
-                .map(|ext| format!("index.{ext}"))
-            {
-                let path = cqs_dir.join(file_name);
-                if let Err(e) = std::fs::remove_file(&path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "Failed to delete stale HNSW file during GC"
-                        );
-                    }
-                }
-            }
-            tracing::debug!("Deleted stale HNSW before rebuild");
+        // Purge the stale HNSW (manifest + every generation's artifacts) so
+        // concurrent searches fall back to brute-force during the rebuild
+        // window rather than returning orphan IDs from the old index.
+        if let Err(e) = cqs::HnswIndex::purge_artifacts(cqs_dir, "index") {
+            tracing::warn!(error = %e, "Failed to purge stale HNSW before GC rebuild");
+        } else {
+            tracing::debug!("Purged stale HNSW before rebuild");
         }
         match build_hnsw_index(store, cqs_dir)? {
             Some((total, cqs::hnsw::SaveOutcome::Saved)) => {

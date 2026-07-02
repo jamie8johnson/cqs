@@ -52,68 +52,101 @@ fn warn_wsl_advisory_locking(dir: &Path) {
     }
 }
 
-/// Core HNSW file extensions (graph, data, IDs, meta header). These are the
-/// extensions allowed in the checksum manifest. `hnsw.meta` is absent from
-/// legacy (pre-#1351) indexes — the load path treats a missing meta as
-/// cosine, which is what every legacy index is.
-const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.meta"];
+/// Per-generation HNSW artifact extensions. Each successful save writes a
+/// fresh generation `{basename}.gen<N>.hnsw.{graph,data,ids}`; the manifest
+/// pointer flip (see [`HnswManifest`]) is the single atomic commit point.
+const HNSW_ARTIFACT_EXTS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
-/// All HNSW file extensions including checksum (for cleanup/deletion).
-/// NOTE: Keep in sync with HNSW_EXTENSIONS above — first 4 elements must match.
-pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
+/// Legacy pre-manifest sidecar extensions. A fixed-name five-file set
+/// (`{basename}.hnsw.{graph,data,ids,meta,checksum}`) is what every index
+/// built before the manifest-generation scheme carries. HNSW is derived
+/// data, so the loader treats a legacy set (no manifest) as absent and lets
+/// the rebuild path fire; the first successful manifest-format save deletes
+/// these files under the exclusive lock.
+const LEGACY_HNSW_EXTENSIONS: &[&str] = &[
     "hnsw.graph",
     "hnsw.data",
     "hnsw.ids",
     "hnsw.meta",
     "hnsw.checksum",
-    "hnsw.lock",
 ];
 
-/// Magic string for the `{basename}.hnsw.meta` JSON header. A
-/// mismatch is a typed load error, not a silent default.
-const HNSW_META_MAGIC: &str = "CQSHNSW";
+/// Magic string for the `{basename}.hnsw.manifest` JSON pointer. A mismatch
+/// is a typed load error, not a silent default.
+const HNSW_MANIFEST_MAGIC: &str = "CQSHNSWMANIFEST";
 
-/// Version of the `.hnsw.meta` header. Bump when adding fields an older
-/// binary must not misinterpret; the load path rejects versions newer than
-/// this binary understands.
-const HNSW_META_VERSION: u32 = 1;
+/// Version of the manifest schema. Bump when adding fields an older binary
+/// must not misinterpret; the load path rejects versions newer than this
+/// binary understands.
+const HNSW_MANIFEST_VERSION: u32 = 1;
 
-/// JSON header persisted next to the HNSW graph/data/ids files.
+/// The manifest pointer persisted next to the generation artifact files.
 ///
-/// Carries index-level configuration that the raw hnsw_rs dump does not
-/// expose up front — the distance metric, which the load path
-/// needs *before* it can instantiate the right `Hnsw<f32, D>` type
-/// parameter — plus the store-state stamp the sidecar contents reflect.
-/// Mirrors the CAGRA `.cagra.meta` sidecar pattern (`src/cagra.rs`).
+/// This is the single atomic commit point of a save: `atomic_replace` of the
+/// manifest either fully lands (making generation `N` current) or leaves the
+/// previous manifest in place — never a torn state. It carries everything the
+/// load path needs before it can instantiate the right `Hnsw<f32, D>`:
+///
+/// - `generation`: which `{basename}.gen<N>.hnsw.*` artifact set is current.
+/// - `metric`: the distance metric ([`DistanceMetric::as_str`]), needed
+///   before the graph type parameter can be chosen.
+/// - the store-state stamp (`chunk_count` + `splade_generation`) the artifacts
+///   reflect — the dirty-flag self-heal discriminator.
+/// - `checksums`: blake3 of the current generation's graph/data/ids files.
+///
+/// # Integrity model
+///
+/// Artifact corruption (bit rot, truncation) is caught by the inline
+/// `checksums`. The manifest itself is NOT self-checksummed: `atomic_replace`
+/// rules out partial writes, and a manifest that fails JSON validation falls
+/// into the rebuild path rather than being trusted. Deliberate tampering is
+/// out of the documented threat model (see [`verify_hnsw_checksums`]) — an
+/// editor who can rewrite the manifest can already rewrite the artifacts and
+/// their recorded checksums. A tampered `metric` is still caught on load:
+/// hnsw_rs cross-checks the distance name embedded in the graph file.
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
-struct HnswMeta {
-    /// Format magic. See [`HNSW_META_MAGIC`].
+struct HnswManifest {
+    /// Format magic. See [`HNSW_MANIFEST_MAGIC`].
     magic: String,
-    /// Header schema version. See [`HNSW_META_VERSION`].
+    /// Manifest schema version. See [`HNSW_MANIFEST_VERSION`].
     version: u32,
+    /// Current generation: the `{basename}.gen<N>.hnsw.*` set this manifest
+    /// points at.
+    generation: u64,
     /// [`DistanceMetric::as_str`] value the index was built with.
     metric: String,
-    /// `Store::chunk_count()` of the store state this index was built from.
-    /// `None` on sidecars written before the stamp existed; clean (non-dirty)
-    /// loads of such sidecars keep working, but the dirty-flag self-heal
-    /// treats a missing stamp as a mismatch — a stamp-less sidecar cannot
-    /// prove it postdates the last chunk write.
+    /// `Store::chunk_count()` of the store state this generation was built
+    /// from. `None` on a store-less `save()`; a stamp-less manifest cannot
+    /// prove it postdates the last chunk write, so the dirty-flag self-heal
+    /// treats it as a mismatch. Clean (non-dirty) loads are unaffected.
     #[serde(default)]
     chunk_count: Option<u64>,
-    /// `Store::splade_generation()` of the store state this index was built
-    /// from. The counter is bumped by every sparse-vector write batch, by
-    /// the chunk-delete trigger, and by dense-embedding rewrites
+    /// `Store::splade_generation()` of the store state this generation was
+    /// built from. The counter is bumped by every sparse-vector write batch,
+    /// by the chunk-delete trigger, and by dense-embedding rewrites
     /// (`update_embeddings_with_hashes_batch`, the enrichment pass), so it
     /// advances with every vector-affecting write the index pipeline
     /// performs. Same `None` semantics as `chunk_count`.
     #[serde(default)]
     splade_generation: Option<u64>,
+    /// blake3 checksums of the current generation's artifact files.
+    checksums: ManifestChecksums,
 }
 
-impl HnswMeta {
-    /// The store-state stamp recorded at save, if this sidecar has one.
+/// blake3 hex checksums of a generation's three artifact files, inlined into
+/// the manifest so the read path detects artifact corruption without a
+/// separate checksum sidecar.
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Default)]
+struct ManifestChecksums {
+    graph: String,
+    data: String,
+    ids: String,
+}
+
+impl HnswManifest {
+    /// The store-state stamp recorded at save, if this manifest has one.
     /// Both fields are written together; a half-present pair (hand-edited
-    /// meta) counts as no stamp.
+    /// manifest) counts as no stamp.
     fn store_stamp(&self) -> Option<StoreStamp> {
         match (self.chunk_count, self.splade_generation) {
             (Some(chunk_count), Some(splade_generation)) => Some(StoreStamp {
@@ -123,6 +156,149 @@ impl HnswMeta {
             _ => None,
         }
     }
+
+    /// The recorded checksum for one of the three artifact extensions.
+    fn checksum_for(&self, ext: &str) -> Option<&str> {
+        match ext {
+            "hnsw.graph" => Some(&self.checksums.graph),
+            "hnsw.data" => Some(&self.checksums.data),
+            "hnsw.ids" => Some(&self.checksums.ids),
+            _ => None,
+        }
+    }
+}
+
+/// The hnsw_rs basename for a given generation. The library's `file_dump` /
+/// `HnswIo::new` append `.hnsw.graph` / `.hnsw.data`, so a generation
+/// basename of `index.gen42` yields `index.gen42.hnsw.graph` on both sides.
+fn gen_basename(basename: &str, generation: u64) -> String {
+    format!("{basename}.gen{generation}")
+}
+
+/// Path of the manifest pointer for `basename`.
+fn manifest_path(dir: &Path, basename: &str) -> std::path::PathBuf {
+    dir.join(format!("{basename}.hnsw.manifest"))
+}
+
+/// Extract the generation number from an artifact filename, or `None` if the
+/// name is not a `{basename}.gen<N>.hnsw.<ext>` artifact for THIS basename.
+/// The basename guard keeps `index` and `index_base` artifacts (which share a
+/// directory) from being mistaken for each other.
+fn parse_generation(name: &str, basename: &str) -> Option<u64> {
+    let rest = name.strip_prefix(&format!("{basename}.gen"))?;
+    let digits = rest.split(".hnsw.").next()?;
+    digits.parse::<u64>().ok()
+}
+
+/// Highest generation number present among `basename`'s artifact files on
+/// disk, ignoring the manifest. A fresh save picks a generation above this so
+/// it never reuses a number an orphaned (crashed-save) artifact still holds.
+fn max_disk_generation(dir: &Path, basename: &str) -> Option<u64> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut max: Option<u64> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(generation) = parse_generation(&name, basename) {
+            max = Some(max.map_or(generation, |m| m.max(generation)));
+        }
+    }
+    max
+}
+
+/// blake3 hex of a file's contents, streamed so the whole file never sits in
+/// memory at once.
+fn hash_file(path: &Path) -> Result<String, HnswError> {
+    let file = std::fs::File::open(path).map_err(|e| {
+        HnswError::Internal(format!(
+            "Failed to open {} for checksum: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file).map_err(|e| {
+        HnswError::Internal(format!(
+            "Failed to read {} for checksum: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Best-effort fsync of a directory so recently created / renamed entries are
+/// durable against power loss. A no-op on platforms that don't support opening
+/// a directory for fsync (Windows journals renames in its own metadata).
+fn fsync_dir(dir: &Path) {
+    #[cfg(unix)]
+    match std::fs::File::open(dir) {
+        Ok(f) => {
+            if let Err(e) = f.sync_all() {
+                tracing::debug!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "fsync of HNSW directory failed (non-fatal)"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                dir = %dir.display(),
+                "could not open HNSW directory for fsync"
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// Remove every generation artifact for `basename` except `keep_gen`, plus any
+/// legacy fixed-name sidecars and `.bak` debris. Must run under the exclusive
+/// save lock (no concurrent saver can be mid-flight writing a generation).
+/// Best-effort: a failed unlink is logged, not fatal — the next save GCs it.
+fn gc_stale_generations(dir: &Path, basename: &str, keep_gen: u64) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(generation) = parse_generation(&name, basename) {
+                if generation != keep_gen {
+                    if let Err(e) = std::fs::remove_file(entry.path()) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            tracing::debug!(
+                                path = %entry.path().display(),
+                                error = %e,
+                                "Failed to GC stale HNSW generation artifact"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for ext in LEGACY_HNSW_EXTENSIONS {
+        let _ = std::fs::remove_file(dir.join(format!("{}.{}", basename, ext)));
+        let _ = std::fs::remove_file(dir.join(format!("{}.{}.bak", basename, ext)));
+    }
+}
+
+/// Resolved on-disk paths for a persisted HNSW generation's artifacts, plus
+/// the manifest pointer. Returned by [`HnswIndex::artifact_paths`] for callers
+/// that report on or manipulate the raw files.
+#[derive(Debug, Clone)]
+pub struct HnswArtifacts {
+    /// The current generation number the manifest points at.
+    pub generation: u64,
+    /// `{basename}.gen<N>.hnsw.graph`.
+    pub graph: std::path::PathBuf,
+    /// `{basename}.gen<N>.hnsw.data`.
+    pub data: std::path::PathBuf,
+    /// `{basename}.gen<N>.hnsw.ids`.
+    pub ids: std::path::PathBuf,
+    /// `{basename}.hnsw.manifest`.
+    pub manifest: std::path::PathBuf,
 }
 
 /// Store state an HNSW sidecar set reflects, captured at save time.
@@ -179,92 +355,106 @@ struct SaveStamp<'a> {
     snapshot: StoreStamp,
 }
 
-/// Read and validate the `{basename}.hnsw.meta` header, if present.
+/// Read and validate the `{basename}.hnsw.manifest` pointer, if present.
 ///
-/// - Missing meta file → `Ok(None)` (legacy index predating the meta header).
+/// - Missing manifest → `Ok(None)` (no index, or a legacy pre-manifest set).
 /// - Present but malformed / unknown magic / newer version → typed error.
-fn read_hnsw_meta(dir: &Path, basename: &str) -> Result<Option<HnswMeta>, HnswError> {
-    let meta_path = dir.join(format!("{}.hnsw.meta", basename));
-    if !meta_path.exists() {
+fn read_manifest(dir: &Path, basename: &str) -> Result<Option<HnswManifest>, HnswError> {
+    let path = manifest_path(dir, basename);
+    if !path.exists() {
         return Ok(None);
     }
 
-    // Size cap: the header is a 3-field JSON object; anything beyond a few
-    // KB is corruption or tampering.
-    const MAX_META_SIZE: u64 = 64 * 1024;
-    let meta_size = std::fs::metadata(&meta_path)
+    // Size cap: the manifest is a small JSON object; anything beyond a few KB
+    // is corruption or tampering.
+    const MAX_MANIFEST_SIZE: u64 = 64 * 1024;
+    let size = std::fs::metadata(&path)
         .map_err(|e| {
             HnswError::Internal(format!(
-                "Failed to stat HNSW meta {}: {}",
-                meta_path.display(),
+                "Failed to stat HNSW manifest {}: {}",
+                path.display(),
                 e
             ))
         })?
         .len();
-    if meta_size > MAX_META_SIZE {
+    if size > MAX_MANIFEST_SIZE {
         return Err(HnswError::Internal(format!(
-            "HNSW meta {} is {} bytes, exceeds {} byte limit",
-            meta_path.display(),
-            meta_size,
-            MAX_META_SIZE
+            "HNSW manifest {} is {} bytes, exceeds {} byte limit",
+            path.display(),
+            size,
+            MAX_MANIFEST_SIZE
         )));
     }
 
-    let raw = std::fs::read(&meta_path).map_err(|e| {
+    let raw = std::fs::read(&path).map_err(|e| {
         HnswError::Internal(format!(
-            "Failed to read HNSW meta {}: {}",
-            meta_path.display(),
+            "Failed to read HNSW manifest {}: {}",
+            path.display(),
             e
         ))
     })?;
-    let meta: HnswMeta = serde_json::from_slice(&raw).map_err(|e| {
+    let manifest: HnswManifest = serde_json::from_slice(&raw).map_err(|e| {
         HnswError::Internal(format!(
-            "Failed to parse HNSW meta {}: {}",
-            meta_path.display(),
+            "Failed to parse HNSW manifest {}: {}",
+            path.display(),
             e
         ))
     })?;
 
-    if meta.magic != HNSW_META_MAGIC {
+    if manifest.magic != HNSW_MANIFEST_MAGIC {
         return Err(HnswError::Internal(format!(
-            "HNSW meta {} has unexpected magic {:?} (want {:?})",
-            meta_path.display(),
-            meta.magic,
-            HNSW_META_MAGIC
+            "HNSW manifest {} has unexpected magic {:?} (want {:?})",
+            path.display(),
+            manifest.magic,
+            HNSW_MANIFEST_MAGIC
         )));
     }
-    if meta.version > HNSW_META_VERSION {
+    if manifest.version > HNSW_MANIFEST_VERSION {
         return Err(HnswError::Internal(format!(
-            "HNSW meta {} has version {} — newer than this binary understands ({}). \
+            "HNSW manifest {} has version {} — newer than this binary understands ({}). \
              Run 'cqs index --force' or upgrade cqs.",
-            meta_path.display(),
-            meta.version,
-            HNSW_META_VERSION
+            path.display(),
+            manifest.version,
+            HNSW_MANIFEST_VERSION
         )));
     }
 
-    Ok(Some(meta))
+    Ok(Some(manifest))
+}
+
+/// Like [`read_manifest`] but collapses any read / parse / validation error to
+/// `None`. Used by the save path (a corrupt manifest must never block a new
+/// save — that is exactly the persistence wedge this scheme removes) and by
+/// the infallible accessors (`exists`, `count_vectors`, `artifact_paths`).
+fn read_manifest_lenient(dir: &Path, basename: &str) -> Option<HnswManifest> {
+    match read_manifest(dir, basename) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, basename, "Ignoring unreadable HNSW manifest");
+            None
+        }
+    }
 }
 
 /// Read the persisted distance metric for an index, if any.
 ///
-/// - Missing meta file → `Ok(Cosine)`: every index predating the meta header
-///   was built with `DistCosine` by construction.
+/// - Missing manifest → `Ok(Cosine)`: every index predating the manifest was
+///   built with `DistCosine` by construction, and the build default is cosine.
 /// - Present but malformed / unknown magic / newer version / unknown metric
 ///   → typed error. Never a silent cosine fallback: misreading a dot-product
 ///   index as cosine produces wrong distances, not a crash.
-fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
-    let Some(meta) = read_hnsw_meta(dir, basename)? else {
+fn read_manifest_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
+    let Some(manifest) = read_manifest(dir, basename)? else {
         tracing::debug!(
             dir = %dir.display(),
             basename,
-            "No HNSW meta header (legacy index) — metric is cosine"
+            "No HNSW manifest (legacy/absent index) — metric is cosine"
         );
         return Ok(DistanceMetric::Cosine);
     };
-    meta.metric.parse::<DistanceMetric>().map_err(|e| {
+    manifest.metric.parse::<DistanceMetric>().map_err(|e| {
         HnswError::Internal(format!(
-            "HNSW meta for {}/{} has invalid metric: {}",
+            "HNSW manifest for {}/{} has invalid metric: {}",
             dir.display(),
             basename,
             e
@@ -272,7 +462,7 @@ fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, H
     })
 }
 
-/// Verify that a persisted HNSW sidecar set is both intact AND reflects the
+/// Verify that a persisted HNSW generation is both intact AND reflects the
 /// live store. This is the dirty-flag self-heal check: the `hnsw_dirty` flag
 /// is set before chunk writes and cleared after a successful HNSW save, so a
 /// set flag means "chunks may have been committed after the last save". A
@@ -282,10 +472,9 @@ fn read_hnsw_meta_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, H
 /// save landed" (heal) from "died after the chunk commit, before the save"
 /// (stay dirty, brute-force until rebuild).
 ///
-/// A sidecar without a stamp (written before the stamp existed) fails this
-/// check: it cannot prove it postdates the last chunk write. Clean
-/// (non-dirty) loads of such sidecars are unaffected — this function is only
-/// on the dirty path.
+/// A manifest without a stamp (a store-less `save()`) fails this check: it
+/// cannot prove it postdates the last chunk write. Clean (non-dirty) loads of
+/// such an index are unaffected — this function is only on the dirty path.
 pub fn verify_hnsw_current<Mode>(
     dir: &Path,
     basename: &str,
@@ -298,36 +487,45 @@ pub fn verify_hnsw_current<Mode>(
             e
         ))
     })?;
-    let stamped = read_hnsw_meta(dir, basename)?.and_then(|m| m.store_stamp());
+    let stamped = read_manifest(dir, basename)?.and_then(|m| m.store_stamp());
     match stamped {
         Some(s) if s == live => Ok(()),
         Some(s) => Err(HnswError::Internal(format!(
-            "HNSW sidecar stamp (chunks={}, generation={}) does not match the live store \
+            "HNSW manifest stamp (chunks={}, generation={}) does not match the live store \
              (chunks={}, generation={}) — the index predates the last chunk write",
             s.chunk_count, s.splade_generation, live.chunk_count, live.splade_generation
         ))),
         None => Err(HnswError::Internal(
-            "HNSW sidecar has no store-state stamp — cannot prove the index postdates \
+            "HNSW manifest has no store-state stamp — cannot prove the index postdates \
              the last chunk write"
                 .to_string(),
         )),
     }
 }
 
-/// Verify HNSW index file checksums using blake3.
+/// Verify the current HNSW generation's artifact checksums using blake3.
+///
+/// Reads the manifest to resolve the current generation, then hashes each of
+/// its `{basename}.gen<N>.hnsw.{graph,data,ids}` artifacts and compares
+/// against the checksums the manifest recorded.
 ///
 /// # Security Model
 ///
 /// **WARNING:** These checksums detect accidental corruption only (disk errors,
 /// incomplete writes). They do NOT provide tamper-detection or authenticity
-/// guarantees - an attacker with filesystem access can update both files and
-/// checksums. For tamper-proofing, the checksum file would need to be signed
-/// or stored separately in a trusted location.
+/// guarantees - an attacker with filesystem access can update both the
+/// artifacts and the recorded checksums. For tamper-proofing, the manifest
+/// would need to be signed or stored separately in a trusted location.
 ///
-/// Returns Ok if checksums match or no checksum file exists (with warning).
+/// # Errors
+///
+/// - No manifest → `Internal` ("No HNSW manifest").
+/// - A referenced artifact is missing → `NotFound` (the partial-save /
+///   corrupt-generation case; the loader turns this into the rebuild path).
+/// - An artifact's hash disagrees with the manifest → `ChecksumMismatch`.
 pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
     // Entry span so operators can see this on the startup path. Hashing
-    // potentially hundreds of MB of HNSW manifests is the kind of thing that
+    // potentially hundreds of MB of HNSW artifacts is the kind of thing that
     // ends up at the top of "why is `cqs index` slow on cold start"
     // investigations; an untimed pass is opaque.
     let started = std::time::Instant::now();
@@ -337,127 +535,116 @@ pub fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError
         basename
     )
     .entered();
-    let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
 
-    if !checksum_path.exists() {
+    let Some(manifest) = read_manifest(dir, basename)? else {
         return Err(HnswError::Internal(
-            "No checksum file for HNSW index — run 'cqs index --force' to regenerate".to_string(),
+            "No HNSW manifest for index — run 'cqs index --force' to regenerate".to_string(),
         ));
-    }
+    };
+    let gen_base = gen_basename(basename, manifest.generation);
 
-    let checksum_content = std::fs::read_to_string(&checksum_path).map_err(|e| {
-        tracing::warn!(
-            error = %e,
-            path = %checksum_path.display(),
-            kind = ?e.kind(),
-            "verify_hnsw_checksums IO failure"
-        );
-        HnswError::Internal(format!("Failed to read {}: {}", checksum_path.display(), e))
-    })?;
-    for line in checksum_content.lines() {
-        if let Some((ext, expected)) = line.split_once(':') {
-            // Only allow known extensions to prevent path traversal
-            if !HNSW_EXTENSIONS.contains(&ext) {
-                tracing::warn!(ext = %ext, "Ignoring unknown extension in checksum file");
-                continue;
-            }
-            let path = dir.join(format!("{}.{}", basename, ext));
-            // A missing file referenced by the checksum manifest is a hard
-            // failure, not a skip. This catches the partial-save case: a
-            // crash between writing the manifest and renaming the graph/data
-            // files into place would otherwise leave the verifier returning
-            // Ok, then the load path falling into `hnsw_rs::file_load`
-            // against a missing file. The `HNSW_EXTENSIONS` whitelist at the
-            // top of the loop already gates which paths can reach this
-            // branch, so the strict check is safe.
-            if !path.exists() {
-                return Err(HnswError::Internal(format!(
-                    "HNSW checksum manifest references missing file: {} (partial save?)",
-                    path.display()
-                )));
-            }
-            // Stream file through blake3 hasher to avoid loading entire file into memory
-            let file = std::fs::File::open(&path).map_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    path = %path.display(),
-                    kind = ?e.kind(),
-                    "verify_hnsw_checksums IO failure"
-                );
-                HnswError::Internal(format!(
-                    "Failed to open {} for checksum: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            let mut hasher = blake3::Hasher::new();
-            std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    path = %path.display(),
-                    kind = ?e.kind(),
-                    "verify_hnsw_checksums IO failure"
-                );
-                HnswError::Internal(format!(
-                    "Failed to read {} for checksum: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            let actual = hasher.finalize().to_hex().to_string();
-            if actual != expected {
-                return Err(HnswError::ChecksumMismatch {
-                    file: path.display().to_string(),
-                    expected: expected.to_string(),
-                    actual,
-                });
-            }
+    for ext in HNSW_ARTIFACT_EXTS {
+        let expected = manifest.checksum_for(ext).ok_or_else(|| {
+            HnswError::Internal(format!("HNSW manifest is missing the checksum for {}", ext))
+        })?;
+        let path = dir.join(format!("{}.{}", gen_base, ext));
+        // A missing artifact referenced by the manifest is a hard failure —
+        // the partial-save / corrupt-generation case. Surfaced as NotFound so
+        // the load path falls into rebuild, never a wedge.
+        if !path.exists() {
+            return Err(HnswError::NotFound(format!(
+                "HNSW manifest references missing artifact: {} (partial save?)",
+                path.display()
+            )));
+        }
+        // Stream the file through blake3 to avoid loading it all into memory.
+        let file = std::fs::File::open(&path).map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                kind = ?e.kind(),
+                "verify_hnsw_checksums IO failure"
+            );
+            HnswError::Internal(format!(
+                "Failed to open {} for checksum: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                kind = ?e.kind(),
+                "verify_hnsw_checksums IO failure"
+            );
+            HnswError::Internal(format!(
+                "Failed to read {} for checksum: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let actual = hasher.finalize().to_hex().to_string();
+        if actual != *expected {
+            return Err(HnswError::ChecksumMismatch {
+                file: path.display().to_string(),
+                expected: expected.to_string(),
+                actual,
+            });
         }
     }
+
     tracing::info!(
         elapsed_ms = started.elapsed().as_millis() as u64,
+        generation = manifest.generation,
         "HNSW checksums verified"
     );
     Ok(())
 }
 
-/// Test-only fault injection seams for the save/promote path. Thread-local
-/// so parallel tests can't observe each other's injected faults (saves run
-/// synchronously on the calling thread).
+/// Test-only fault injection seam for the save path. Thread-local so parallel
+/// tests can't observe each other's injected faults (saves run synchronously
+/// on the calling thread).
 #[cfg(test)]
 pub(crate) mod test_hooks {
     use std::cell::RefCell;
 
     thread_local! {
-        /// When set, `save()` deletes the staged file with this extension
-        /// (e.g. `"hnsw.ids"`) right before the promote pass, simulating a
-        /// staging directory that was tampered with mid-save.
-        pub(crate) static DELETE_STAGED_EXT_BEFORE_PROMOTE: RefCell<Option<String>> =
-            const { RefCell::new(None) };
+        /// When set, `save_impl` writes and fsyncs the new generation's
+        /// artifact files, then returns an error WITHOUT committing the
+        /// manifest — simulating a crash in the window between artifact
+        /// completion and the atomic manifest commit. The prior generation
+        /// (or its absence) is left intact on disk.
+        pub(crate) static FAIL_BEFORE_MANIFEST_COMMIT: RefCell<bool> =
+            const { RefCell::new(false) };
     }
 }
 
 impl HnswIndex {
-    /// Save the index to disk
+    /// Save the index to disk as a new generation.
     ///
-    /// Creates files in the directory:
-    /// - `{basename}.hnsw.data` - Vector data
-    /// - `{basename}.hnsw.graph` - HNSW graph structure
-    /// - `{basename}.hnsw.ids` - Chunk ID mapping
-    /// - `{basename}.hnsw.meta` - JSON header (distance metric, #1351)
-    /// - `{basename}.hnsw.checksum` - Blake3 checksums for integrity
+    /// Writes a fresh generation into the directory:
+    /// - `{basename}.gen<N>.hnsw.graph` - HNSW graph structure
+    /// - `{basename}.gen<N>.hnsw.data` - Vector data
+    /// - `{basename}.gen<N>.hnsw.ids` - Chunk ID mapping
+    ///
+    /// then flips the pointer with a single atomic commit:
+    /// - `{basename}.hnsw.manifest` - JSON manifest (current generation,
+    ///   distance metric, store-state stamp, per-artifact blake3 checksums)
     ///
     /// # Crash safety
-    /// The ID map and checksum files are written atomically (write-to-temp, then rename).
-    /// The checksum file is written last, so if the process crashes during save:
-    /// - If checksum is missing/incomplete, load() will fail verification
-    /// - If graph/data are incomplete, load() will fail checksum verification
+    /// The generation number `N` is chosen above every artifact already on
+    /// disk, so writing the new generation never touches the live set. The
+    /// manifest is committed via `atomic_replace` (fsync + rename), the single
+    /// point at which generation `N` becomes current — a crash before that
+    /// leaves the prior generation (or its absence) intact and loadable, and
+    /// leaves the new generation as an orphan the next save's post-commit GC
+    /// removes. There is no `.bak` shuffle and no save that a prior crash can
+    /// wedge.
     ///
-    /// Note: The underlying library writes graph/data non-atomically. However, the
-    /// checksum verification on load ensures we never use a corrupted index.
-    ///
-    /// This variant writes no store-state stamp into the meta header, so the
-    /// dirty-flag self-heal will refuse the resulting sidecars (see
+    /// This variant writes no store-state stamp into the manifest, so the
+    /// dirty-flag self-heal will refuse the resulting generation (see
     /// [`verify_hnsw_current`]). Production callers that have a `Store` in
     /// scope must use [`save_stamped`](Self::save_stamped); this remains for
     /// tests and store-less callers.
@@ -503,7 +690,7 @@ impl HnswIndex {
         )
     }
 
-    /// Shared save body. See [`save`](Self::save) for the file layout and
+    /// Shared save body. See [`save`](Self::save) for the layout and
     /// crash-safety contract, [`save_stamped`](Self::save_stamped) for the
     /// stamp semantics.
     fn save_impl(
@@ -515,7 +702,7 @@ impl HnswIndex {
         let _span = tracing::debug_span!("hnsw_save", dir = %dir.display(), basename).entered();
         tracing::info!(dir = %dir.display(), basename, "Saving HNSW index");
 
-        // Verify ID map matches HNSW vector count before saving
+        // Verify ID map matches HNSW vector count before saving.
         let hnsw_count = self.inner.with_hnsw(|h| h.get_nb_point());
         if hnsw_count != self.id_map.len() {
             return Err(HnswError::Internal(format!(
@@ -525,7 +712,7 @@ impl HnswIndex {
             )));
         }
 
-        // Ensure target directory exists
+        // Ensure the target directory exists.
         std::fs::create_dir_all(dir).map_err(|e| {
             HnswError::Internal(format!(
                 "Failed to create directory {}: {}",
@@ -534,14 +721,11 @@ impl HnswIndex {
             ))
         })?;
 
-        // Acquire exclusive lock for save. This happens BEFORE the stale-.bak
-        // guard below: a concurrent saver's transient .baks (it renames the
-        // live files to .bak between its backup loop and promote pass) must
-        // not be observable here. Once the exclusive lock is held, any .bak
-        // we see is from a save that already terminated.
-        // NOTE: File locking is advisory only on WSL over 9P.
-        // This prevents concurrent cqs processes from corrupting the index,
-        // but cannot protect against external Windows process modifications.
+        // Acquire the exclusive save lock. It also serializes the post-commit
+        // generation GC below against concurrent savers.
+        // NOTE: File locking is advisory only on WSL over 9P — it prevents
+        // concurrent cqs processes from racing, but not external Windows
+        // process modifications.
         let lock_path = dir.join(format!("{}.hnsw.lock", basename));
         #[allow(clippy::suspicious_open_options)] // Intentional: create if missing, don't truncate
         let lock_file = std::fs::OpenOptions::new()
@@ -552,117 +736,23 @@ impl HnswIndex {
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
 
-        // Live store stamp, read once under the exclusive lock. Used by both
-        // the debris check below and the staleness discard after it.
+        // Live store stamp, read once under the exclusive lock, for the
+        // staleness discard below.
         let live_stamp: Option<StoreStamp> = match &stamp {
             Some(s) => Some((s.live)()?),
             None => None,
         };
 
-        let all_exts = [
-            "hnsw.graph",
-            "hnsw.data",
-            "hnsw.ids",
-            "hnsw.meta",
-            "hnsw.checksum",
-        ];
-        let stale_baks: Vec<std::path::PathBuf> = all_exts
-            .iter()
-            .filter_map(|ext| {
-                let bak = dir.join(format!("{}.{}.bak", basename, ext));
-                if bak.exists() {
-                    Some(bak)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !stale_baks.is_empty() {
-            // .bak files exist from a save that didn't finish its cleanup.
-            // Two distinct states:
-            //
-            // - Post-success debris: the previous save promoted its complete
-            //   new set and was killed before deleting the .baks. A partial
-            //   promote cannot pass `verify_hnsw_checksums` (the manifest is
-            //   promoted last and references the other files' new hashes), so
-            //   a live set that verifies AND carries a store-state stamp from
-            //   this store's history is a completed save. The .baks hold the
-            //   generation BEFORE it — redundant. Delete them and proceed.
-            //
-            // - Recovery breadcrumbs: the live set is absent, incomplete, or
-            //   fails verification — the .baks may be the only good copy of
-            //   the index. Refuse so the backup loop below can't overwrite
-            //   them.
-            //
-            // The debris check deliberately does NOT require the live set's
-            // stamp to equal the CURRENT store stamp: writes that landed
-            // between the kill and this save would re-wedge persistence
-            // (the exact lockout this branch fixes). Staleness of the live
-            // set is the dirty-path load check's job, not this guard's; the
-            // stamp here only has to prove the set came from a completed,
-            // stamp-aware save of this store (generation not in the future).
-            // An ahead-of-store generation also occurs after restoring
-            // index.db from a backup (the restore rolls the counter back
-            // under sidecars saved later); the refusal is conservative
-            // there — remove the .baks or run `cqs index --force` to
-            // realign sidecars with the restored store.
-            let debris_reason: Result<(), String> = (|| {
-                verify_hnsw_checksums(dir, basename)
-                    .map_err(|e| format!("live set failed verification: {}", e))?;
-                let set_stamp = read_hnsw_meta(dir, basename)
-                    .map_err(|e| format!("live set meta unreadable: {}", e))?
-                    .and_then(|m| m.store_stamp())
-                    .ok_or_else(|| "live set has no store-state stamp".to_string())?;
-                if let Some(live) = live_stamp {
-                    if set_stamp.splade_generation > live.splade_generation {
-                        return Err(format!(
-                            "live set stamp generation {} is ahead of the store ({}) — \
-                             not from this store's history",
-                            set_stamp.splade_generation, live.splade_generation
-                        ));
-                    }
-                } else {
-                    return Err("no store available to validate the live set stamp".to_string());
-                }
-                Ok(())
-            })();
-            match debris_reason {
-                Ok(()) => {
-                    tracing::warn!(
-                        baks = ?stale_baks,
-                        "Removing post-success .bak debris: live HNSW set is complete, \
-                         checksum-valid, and stamped — the .baks are the superseded generation"
-                    );
-                    for bak in &stale_baks {
-                        if let Err(e) = std::fs::remove_file(bak) {
-                            return Err(HnswError::Internal(format!(
-                                "Failed to remove .bak debris {}: {}",
-                                bak.display(),
-                                e
-                            )));
-                        }
-                    }
-                }
-                Err(reason) => {
-                    tracing::warn!(
-                        baks = ?stale_baks,
-                        reason = %reason,
-                        "Refusing HNSW save: .bak files present and live set is not a \
-                         verified completed save"
-                    );
-                    return Err(HnswError::Internal(format!(
-                        "stale .bak files from prior failed save: {:?} ({}); manual recovery \
-                         required (the .baks are the previous good index)",
-                        stale_baks, reason,
-                    )));
-                }
-            }
-        }
-
         // Staleness discard: if the store moved past the snapshot this index
         // was built from, persisting would replace a newer on-disk index with
         // stale contents stamped as current. Nothing has been written yet, so
         // discarding here is side-effect-free.
+        //
+        // There is deliberately NO stale-debris guard preceding this. The
+        // generation scheme makes every prior on-disk state — a committed
+        // generation, a half-written orphan generation, legacy sidecars, even
+        // leftover `.bak` debris — safe to write past, so a crashed previous
+        // save can never wedge this one.
         if let (Some(s), Some(live)) = (&stamp, live_stamp) {
             if live != s.snapshot {
                 tracing::warn!(
@@ -679,89 +769,60 @@ impl HnswIndex {
             }
         }
 
-        // Use a temporary directory for atomic writes so that a crash
-        // mid-save leaves the old index intact. Unpredictable suffix
-        // prevents symlink TOCTOU.
-        let suffix = crate::temp_suffix();
-        let temp_dir = dir.join(format!(".{}.{:016x}.tmp", basename, suffix));
-        if temp_dir.exists() {
-            std::fs::remove_dir_all(&temp_dir).map_err(|e| {
-                HnswError::Internal(format!(
-                    "Failed to clean up temp dir {}: {}",
-                    temp_dir.display(),
-                    e
-                ))
-            })?;
-        }
-        std::fs::create_dir_all(&temp_dir).map_err(|e| {
-            HnswError::Internal(format!(
-                "Failed to create temp dir {}: {}",
-                temp_dir.display(),
-                e
-            ))
-        })?;
+        // Choose a generation number above the current manifest AND every
+        // artifact already on disk, so writing the new generation can never
+        // overwrite the live set or a not-yet-GC'd orphan. The manifest read
+        // is lenient — a corrupt manifest must not block the save.
+        let current_gen = read_manifest_lenient(dir, basename).map(|m| m.generation);
+        let disk_gen = max_disk_generation(dir, basename);
+        let generation = current_gen
+            .unwrap_or(0)
+            .max(disk_gen.unwrap_or(0))
+            .saturating_add(1);
+        let gen_base = gen_basename(basename, generation);
 
-        // Save the HNSW graph and data to temp directory
+        // Dump the graph + data for the new generation directly into `dir`.
+        // The generation suffix is the isolation: the live set is a different
+        // generation, so a crash mid-dump leaves an orphan the loader ignores
+        // (the manifest still points at the prior generation). No temp dir or
+        // promote pass is needed.
         self.inner
-            .with_hnsw(|g| g.file_dump(&temp_dir, basename))
+            .with_hnsw(|g| g.file_dump(dir, &gen_base))
             .map_err(|e| {
                 HnswError::Internal(format!(
                     "Failed to dump HNSW to {}/{}: {}",
-                    temp_dir.display(),
-                    basename,
+                    dir.display(),
+                    gen_base,
                     e
                 ))
             })?;
 
-        // Write the meta header (distance metric) to the temp directory.
-        // Small JSON; written with mode 0600 + fsync like the id map so a
-        // power cut can't promote a checksum manifest that references a
-        // page-cache-only meta file.
-        let meta_temp = temp_dir.join(format!("{}.hnsw.meta", basename));
-        {
-            let meta = HnswMeta {
-                magic: HNSW_META_MAGIC.to_string(),
-                version: HNSW_META_VERSION,
-                metric: self.metric().as_str().to_string(),
-                chunk_count: stamp.as_ref().map(|s| s.snapshot.chunk_count),
-                splade_generation: stamp.as_ref().map(|s| s.snapshot.splade_generation),
-            };
-            let meta_json = serde_json::to_vec(&meta).map_err(|e| {
-                HnswError::Internal(format!("Failed to serialize HNSW meta: {}", e))
-            })?;
-            let mut file = {
-                #[cfg(unix)]
+        // Tighten permissions on the library-written graph/data (it uses the
+        // process umask) and fsync each so its bytes are durable before the
+        // manifest that records their checksums is committed.
+        for ext in ["hnsw.graph", "hnsw.data"] {
+            let path = dir.join(format!("{}.{}", gen_base, ext));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) =
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                 {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .mode(0o600)
-                        .open(&meta_temp)
-                }
-                #[cfg(not(unix))]
-                {
-                    std::fs::File::create(&meta_temp)
+                    tracing::debug!(path = %path.display(), error = %e, "Failed to set HNSW artifact permissions");
                 }
             }
-            .map_err(|e| {
-                HnswError::Internal(format!("Failed to create {}: {}", meta_temp.display(), e))
+            let f = std::fs::File::open(&path).map_err(|e| {
+                HnswError::Internal(format!("Failed to open {} to fsync: {}", path.display(), e))
             })?;
-            use std::io::Write;
-            file.write_all(&meta_json).map_err(|e| {
-                HnswError::Internal(format!("Failed to write {}: {}", meta_temp.display(), e))
-            })?;
-            file.sync_all().map_err(|e| {
-                HnswError::Internal(format!("Failed to fsync {}: {}", meta_temp.display(), e))
+            f.sync_all().map_err(|e| {
+                HnswError::Internal(format!("Failed to fsync {}: {}", path.display(), e))
             })?;
         }
 
-        // Stream ID map directly to file via BufWriter rather than
-        // serializing to an in-memory JSON string first.
-        let id_map_temp = temp_dir.join(format!("{}.hnsw.ids", basename));
+        // Stream the ID map to the generation's `.ids` file (mode 0600), then
+        // fsync so a power cut can't leave the graph without its string IDs.
+        let ids_path = dir.join(format!("{}.hnsw.ids", gen_base));
         {
-            // Create with mode 0o600 so file is never world-readable
             let file = {
                 #[cfg(unix)]
                 {
@@ -771,354 +832,119 @@ impl HnswIndex {
                         .create(true)
                         .truncate(true)
                         .mode(0o600)
-                        .open(&id_map_temp)
+                        .open(&ids_path)
                 }
                 #[cfg(not(unix))]
                 {
-                    std::fs::File::create(&id_map_temp)
+                    std::fs::File::create(&ids_path)
                 }
             }
             .map_err(|e| {
-                HnswError::Internal(format!("Failed to create {}: {}", id_map_temp.display(), e))
+                HnswError::Internal(format!("Failed to create {}: {}", ids_path.display(), e))
             })?;
             let mut writer = std::io::BufWriter::new(file);
             serde_json::to_writer(&mut writer, &self.id_map)
                 .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-            // Flush the BufWriter and fsync the underlying file before it is
-            // dropped so the id_map bytes are durable on disk. Without this
-            // the id_map could survive in the page cache through the
-            // subsequent rename and get lost on a power cut, leaving the
-            // graph without any string IDs to look up.
             use std::io::Write;
             writer.flush().map_err(|e| {
-                HnswError::Internal(format!("Failed to flush {}: {}", id_map_temp.display(), e))
+                HnswError::Internal(format!("Failed to flush {}: {}", ids_path.display(), e))
             })?;
             writer.get_ref().sync_all().map_err(|e| {
-                HnswError::Internal(format!("Failed to fsync {}: {}", id_map_temp.display(), e))
+                HnswError::Internal(format!("Failed to fsync {}: {}", ids_path.display(), e))
             })?;
         }
 
-        // Compute checksum by reading back the file (avoids holding JSON in memory)
-        let ids_hash = {
-            let file = std::fs::File::open(&id_map_temp).map_err(|e| {
-                HnswError::Internal(format!(
-                    "Failed to open {} for checksum: {}",
-                    id_map_temp.display(),
-                    e
-                ))
-            })?;
-            let mut hasher = blake3::Hasher::new();
-            hasher.update_reader(file).map_err(|e| {
-                HnswError::Internal(format!(
-                    "Failed to read {} for checksum: {}",
-                    id_map_temp.display(),
-                    e
-                ))
-            })?;
-            hasher.finalize()
-        };
-        let mut checksums = vec![format!("hnsw.ids:{}", ids_hash.to_hex())];
-        for ext in &["hnsw.graph", "hnsw.data", "hnsw.meta"] {
-            let path = temp_dir.join(format!("{}.{}", basename, ext));
-            if path.exists() {
-                let file = std::fs::File::open(&path).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to open {} for checksum: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                let mut hasher = blake3::Hasher::new();
-                hasher.update_reader(file).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to read {} for checksum: {}",
-                        path.display(),
-                        e
-                    ))
-                })?;
-                let hash = hasher.finalize();
-                checksums.push(format!("{}:{}", ext, hash.to_hex()));
-            }
-        }
+        // fsync the parent directory so all three artifact directory entries
+        // are durable before the manifest commit.
+        fsync_dir(dir);
 
-        // Write checksum with mode 0o600 from creation
-        let checksum_temp = temp_dir.join(format!("{}.hnsw.checksum", basename));
-        {
-            #[cfg(unix)]
-            {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&checksum_temp)
-                    .map_err(|e| {
-                        HnswError::Internal(format!(
-                            "Failed to write {}: {}",
-                            checksum_temp.display(),
-                            e
-                        ))
-                    })?;
-                f.write_all(checksums.join("\n").as_bytes()).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to write {}: {}",
-                        checksum_temp.display(),
-                        e
-                    ))
-                })?;
-            }
-            #[cfg(not(unix))]
-            {
-                std::fs::write(&checksum_temp, checksums.join("\n")).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to write {}: {}",
-                        checksum_temp.display(),
-                        e
-                    ))
-                })?;
-            }
-        }
-
-        // Set restrictive permissions on remaining temp files (graph/data written by library)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let restrictive = std::fs::Permissions::from_mode(0o600);
-            for ext in &["hnsw.graph", "hnsw.data"] {
-                let path = temp_dir.join(format!("{}.{}", basename, ext));
-                if path.exists() {
-                    if let Err(e) = std::fs::set_permissions(&path, restrictive.clone()) {
-                        tracing::debug!(path = %path.display(), error = %e, "Failed to set HNSW file permissions");
-                    }
-                }
-            }
-        }
-
-        // Test-only fault injection: delete one staged file just before the
-        // promote pass so tests can pin the missing-temp hard-error path.
+        // Test seam: simulate a crash in the window between artifact
+        // completion and the manifest commit. The prior generation is intact;
+        // the just-written generation is left as an orphan.
         #[cfg(test)]
-        test_hooks::DELETE_STAGED_EXT_BEFORE_PROMOTE.with(|hook| {
-            if let Some(ext) = hook.borrow_mut().take() {
-                let p = temp_dir.join(format!("{}.{}", basename, ext));
-                let _ = std::fs::remove_file(&p);
-            }
-        });
+        if test_hooks::FAIL_BEFORE_MANIFEST_COMMIT.with(|h| *h.borrow()) {
+            return Err(HnswError::Internal(
+                "injected: crash before HNSW manifest commit (test hook)".to_string(),
+            ));
+        }
 
-        // Atomically rename each file from temp to final location. Track
-        // which files were successfully moved so we can roll back on failure.
-        // `all_exts` is reused from the stale-bak guard above.
-        let mut moved_exts: Vec<&str> = Vec::new();
+        // Hash the three artifacts for the manifest's integrity record.
+        let checksums = ManifestChecksums {
+            graph: hash_file(&dir.join(format!("{}.hnsw.graph", gen_base)))?,
+            data: hash_file(&dir.join(format!("{}.hnsw.data", gen_base)))?,
+            ids: hash_file(&ids_path)?,
+        };
 
-        let rename_result: Result<(), HnswError> = (|| {
-            // Back up existing files before overwriting so rollback can
-            // restore them.
-            //
-            // Propagate the rename error rather than warning-and-continuing.
-            // If the backup never landed, the rollback path further down
-            // can't restore the original file when atomic_replace later
-            // fails — we'd delete the (newly promoted) file in `moved_exts`
-            // then look for a `.bak` that was never created and silently lose
-            // the prior index. Better to bail BEFORE the atomic_replace pass
-            // touches anything.
-            for ext in &all_exts {
-                let final_path = dir.join(format!("{}.{}", basename, ext));
-                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
-                if final_path.exists() {
-                    std::fs::rename(&final_path, &bak_path).map_err(|e| {
-                        HnswError::Internal(format!(
-                            "Failed to back up {} -> {} before save: {}",
-                            final_path.display(),
-                            bak_path.display(),
-                            e
-                        ))
-                    })?;
-                }
-            }
+        // Build the manifest for the new generation.
+        let manifest = HnswManifest {
+            magic: HNSW_MANIFEST_MAGIC.to_string(),
+            version: HNSW_MANIFEST_VERSION,
+            generation,
+            metric: self.metric().as_str().to_string(),
+            chunk_count: stamp.as_ref().map(|s| s.snapshot.chunk_count),
+            splade_generation: stamp.as_ref().map(|s| s.snapshot.splade_generation),
+            checksums,
+        };
+        let manifest_json = serde_json::to_vec(&manifest).map_err(|e| {
+            HnswError::Internal(format!("Failed to serialize HNSW manifest: {}", e))
+        })?;
 
-            // Fsync the parent directory so the `.bak` rename entries are
-            // durable before the atomic_replace pass proceeds. Without this,
-            // a power cut between the backup loop and atomic_replace can
-            // leave the directory in a state where the `.bak` file exists in
-            // the page cache but not on disk. Best-effort fsync: log at debug
-            // on platforms that don't support directory fsync.
-            match std::fs::File::open(dir) {
-                Ok(f) => {
-                    if let Err(e) = f.sync_all() {
-                        tracing::debug!(
-                            error = %e,
-                            dir = %dir.display(),
-                            "fsync of HNSW parent directory after backup loop failed (non-fatal)"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        dir = %dir.display(),
-                        "could not open HNSW parent directory for fsync after backup loop"
-                    );
-                }
-            }
-
-            for ext in &all_exts {
-                let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
-                let final_path = dir.join(format!("{}.{}", basename, ext));
-                // Every staged file is written unconditionally earlier in
-                // this function, so a missing one means the staging dir was
-                // deleted out from under us (e.g. by another process's
-                // stale-temp cleanup). Silently skipping it would promote a
-                // partial set and let the success path below delete the
-                // `.bak`s of the previous good index — hard-error into the
-                // rollback instead.
-                if !temp_path.exists() {
-                    return Err(HnswError::Internal(format!(
-                        "HNSW staging file missing during promote: {} — \
-                         aborting save and rolling back",
-                        temp_path.display()
-                    )));
-                }
-                // `atomic_replace` fsyncs the temp file, renames with
-                // cross-device fallback (the in-process temp dir sits
-                // on a different device from `dir` on Docker overlayfs
-                // and WSL `/mnt/c`), and fsyncs the parent directory.
-                crate::fs::atomic_replace(&temp_path, &final_path).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to promote {} -> {}: {}",
-                        temp_path.display(),
-                        final_path.display(),
-                        e
-                    ))
-                })?;
-                // Keep the restrictive mode on the promoted file now that
-                // it lives in the final directory. The library
-                // `file_dump` output uses the process umask; we want
-                // 0o600 regardless.
+        // Write the manifest to a temp file (mode 0600 + fsync), then commit it
+        // with `atomic_replace` — THE single point at which generation `N`
+        // becomes current. A crash before this leaves the previous manifest
+        // (or none); a crash after leaves the complete new one.
+        let suffix = crate::temp_suffix();
+        let manifest_tmp = dir.join(format!(".{}.hnsw.manifest.{:016x}.tmp", basename, suffix));
+        {
+            let mut file = {
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &final_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
+                    use std::os::unix::fs::OpenOptionsExt;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&manifest_tmp)
                 }
-                moved_exts.push(ext);
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = rename_result {
-            // Roll back: remove new files and restore originals from .bak
-            for ext in &moved_exts {
-                let final_path = dir.join(format!("{}.{}", basename, ext));
-                let _ = std::fs::remove_file(&final_path);
-            }
-            // Track which `.bak` files failed to restore rather than
-            // warning-and-continuing. The unrestored ones are left in place
-            // as recovery breadcrumbs and the operator gets an actionable
-            // error. The start-of-save guard will also refuse to start the
-            // next save while any `.bak` survives, but surfacing the failure
-            // here gives an immediate signal that manual recovery is needed.
-            let mut restore_failures: Vec<(String, std::io::Error)> = Vec::new();
-            for ext in &all_exts {
-                let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
-                let final_path = dir.join(format!("{}.{}", basename, ext));
-                if bak_path.exists() {
-                    if let Err(rename_err) = std::fs::rename(&bak_path, &final_path) {
-                        tracing::error!(
-                            path = %final_path.display(),
-                            error = %rename_err,
-                            "Failed to restore backup during HNSW save rollback"
-                        );
-                        restore_failures.push((final_path.display().to_string(), rename_err));
-                    }
+                #[cfg(not(unix))]
+                {
+                    std::fs::File::create(&manifest_tmp)
                 }
             }
-            // Fsync the parent directory after restoring backups so the
-            // restore renames are durable. Without this, a second power cut
-            // during rollback can leave the index with missing files even
-            // though the `.bak` existed on disk.
-            match std::fs::File::open(dir) {
-                Ok(f) => {
-                    if let Err(sync_err) = f.sync_all() {
-                        tracing::debug!(
-                            error = %sync_err,
-                            dir = %dir.display(),
-                            "fsync of HNSW parent directory after rollback failed (non-fatal)"
-                        );
-                    }
-                }
-                Err(open_err) => {
-                    tracing::debug!(
-                        error = %open_err,
-                        dir = %dir.display(),
-                        "could not open HNSW parent directory for fsync after rollback"
-                    );
-                }
-            }
-            tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back to original files");
-            let _ = std::fs::remove_dir_all(&temp_dir);
-
-            // Surface partial-rollback as an actionable error so the
-            // operator can clear the orphaned .bak files. The next `save`
-            // would refuse to start anyway under the stale-bak guard above;
-            // this turns the deferred refusal into an immediate breadcrumb at
-            // the point of failure.
-            if !restore_failures.is_empty() {
-                let detail: String = restore_failures
-                    .iter()
-                    .map(|(p, err)| format!("  {p}: {err}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                tracing::error!(
-                    %detail,
-                    dir = %dir.display(),
-                    "HNSW rollback INCOMPLETE — manual recovery required: \
-                     restore .bak files matching {basename}.*.bak in dir",
-                );
-                return Err(HnswError::Internal(format!(
-                    "HNSW rollback partially failed; .bak files present, \
-                     manual recovery required:\n{detail}"
-                )));
-            }
-            return Err(e);
+            .map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to create {}: {}",
+                    manifest_tmp.display(),
+                    e
+                ))
+            })?;
+            use std::io::Write;
+            file.write_all(&manifest_json).map_err(|e| {
+                HnswError::Internal(format!("Failed to write {}: {}", manifest_tmp.display(), e))
+            })?;
+            file.sync_all().map_err(|e| {
+                HnswError::Internal(format!("Failed to fsync {}: {}", manifest_tmp.display(), e))
+            })?;
         }
+        crate::fs::atomic_replace(&manifest_tmp, &manifest_path(dir, basename)).map_err(|e| {
+            // Clean up the temp manifest before surfacing the failure so it
+            // can't accumulate as debris; the live generation is unchanged.
+            let _ = std::fs::remove_file(&manifest_tmp);
+            HnswError::Internal(format!("Failed to commit HNSW manifest: {}", e))
+        })?;
 
-        // Fsync the parent directory so the renames themselves are durable
-        // on a power cut — otherwise the files exist on disk but the
-        // directory entries can be reordered or lost, leaving a half-saved
-        // index. Best-effort: on platforms where opening a directory for
-        // fsync isn't supported we log at debug level and continue.
-        match std::fs::File::open(dir) {
-            Ok(f) => {
-                if let Err(e) = f.sync_all() {
-                    tracing::debug!(
-                        error = %e,
-                        dir = %dir.display(),
-                        "fsync of HNSW parent directory failed (non-fatal)"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::debug!(
-                    error = %e,
-                    dir = %dir.display(),
-                    "could not open HNSW parent directory for fsync"
-                );
-            }
-        }
-
-        // Clean up temp directory and .bak files from successful save
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        for ext in &all_exts {
-            let bak_path = dir.join(format!("{}.{}.bak", basename, ext));
-            let _ = std::fs::remove_file(&bak_path);
-        }
+        // Post-commit GC under the still-held lock: drop every superseded /
+        // orphaned generation and any legacy fixed-name sidecars (the one-time
+        // migration cleanup). Best-effort — a failed unlink is logged, not
+        // fatal; the next save GCs it.
+        gc_stale_generations(dir, basename, generation);
 
         tracing::info!(
-            "HNSW index saved: {} vectors (with checksums)",
-            self.id_map.len()
+            generation,
+            "HNSW index saved: {} vectors (generation {})",
+            self.id_map.len(),
+            generation
         );
 
         Ok(SaveOutcome::Saved)
@@ -1130,48 +956,34 @@ impl HnswIndex {
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load_with_dim(dir: &Path, basename: &str, dim: usize) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
-        let graph_path = dir.join(format!("{}.hnsw.graph", basename));
-        let data_path = dir.join(format!("{}.hnsw.data", basename));
-        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
 
-        // The stale-temp cleanup and the existence check both happen
-        // INSIDE the shared-lock critical section.
+        // The stale-temp cleanup, the manifest read, and the existence check
+        // all happen INSIDE the shared-lock critical section.
         //
-        // Cleanup before the lock would race a concurrent `save()`: the
-        // saver creates its `.{basename}.<suffix>.tmp` staging directory
-        // under the EXCLUSIVE lock and writes into it while a pre-lock
-        // loader could `remove_dir_all` that live staging dir. The saver
-        // would then rename the previous good files to `.bak`, find every
-        // staged file missing during promote, and the success path would
-        // delete the `.bak`s — destroying the previous good index. Once
-        // the shared lock is held, no exclusive saver is mid-flight, so
-        // any surviving `.tmp` directory is genuinely stale.
+        // Cleanup before the lock would race a concurrent `save()`: pre-lock,
+        // a loader could `remove_dir_all` a leftover temp while a saver is
+        // mid-flight. Once the shared lock is held, no exclusive saver is
+        // in-flight, so any surviving `.tmp` entry is genuinely stale.
         //
-        // Checking file existence before acquiring the lock
-        // would open a TOCTOU window: a concurrent `save()` could take
-        // the exclusive lock, rename the four files into `.bak`, and
-        // complete; the reader would then proceed with files that had
-        // already been replaced, and `verify_hnsw_checksums` would fail
-        // with a confusing checksum-mismatch error during a normal
-        // concurrent rebuild.
+        // Reading the manifest and checking existence before the lock would
+        // open a TOCTOU window: a concurrent `save()` could commit a new
+        // manifest generation and GC the old artifacts out from under a
+        // pre-lock reader. The manifest commit (`atomic_replace`) and the
+        // generation GC both require the exclusive lock, so holding the shared
+        // lock across resolve-then-load pins one generation for the load.
         //
-        // The lock-acquisition path doesn't depend on the four data
-        // files existing (the lock file is a separate `.hnsw.lock`),
-        // so the check is done only AFTER the shared lock is held: any
-        // saver that wants to rename files MUST first take the
-        // exclusive lock.
-        //
-        // The deeper hazard — a half-renamed set where save N+1 has
-        // moved graph but not yet data — remains and is tracked as
-        // the larger "bundle into single .hnsw.bundle for atomic
-        // replace" refactor. The lock-then-existence check at least
-        // ensures we don't observe in-progress renames.
+        // The generation scheme closes the old half-replaced-set hazard
+        // outright: the current generation is whatever the manifest points at,
+        // its artifacts are written under a fresh generation name before the
+        // pointer flips, and superseded artifacts are GC'd only after. A load
+        // never observes a partially-replaced set — only a whole generation or
+        // none.
 
         // Acquire shared lock for the read phase only (released before
-        // return). Protects the on-disk graph/data/ids/checksum files
-        // from being overwritten by a concurrent `save()` while this
-        // function is reading them — once the data is in memory the
-        // copy is independent and the lock is no longer needed.
+        // return). Protects the on-disk artifact files from being replaced by
+        // a concurrent `save()` while this function is reading them — once the
+        // data is in memory the copy is independent and the lock is no longer
+        // needed.
         //
         // NOTE: File locking is advisory only on WSL over 9P. The lock
         // is best-effort cross-process; an external Windows tool can
@@ -1217,40 +1029,61 @@ impl HnswIndex {
         warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared, released after read)");
 
-        // Clean up stale temp dirs from interrupted saves. This runs under
-        // the shared lock: a live `save()` holds the exclusive lock while
-        // its staging directory exists, so any `.tmp` directory observed
-        // here is from a crashed/killed save and safe to remove. Temp dirs
-        // have unpredictable suffixes, so match by prefix+suffix pattern.
+        // Clean up stale temps from interrupted saves. This runs under the
+        // shared lock: a live `save()` holds the exclusive lock while it
+        // writes, so any `.tmp` entry observed here is from a crashed/killed
+        // save and safe to remove. Temps carry an unpredictable suffix, so
+        // match by prefix+suffix. Two shapes: a legacy staging directory, and
+        // the manifest-commit temp file left by a crash mid-`atomic_replace`.
         if let Ok(entries) = std::fs::read_dir(dir) {
             let prefix = format!(".{}.", basename);
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name.starts_with(&prefix) && name.ends_with(".tmp") && entry.path().is_dir() {
+                if name.starts_with(&prefix) && name.ends_with(".tmp") {
                     tracing::info!(dir = %entry.path().display(), "Cleaning up interrupted HNSW save");
-                    let _ = std::fs::remove_dir_all(entry.path());
+                    if entry.path().is_dir() {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    } else {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
                 }
             }
         }
 
-        // Existence check happens under the shared lock. A concurrent
-        // `save()` that wanted to rename these files would need the
-        // exclusive lock — which it can't get while we hold the shared
-        // lock. So the files we observe here are guaranteed to remain in
-        // place for the duration of the load.
+        // Resolve the current generation from the manifest. No manifest → the
+        // index is absent or legacy (pre-manifest); either way NotFound sends
+        // the caller to the rebuild path.
+        let manifest = read_manifest(dir, basename)?
+            .ok_or_else(|| HnswError::NotFound(dir.display().to_string()))?;
+        let gen_base = gen_basename(basename, manifest.generation);
+        let graph_path = dir.join(format!("{}.hnsw.graph", gen_base));
+        let data_path = dir.join(format!("{}.hnsw.data", gen_base));
+        let id_map_path = dir.join(format!("{}.hnsw.ids", gen_base));
+
+        // Existence check under the shared lock. A concurrent `save()` that
+        // wanted to change the current generation needs the exclusive lock —
+        // which it can't get while we hold the shared lock — and it only flips
+        // the manifest (an atomic replace) after its artifacts are durable. So
+        // the generation we resolved and the files we observe here are stable
+        // for the duration of the load.
         if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
 
-        tracing::info!(dir = %dir.display(), basename, "Loading HNSW index");
+        tracing::info!(
+            dir = %dir.display(),
+            basename,
+            generation = manifest.generation,
+            "Loading HNSW index"
+        );
         verify_hnsw_checksums(dir, basename)?;
 
-        // Resolve the distance metric. The stored value (meta
-        // header; legacy indexes without one are cosine) always wins — but
-        // an *explicit* conflicting CQS_DISTANCE_METRIC is a typed error
-        // rather than a silent reinterpretation of distances.
-        let stored_metric = read_hnsw_meta_metric(dir, basename)?;
+        // Resolve the distance metric. The stored value (manifest; legacy
+        // indexes without one are cosine) always wins — but an *explicit*
+        // conflicting CQS_DISTANCE_METRIC is a typed error rather than a silent
+        // reinterpretation of distances.
+        let stored_metric = read_manifest_metric(dir, basename)?;
         if let Some(requested) = DistanceMetric::from_env().map_err(HnswError::Internal)? {
             if requested != stored_metric {
                 return Err(HnswError::MetricMismatch {
@@ -1378,15 +1211,15 @@ impl HnswIndex {
         //
         // hnsw_rs returns Hnsw<'a> borrowing from &'a mut HnswIo.
         // self_cell ties these lifetimes together without transmute.
-        let hnsw_io_cell = Box::new(HnswIoCell(UnsafeCell::new(HnswIo::new(dir, basename))));
+        let hnsw_io_cell = Box::new(HnswIoCell(UnsafeCell::new(HnswIo::new(dir, &gen_base))));
 
         let loaded = LoadedHnsw::try_new(hnsw_io_cell, |cell| {
             // SAFETY: Exclusive access during construction — no other references exist.
             // After this closure returns, the UnsafeCell is never accessed again directly.
             let io = unsafe { &mut *cell.0.get() };
-            // Instantiate the dist type recorded in the meta header. hnsw_rs
+            // Instantiate the dist type recorded in the manifest. hnsw_rs
             // additionally cross-checks the distance name embedded in the
-            // graph file, so a forged meta cannot misread distances.
+            // graph file, so a forged manifest metric cannot misread distances.
             HnswGraph::load(io, stored_metric)
         })?;
 
@@ -1422,21 +1255,78 @@ impl HnswIndex {
     }
 
     /// Read the stored distance metric for a persisted index without
-    /// loading it. Missing meta header → `Cosine` (legacy indexes,
-    /// and the build default when no index exists yet). Used by derived
-    /// backends (CAGRA rebuild path) to stay consistent with the slot's
-    /// HNSW metric when `CQS_DISTANCE_METRIC` is unset.
+    /// loading it. Missing manifest → `Cosine` (legacy indexes, and the build
+    /// default when no index exists yet). Used by derived backends (CAGRA
+    /// rebuild path) to stay consistent with the slot's HNSW metric when
+    /// `CQS_DISTANCE_METRIC` is unset.
     pub fn stored_metric(dir: &Path, basename: &str) -> Result<DistanceMetric, HnswError> {
-        read_hnsw_meta_metric(dir, basename)
+        read_manifest_metric(dir, basename)
     }
 
-    /// Check if an HNSW index exists at the given path
+    /// Check if an HNSW index exists at the given path.
+    ///
+    /// True iff a readable manifest is present AND its current generation's
+    /// three artifact files are on disk. A legacy pre-manifest set reads as
+    /// absent (no manifest), which is what routes it to the rebuild path.
     pub fn exists(dir: &Path, basename: &str) -> bool {
-        let graph_path = dir.join(format!("{}.hnsw.graph", basename));
-        let data_path = dir.join(format!("{}.hnsw.data", basename));
-        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        let Some(manifest) = read_manifest_lenient(dir, basename) else {
+            return false;
+        };
+        let gen_base = gen_basename(basename, manifest.generation);
+        HNSW_ARTIFACT_EXTS
+            .iter()
+            .all(|ext| dir.join(format!("{}.{}", gen_base, ext)).exists())
+    }
 
-        graph_path.exists() && data_path.exists() && id_map_path.exists()
+    /// Resolved on-disk paths for the current generation's artifacts, or
+    /// `None` when no readable manifest is present. Lets callers that report
+    /// on or manipulate the raw files (stats sizing, corruption tests) find
+    /// them without duplicating the generation-resolution logic.
+    pub fn artifact_paths(dir: &Path, basename: &str) -> Option<HnswArtifacts> {
+        let manifest = read_manifest_lenient(dir, basename)?;
+        let gen_base = gen_basename(basename, manifest.generation);
+        Some(HnswArtifacts {
+            generation: manifest.generation,
+            graph: dir.join(format!("{}.hnsw.graph", gen_base)),
+            data: dir.join(format!("{}.hnsw.data", gen_base)),
+            ids: dir.join(format!("{}.hnsw.ids", gen_base)),
+            manifest: manifest_path(dir, basename),
+        })
+    }
+
+    /// Remove all on-disk HNSW state for `basename` — the manifest, every
+    /// generation's artifacts, and any legacy fixed-name sidecars / `.bak`
+    /// debris — under the exclusive lock. Idempotent (a no-op when nothing is
+    /// present). Used by GC to force a clean rebuild: with the manifest gone,
+    /// concurrent loads see NotFound and fall back to brute-force search.
+    pub fn purge_artifacts(dir: &Path, basename: &str) -> Result<(), HnswError> {
+        let _span = tracing::info_span!("hnsw_purge", dir = %dir.display(), basename).entered();
+        if !dir.exists() {
+            return Ok(());
+        }
+        let lock_path = dir.join(format!("{}.hnsw.lock", basename));
+        #[allow(clippy::suspicious_open_options)] // Intentional: create if missing, don't truncate
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)?;
+        lock_file.lock().map_err(HnswError::Io)?;
+        warn_wsl_advisory_locking(dir);
+
+        // Remove the manifest first so a concurrent load resolves NotFound
+        // even if an artifact unlink below lags.
+        if let Err(e) = std::fs::remove_file(manifest_path(dir, basename)) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(HnswError::Internal(format!(
+                    "Failed to remove HNSW manifest for {}: {}",
+                    basename, e
+                )));
+            }
+        }
+        // Remove every generation's artifacts (u64::MAX keeps nothing) plus
+        // legacy sidecars and `.bak` debris.
+        gc_stale_generations(dir, basename, u64::MAX);
+        Ok(())
     }
 
     /// Get vector count without loading the full index (fast, for stats).
@@ -1444,7 +1334,11 @@ impl HnswIndex {
     /// Uses `BufReader` + `serde_json::from_reader` to avoid reading the entire
     /// id map file into a String first. The file is a JSON array of chunk ID strings.
     pub fn count_vectors(dir: &Path, basename: &str) -> Option<usize> {
-        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        // Resolve the current generation's id map via the manifest; no
+        // manifest → no index → no count.
+        let manifest = read_manifest_lenient(dir, basename)?;
+        let gen_base = gen_basename(basename, manifest.generation);
+        let id_map_path = dir.join(format!("{}.hnsw.ids", gen_base));
         let file = match std::fs::File::open(&id_map_path) {
             Ok(f) => f,
             Err(e) => {
@@ -1456,7 +1350,10 @@ impl HnswIndex {
                 return None;
             }
         };
-        // Acquire shared lock for consistency with load()
+        // Best-effort shared lock on the id-map file itself (advisory). This
+        // is NOT the save/load `.hnsw.lock` — count_vectors is a cheap stats
+        // read that only needs the id-map bytes to be internally consistent,
+        // not full serialization against a concurrent generation swap.
         if let Err(e) = file.lock_shared() {
             tracing::debug!(error = %e, "Could not lock HNSW id map");
             return None;
@@ -1597,43 +1494,76 @@ mod tests {
 
     use crate::hnsw::make_test_embedding as make_embedding;
 
-    /// Write a checksum file matching the given HNSW files
-    fn write_checksums(dir: &Path, basename: &str) {
-        let mut lines = Vec::new();
-        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
-            let path = dir.join(format!("{}.{}", basename, ext));
-            if path.exists() {
-                let mut hasher = blake3::Hasher::new();
-                let mut file = std::fs::File::open(&path).unwrap();
-                std::io::copy(&mut file, &mut hasher).unwrap();
-                let hash = hasher.finalize().to_hex().to_string();
-                lines.push(format!("{}:{}", ext, hash));
-            }
-        }
+    /// blake3 hex of a file on disk (test-side mirror of `hash_file`).
+    fn hash_test_file(path: &Path) -> String {
+        let mut hasher = blake3::Hasher::new();
+        let mut file = std::fs::File::open(path).unwrap();
+        std::io::copy(&mut file, &mut hasher).unwrap();
+        hasher.finalize().to_hex().to_string()
+    }
+
+    /// Fabricate a manifest for `basename` at `generation`, hashing whatever
+    /// bytes currently sit at `{basename}.gen{generation}.hnsw.{graph,data,ids}`.
+    /// The test-side equivalent of the old `write_checksums`: it makes a
+    /// hand-built or mutated generation loadable by pinning matching checksums.
+    fn write_manifest(
+        dir: &Path,
+        basename: &str,
+        generation: u64,
+        metric: &str,
+        stamp: Option<StoreStamp>,
+    ) {
+        let gb = gen_basename(basename, generation);
+        let checksums = ManifestChecksums {
+            graph: hash_test_file(&dir.join(format!("{gb}.hnsw.graph"))),
+            data: hash_test_file(&dir.join(format!("{gb}.hnsw.data"))),
+            ids: hash_test_file(&dir.join(format!("{gb}.hnsw.ids"))),
+        };
+        let (chunk_count, splade_generation) = match stamp {
+            Some(s) => (Some(s.chunk_count), Some(s.splade_generation)),
+            None => (None, None),
+        };
+        let manifest = HnswManifest {
+            magic: HNSW_MANIFEST_MAGIC.to_string(),
+            version: HNSW_MANIFEST_VERSION,
+            generation,
+            metric: metric.to_string(),
+            chunk_count,
+            splade_generation,
+            checksums,
+        };
         std::fs::write(
-            dir.join(format!("{}.hnsw.checksum", basename)),
-            lines.join("\n"),
+            manifest_path(dir, basename),
+            serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    /// Write the three artifact files for a fabricated generation `1`, with
+    /// `graph`/`data` sized as requested (sparse) and `ids` = `ids_json`, then
+    /// pin a matching manifest so the load path reaches the size/parse checks.
+    fn fabricate_generation(dir: &Path, graph_len: u64, data_len: u64, ids_json: &[u8]) {
+        let gb = gen_basename("test", 1);
+        let graph = dir.join(format!("{gb}.hnsw.graph"));
+        let data = dir.join(format!("{gb}.hnsw.data"));
+        let ids = dir.join(format!("{gb}.hnsw.ids"));
+        std::fs::File::create(&graph)
+            .unwrap()
+            .set_len(graph_len)
+            .unwrap();
+        std::fs::File::create(&data)
+            .unwrap()
+            .set_len(data_len)
+            .unwrap();
+        std::fs::write(&ids, ids_json).unwrap();
+        write_manifest(dir, "test", 1, "cosine", None);
     }
 
     #[test]
     fn test_load_rejects_oversized_graph_file() {
         let tmp = TempDir::new().unwrap();
-
-        // Create valid-looking HNSW files, but make graph oversized
-        let graph_path = tmp.path().join("test.hnsw.graph");
-        let data_path = tmp.path().join("test.hnsw.data");
-        let ids_path = tmp.path().join("test.hnsw.ids");
-
-        // Write oversized graph file (just over 500MB limit)
-        // We use set_len to create a sparse file — no actual disk I/O
-        let f = std::fs::File::create(&graph_path).unwrap();
-        f.set_len(501 * 1024 * 1024).unwrap();
-
-        std::fs::write(&data_path, b"dummy").unwrap();
-        std::fs::write(&ids_path, b"[]").unwrap();
-        write_checksums(tmp.path(), "test");
+        // Oversized graph (just over the 500MB limit), sparse so no real I/O.
+        fabricate_generation(tmp.path(), 501 * 1024 * 1024, 5, b"[]");
 
         match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
@@ -1651,19 +1581,8 @@ mod tests {
     #[test]
     fn test_load_rejects_oversized_data_file() {
         let tmp = TempDir::new().unwrap();
-
-        let graph_path = tmp.path().join("test.hnsw.graph");
-        let data_path = tmp.path().join("test.hnsw.data");
-        let ids_path = tmp.path().join("test.hnsw.ids");
-
-        std::fs::write(&graph_path, b"dummy").unwrap();
-
-        // Write oversized data file (just over 1GB limit)
-        let f = std::fs::File::create(&data_path).unwrap();
-        f.set_len(1025 * 1024 * 1024).unwrap();
-
-        std::fs::write(&ids_path, b"[]").unwrap();
-        write_checksums(tmp.path(), "test");
+        // Oversized data (just over the 1GB limit).
+        fabricate_generation(tmp.path(), 5, 1025 * 1024 * 1024, b"[]");
 
         match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
@@ -1681,19 +1600,9 @@ mod tests {
     #[test]
     fn test_load_rejects_data_too_large_for_id_map() {
         let tmp = TempDir::new().unwrap();
-
-        let graph_path = tmp.path().join("test.hnsw.graph");
-        let data_path = tmp.path().join("test.hnsw.data");
-        let ids_path = tmp.path().join("test.hnsw.ids");
-
-        std::fs::write(&graph_path, b"dummy").unwrap();
-
-        // id_map claims 2 vectors, but data file is far larger than
-        // 2 * 768 * 4 * 2 = 12,288 bytes would allow
-        std::fs::write(&ids_path, r#"["a","b"]"#).unwrap();
-        let f = std::fs::File::create(&data_path).unwrap();
-        f.set_len(1_000_000).unwrap(); // ~1MB >> 12KB limit
-        write_checksums(tmp.path(), "test");
+        // id_map claims 2 vectors, but the data file is far larger than
+        // 2 * 768 * 4 * 2 = 12,288 bytes would allow.
+        fabricate_generation(tmp.path(), 5, 1_000_000, br#"["a","b"]"#);
 
         match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
@@ -1708,25 +1617,29 @@ mod tests {
         }
     }
 
+    /// A generation set present but with no manifest pointer reads as absent:
+    /// `load_with_dim` returns `NotFound`, which routes the caller to rebuild.
+    /// This is the migration path (a legacy index has artifacts but no
+    /// manifest) and the "manifest lost" corruption case in one.
     #[test]
-    fn test_load_rejects_missing_checksum() {
+    fn test_load_without_manifest_is_not_found() {
         let tmp = TempDir::new().unwrap();
-
-        std::fs::write(tmp.path().join("test.hnsw.graph"), b"data").unwrap();
-        std::fs::write(tmp.path().join("test.hnsw.data"), b"data").unwrap();
-        std::fs::write(tmp.path().join("test.hnsw.ids"), b"[]").unwrap();
-        // No checksum file
+        let gb = gen_basename("test", 1);
+        std::fs::write(tmp.path().join(format!("{gb}.hnsw.graph")), b"data").unwrap();
+        std::fs::write(tmp.path().join(format!("{gb}.hnsw.data")), b"data").unwrap();
+        std::fs::write(tmp.path().join(format!("{gb}.hnsw.ids")), b"[]").unwrap();
+        // No manifest.
 
         match HnswIndex::load_with_dim(tmp.path(), "test", crate::EMBEDDING_DIM) {
             Err(e) => {
                 let msg = format!("{}", e);
                 assert!(
-                    msg.contains("No checksum file"),
-                    "Expected checksum error, got: {}",
+                    msg.contains("not found") || msg.contains("NotFound"),
+                    "Expected NotFound error, got: {}",
                     msg
                 );
             }
-            Ok(_) => panic!("Expected error for missing checksum file"),
+            Ok(_) => panic!("Expected NotFound for a manifest-less generation set"),
         }
     }
 
@@ -1823,10 +1736,9 @@ mod tests {
                 crate::EMBEDDING_DIM,
             )
             .unwrap();
-            // Save into a NEW basename so we don't trip the
-            // stale-`.bak` guard from a partial first save; the lock
-            // path is keyed on basename so we keep the original to
-            // exercise the deadlock surface.
+            // Re-save the same basename; each save writes a fresh generation,
+            // so this exercises the load-then-save lock surface without any
+            // debris concern.
             let result = new_index.save(&dir, &basename_owned);
             let _ = tx.send(result);
         });
@@ -1904,57 +1816,211 @@ mod tests {
         );
     }
 
-    /// A staged file that goes missing between staging and promote must
-    /// hard-error into the rollback path — never report a successful save.
-    /// Silently skipping missing temps used to promote a partial set and
-    /// then delete the `.bak`s of the previous good index on the success
-    /// path, destroying it.
+    /// List the generation numbers with at least one artifact on disk.
+    fn generations_on_disk(dir: &Path, basename: &str) -> Vec<u64> {
+        let mut gens = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(g) = parse_generation(&name, basename) {
+                gens.insert(g);
+            }
+        }
+        gens.into_iter().collect()
+    }
+
+    /// Headline crash-state (a): a crash in the window between artifact
+    /// completion and the manifest commit leaves the PRIOR generation intact
+    /// and loadable. The injected fault writes generation 2's artifacts, then
+    /// dies before flipping the pointer; the loader still serves generation 1.
     #[test]
-    fn test_save_errors_and_rolls_back_when_staged_file_missing() {
+    fn crash_before_manifest_commit_serves_old_generation() {
         let tmp = TempDir::new().unwrap();
         let basename = "index";
 
-        // Establish a good v1 index on disk.
+        // Good v1 index: manifest points at generation 1.
         let v1: Vec<(String, crate::embedder::Embedding)> = (1..=2)
             .map(|i| (format!("vec{}", i), make_embedding(i)))
             .collect();
-        let v1_idx = HnswIndex::build_with_dim(v1, crate::EMBEDDING_DIM).unwrap();
-        v1_idx.save(tmp.path(), basename).unwrap();
-        let v1_ids = std::fs::read(tmp.path().join(format!("{}.hnsw.ids", basename))).unwrap();
+        HnswIndex::build_with_dim(v1, crate::EMBEDDING_DIM)
+            .unwrap()
+            .save(tmp.path(), basename)
+            .unwrap();
 
-        // Save v2 with the ids staging file deleted just before promote.
-        // graph/data promote first, so this exercises mid-loop rollback.
+        // v2 save crashes just before the manifest commit.
         let v2: Vec<(String, crate::embedder::Embedding)> = (1..=3)
             .map(|i| (format!("newvec{}", i), make_embedding(i + 10)))
             .collect();
         let v2_idx = HnswIndex::build_with_dim(v2, crate::EMBEDDING_DIM).unwrap();
-        test_hooks::DELETE_STAGED_EXT_BEFORE_PROMOTE
-            .with(|hook| *hook.borrow_mut() = Some("hnsw.ids".to_string()));
+        test_hooks::FAIL_BEFORE_MANIFEST_COMMIT.with(|h| *h.borrow_mut() = true);
         let result = v2_idx.save(tmp.path(), basename);
-
-        let err = format!("{}", result.unwrap_err());
+        test_hooks::FAIL_BEFORE_MANIFEST_COMMIT.with(|h| *h.borrow_mut() = false);
         assert!(
-            err.contains("staging file missing during promote"),
-            "save must surface the missing staged file, got: {}",
-            err
+            result.is_err(),
+            "the injected crash must surface as an error"
         );
 
-        // Rollback must restore the previous good index: v1 files back in
-        // place, no `.bak` breadcrumbs, no staging dir, and the index loads.
-        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
-            let bak = tmp.path().join(format!("{}.{}.bak", basename, ext));
-            assert!(
-                !bak.exists(),
-                "rollback must consume .bak files; {} still exists",
-                bak.display()
-            );
-        }
-        let restored_ids =
-            std::fs::read(tmp.path().join(format!("{}.hnsw.ids", basename))).unwrap();
-        assert_eq!(restored_ids, v1_ids, "rollback must restore the v1 id map");
+        // The manifest still points at generation 1, whose artifacts are
+        // intact — the loader serves the OLD generation, not a half-written v2.
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
-            .expect("previous good index must still load after rolled-back save");
-        assert_eq!(loaded.len(), 2, "loaded index must be the v1 index");
+            .expect("prior generation must remain loadable after a mid-save crash");
+        assert_eq!(
+            loaded.len(),
+            2,
+            "the served index must be v1 (generation 1)"
+        );
+        assert!(
+            generations_on_disk(tmp.path(), basename).contains(&2),
+            "the crashed save's generation-2 artifacts should be present as orphans"
+        );
+    }
+
+    /// Headline crash-state (b) — the availability fix: after a crash state, a
+    /// subsequent save SUCCEEDS. This is RED against the old stale-`.bak`
+    /// guard, which refused every save after a partial one ("manual recovery
+    /// required"). The next save also GCs the orphaned generation.
+    #[test]
+    fn save_succeeds_after_crash_before_manifest_commit() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        HnswIndex::build_with_dim(
+            (1..=2)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+
+        // Crash a v2 save before the commit.
+        let crashed = HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("mid{}", i), make_embedding(i + 20)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        test_hooks::FAIL_BEFORE_MANIFEST_COMMIT.with(|h| *h.borrow_mut() = true);
+        let _ = crashed.save(tmp.path(), basename);
+        test_hooks::FAIL_BEFORE_MANIFEST_COMMIT.with(|h| *h.borrow_mut() = false);
+
+        // The subsequent save must SUCCEED (no wedge) and become current.
+        let v3 = HnswIndex::build_with_dim(
+            (1..=4)
+                .map(|i| (format!("final{}", i), make_embedding(i + 40)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        v3.save(tmp.path(), basename)
+            .expect("a save after a crashed save must succeed — the wedge is gone");
+        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).unwrap();
+        assert_eq!(loaded.len(), 4, "the current index must be the v3 save");
+        assert_eq!(
+            generations_on_disk(tmp.path(), basename).len(),
+            1,
+            "post-commit GC must leave exactly the current generation"
+        );
+    }
+
+    /// Crash-state (c): a committed manifest with a not-yet-GC'd predecessor
+    /// generation loads the NEW generation, and the next save GCs the stragglers.
+    #[test]
+    fn committed_with_stale_generations_loads_new_then_next_save_gcs() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        HnswIndex::build_with_dim(
+            (1..=2)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+
+        // Fabricate a not-GC'd predecessor generation 0 by copying gen 1's
+        // artifacts under gen-0 names.
+        let g1 = gen_basename(basename, 1);
+        let g0 = gen_basename(basename, 0);
+        for ext in HNSW_ARTIFACT_EXTS {
+            std::fs::copy(
+                tmp.path().join(format!("{g1}.{ext}")),
+                tmp.path().join(format!("{g0}.{ext}")),
+            )
+            .unwrap();
+        }
+        assert!(generations_on_disk(tmp.path(), basename).contains(&0));
+
+        // Load still serves the current generation (1).
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // The next save GCs every non-current generation.
+        HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("next{}", i), make_embedding(i + 5)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+        assert_eq!(
+            generations_on_disk(tmp.path(), basename).len(),
+            1,
+            "the next save must GC the stale generations, leaving only the current"
+        );
+    }
+
+    /// Crash-state (d): a manifest pointing at a generation whose artifacts are
+    /// missing (or corrupt) fails to load — routed to rebuild, never a wedge —
+    /// and a subsequent save recovers cleanly.
+    #[test]
+    fn manifest_referencing_missing_artifact_falls_to_rebuild() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        HnswIndex::build_with_dim(
+            (1..=2)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+
+        // Remove the current generation's graph artifact, leaving the manifest.
+        let paths = HnswIndex::artifact_paths(tmp.path(), basename).unwrap();
+        std::fs::remove_file(&paths.graph).unwrap();
+
+        // load errors; try_load routes to brute-force (None), never a wedge.
+        assert!(HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).is_err());
+        assert!(HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM).is_none());
+
+        // A subsequent save recovers.
+        let v2 = HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("recovered{}", i), make_embedding(i + 7)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        v2.save(tmp.path(), basename).unwrap();
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -2117,152 +2183,116 @@ mod tests {
         );
     }
 
-    /// A backup-rename failure during save MUST bubble up rather than being
-    /// warning-and-continued. Swallowing the error would leave the rollback
-    /// path unable to restore the original file because no `.bak` had ever
-    /// been created — silently losing the prior index.
-    ///
-    /// Force the failure by pre-creating a `.bak` path as a non-empty directory
-    /// (Linux `rename(file, dir)` returns EISDIR / ENOTDIR depending on kernel,
-    /// either way an error). The save must surface that error and leave the
-    /// original `index.hnsw.*` files untouched.
-    #[cfg(unix)]
+    /// A successful save leaves a clean generation layout: exactly the current
+    /// generation's three artifacts plus the manifest — no `.bak` debris and no
+    /// legacy fixed-name sidecars.
     #[test]
-    fn test_save_propagates_backup_rename_failure() {
+    fn test_save_leaves_clean_generation_layout() {
         let tmp = TempDir::new().unwrap();
+        let basename = "index";
 
-        // Build + save a valid index so the directory has the v1 files.
-        let embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=5)
-            .map(|i| (format!("vec{}", i), make_embedding(i)))
-            .collect();
-        let v1 = HnswIndex::build_with_dim(embeddings.clone(), crate::EMBEDDING_DIM).unwrap();
-        v1.save(tmp.path(), "index").unwrap();
+        HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+        // A second save supersedes the first; the layout must stay clean.
+        HnswIndex::build_with_dim(
+            (1..=5)
+                .map(|i| (format!("vec{}", i + 10), make_embedding(i + 10)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
 
-        // Snapshot the v1 graph file size so we can detect post-failure damage.
-        let graph_path = tmp.path().join("index.hnsw.graph");
-        let v1_graph_size = std::fs::metadata(&graph_path).unwrap().len();
-        assert!(
-            v1_graph_size > 0,
-            "v1 graph file should be non-empty after first save"
-        );
-
-        // Pre-create a non-empty directory at the `.bak` path for one of the
-        // extensions. `std::fs::rename(file, non_empty_dir)` fails with
-        // ENOTDIR/EISDIR on Linux, exercising the backup-rename error branch.
-        let bak_blocker = tmp.path().join("index.hnsw.graph.bak");
-        std::fs::create_dir(&bak_blocker).unwrap();
-        // Put a file inside so the rename can't succeed by replacing an empty dir.
-        std::fs::write(bak_blocker.join("blocker"), b"x").unwrap();
-
-        // Attempt a second save with a different (still valid) embeddings set.
-        let v2_embeddings: Vec<(String, crate::embedder::Embedding)> = (1..=8)
-            .map(|i| (format!("vec{}", i + 100), make_embedding(i + 100)))
-            .collect();
-        let v2 = HnswIndex::build_with_dim(v2_embeddings, crate::EMBEDDING_DIM).unwrap();
-
-        let result = v2.save(tmp.path(), "index");
-        assert!(
-            result.is_err(),
-            "save MUST surface the backup-rename failure (P2 #30)"
-        );
-        let err_msg = format!("{}", result.unwrap_err());
-        // The stale-bak guard runs before the backup-rename pass, so a
-        // pre-existing `.bak` (whether file or directory) trips the guard
-        // with a "stale .bak files" message before the rename failure path
-        // runs. Either error path is a valid surfacing of the underlying
-        // scenario: save bails without touching the original index. Accept
-        // both messages so this test pins the correctness invariant ("save
-        // bails before damage") independent of which guard fires.
-        assert!(
-            err_msg.contains("back up")
-                || err_msg.contains("backup")
-                || err_msg.contains("stale .bak files"),
-            "error should mention backup failure or stale-bak guard, got: {}",
-            err_msg
-        );
-
-        // Original v1 graph file MUST still be intact and the same size.
-        let post_size = std::fs::metadata(&graph_path).unwrap().len();
         assert_eq!(
-            post_size, v1_graph_size,
-            "original index file must not be touched when save bails on backup failure"
+            generations_on_disk(tmp.path(), basename).len(),
+            1,
+            "exactly one generation should remain after a supersede"
         );
-    }
-
-    /// A successful save must leave NO `.bak` files behind. This test pins
-    /// it so a future refactor of the cleanup loop can't silently regress
-    /// and let the next save trip the stale-bak guard.
-    #[cfg(unix)]
-    #[test]
-    fn test_save_cleans_up_baks_on_success() {
-        let tmp = TempDir::new().unwrap();
-
-        let v1: Vec<(String, crate::embedder::Embedding)> = (1..=3)
-            .map(|i| (format!("vec{}", i), make_embedding(i)))
-            .collect();
-        let v1_idx = HnswIndex::build_with_dim(v1, crate::EMBEDDING_DIM).unwrap();
-        v1_idx.save(tmp.path(), "index").unwrap();
-
-        let v2: Vec<(String, crate::embedder::Embedding)> = (1..=5)
-            .map(|i| (format!("vec{}", i + 10), make_embedding(i + 10)))
-            .collect();
-        let v2_idx = HnswIndex::build_with_dim(v2, crate::EMBEDDING_DIM).unwrap();
-        // Successful overwrite. The save creates `.bak` files mid-flight
-        // and must clean them up before returning Ok.
-        v2_idx.save(tmp.path(), "index").unwrap();
-
-        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
-            let bak = tmp.path().join(format!("index.{}.bak", ext));
-            assert!(
-                !bak.exists(),
-                "successful save must remove .bak files; {} still exists",
-                bak.display(),
-            );
+        assert!(
+            manifest_path(tmp.path(), basename).exists(),
+            "manifest must be present"
+        );
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            assert!(!tmp.path().join(format!("{basename}.{ext}")).exists());
+            assert!(!tmp.path().join(format!("{basename}.{ext}.bak")).exists());
         }
     }
 
-    /// Stale `.bak` files from a prior failed rollback must be detected at
-    /// save start. Manual recovery is required so
-    /// we don't silently overwrite a known-good index with a stale
-    /// `.bak` on a future rollback. The guard returns
-    /// `HnswError::Internal` with an actionable message naming the
-    /// stale paths.
-    #[cfg(unix)]
+    /// The availability fix, positively pinned: leftover debris from the
+    /// retired scheme (a `.bak`, a legacy sidecar) does NOT block a save. The
+    /// old stale-`.bak` guard returned "manual recovery required" here; now the
+    /// save proceeds and the post-commit GC cleans the debris. RED against the
+    /// old code.
     #[test]
-    fn test_save_refuses_when_stale_bak_present() {
+    fn test_save_succeeds_despite_stale_bak() {
         let tmp = TempDir::new().unwrap();
+        let basename = "index";
 
-        // Plant a stale .bak file (no current index — fresh dir).
-        let stale_bak = tmp.path().join("index.hnsw.graph.bak");
-        std::fs::write(&stale_bak, b"stale-content").unwrap();
+        std::fs::write(tmp.path().join("index.hnsw.graph.bak"), b"stale").unwrap();
+        std::fs::write(tmp.path().join("index.hnsw.checksum"), b"stale").unwrap();
 
-        let v: Vec<(String, crate::embedder::Embedding)> = (1..=3)
-            .map(|i| (format!("vec{}", i), make_embedding(i)))
-            .collect();
-        let idx = HnswIndex::build_with_dim(v, crate::EMBEDDING_DIM).unwrap();
-
-        let result = idx.save(tmp.path(), "index");
-        assert!(
-            result.is_err(),
-            "save MUST refuse to start with a stale .bak present"
+        let idx = HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap();
+        idx.save(tmp.path(), basename)
+            .expect("a save must NOT be wedged by leftover .bak / legacy debris");
+        assert!(!tmp.path().join("index.hnsw.graph.bak").exists());
+        assert!(!tmp.path().join("index.hnsw.checksum").exists());
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            3
         );
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("stale .bak files"),
-            "error must name the stale-bak guard, got: {}",
-            err_msg,
-        );
-        assert!(
-            err_msg.contains("manual recovery required"),
-            "error must direct operator to manual recovery, got: {}",
-            err_msg,
-        );
+    }
 
-        // Stale .bak must still be on disk — the guard does NOT clean
-        // up; it surfaces the breadcrumb for the operator.
-        assert!(
-            stale_bak.exists(),
-            "guard must NOT delete the stale .bak (it's the operator's recovery breadcrumb)"
+    /// Migration: a fabricated legacy five-file set (no manifest) reads as
+    /// absent (NotFound → rebuild), and the first successful new-format save
+    /// removes the legacy files under the lock.
+    #[test]
+    fn test_legacy_five_file_set_migrates_on_first_save() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            std::fs::write(tmp.path().join(format!("{basename}.{ext}")), b"legacy").unwrap();
+        }
+        assert!(HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).is_err());
+        assert!(!HnswIndex::exists(tmp.path(), basename));
+
+        HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            assert!(
+                !tmp.path().join(format!("{basename}.{ext}")).exists(),
+                "legacy {ext} must be removed on first new-format save"
+            );
+        }
+        assert!(HnswIndex::exists(tmp.path(), basename));
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            3
         );
     }
 
@@ -2293,10 +2323,10 @@ mod tests {
             assert_eq!(index.metric(), DistanceMetric::DotProduct);
             index.save(tmp.path(), basename).unwrap();
 
-            // The meta header must be on disk and covered by the manifest.
+            // The manifest must be on disk (it carries the metric).
             assert!(
-                tmp.path().join(format!("{basename}.hnsw.meta")).exists(),
-                "save must write the .hnsw.meta header"
+                manifest_path(tmp.path(), basename).exists(),
+                "save must write the .hnsw.manifest pointer"
             );
 
             let loaded =
@@ -2318,36 +2348,18 @@ mod tests {
         );
     }
 
-    /// A pre-#1351 index has no `.hnsw.meta` and a 3-line checksum manifest.
-    /// It must load as cosine — that is what every legacy index was built
-    /// with.
+    /// With no manifest present, `stored_metric` defaults to cosine — every
+    /// legacy index was built with `DistCosine`, and that keeps the CAGRA
+    /// rebuild path consistent when `CQS_DISTANCE_METRIC` is unset.
     #[test]
-    fn test_legacy_index_without_meta_loads_as_cosine() {
+    fn test_stored_metric_defaults_to_cosine_without_manifest() {
         use crate::index::DistanceMetric;
         let tmp = TempDir::new().unwrap();
-        let basename = "test_legacy";
-
-        let embeddings = vec![
-            ("a".to_string(), make_embedding(1)),
-            ("b".to_string(), make_embedding(2)),
-        ];
-        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
-        index.save(tmp.path(), basename).unwrap();
-
-        // Simulate the legacy layout: drop the meta header and rewrite the
-        // manifest with only the three legacy extensions (`write_checksums`
-        // covers exactly graph/data/ids).
-        std::fs::remove_file(tmp.path().join(format!("{basename}.hnsw.meta"))).unwrap();
-        write_checksums(tmp.path(), basename);
-
-        let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
-            .expect("legacy index without meta header must load");
         assert_eq!(
-            loaded.metric(),
+            HnswIndex::stored_metric(tmp.path(), "absent").unwrap(),
             DistanceMetric::Cosine,
-            "legacy index must load as cosine"
+            "no manifest → cosine default"
         );
-        assert_eq!(loaded.len(), 2);
     }
 
     /// Loading with `CQS_DISTANCE_METRIC` explicitly set to a different
@@ -2411,40 +2423,42 @@ mod tests {
         // _var's Drop removes the env var before the lock releases.
     }
 
-    /// The meta header is covered by the blake3 manifest: tampering with it
-    /// after save must fail checksum verification before the metric is even
-    /// read.
+    /// A manifest whose `metric` is edited to disagree with the graph must not
+    /// silently misread distances. The manifest is not self-checksummed (its
+    /// integrity is the atomic commit), so the artifact checksums still pass;
+    /// the guard is hnsw_rs's cross-check of the distance name embedded in the
+    /// graph file, which makes the load fail loudly.
     #[test]
-    fn test_tampered_meta_fails_checksum() {
+    fn test_tampered_manifest_metric_fails_load() {
         let tmp = TempDir::new().unwrap();
-        let basename = "test_meta_tamper";
+        let basename = "test_metric_tamper";
 
-        let embeddings = vec![
-            ("a".to_string(), make_embedding(1)),
-            ("b".to_string(), make_embedding(2)),
-        ];
-        let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
-        index.save(tmp.path(), basename).unwrap();
-
-        // Rewrite the meta to claim a different metric WITHOUT updating the
-        // manifest.
-        let meta_path = tmp.path().join(format!("{basename}.hnsw.meta"));
-        std::fs::write(
-            &meta_path,
-            r#"{"magic":"CQSHNSW","version":1,"metric":"dot"}"#,
+        // Build a cosine index, then rewrite the manifest to claim "dot"
+        // (keeping generation + artifact checksums valid).
+        let index = HnswIndex::build_with_dim(
+            vec![
+                ("a".to_string(), make_embedding(1)),
+                ("b".to_string(), make_embedding(2)),
+            ],
+            crate::EMBEDDING_DIM,
         )
         .unwrap();
+        index.save(tmp.path(), basename).unwrap();
 
-        match HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM) {
-            Err(HnswError::ChecksumMismatch { file, .. }) => {
-                assert!(
-                    file.contains("hnsw.meta"),
-                    "checksum failure should point at the meta file: {file}"
-                );
-            }
-            Err(other) => panic!("expected ChecksumMismatch, got: {other}"),
-            Ok(_) => panic!("tampered meta must not load"),
-        }
+        let manifest = read_manifest(tmp.path(), basename).unwrap().unwrap();
+        write_manifest(
+            tmp.path(),
+            basename,
+            manifest.generation,
+            "dot",
+            manifest.store_stamp(),
+        );
+
+        // The metric now says dot, the graph says cosine → hnsw_rs rejects it.
+        assert!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM).is_err(),
+            "a manifest metric that disagrees with the graph must not load"
+        );
     }
 
     // ===== id_map edge cases =====
@@ -2462,30 +2476,22 @@ mod tests {
     //   decodes it to a real NUL in the `String`. Pins that the loader
     //   accepts such ids today.
 
-    /// Build a valid on-disk HNSW index, then rewrite its `.hnsw.ids` file
-    /// with a crafted id_map while keeping graph + data intact. The
-    /// checksum file must also be rewritten or `verify_hnsw_checksums`
-    /// rejects the index before the id_map is touched.
-    fn rewrite_id_map_and_checksums(dir: &Path, basename: &str, ids: &[&str]) {
-        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
-        let json = serde_json::to_string(ids).unwrap();
-        std::fs::write(&id_map_path, json).unwrap();
-
-        // Re-write checksums so the load path accepts the mutated id_map.
-        let mut lines = Vec::new();
-        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
-            let path = dir.join(format!("{}.{}", basename, ext));
-            let mut hasher = blake3::Hasher::new();
-            let mut file = std::fs::File::open(&path).unwrap();
-            std::io::copy(&mut file, &mut hasher).unwrap();
-            let hash = hasher.finalize().to_hex().to_string();
-            lines.push(format!("{}:{}", ext, hash));
-        }
-        std::fs::write(
-            dir.join(format!("{}.hnsw.checksum", basename)),
-            lines.join("\n"),
-        )
-        .unwrap();
+    /// Build a valid on-disk HNSW index, then rewrite the current generation's
+    /// `.ids` file with a crafted id_map while keeping graph + data intact. The
+    /// manifest is re-pinned over the mutated artifacts, or `verify_hnsw_checksums`
+    /// would reject the index before the id_map is touched.
+    fn rewrite_id_map_and_manifest(dir: &Path, basename: &str, ids: &[&str]) {
+        let manifest = read_manifest(dir, basename).unwrap().unwrap();
+        let gb = gen_basename(basename, manifest.generation);
+        let id_map_path = dir.join(format!("{gb}.hnsw.ids"));
+        std::fs::write(&id_map_path, serde_json::to_string(ids).unwrap()).unwrap();
+        write_manifest(
+            dir,
+            basename,
+            manifest.generation,
+            &manifest.metric,
+            manifest.store_stamp(),
+        );
     }
 
     /// Duplicate id_map entries are NOT rejected. `load_with_dim` only
@@ -2508,7 +2514,7 @@ mod tests {
 
         // Rewrite id_map so two slots point at the same chunk id. The
         // hnsw_count still matches 3, so the mismatch check doesn't fire.
-        rewrite_id_map_and_checksums(tmp.path(), basename, &["a", "a", "c"]);
+        rewrite_id_map_and_manifest(tmp.path(), basename, &["a", "a", "c"]);
 
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("duplicate id_map entries must not cause load failure");
@@ -2532,7 +2538,7 @@ mod tests {
         let index = HnswIndex::build_with_dim(embeddings, crate::EMBEDDING_DIM).unwrap();
         index.save(tmp.path(), basename).unwrap();
 
-        rewrite_id_map_and_checksums(tmp.path(), basename, &["", "b"]);
+        rewrite_id_map_and_manifest(tmp.path(), basename, &["", "b"]);
 
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("empty-string id_map entries must not cause load failure");
@@ -2562,7 +2568,7 @@ mod tests {
         let nul_id = String::from("has\0nul");
         let normal_id = String::from("b");
         let ids: Vec<&str> = vec![nul_id.as_str(), normal_id.as_str()];
-        rewrite_id_map_and_checksums(tmp.path(), basename, &ids);
+        rewrite_id_map_and_manifest(tmp.path(), basename, &ids);
 
         let loaded = HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
             .expect("NUL-byte id_map entries must not cause load failure");
@@ -2615,15 +2621,6 @@ mod tests {
             .upsert_chunks_batch(&[(chunk, make_embedding(42))], Some(0))
             .expect("seed chunk");
     }
-
-    /// All five sidecar extensions a completed save promotes.
-    const STAMP_TEST_EXTS: [&str; 5] = [
-        "hnsw.graph",
-        "hnsw.data",
-        "hnsw.ids",
-        "hnsw.meta",
-        "hnsw.checksum",
-    ];
 
     /// Dirty-path contract: a stamped save whose stamp still matches the
     /// live store verifies (died after the save → heal); once the store
@@ -2738,173 +2735,61 @@ mod tests {
         );
         assert!(
             !HnswIndex::exists(tmp.path(), "index"),
-            "a discarded save must not write sidecars"
+            "a discarded save must not write a manifest"
         );
     }
 
-    /// Post-success debris: a kill between the last promote and the .bak
-    /// cleanup leaves a healthy stamped live set plus orphan .baks. The next
-    /// save must treat the .baks as debris (delete, proceed) instead of
-    /// wedging persistence with a manual-recovery refusal.
+    /// The manifest roundtrips the stamp for a stamped save, and a plain
+    /// (store-less) `save()` writes a stamp-less manifest whose
+    /// `store_stamp()` is `None` (so the dirty path refuses it).
     #[test]
-    fn save_stamped_clears_post_success_bak_debris() {
-        let (store, tmp) = crate::test_helpers::setup_store();
-        let v1 = small_index();
-        let snapshot = StoreStamp::read(&store).unwrap();
-        assert_eq!(
-            v1.save_stamped(tmp.path(), "index", &store, snapshot)
-                .unwrap(),
-            SaveOutcome::Saved
-        );
-
-        // Simulate the kill window: every promoted file also has a .bak left
-        // behind (contents don't matter to the guard — only the live set's
-        // health does).
-        for ext in STAMP_TEST_EXTS {
-            let live = tmp.path().join(format!("index.{ext}"));
-            let bak = tmp.path().join(format!("index.{ext}.bak"));
-            std::fs::copy(&live, &bak).unwrap();
-        }
-
-        let v2 = small_index();
-        let snapshot2 = StoreStamp::read(&store).unwrap();
-        assert_eq!(
-            v2.save_stamped(tmp.path(), "index", &store, snapshot2)
-                .unwrap(),
-            SaveOutcome::Saved,
-            "healthy stamped live set + .baks = debris; the save must proceed"
-        );
-        for ext in STAMP_TEST_EXTS {
-            let bak = tmp.path().join(format!("index.{ext}.bak"));
-            assert!(!bak.exists(), "debris {} must be cleaned", bak.display());
-        }
-        let loaded =
-            HnswIndex::load_with_dim(tmp.path(), "index", crate::EMBEDDING_DIM).expect("load v2");
-        assert_eq!(loaded.len(), 2);
-    }
-
-    /// When .baks exist and the live set does NOT verify, the .baks may be
-    /// the only good copy — the save must still hard-refuse and leave them
-    /// in place.
-    #[test]
-    fn save_stamped_refuses_baks_when_live_set_invalid() {
-        let (store, tmp) = crate::test_helpers::setup_store();
-        let v1 = small_index();
-        let snapshot = StoreStamp::read(&store).unwrap();
-        assert_eq!(
-            v1.save_stamped(tmp.path(), "index", &store, snapshot)
-                .unwrap(),
-            SaveOutcome::Saved
-        );
-        for ext in STAMP_TEST_EXTS {
-            let live = tmp.path().join(format!("index.{ext}"));
-            let bak = tmp.path().join(format!("index.{ext}.bak"));
-            std::fs::copy(&live, &bak).unwrap();
-        }
-        // Corrupt the live graph so verification fails.
-        std::fs::File::create(tmp.path().join("index.hnsw.graph"))
-            .unwrap()
-            .set_len(0)
-            .unwrap();
-
-        let v2 = small_index();
-        let snapshot2 = StoreStamp::read(&store).unwrap();
-        let err = v2
-            .save_stamped(tmp.path(), "index", &store, snapshot2)
-            .expect_err("invalid live set + .baks must refuse");
-        assert!(
-            format!("{err}").contains("manual recovery"),
-            "want manual-recovery refusal, got: {err}"
-        );
-        for ext in STAMP_TEST_EXTS {
-            let bak = tmp.path().join(format!("index.{ext}.bak"));
-            assert!(
-                bak.exists(),
-                "breadcrumb {} must be preserved",
-                bak.display()
-            );
-        }
-    }
-
-    /// Plain (store-less) `save()` cannot validate the live set's stamp, so
-    /// any .bak keeps the conservative hard refusal.
-    #[test]
-    fn plain_save_still_refuses_any_baks() {
-        let tmp = TempDir::new().unwrap();
-        let v1 = small_index();
-        v1.save(tmp.path(), "index").unwrap();
-        let live = tmp.path().join("index.hnsw.ids");
-        std::fs::copy(&live, tmp.path().join("index.hnsw.ids.bak")).unwrap();
-
-        let err = small_index()
-            .save(tmp.path(), "index")
-            .expect_err("store-less save must refuse while .baks exist");
-        assert!(
-            format!("{err}").contains("manual recovery"),
-            "want manual-recovery refusal, got: {err}"
-        );
-    }
-
-    /// The meta header roundtrips the stamp, and pre-stamp sidecars parse
-    /// with `store_stamp() == None` (clean loads keep working).
-    #[test]
-    fn meta_stamp_roundtrip_and_legacy_compat() {
+    fn manifest_stamp_roundtrip_and_unstamped() {
         let (store, tmp) = crate::test_helpers::setup_store();
         let snapshot = StoreStamp::read(&store).unwrap();
         small_index()
             .save_stamped(tmp.path(), "index", &store, snapshot)
             .unwrap();
-        let meta = read_hnsw_meta(tmp.path(), "index")
+        let manifest = read_manifest(tmp.path(), "index")
             .unwrap()
-            .expect("meta written");
-        assert_eq!(meta.store_stamp(), Some(snapshot));
+            .expect("manifest written");
+        assert_eq!(manifest.store_stamp(), Some(snapshot));
 
-        // Legacy (pre-stamp) meta: only magic/version/metric.
-        let legacy = serde_json::json!({
-            "magic": HNSW_META_MAGIC,
-            "version": HNSW_META_VERSION,
-            "metric": "cosine",
-        });
-        std::fs::write(
-            tmp.path().join("legacy.hnsw.meta"),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
-        let legacy_meta = read_hnsw_meta(tmp.path(), "legacy")
+        // A store-less plain save writes no stamp.
+        let tmp2 = TempDir::new().unwrap();
+        small_index().save(tmp2.path(), "index").unwrap();
+        let unstamped = read_manifest(tmp2.path(), "index")
             .unwrap()
-            .expect("legacy meta parses");
-        assert_eq!(legacy_meta.store_stamp(), None);
+            .expect("manifest written");
+        assert_eq!(unstamped.store_stamp(), None);
         assert_eq!(
-            read_hnsw_meta_metric(tmp.path(), "legacy").unwrap(),
+            read_manifest_metric(tmp2.path(), "index").unwrap(),
             DistanceMetric::Cosine
         );
     }
 
-    // ===== property tests: HnswMeta save→load codec + the stamp/version
+    // ===== property tests: HnswManifest save→load codec + the stamp/version
     // contracts =====
     //
     // The example tests above pin hand-picked values: one fixed stamp from
     // `setup_store()`, the (Some,Some) and (None,None) presence shapes, the
     // `dot`/`cosine` metrics, `version == 1`. The structural null is the rest
     // of the field space — boundary stamp values (0, 1, u64::MAX), the two
-    // *half-present* presence shapes (the hand-edited-meta case the
+    // *half-present* presence shapes (the hand-edited-manifest case the
     // `store_stamp()` doc calls out), version boundaries around
-    // `HNSW_META_VERSION` (including 0 and u32::MAX), and arbitrary metric /
+    // `HNSW_MANIFEST_VERSION` (including 0 and u32::MAX), and arbitrary metric /
     // magic strings. The properties below drive the REAL functions
-    // (`serde_json` serialize == the save path's encoder; `read_hnsw_meta` /
-    // `read_hnsw_meta_metric` == the load path's decoder + validators) over a
+    // (`serde_json` serialize == the save path's encoder; `read_manifest` /
+    // `read_manifest_metric` == the load path's decoder + validators) over a
     // generator that lands deliberately on those boundaries.
     mod properties {
         use super::*;
         use proptest::prelude::*;
 
-        /// Serialize a typed `HnswMeta` exactly as `save_impl` does
-        /// (`serde_json::to_vec`), write it to the basename's `.hnsw.meta`
-        /// path under `dir`, and return that path's parent for the readers.
-        fn write_meta_json(dir: &Path, basename: &str, meta: &HnswMeta) {
-            let path = dir.join(format!("{}.hnsw.meta", basename));
-            let bytes = serde_json::to_vec(meta).expect("HnswMeta serializes");
-            std::fs::write(&path, bytes).expect("write meta");
+        /// Serialize a typed `HnswManifest` exactly as `save_impl` does
+        /// (`serde_json::to_vec`) and write it to the basename's manifest path.
+        fn write_manifest_json(dir: &Path, basename: &str, manifest: &HnswManifest) {
+            let bytes = serde_json::to_vec(manifest).expect("HnswManifest serializes");
+            std::fs::write(manifest_path(dir, basename), bytes).expect("write manifest");
         }
 
         /// Generator coverage claim: every (chunk_count, splade_generation)
@@ -2922,15 +2807,15 @@ mod tests {
         }
 
         /// Generator coverage claim: `version` lands on the validation
-        /// boundary deliberately — 0 (below current), HNSW_META_VERSION
-        /// (the accept/reject seam), HNSW_META_VERSION+1 (first rejected),
+        /// boundary deliberately — 0 (below current), HNSW_MANIFEST_VERSION
+        /// (the accept/reject seam), HNSW_MANIFEST_VERSION+1 (first rejected),
         /// u32::MAX (max) — plus a uniform u32 so no in-between value is
         /// unreachable.
         fn version_field() -> impl Strategy<Value = u32> {
             prop_oneof![
                 Just(0u32),
-                Just(HNSW_META_VERSION),
-                Just(HNSW_META_VERSION.saturating_add(1)),
+                Just(HNSW_MANIFEST_VERSION),
+                Just(HNSW_MANIFEST_VERSION.saturating_add(1)),
                 Just(u32::MAX),
                 any::<u32>(),
             ]
@@ -2942,17 +2827,17 @@ mod tests {
         /// both get hit.
         fn magic_field() -> impl Strategy<Value = String> {
             prop_oneof![
-                Just(HNSW_META_MAGIC.to_string()),
+                Just(HNSW_MANIFEST_MAGIC.to_string()),
                 Just(String::new()),
-                Just("cqshnsw".to_string()),  // case near-miss
-                Just("CQSHNSW ".to_string()), // trailing-space near-miss
-                ".*",                         // arbitrary, incl. unicode
+                Just("cqshnswmanifest".to_string()), // case near-miss
+                Just("CQSHNSWMANIFEST ".to_string()), // trailing-space near-miss
+                ".*",                                // arbitrary, incl. unicode
             ]
         }
 
         /// Generator coverage claim: `metric` covers every accepted spelling
         /// `FromStr` recognizes (so the metric round-trips through
-        /// `read_hnsw_meta_metric`), the canonical persisted spellings, and
+        /// `read_manifest_metric`), the canonical persisted spellings, and
         /// arbitrary garbage (so the typed-error arm is exercised).
         fn metric_field() -> impl Strategy<Value = String> {
             prop_oneof![
@@ -2966,27 +2851,31 @@ mod tests {
             ]
         }
 
-        /// A fully-arbitrary, always-well-formed `HnswMeta` (correct magic +
-        /// supported version + parseable metric). Used by the round-trip and
+        /// A fully-arbitrary, always-well-formed `HnswManifest` (correct magic
+        /// + supported version + parseable metric). Used by the round-trip and
         /// stamp properties where the validators must ACCEPT every input, so
         /// the generator stays inside the valid region but still sweeps the
-        /// full stamp boundary set.
-        fn valid_meta() -> impl Strategy<Value = HnswMeta> {
+        /// full stamp boundary set. Checksums are irrelevant to these
+        /// decode/validate properties, so they stay empty.
+        fn valid_manifest() -> impl Strategy<Value = HnswManifest> {
             (
                 prop_oneof![Just("cosine".to_string()), Just("dot".to_string())],
-                0u32..=HNSW_META_VERSION, // supported versions only
+                0u32..=HNSW_MANIFEST_VERSION, // supported versions only
+                any::<u64>(),                 // generation
                 stamp_field(),
                 stamp_field(),
             )
-                .prop_map(|(metric, version, chunk_count, splade_generation)| {
-                    HnswMeta {
-                        magic: HNSW_META_MAGIC.to_string(),
+                .prop_map(
+                    |(metric, version, generation, chunk_count, splade_generation)| HnswManifest {
+                        magic: HNSW_MANIFEST_MAGIC.to_string(),
                         version,
+                        generation,
                         metric,
                         chunk_count,
                         splade_generation,
-                    }
-                })
+                        checksums: ManifestChecksums::default(),
+                    },
+                )
         }
 
         proptest! {
@@ -2995,21 +2884,21 @@ mod tests {
             // boundary cases below as explicit `#[test]`s.
 
             /// Invariant (round-trip / codec):
-            ///   read(write(meta)) ≡ meta   ∀ well-formed meta.
+            ///   read(write(manifest)) ≡ manifest   ∀ well-formed manifest.
             /// The save path encodes with `serde_json::to_vec`; the load path
-            /// decodes with `serde_json::from_slice` inside `read_hnsw_meta`.
+            /// decodes with `serde_json::from_slice` inside `read_manifest`.
             /// This drives both real functions and asserts byte-faithful field
             /// reconstruction — the `#[serde(default)] Option<u64>` fields are
             /// the bite risk (a `None` that decodes as `Some(0)`, or a stamp
             /// dropped, would silently break the staleness guard).
             #[test]
-            fn prop_meta_round_trips(meta in valid_meta()) {
+            fn prop_manifest_round_trips(manifest in valid_manifest()) {
                 let tmp = TempDir::new().unwrap();
-                write_meta_json(tmp.path(), "rt", &meta);
-                let loaded = read_hnsw_meta(tmp.path(), "rt")
-                    .expect("well-formed meta must read")
-                    .expect("meta file exists");
-                prop_assert_eq!(loaded, meta);
+                write_manifest_json(tmp.path(), "rt", &manifest);
+                let loaded = read_manifest(tmp.path(), "rt")
+                    .expect("well-formed manifest must read")
+                    .expect("manifest file exists");
+                prop_assert_eq!(loaded, manifest);
             }
 
             /// Invariant (stamp pairing):
@@ -3023,16 +2912,18 @@ mod tests {
                 cc in stamp_field(),
                 sg in stamp_field(),
             ) {
-                let meta = HnswMeta {
-                    magic: HNSW_META_MAGIC.to_string(),
-                    version: HNSW_META_VERSION,
+                let manifest = HnswManifest {
+                    magic: HNSW_MANIFEST_MAGIC.to_string(),
+                    version: HNSW_MANIFEST_VERSION,
+                    generation: 1,
                     metric: "cosine".to_string(),
                     chunk_count: cc,
                     splade_generation: sg,
+                    checksums: ManifestChecksums::default(),
                 };
                 let tmp = TempDir::new().unwrap();
-                write_meta_json(tmp.path(), "sp", &meta);
-                let loaded = read_hnsw_meta(tmp.path(), "sp").unwrap().unwrap();
+                write_manifest_json(tmp.path(), "sp", &manifest);
+                let loaded = read_manifest(tmp.path(), "sp").unwrap().unwrap();
                 let expected = match (cc, sg) {
                     (Some(chunk_count), Some(splade_generation)) => {
                         Some(StoreStamp { chunk_count, splade_generation })
@@ -3042,11 +2933,11 @@ mod tests {
                 prop_assert_eq!(loaded.store_stamp(), expected);
             }
 
-            /// Invariant (version/magic gate — the generation-stamp seam):
-            ///   read_hnsw_meta accepts  iff  magic == HNSW_META_MAGIC ∧ version ≤ HNSW_META_VERSION.
-            /// A meta from a *newer* generation (version > this binary) must be
+            /// Invariant (version/magic gate — the generation-manifest seam):
+            ///   read_manifest accepts  iff  magic == HNSW_MANIFEST_MAGIC ∧ version ≤ HNSW_MANIFEST_VERSION.
+            /// A manifest from a *newer* binary (version > this one) must be
             /// REJECTED, never silently used as-current — that is exactly the
-            /// sidecar-from-a-future-generation class. Both arms are generated.
+            /// manifest-from-a-future-version class. Both arms are generated.
             #[test]
             fn prop_version_magic_gate(
                 magic in magic_field(),
@@ -3055,17 +2946,19 @@ mod tests {
                 cc in stamp_field(),
                 sg in stamp_field(),
             ) {
-                let meta = HnswMeta {
+                let manifest = HnswManifest {
                     magic: magic.clone(),
                     version,
+                    generation: 1,
                     metric,
                     chunk_count: cc,
                     splade_generation: sg,
+                    checksums: ManifestChecksums::default(),
                 };
                 let tmp = TempDir::new().unwrap();
-                write_meta_json(tmp.path(), "vg", &meta);
-                let result = read_hnsw_meta(tmp.path(), "vg");
-                let should_accept = magic == HNSW_META_MAGIC && version <= HNSW_META_VERSION;
+                write_manifest_json(tmp.path(), "vg", &manifest);
+                let result = read_manifest(tmp.path(), "vg");
+                let should_accept = magic == HNSW_MANIFEST_MAGIC && version <= HNSW_MANIFEST_VERSION;
                 if should_accept {
                     prop_assert!(
                         result.is_ok() && result.as_ref().unwrap().is_some(),
@@ -3075,34 +2968,36 @@ mod tests {
                 } else {
                     // A mismatched magic or future version is a typed error —
                     // never a silent Ok that the load path would treat as a
-                    // current sidecar.
+                    // current manifest.
                     prop_assert!(
                         result.is_err(),
                         "magic={:?} version={} should reject (magic_ok={}, ver_ok={})",
                         magic,
                         version,
-                        magic == HNSW_META_MAGIC,
-                        version <= HNSW_META_VERSION,
+                        magic == HNSW_MANIFEST_MAGIC,
+                        version <= HNSW_MANIFEST_VERSION,
                     );
                 }
             }
 
             /// Invariant (metric round-trip):
-            ///   read_hnsw_meta_metric(write(meta)) = meta.metric.parse::<DistanceMetric>()
+            ///   read_manifest_metric(write(manifest)) = manifest.metric.parse::<DistanceMetric>()
             /// whenever magic+version are valid. A parseable metric survives;
             /// an unparseable one is a typed error (never a silent cosine).
             #[test]
             fn prop_metric_round_trip(metric in metric_field()) {
-                let meta = HnswMeta {
-                    magic: HNSW_META_MAGIC.to_string(),
-                    version: HNSW_META_VERSION,
+                let manifest = HnswManifest {
+                    magic: HNSW_MANIFEST_MAGIC.to_string(),
+                    version: HNSW_MANIFEST_VERSION,
+                    generation: 1,
                     metric: metric.clone(),
                     chunk_count: None,
                     splade_generation: None,
+                    checksums: ManifestChecksums::default(),
                 };
                 let tmp = TempDir::new().unwrap();
-                write_meta_json(tmp.path(), "mr", &meta);
-                let got = read_hnsw_meta_metric(tmp.path(), "mr");
+                write_manifest_json(tmp.path(), "mr", &manifest);
+                let got = read_manifest_metric(tmp.path(), "mr");
                 match metric.parse::<DistanceMetric>() {
                     Ok(expected) => {
                         prop_assert_eq!(
@@ -3126,13 +3021,10 @@ mod tests {
             /// dirty-path check accepts ONLY when a complete stamp is present
             /// AND equals the live store. A persisted stamp from a *different*
             /// generation (saved ≠ live) must be refused — silently accepting
-            /// it is the sidecar-from-previous-generation bug. The example
+            /// it is the manifest-from-previous-generation bug. The example
             /// suite drives this with the store's *actual* generation; here we
             /// forge the persisted stamp directly so saved>live, saved<live,
             /// saved==live, and the half/empty shapes are all reachable.
-            ///
-            /// `setup_store()` gives a fresh store at a fixed live stamp; we
-            /// read it once and forge persisted stamps around it.
             #[test]
             fn prop_verify_current_accepts_iff_stamp_equals_live(
                 saved_cc in stamp_field(),
@@ -3141,24 +3033,22 @@ mod tests {
                 let (store, tmp) = crate::test_helpers::setup_store();
                 let live = StoreStamp::read(&store).unwrap();
 
-                // Forge a verified sidecar SET (graph/data/ids/checksum) so
-                // `verify_hnsw_checksums` passes — then the only thing left to
-                // decide the verdict is the stamp comparison. Build+save a real
-                // tiny index, then overwrite ONLY the meta with the forged
-                // stamp and refresh its checksum line.
+                // Build+save a real tiny index (real artifacts + manifest), then
+                // overwrite ONLY the manifest's stamp with the forged pair,
+                // keeping the REAL checksums so `verify_hnsw_checksums` still
+                // passes and the stamp comparison is the sole discriminator.
                 small_index().save(tmp.path(), "index").unwrap();
-                let forged = HnswMeta {
-                    magic: HNSW_META_MAGIC.to_string(),
-                    version: HNSW_META_VERSION,
+                let real = read_manifest(tmp.path(), "index").unwrap().unwrap();
+                let forged = HnswManifest {
+                    magic: HNSW_MANIFEST_MAGIC.to_string(),
+                    version: HNSW_MANIFEST_VERSION,
+                    generation: real.generation,
                     metric: "cosine".to_string(),
                     chunk_count: saved_cc,
                     splade_generation: saved_sg,
+                    checksums: real.checksums,
                 };
-                write_meta_json(tmp.path(), "index", &forged);
-                // Rebuild the checksum manifest over the (now-forged) meta plus
-                // the real graph/data/ids so checksum verification still passes
-                // and the stamp comparison is the sole discriminator.
-                rewrite_all_checksums(tmp.path(), "index");
+                write_manifest_json(tmp.path(), "index", &forged);
 
                 let result = verify_hnsw_current(tmp.path(), "index", &store);
 
@@ -3187,29 +3077,6 @@ mod tests {
             }
         }
 
-        /// Rewrite the blake3 checksum manifest over the four content files
-        /// (graph/data/ids/meta) as they currently sit on disk. Used by the
-        /// `verify_hnsw_current` property after forging the meta so the
-        /// checksum pass stays green and the stamp comparison is the sole
-        /// discriminator.
-        fn rewrite_all_checksums(dir: &Path, basename: &str) {
-            let mut lines = Vec::new();
-            for ext in &["hnsw.ids", "hnsw.graph", "hnsw.data", "hnsw.meta"] {
-                let path = dir.join(format!("{}.{}", basename, ext));
-                if path.exists() {
-                    let mut hasher = blake3::Hasher::new();
-                    let mut file = std::fs::File::open(&path).unwrap();
-                    std::io::copy(&mut file, &mut hasher).unwrap();
-                    lines.push(format!("{}:{}", ext, hasher.finalize().to_hex()));
-                }
-            }
-            std::fs::write(
-                dir.join(format!("{}.hnsw.checksum", basename)),
-                lines.join("\n"),
-            )
-            .unwrap();
-        }
-
         // ===== pinned boundary regressions =====
         //
         // The boundary cases the properties sweep, pinned as explicit examples
@@ -3217,20 +3084,22 @@ mod tests {
         // are the values a hand-written suite would have to enumerate by hand;
         // they are kept here as the durable floor under the generated search.
 
-        /// version == HNSW_META_VERSION is the accept/reject seam: it must be
-        /// accepted (the boundary is `>`, not `>=`).
+        /// version == HNSW_MANIFEST_VERSION is the accept/reject seam: it must
+        /// be accepted (the boundary is `>`, not `>=`).
         #[test]
         fn boundary_version_at_limit_accepts() {
             let tmp = TempDir::new().unwrap();
-            let meta = HnswMeta {
-                magic: HNSW_META_MAGIC.to_string(),
-                version: HNSW_META_VERSION,
+            let manifest = HnswManifest {
+                magic: HNSW_MANIFEST_MAGIC.to_string(),
+                version: HNSW_MANIFEST_VERSION,
+                generation: 1,
                 metric: "cosine".to_string(),
                 chunk_count: Some(u64::MAX),
                 splade_generation: Some(0),
+                checksums: ManifestChecksums::default(),
             };
-            write_meta_json(tmp.path(), "b", &meta);
-            let loaded = read_hnsw_meta(tmp.path(), "b").unwrap().unwrap();
+            write_manifest_json(tmp.path(), "b", &manifest);
+            let loaded = read_manifest(tmp.path(), "b").unwrap().unwrap();
             assert_eq!(
                 loaded.store_stamp(),
                 Some(StoreStamp {
@@ -3240,39 +3109,43 @@ mod tests {
             );
         }
 
-        /// version == HNSW_META_VERSION + 1 is the first rejected value: a
-        /// sidecar written by a newer binary must be refused, not used.
+        /// version == HNSW_MANIFEST_VERSION + 1 is the first rejected value: a
+        /// manifest written by a newer binary must be refused, not used.
         #[test]
         fn boundary_version_above_limit_rejects() {
             let tmp = TempDir::new().unwrap();
-            let meta = HnswMeta {
-                magic: HNSW_META_MAGIC.to_string(),
-                version: HNSW_META_VERSION + 1,
+            let manifest = HnswManifest {
+                magic: HNSW_MANIFEST_MAGIC.to_string(),
+                version: HNSW_MANIFEST_VERSION + 1,
+                generation: 1,
                 metric: "cosine".to_string(),
                 chunk_count: None,
                 splade_generation: None,
+                checksums: ManifestChecksums::default(),
             };
-            write_meta_json(tmp.path(), "b", &meta);
+            write_manifest_json(tmp.path(), "b", &manifest);
             let err =
-                read_hnsw_meta(tmp.path(), "b").expect_err("future-version sidecar must reject");
+                read_manifest(tmp.path(), "b").expect_err("future-version manifest must reject");
             assert!(format!("{err}").contains("newer than this binary"));
         }
 
         /// Both half-present stamp shapes collapse to `None` — a hand-edited
-        /// meta carrying only one of the pair cannot prove a generation.
+        /// manifest carrying only one of the pair cannot prove a generation.
         #[test]
         fn boundary_half_present_stamp_is_none() {
             for (cc, sg) in [(Some(7u64), None), (None, Some(9u64))] {
                 let tmp = TempDir::new().unwrap();
-                let meta = HnswMeta {
-                    magic: HNSW_META_MAGIC.to_string(),
-                    version: HNSW_META_VERSION,
+                let manifest = HnswManifest {
+                    magic: HNSW_MANIFEST_MAGIC.to_string(),
+                    version: HNSW_MANIFEST_VERSION,
+                    generation: 1,
                     metric: "cosine".to_string(),
                     chunk_count: cc,
                     splade_generation: sg,
+                    checksums: ManifestChecksums::default(),
                 };
-                write_meta_json(tmp.path(), "b", &meta);
-                let loaded = read_hnsw_meta(tmp.path(), "b").unwrap().unwrap();
+                write_manifest_json(tmp.path(), "b", &manifest);
+                let loaded = read_manifest(tmp.path(), "b").unwrap().unwrap();
                 assert_eq!(
                     loaded.store_stamp(),
                     None,

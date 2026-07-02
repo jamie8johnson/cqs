@@ -63,7 +63,7 @@ fn test_truncated_data_file_detected() {
     index.save(tmp.path(), "test").unwrap();
 
     // Truncate the data file (corrupt it)
-    let data_path = tmp.path().join("test.hnsw.data");
+    let data_path = HnswIndex::artifact_paths(tmp.path(), "test").unwrap().data;
     let original = std::fs::read(&data_path).unwrap();
     // Write only first half of the file
     std::fs::write(&data_path, &original[..original.len() / 2]).unwrap();
@@ -96,7 +96,7 @@ fn test_checksum_mismatch_detected() {
     index.save(tmp.path(), "test").unwrap();
 
     // Corrupt a single byte in the graph file
-    let graph_path = tmp.path().join("test.hnsw.graph");
+    let graph_path = HnswIndex::artifact_paths(tmp.path(), "test").unwrap().graph;
     let mut data = std::fs::read(&graph_path).unwrap();
     if !data.is_empty() {
         // Flip a bit in the middle of the file
@@ -130,7 +130,8 @@ fn test_missing_files_detected() {
     index.save(tmp.path(), "test").unwrap();
 
     // Delete one of the required files
-    std::fs::remove_file(tmp.path().join("test.hnsw.ids")).unwrap();
+    let ids_path = HnswIndex::artifact_paths(tmp.path(), "test").unwrap().ids;
+    std::fs::remove_file(&ids_path).unwrap();
 
     // Loading should fail with not found
     let result = HnswIndex::load_with_dim(tmp.path(), "test", cqs::EMBEDDING_DIM);
@@ -157,7 +158,7 @@ fn test_corrupted_id_map_json() {
     index.save(tmp.path(), "test").unwrap();
 
     // Corrupt the ID map JSON
-    let id_map_path = tmp.path().join("test.hnsw.ids");
+    let id_map_path = HnswIndex::artifact_paths(tmp.path(), "test").unwrap().ids;
     std::fs::write(&id_map_path, "{ invalid json [[[").unwrap();
 
     // Loading should fail (either checksum or parse error)
@@ -177,7 +178,7 @@ fn test_id_map_size_mismatch_rejected() {
     index.save(tmp.path(), "test").unwrap();
 
     // Modify id_map to have wrong count (2 instead of 3)
-    let id_map_path = tmp.path().join("test.hnsw.ids");
+    let id_map_path = HnswIndex::artifact_paths(tmp.path(), "test").unwrap().ids;
     std::fs::write(&id_map_path, r#"["chunk1", "chunk2"]"#).unwrap();
 
     // Loading should fail due to size mismatch

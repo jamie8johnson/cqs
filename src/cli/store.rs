@@ -920,10 +920,12 @@ mod base_index_tests {
 
         // Corrupt one of the checksummed files — truncating to zero bytes
         // is enough to flip the blake3 result and flunk verify_hnsw_checksums.
-        let graph_path = dir.path().join("index_base.hnsw.graph");
+        let graph_path = cqs::HnswIndex::artifact_paths(dir.path(), "index_base")
+            .expect("fixture invariant: manifest must exist after save()")
+            .graph;
         assert!(
             graph_path.exists(),
-            "fixture invariant: .hnsw.graph must exist after save() so we can corrupt it"
+            "fixture invariant: the generation graph must exist after save() so we can corrupt it"
         );
         std::fs::File::create(&graph_path)
             .unwrap()
@@ -1060,10 +1062,12 @@ mod base_index_tests {
         index.save(dir.path(), "index").unwrap();
 
         // Truncate the enriched graph file — enriched basename is "index".
-        let graph_path = dir.path().join("index.hnsw.graph");
+        let graph_path = cqs::HnswIndex::artifact_paths(dir.path(), "index")
+            .expect("fixture invariant: manifest must exist after save()")
+            .graph;
         assert!(
             graph_path.exists(),
-            "fixture invariant: index.hnsw.graph must exist after save() so we can corrupt it"
+            "fixture invariant: the generation graph must exist after save() so we can corrupt it"
         );
         std::fs::File::create(&graph_path)
             .unwrap()
