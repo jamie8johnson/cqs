@@ -319,21 +319,24 @@ pub(crate) fn callers_core(
 /// in the delta are dropped, then the overlay's callers are unioned in. The
 /// edge-kind filter and `--limit` cap apply to the merged set.
 ///
+/// The `Type::method`-qualified path merges too, via [`callers_qualified`]:
+/// parent attributed callers from delta-touched origins are masked, the
+/// overlay's attributed callers are unioned, and `qual_defines` /
+/// `other_owner_types` are computed from the union of both stores' definitions.
+///
 /// Returns `(output, overlay_participated)`. The bool reports whether the
 /// overlay actually consulted the delta for THIS answer — true only when the
 /// merge changed the caller set (a parent row's call-site origin was masked OR
 /// ≥1 overlay row was unioned). It is `false` on every parent-truth path:
-/// `overlay == None`, the `Type::method`-qualified early-return, the
-/// kind-fallback early-return, and an active overlay that touched no origin
-/// relevant to this query. The daemon adapter gates the
+/// `overlay == None`, the kind-fallback early-return, and an active overlay
+/// that touched no origin relevant to this query. The daemon adapter gates the
 /// `_meta.overlay_graph = "full"` calibration marker on this bool so the marker
 /// never over-claims: `overlay.is_some()` means "the worktree has some dirty
 /// file", NOT "this answer reflects the delta".
 ///
-/// The `Type::method`-qualified and kind-fallback paths stay on parent-truth in
-/// Part B PR1 — the merge is wired only for the bare-name call-graph query (the
-/// common surface). Extending the merge to the attributed `Type::method` path is
-/// follow-up work.
+/// The kind-fallback early-return stays parent-truth by design: it returns a
+/// definitions-redirect, not a caller graph, so the `"full"` marker (a
+/// caller-set completeness claim) has nothing to describe.
 pub(crate) fn callers_overlay(
     store: &Store<ReadOnly>,
     args: &CallersArgs,
@@ -345,21 +348,25 @@ pub(crate) fn callers_overlay(
     // before rendering so the user can paginate via repeated calls.
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
-    // `Type::method` receiver-type disambiguation. Resolved read-side
-    // from `chunks.parent_type_name`, before kind detection (which classifies
-    // the *bare* name, never the qualified form). Parent-truth in PR1 — the
-    // overlay never participates here, so this path reports `false`.
+    // `Type::method` receiver-type disambiguation. Resolved read-side from
+    // `chunks.parent_type_name`, before kind detection (which classifies the
+    // *bare* name, never the qualified form). The overlay is threaded through so
+    // a method added or re-attributed in the delta is reflected: parent
+    // attributed callers from delta-touched origins are masked, the overlay's
+    // attributed callers are unioned, and the definition landscape
+    // (`qual_defines` / other-owner exclusion) is the union of both stores.
     if let Some((qual_type, method)) = split_type_qualifier(&args.name) {
-        return Ok((
-            callers_qualified(store, qual_type, method, args.edge_kind, limit)?,
-            false,
-        ));
+        return callers_qualified(store, overlay, qual_type, method, args.edge_kind, limit);
     }
 
-    // Polymorphic-routing kind detection. Dispatch the kind-mismatch
-    // fallback before the call-graph query. Parent-truth in PR1 — the kind is
-    // classified from the parent store, so a fallback verdict never reflects
-    // the overlay: report `false`.
+    // Polymorphic-routing kind detection: dispatch the kind-mismatch fallback
+    // before the call-graph query. This stays parent-truth by design, not
+    // omission — a kind fallback returns a definitions-redirect, NOT a caller
+    // graph, so the `overlay_graph = "full"` marker (a caller-set completeness
+    // claim) has nothing to describe. The verdict is classified from the parent
+    // store; a worktree that changed a name's *kind* is a classification-
+    // freshness concern orthogonal to this call-graph merge. Report `false` so
+    // the honest absent marker stands.
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callers(fk);
@@ -462,51 +469,108 @@ fn multi_def_candidates(store: &Store<ReadOnly>, name: &str) -> Result<Vec<DefCa
 /// 3. Only when BOTH the local def is absent AND the exact arm is empty is it a
 ///    genuine typo (`Banana::search`) or a misused path: return empty with the
 ///    real `Type::method` candidates listed so the user sees the truth.
+///
+/// Worktree-overlay merge (`overlay = Some`): the definition landscape
+/// (`qual_defines`, `other_owner_types`) is the union of the parent store's
+/// defs and the overlay store's delta-file defs, so a method (or an other-owner
+/// type) added in the worktree is attributed. Parent attributed callers — and
+/// parent exclusions — from delta-touched origins are dropped (their edge or
+/// verdict may have changed), then the overlay's fresh attributed rows from
+/// those origins are unioned. The returned bool reports whether that merge
+/// consulted the delta for this answer. `overlay = None` is byte-identical to
+/// the pre-overlay parent-only resolution.
 fn callers_qualified(
     store: &Store<ReadOnly>,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
     qual_type: &str,
     method: &str,
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
-) -> Result<CallersCoreOutput> {
-    // Single scan of the method's definitions feeds the local-def gate and the
-    // other-owner-types exclusion set.
-    let defs = store
+) -> Result<(CallersCoreOutput, bool)> {
+    // Definition landscape across both stores. The overlay store holds only
+    // delta-file chunks, so its defs are the worktree's fresh view of the edited
+    // files. The union (presence of a type across either store) gates:
+    //   - `qual_defines`: does the queried type define `method` anywhere in the
+    //     worktree (parent-unchanged OR overlay-added)? Enables the bare-method
+    //     arm so a bare call site in a delta file is attributed even when the
+    //     def lives in an unedited file.
+    //   - `other_owner_types`: every OTHER type owning a same-named method,
+    //     driving the heuristic exclusion.
+    let parent_defs = store
         .count_method_defs_by_type(method)
         .context("Failed to enumerate method definitions")?;
-    let qual_defines = defs.iter().any(|(ty, _)| ty.as_deref() == Some(qual_type));
-
-    // The bare-method arm runs only when the qualifier has a local def; the
-    // exact-qualified arm always runs (see `get_callers_attributed`).
+    let overlay_defs = match overlay {
+        Some(ov) => ov
+            .store
+            .count_method_defs_by_type(method)
+            .context("Failed to enumerate overlay method definitions")?,
+        None => Vec::new(),
+    };
+    let qual_defines = parent_defs
+        .iter()
+        .chain(overlay_defs.iter())
+        .any(|(ty, _)| ty.as_deref() == Some(qual_type));
     let other_owner_types: std::collections::HashSet<String> = if qual_defines {
-        defs.iter()
+        parent_defs
+            .iter()
+            .chain(overlay_defs.iter())
             .filter_map(|(ty, _)| ty.clone())
             .filter(|t| t != qual_type)
             .collect()
     } else {
         std::collections::HashSet::new()
     };
-    let (mut attributed, excluded) = store
+
+    // Parent attributed callers plus the origins of parent exclusions.
+    let (mut attributed, mut excluded_origins) = store
         .get_callers_attributed(method, qual_type, &other_owner_types, qual_defines)
         .context("Failed to load attributed callers")?;
+
+    // Overlay merge, mirroring the bare-name path: drop parent rows (attributed
+    // AND excluded) whose call-site origin is delta-touched, then union the
+    // overlay's fresh rows from those same origins. `participated` is true when
+    // the merge consulted the delta for this answer — a parent row masked, or an
+    // overlay row unioned.
+    let mut participated = false;
+    if let Some(ov) = overlay {
+        let incl_before = attributed.len();
+        attributed.retain(|a| !ov.masked_origins.contains(&a.caller.file));
+        let excl_before = excluded_origins.len();
+        excluded_origins.retain(|o| !ov.masked_origins.contains(o));
+        let (ov_attr, ov_excluded) = ov
+            .store
+            .get_callers_attributed(method, qual_type, &other_owner_types, qual_defines)
+            .context("Failed to load overlay attributed callers")?;
+        participated = attributed.len() != incl_before
+            || excluded_origins.len() != excl_before
+            || !ov_attr.is_empty()
+            || !ov_excluded.is_empty();
+        attributed.extend(ov_attr);
+        excluded_origins.extend(ov_excluded);
+    }
+
     if let Some(want) = edge_kind {
         attributed.retain(|a| a.caller.edge_kind == want);
     }
 
-    // Genuine unknown qualifier: no local def AND no exact-qualified edges.
-    // Surface the real owners as candidates instead of an empty result that
-    // looks like "no callers".
+    // Genuine unknown qualifier: no local def anywhere AND no attributed edges.
+    // Surface the real owners (merged across both stores) as candidates instead
+    // of an empty result that looks like "no callers".
     if !qual_defines && attributed.is_empty() {
-        return Ok(CallersCoreOutput::Callers(CallersOutput {
-            name: format!("{qual_type}::{method}"),
-            callers: Vec::new(),
-            count: 0,
-            total: 0,
-            candidates: defs_to_candidates(&defs, method),
-            excluded_other_owner: 0,
-        }));
+        return Ok((
+            CallersCoreOutput::Callers(CallersOutput {
+                name: format!("{qual_type}::{method}"),
+                callers: Vec::new(),
+                count: 0,
+                total: 0,
+                candidates: merged_candidates(&parent_defs, &overlay_defs, method),
+                excluded_other_owner: 0,
+            }),
+            participated,
+        ));
     }
 
+    let excluded = excluded_origins.len();
     let total = attributed.len();
     attributed.truncate(limit);
     let entries: Vec<CallerEntry> = attributed
@@ -520,14 +584,38 @@ fn callers_qualified(
             attribution: attribution_field(a.attribution),
         })
         .collect();
-    Ok(CallersCoreOutput::Callers(CallersOutput {
-        name: format!("{qual_type}::{method}"),
-        count: entries.len(),
-        callers: entries,
-        total,
-        candidates: Vec::new(),
-        excluded_other_owner: excluded,
-    }))
+    Ok((
+        CallersCoreOutput::Callers(CallersOutput {
+            name: format!("{qual_type}::{method}"),
+            count: entries.len(),
+            callers: entries,
+            total,
+            candidates: Vec::new(),
+            excluded_other_owner: excluded,
+        }),
+        participated,
+    ))
+}
+
+/// Merge the parent and overlay method-definition type-sets into candidate
+/// `Type::method` forms for the unknown-qualifier redirect. Parent defs are
+/// authoritative for the types they know (they cover the whole tree, including
+/// stale delta-file defs); a type present ONLY in the overlay (added in the
+/// worktree) is appended so a worktree-new owner still surfaces as a "did you
+/// mean" candidate. Counts stay advisory. `overlay_defs` empty ⇒ identical to
+/// `defs_to_candidates(parent_defs, method)`.
+fn merged_candidates(
+    parent_defs: &[(Option<String>, usize)],
+    overlay_defs: &[(Option<String>, usize)],
+    method: &str,
+) -> Vec<DefCandidate> {
+    let mut merged: Vec<(Option<String>, usize)> = parent_defs.to_vec();
+    for (ty, count) in overlay_defs {
+        if !parent_defs.iter().any(|(pty, _)| pty == ty) {
+            merged.push((ty.clone(), *count));
+        }
+    }
+    defs_to_candidates(&merged, method)
 }
 
 /// Project a method's definition rows (from [`Store::count_method_defs_by_type`])
@@ -586,15 +674,21 @@ pub(crate) fn callees_core(
 ///
 /// The `x_def_masked` decision is [`WorktreeOverlay::callee_target_def_masked`]
 /// over X's parent definition origins plus an overlay-store def check.
-/// `Type::method` and kind-fallback paths stay on parent-truth in PR1.
 ///
-/// Returns `(output, overlay_participated)`. For callees, participation is
-/// exactly `x_def_masked`: the overlay path ran (parent rows dropped, overlay
-/// rows served) only when X's definition lives in the delta. An active overlay
-/// with X unedited returns the parent callees untouched — pure parent-truth,
-/// `false`. The early-return parent-truth paths (`overlay == None`,
-/// `Type::method`-qualified, kind-fallback) all report `false` too. The daemon
-/// adapter gates the `_meta.overlay_graph = "full"` marker on this bool.
+/// The `Type::method`-qualified path merges too, via [`callees_qualified`],
+/// keyed on the queried type's DEF-SITE origins: a parent def-site in a delta
+/// file is dropped and re-served from the overlay's def-sites, so an edited or
+/// worktree-added method body yields fresh callees. The kind-fallback
+/// early-return stays parent-truth by design — it emits a definitions-redirect,
+/// not a callee graph, so the `"full"` marker has nothing to describe.
+///
+/// Returns `(output, overlay_participated)`. For the bare-name path,
+/// participation is exactly `x_def_masked`: the overlay path ran (parent rows
+/// dropped, overlay rows served) only when X's definition lives in the delta. An
+/// active overlay with X unedited returns the parent callees untouched — pure
+/// parent-truth, `false`. `overlay == None` and the kind-fallback early-return
+/// report `false` too. The daemon adapter gates the
+/// `_meta.overlay_graph = "full"` marker on this bool.
 pub(crate) fn callees_overlay(
     store: &Store<ReadOnly>,
     args: &CalleesArgs,
@@ -604,13 +698,13 @@ pub(crate) fn callees_overlay(
         tracing::info_span!("callees_overlay", name = %args.name, limit = args.limit).entered();
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
-    // `Type::method` scoping: callees of the method as defined under
-    // the queried type, scoped by the def's origin file(s). Parent-truth in PR1.
+    // `Type::method` scoping: callees of the method as defined under the queried
+    // type, scoped by the def's origin file(s). The overlay is threaded through
+    // so an edited or worktree-added method body serves fresh callees: a parent
+    // def-site in a delta file is dropped (its out-edges are suspect) and the
+    // overlay's def-sites in those files are scanned instead.
     if let Some((qual_type, method)) = split_type_qualifier(&args.name) {
-        return Ok((
-            callees_qualified(store, qual_type, method, args.edge_kind, limit)?,
-            false,
-        ));
+        return callees_qualified(store, overlay, qual_type, method, args.edge_kind, limit);
     }
 
     let (chunks, fallback) = super::detect_fallback(store, &args.name);
@@ -680,39 +774,83 @@ pub(crate) fn callees_overlay(
 /// show. Rather than a bare "no callees", surface the real owners as
 /// disambiguation candidates (the callers side does the same), so the user
 /// learns the qualified forms that actually resolve.
+///
+/// Worktree-overlay merge (`overlay = Some`): a def-site's origin is where the
+/// method body lives, so it is the masking key. A parent def-site in a
+/// delta-touched file is dropped — its out-edges are suspect — and the overlay's
+/// def-sites (all in delta files) are scanned in its place, so an edited method
+/// serves its worktree callees and a worktree-added method resolves at all.
+/// `overlay = None` is byte-identical to the pre-overlay parent-only resolution.
 fn callees_qualified(
     store: &Store<ReadOnly>,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
     qual_type: &str,
     method: &str,
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
-) -> Result<CalleesCoreOutput> {
-    let def_sites = store
-        .get_type_method_def_sites(qual_type, method)
-        .context("Failed to resolve type-method def sites")?;
+) -> Result<(CalleesCoreOutput, bool)> {
     let name = format!("{qual_type}::{method}");
 
-    // No local def under this qualifier → no callees exist for it. Mirror the
-    // callers side: if the method is defined under OTHER types, the qualifier
-    // is wrong/unknown — surface those owners as candidates instead of an empty
+    // Def-sites in the parent store (all files) and the overlay store (delta
+    // files only). The def-site origin is the callee masking key.
+    let parent_sites = store
+        .get_type_method_def_sites(qual_type, method)
+        .context("Failed to resolve type-method def sites")?;
+    let overlay_sites = match overlay {
+        Some(ov) => ov
+            .store
+            .get_type_method_def_sites(qual_type, method)
+            .context("Failed to resolve overlay type-method def sites")?,
+        None => Vec::new(),
+    };
+    let is_masked = |origin: &str| -> bool {
+        overlay
+            .map(|ov| ov.masked_origins.contains(std::path::Path::new(origin)))
+            .unwrap_or(false)
+    };
+
+    // A parent def-site in a delta file is suspect (its body may have changed),
+    // so it is dropped and re-served from the overlay's def-sites. Participation
+    // = a parent site masked (body edited/removed) OR the overlay contributed a
+    // def-site (body edited/added).
+    let masked_parent_site = parent_sites.iter().any(|(origin, _)| is_masked(origin));
+    let participated = masked_parent_site || !overlay_sites.is_empty();
+
+    // No usable def-site anywhere (no unmasked parent site AND no overlay site)
+    // → the qualifier is wrong/unknown. Mirror the callers side: surface the real
+    // owners (merged across both stores) as candidates instead of an empty
     // result that reads as "this method calls nothing".
-    if def_sites.is_empty() {
-        let defs = store
+    let has_unmasked_parent_site = parent_sites.iter().any(|(origin, _)| !is_masked(origin));
+    if !has_unmasked_parent_site && overlay_sites.is_empty() {
+        let parent_defs = store
             .count_method_defs_by_type(method)
             .context("Failed to enumerate method definitions")?;
-        let candidates = defs_to_candidates(&defs, method);
-        return Ok(CalleesCoreOutput::Callees(CalleesOutput {
-            name,
-            calls: Vec::new(),
-            count: 0,
-            total: 0,
-            candidates,
-        }));
+        let overlay_defs = match overlay {
+            Some(ov) => ov
+                .store
+                .count_method_defs_by_type(method)
+                .context("Failed to enumerate overlay method definitions")?,
+            None => Vec::new(),
+        };
+        return Ok((
+            CalleesCoreOutput::Callees(CalleesOutput {
+                name,
+                calls: Vec::new(),
+                count: 0,
+                total: 0,
+                candidates: merged_candidates(&parent_defs, &overlay_defs, method),
+            }),
+            participated,
+        ));
     }
 
     let mut callees: Vec<CalleeInfo> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (origin, line) in &def_sites {
+    // Parent def-sites whose origin is NOT delta-touched: authoritative.
+    for (origin, line) in &parent_sites {
+        if is_masked(origin) {
+            continue;
+        }
         let part = store
             .get_callees_full(method, Some(origin), Some(*line))
             .context("Failed to load callees")?;
@@ -722,14 +860,31 @@ fn callees_qualified(
             }
         }
     }
+    // Overlay def-sites (all in delta files): the worktree's fresh out-edges.
+    // Origins are disjoint from the kept parent sites (masked vs unmasked), so
+    // the shared `seen` set never collapses a parent callee into an overlay one.
+    if let Some(ov) = overlay {
+        for (origin, line) in &overlay_sites {
+            let part = ov
+                .store
+                .get_callees_full(method, Some(origin), Some(*line))
+                .context("Failed to load overlay callees")?;
+            for c in part {
+                if seen.insert((origin.clone(), c.name.clone(), c.line)) {
+                    callees.push(c);
+                }
+            }
+        }
+    }
     if let Some(want) = edge_kind {
         callees.retain(|c| c.edge_kind == want);
     }
     let total = callees.len();
     callees.truncate(limit);
-    Ok(CalleesCoreOutput::Callees(build_callees(
-        &name, &callees, total,
-    )))
+    Ok((
+        CalleesCoreOutput::Callees(build_callees(&name, &callees, total)),
+        participated,
+    ))
 }
 
 // ─── Cross-project cores ─────────────────────────────────────────────────────

@@ -131,8 +131,11 @@ impl<Mode> Store<Mode> {
     }
 
     /// Callers of `Type::method`, attributed by receiver type. Returns the
-    /// attributed callers plus the count of callers excluded as belonging to a
-    /// different owning type (`other_owner_types`).
+    /// attributed callers plus the call-site origin file of every caller
+    /// excluded as belonging to a different owning type (`other_owner_types`).
+    /// The excluded-origin list lets the worktree overlay mask a delta-touched
+    /// exclusion (its verdict is recomputed against the overlay) rather than
+    /// double-counting it; the count the caller surfaces is its `.len()`.
     ///
     /// Resolution is read-side from `chunks.parent_type_name` — no new
     /// columns, no parser changes. Up to two edge populations are matched,
@@ -185,7 +188,7 @@ impl<Mode> Store<Mode> {
         qualifier_type: &str,
         other_owner_types: &std::collections::HashSet<String>,
         include_bare: bool,
-    ) -> Result<(Vec<crate::store::AttributedCaller>, usize), StoreError> {
+    ) -> Result<(Vec<crate::store::AttributedCaller>, Vec<PathBuf>), StoreError> {
         use crate::store::{AttributedCaller, CallerAttribution, CallerInfo};
         let _span = tracing::debug_span!(
             "get_callers_attributed",
@@ -245,7 +248,7 @@ impl<Mode> Store<Mode> {
                 .await?;
 
             let mut out = Vec::new();
-            let mut excluded = 0usize;
+            let mut excluded_origins: Vec<PathBuf> = Vec::new();
             // The GROUP BY (file, caller_name, caller_line) already yields one
             // row per call site, collapsing a co-located bare code edge and
             // exact doc edge into a single min-trust-rank row — so the Call
@@ -263,7 +266,7 @@ impl<Mode> Store<Mode> {
                         // same-named method — heuristically excluded (the
                         // receiver could still be ours; the count surfaces it).
                         Some(t) if other_owner_types.contains(t) => {
-                            excluded += 1;
+                            excluded_origins.push(PathBuf::from(file));
                             continue;
                         }
                         // No enclosing type, enclosing type without a same-named
@@ -281,7 +284,7 @@ impl<Mode> Store<Mode> {
                     attribution,
                 });
             }
-            Ok((out, excluded))
+            Ok((out, excluded_origins))
         })
     }
 

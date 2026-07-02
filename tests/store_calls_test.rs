@@ -1223,7 +1223,8 @@ fn attributed_callers_pick_right_type() {
         "caller in a different type that owns the method must be excluded, got {names:?}"
     );
     assert_eq!(
-        excluded, 1,
+        excluded.len(),
+        1,
         "the one Index-parented caller is counted as excluded"
     );
     // store_self → self-call.
@@ -1372,7 +1373,7 @@ fn attributed_callers_exact_only_skips_bare_arm() {
         !names.contains(&"local_reader"),
         "a local bare read_to_string call must NOT be attributed under std::fs: {names:?}"
     );
-    assert_eq!(excluded, 0);
+    assert!(excluded.is_empty());
 }
 
 /// `count_method_defs_by_type` groups a name's callable definitions by
