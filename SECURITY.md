@@ -150,8 +150,8 @@ No other network requests are made. Without `--llm-summaries` or `export-model`,
 |------|---------|------|
 | `.cqs/` directory | Index storage | `cqs init` |
 | `.cqs/slots/<name>/index.db` | SQLite database (per-slot, PR #1105). Pre-migration projects may still see the legacy `.cqs/index.db`. | `cqs index`, note operations |
-| `.cqs/slots/<name>/index.hnsw.*` | HNSW vector index + checksums (per-slot) | `cqs index` |
-| `.cqs/slots/<name>/index_base.hnsw.*` | Base HNSW index + checksums (per-slot) | `cqs index` |
+| `.cqs/slots/<name>/index.gen<N>.hnsw.*` + `index.hnsw.manifest` | HNSW vector index: generation-suffixed graph/data/ids artifacts plus the manifest (generation pointer, stamp, inline checksums) and the `index.hnsw.lock` advisory lock (per-slot) | `cqs index` |
+| `.cqs/slots/<name>/index_base.gen<N>.hnsw.*` + `index_base.hnsw.manifest` | Base HNSW index, same generation+manifest layout (per-slot). Pre-manifest layouts (`*.hnsw.{graph,data,ids,meta,checksum}`) are migrated (rebuilt + legacy files removed) on the first save after upgrade. | `cqs index` |
 | `.cqs/splade.index.bin` | SPLADE sparse inverted index | `cqs index` (with `CQS_SPLADE_MODEL` set), lazy rebuild on first `--splade` query |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
