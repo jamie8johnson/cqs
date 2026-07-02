@@ -100,6 +100,11 @@ const GUARDED_SCOPE: &[&str] = &[
     "src/health.rs",
     "src/impact",
     "src/store/helpers/types.rs",
+    // Daemon/watch wire types agents deserialize off the socket:
+    // `cqs status --watch --json` returns `WatchSnapshot`; `cqs ping`
+    // returns `PingResponse`.
+    "src/watch_status.rs",
+    "src/daemon_translate.rs",
 ];
 
 /// Modules that serialize a `Serialize` `Option` OUTSIDE the GUARDED set and are
@@ -124,19 +129,6 @@ const OUT_OF_SCOPE_LEDGER: &[(&str, &str)] = &[
         "src/diff.rs",
         "re-projected into cli::commands::io::diff::DiffEntryOutput (guarded)",
     ),
-    // Daemon socket ping-protocol framing — agent-adjacent but a protocol type,
-    // not a command payload. Deferred follow-up, not yet SNR-audited.
-    (
-        "src/daemon_translate.rs",
-        "daemon ping-protocol framing; deferred follow-up",
-    ),
-    // `cqs watch status --json` payload — genuinely agent-facing JSON that has
-    // NOT been through the SNR discipline. Deferred follow-up (a real extension
-    // target), NOT blessed as noise-free.
-    (
-        "src/watch_status.rs",
-        "watch-status JSON; NOT yet SNR-audited, deferred follow-up",
-    ),
 ];
 
 /// Anchor files/dirs that must always be in the scanned set. If any stops being
@@ -156,6 +148,9 @@ const GUARDED_ANCHORS: &[&str] = &[
     "src/health.rs",
     "src/impact/types.rs",
     "src/store/helpers/types.rs",
+    // Daemon/watch wire-type anchors.
+    "src/watch_status.rs",
+    "src/daemon_translate.rs",
 ];
 
 /// Floor on the number of `.rs` files scanned across `src/`. Well below the

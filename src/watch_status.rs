@@ -114,8 +114,11 @@ pub struct SlotWatchStatus {
     pub state: FreshnessState,
     /// Unix timestamp (UTC seconds) of the last completed reindex for
     /// this slot (`index.db` mtime). `None` when missing/unreadable.
+    // always-emit: stable per-slot shape (`cqs status --slot X --json` emits
+    // this entry verbatim); null = slot index missing/unreadable.
     pub last_synced_at: Option<i64>,
     /// Latency of the most recent reindex pass against this slot.
+    // always-emit: stable per-slot shape; null = no reindex yet this session.
     pub last_reindex: Option<ReindexLatency>,
     /// Files queued for this slot but not yet drained. For the active
     /// slot this mirrors [`WatchSnapshot::modified_files`]; for sibling
@@ -126,6 +129,8 @@ pub struct SlotWatchStatus {
     /// semantics as [`WatchOpsStats::last_error`]). For sibling slots
     /// this is how a stale-schema / locked-DB / missing-index slot
     /// surfaces without poisoning the watch loop.
+    // always-emit: stable per-slot shape; null = no error observed (sticky
+    // once set, so null unambiguously means "clean this session").
     #[serde(default)]
     pub last_error: Option<WatchErrorInfo>,
 }
@@ -155,9 +160,13 @@ pub struct WatchOpsStats {
     pub reconcile_pending: bool,
     /// Latency of the most recent completed reindex pass. `None` until
     /// the first save-triggered reindex of the session.
+    // always-emit: stable ops shape (`cqs status --watch` renders a fixed
+    // field set); null = no reindex yet this session.
     pub last_reindex: Option<ReindexLatency>,
     /// Most recent reindex/notes-reindex error. Sticky across
     /// subsequent successes — see [`WatchErrorInfo`].
+    // always-emit: stable ops shape; null = no error observed (sticky once
+    // set, so null unambiguously means "clean this session").
     pub last_error: Option<WatchErrorInfo>,
     /// Per-slot freshness. Exactly one entry today (the active slot);
     /// The slot-parallel reindex work extends this vec.
@@ -209,6 +218,8 @@ pub struct WatchSnapshot {
     /// Unix timestamp (UTC seconds) of the last completed reindex —
     /// the mtime of `index.db` after the most recent write. `None`
     /// when the file is missing or unreadable.
+    // always-emit: stable watch-snapshot shape; null = index.db missing or
+    // unreadable.
     pub last_synced_at: Option<i64>,
     /// Unix timestamp (UTC seconds) when this snapshot was published.
     /// Lets clients tell how stale the *snapshot itself* is (stale
@@ -217,6 +228,9 @@ pub struct WatchSnapshot {
     /// snapshot look "56 years stale" and trip downstream freshness gates.
     /// Operators see a once-per-process warn from `now_unix_secs` when this
     /// happens.
+    // always-emit: snapshot publish timestamp; null is the load-bearing
+    // bad-clock signal (a silent 0 reads as decades-stale and would trip
+    // freshness gates), and the dispatch_status shape test pins its presence.
     pub snapshot_at: Option<i64>,
     /// Name of the slot the daemon is currently serving. Lets `cqs slot
     /// remove <name>` refuse to unlink a slot
@@ -226,12 +240,17 @@ pub struct WatchSnapshot {
     /// into a detached directory tree that gets reaped on daemon exit,
     /// silently losing hours of incremental rebuild work. `None` ⇒
     /// daemon hasn't published a snapshot yet (still ramping up).
+    // always-emit: read by the `cqs slot remove` active-daemon guard
+    // (`guard_against_active_daemon`); null = no snapshot published yet.
     #[serde(default)]
     pub active_slot: Option<String>,
     /// Operational stats for `cqs status --watch`. `None` when
     /// the snapshot came from a daemon that predates the field (older
     /// binary) or from the initial `unknown()` placeholder — lets the
     /// CLI distinguish "stats unavailable" from real zeros.
+    // always-emit: null is the load-bearing "daemon predates the ops block"
+    // signal (`print_ops_text` branches on presence to say so rather than
+    // print fake zeros); distinct from a real all-zero ops block.
     #[serde(default)]
     pub ops: Option<WatchOpsStats>,
 }

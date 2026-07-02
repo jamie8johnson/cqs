@@ -746,6 +746,9 @@ pub struct PingResponse {
     /// reading the [`crate::watch_status::WatchSnapshot`] field name can hand
     /// the same JSON to `serde::from_value::<PingResponse>`. Canonical name in
     /// serialization stays `last_indexed_at` — the alias is read-only.
+    // always-emit: fixed ping-protocol shape — every other PingResponse field
+    // is a non-Option always present, so this one stays present too; null is
+    // the deliberate missing-index signal (pinned by the null round-trip test).
     #[serde(alias = "last_synced_at")]
     pub last_indexed_at: Option<i64>,
     /// Cumulative count of dispatch errors observed by the daemon since
