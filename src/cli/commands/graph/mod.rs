@@ -91,6 +91,74 @@ pub(crate) fn detect_fallback(
     }
 }
 
+/// Overlay-aware [`detect_fallback`]. Classifies the name against the
+/// worktree-merged chunk landscape rather than the parent store alone, so a
+/// kind change in the delta is visible to the routing decision: a worktree that
+/// adds `fn Foo` where main has only `struct Foo` classifies `Foo` as ambiguous
+/// (both kinds present), and one that deletes `struct Foo` and adds `fn Foo`
+/// classifies it as a function — routing `callers Foo` to the real (overlay-
+/// merged) call-graph query instead of a blind "Foo is a type" redirect.
+///
+/// The merge is the same mask+union discipline the graph cores use: parent
+/// name-match chunks whose origin is delta-touched are dropped (the worktree may
+/// have removed or changed them) and the overlay store's name-match chunks (all
+/// from delta files) are unioned. Parent-kept and overlay chunks are
+/// origin-disjoint by construction (the overlay indexes only delta files and
+/// `masked_origins` holds every delta origin), so no de-duplication is needed.
+/// The merged chunk set feeds BOTH the classification decision AND the
+/// fallback's `definitions[]` rendering, so an emitted redirect surfaces the
+/// worktree-added definitions.
+///
+/// `overlay == None` is byte-identical to [`detect_fallback`]. A store error on
+/// either read degrades to the normal command path (warn, `None`), exactly as
+/// [`detect_fallback`] does — kind detection is a best-effort routing hint.
+///
+/// Marker note: when this still yields a fallback, the caller returns a
+/// definitions-redirect (not a caller graph), so the `overlay_graph = "full"`
+/// caller-set-completeness marker stays absent — the caller-set-completeness
+/// invariant is unchanged. The freshness fix is that the *routing decision* and
+/// the redirect contents now reflect the worktree.
+pub(crate) fn detect_fallback_overlay(
+    store: &Store<ReadOnly>,
+    overlay: Option<&cqs::worktree_overlay::WorktreeOverlay>,
+    name: &str,
+) -> (Vec<ChunkSummary>, Option<FallbackKind>) {
+    let _span = tracing::info_span!("detect_fallback_overlay", name).entered();
+    let Some(ov) = overlay else {
+        return detect_fallback(store, name);
+    };
+    // Parent name-match chunks, masked by delta origin; overlay name-match
+    // chunks unioned. A read error on either store falls through to the normal
+    // command path (best-effort routing hint), same contract as `detect_fallback`.
+    let parent_chunks = match store.get_chunks_by_name(name) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, name, "overlay kind detection: parent read failed; normal path");
+            return (Vec::new(), None);
+        }
+    };
+    let overlay_chunks = match ov.store.get_chunks_by_name(name) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, name, "overlay kind detection: overlay read failed; normal path");
+            return (Vec::new(), None);
+        }
+    };
+    let merged: Vec<ChunkSummary> = parent_chunks
+        .into_iter()
+        .filter(|c| !ov.masked_origins.contains(&c.file))
+        .chain(overlay_chunks)
+        .collect();
+    let hits: Vec<cqs::kind::KindHit> = merged.iter().map(cqs::kind::KindHit::from).collect();
+    match fallback_kind(cqs::kind::classify_hits(&hits)) {
+        // Fallback fires: hand back the MERGED rows so the redirect's
+        // `definitions[]` reflects the worktree too.
+        Some(fk) => (merged, Some(fk)),
+        // Normal flow — the core runs its own (overlay-merged) call-graph query.
+        None => (Vec::new(), None),
+    }
+}
+
 /// Record a kind-mismatch fallback fire on both observability surfaces.
 ///
 /// Every graph command's core funnels through here the moment it decides

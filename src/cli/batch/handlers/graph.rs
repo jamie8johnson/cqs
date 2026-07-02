@@ -3246,6 +3246,312 @@ mod tests {
         );
     }
 
+    // ─── origin-aware def landscape (worktree-deleted method defs) ──────────
+    //
+    // The qualified merge's definition landscape used to be the ORIGIN-BLIND
+    // union of parent + overlay defs, so a parent def living in a delta-touched
+    // file couldn't be masked — a worktree-DELETED `Foo::method` stayed "defined"
+    // and kept attributing, and a deleted other-owner stayed in the exclusion
+    // set. These pin the origin-aware masking: a def whose origin is delta-
+    // touched drops out before the union, exactly as a reindex would resolve it.
+
+    /// (a) The queried type's OWN method is deleted in the worktree → the
+    /// qualified query REDIRECTS (surfacing the surviving owner) instead of
+    /// stale-attributing the now-orphaned self-caller. RED without the origin
+    /// mask: the origin-blind union keeps `Foo` "defined", so `user` is still
+    /// attributed as a self-caller of a method that no longer exists.
+    #[test]
+    fn callers_qualified_overlay_deleted_own_def_redirects() {
+        // Parent: `Foo::method` (foo.rs) + a second owner `Bar::method`
+        // (bar.rs), plus a Foo self-caller `user` (user.rs, unedited) calling
+        // `method` bare.
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("foo.rs", "method", 10, Some("Foo")),
+                ("bar.rs", "method", 10, Some("Bar")),
+                ("user.rs", "user", 20, Some("Foo")),
+            ],
+            &[("user", "user.rs", 20, "method")],
+        );
+        // Worktree edits foo.rs, deleting `Foo::method` (foo.rs now holds only
+        // unrelated content). The def-origin foo.rs is masked.
+        let overlay = overlay_typed(&[("foo.rs", "leftover", 5, Some("Foo"))], &[], &["foo.rs"]);
+        let args = CallersCoreArgs {
+            name: "Foo::method".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "deleting the queried type's def flips the attribution landscape — must participate"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert!(
+            !got.contains(&"user".to_string()),
+            "a self-caller of a worktree-DELETED method must NOT be attributed; got {got:?}"
+        );
+        let quals: Vec<&str> = out["candidates"]
+            .as_array()
+            .expect("candidates array")
+            .iter()
+            .map(|c| c["qualified"].as_str().unwrap())
+            .collect();
+        assert!(
+            quals.contains(&"Bar::method"),
+            "the surviving owner surfaces as a redirect candidate; got {quals:?}"
+        );
+        assert!(
+            !quals.contains(&"Foo::method"),
+            "the worktree-deleted owner must NOT resurface as a candidate; got {quals:?}"
+        );
+    }
+
+    /// (b) An OTHER owner's same-named method is deleted in the worktree → that
+    /// type drops out of the exclusion set, so its caller (heuristically
+    /// excluded before) now attributes to the queried type. RED without the
+    /// origin mask: `Bar` stays in `other_owner_types` and `mixed` stays
+    /// excluded.
+    #[test]
+    fn callers_qualified_overlay_deleted_other_owner_attributes() {
+        // Parent: `Foo::method` (foo.rs) + `Bar::method` (bar.rs). A caller
+        // `mixed` whose enclosing type is Bar (other.rs, unedited) calls
+        // `method` bare — excluded when querying `Foo::method` because Bar also
+        // defines `method`.
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("foo.rs", "method", 10, Some("Foo")),
+                ("bar.rs", "method", 10, Some("Bar")),
+                ("other.rs", "mixed", 20, Some("Bar")),
+            ],
+            &[("mixed", "other.rs", 20, "method")],
+        );
+        // Worktree edits bar.rs, deleting `Bar::method`. bar.rs is masked.
+        let overlay = overlay_typed(&[("bar.rs", "leftover", 5, Some("Bar"))], &[], &["bar.rs"]);
+        let args = CallersCoreArgs {
+            name: "Foo::method".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "deleting an other-owner shrinks the exclusion set — must participate"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert!(
+            got.contains(&"mixed".to_string()),
+            "a caller of a deleted other-owner must attribute to the queried type; got {got:?}"
+        );
+        // `excluded_other_owner` is a skip-when-zero field, so absent == 0.
+        assert_eq!(
+            out.get("excluded_other_owner")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            0,
+            "the deleted other-owner no longer excludes its caller: {out}"
+        );
+    }
+
+    // ─── overlay-aware kind classification (kind-change footgun) ────────────
+    //
+    // The kind-fallback verdict used to classify from the PARENT store alone, so
+    // a worktree that changes a name's fundamental KIND was invisible to the
+    // routing decision. These pin the overlay-merged classification: adding
+    // `fn Foo` where main has only `struct Foo` becomes ambiguous, and replacing
+    // the struct with the fn routes `callers Foo` to the real (overlay-merged)
+    // call-graph query.
+
+    /// Seed a parent store with explicit-KIND bare chunks `(file, name, kind)`
+    /// + edges. The `type_method_chunk`/`make_chunk` helpers hard-code
+    /// `ChunkType::Function`; the kind-classification tests need a name whose kind (struct vs
+    /// fn) differs across the delta.
+    fn parent_kind_chunks(
+        chunks: &[(&str, &str, ChunkType)],
+        edges: &[(&str, &str, u32, &str)],
+    ) -> (TempDir, crate::cli::batch::BatchContext) {
+        let dir = TempDir::new().expect("tempdir");
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).expect("mkdir .cqs");
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        {
+            let store = Store::open(&index_path).expect("open store");
+            store.init(&ModelInfo::default()).expect("init");
+            for (file, name, kind) in chunks {
+                let mut c = make_typed_chunk(&format!("{file}:{name}"), name, *kind);
+                c.file = PathBuf::from(file);
+                store
+                    .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                    .expect("seed parent kind chunk");
+            }
+            seed_edges_into(&store, edges);
+        }
+        let ctx = create_test_context(&cqs_dir).expect("create_test_context");
+        (dir, ctx)
+    }
+
+    /// Overlay analogue of [`parent_kind_chunks`].
+    fn overlay_kind_chunks(
+        chunks: &[(&str, &str, ChunkType)],
+        edges: &[(&str, &str, u32, &str)],
+        masked: &[&str],
+    ) -> WorktreeOverlay {
+        let mut store = Store::open_memory().expect("open_memory");
+        store.init(&ModelInfo::default()).expect("init store");
+        store.set_dim(cqs::EMBEDDING_DIM);
+        let mut emb = vec![0.0_f32; cqs::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let embedding = Embedding::new(emb);
+        for (file, name, kind) in chunks {
+            let mut c = make_typed_chunk(&format!("{file}:{name}"), name, *kind);
+            c.file = PathBuf::from(file);
+            store
+                .upsert_chunks_batch(&[(c, embedding.clone())], Some(0))
+                .expect("seed overlay kind chunk");
+        }
+        seed_edges_into(&store, edges);
+        WorktreeOverlay {
+            store,
+            masked_origins: masked.iter().map(PathBuf::from).collect(),
+            fingerprint: [0u8; 32],
+            worktree_root: PathBuf::from("/wt"),
+            stats: OverlayStats {
+                files_in_delta: masked.len(),
+                chunks_indexed: chunks.len(),
+                build_ms: 0,
+            },
+        }
+    }
+
+    /// Worktree ADDS `fn Foo` in a new file where main has only `struct Foo` →
+    /// the merged landscape sees both kinds → classifies AMBIGUOUS (redirect
+    /// listing both defs), not the blind "Foo is a type". RED with parent-only
+    /// classification: kind stays `"type"` and the added fn is invisible. The
+    /// redirect is not a caller graph, so the marker stays absent
+    /// (`participated == false`).
+    #[test]
+    fn callers_overlay_kind_added_fn_classifies_ambiguous() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        // Worktree adds a NEW file defining `fn Foo`.
+        let overlay = overlay_kind_chunks(
+            &[("newfn.rs", "Foo", ChunkType::Function)],
+            &[],
+            &["newfn.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Foo".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            !participated,
+            "an ambiguous redirect is not a caller graph — must NOT claim participation"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        assert_eq!(
+            out["kind"], "ambiguous",
+            "worktree-added fn where main has a struct must classify ambiguous: {out}"
+        );
+        assert_eq!(
+            out["definitions"].as_array().map(|a| a.len()),
+            Some(2),
+            "the redirect surfaces BOTH the parent struct and the worktree fn: {out}"
+        );
+    }
+
+    /// Worktree REPLACES `struct Foo` with `fn Foo` (same file, a genuine kind
+    /// change) → the merged landscape sees only a function → routes to the real
+    /// call-graph query, which surfaces the worktree-added caller. RED with
+    /// parent-only classification: the struct wins, `callers Foo` blind-redirects
+    /// and never runs the call-graph query.
+    #[test]
+    fn callers_overlay_kind_change_routes_to_call_graph() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        // Worktree edits types.rs: the struct becomes a fn, with a caller.
+        let overlay = overlay_kind_chunks(
+            &[
+                ("types.rs", "Foo", ChunkType::Function),
+                ("types.rs", "caller_fn", ChunkType::Function),
+            ],
+            &[("caller_fn", "types.rs", 1, "Foo")],
+            &["types.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Foo".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "a kind change that routes to the overlay-merged call graph must participate"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        assert!(
+            out.get("fallback_from").is_none(),
+            "the fn kind must route to the call-graph query, NOT a fallback redirect: {out}"
+        );
+        let got = caller_names_json(&out);
+        assert!(
+            got.contains(&"caller_fn".to_string()),
+            "the worktree-added function's caller must surface; got {got:?}"
+        );
+    }
+
+    /// Daemon-path marker honesty for the kind change: the call-graph
+    /// query ran (fn kind resolved from the overlay), so the answer reflects the
+    /// delta and the `overlay_graph = "full"` marker must be present.
+    #[test]
+    fn dispatch_callers_kind_change_carries_full_marker() {
+        let (_dir, ctx) = parent_kind_chunks(&[("types.rs", "Foo", ChunkType::Struct)], &[]);
+        let overlay = std::sync::Arc::new(overlay_kind_chunks(
+            &[
+                ("types.rs", "Foo", ChunkType::Function),
+                ("types.rs", "caller_fn", ChunkType::Function),
+            ],
+            &[("caller_fn", "types.rs", 1, "Foo")],
+            &["types.rs"],
+        ));
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let args = CallersArgs {
+            name: "Foo".into(),
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 10 },
+            edge_kind: None,
+            overlay: Default::default(),
+        };
+        let json = dispatch_callers(&ctx.build_view(None), &args).expect("dispatch_callers");
+        assert!(
+            json.get("fallback_from").is_none(),
+            "kind resolved to fn — the call-graph query ran, not a redirect: {json}"
+        );
+        let names: Vec<&str> = json["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"caller_fn"),
+            "worktree-added caller present on the daemon path: {json}"
+        );
+        assert_eq!(
+            overlay_graph_marker(&json),
+            Some("full"),
+            "a kind change routed to the overlay-merged call graph must claim full: {json}"
+        );
+    }
+
     // ─── Marker honesty on the DAEMON path ─────────────────────────────────
     //
     // Invariant: `_meta.overlay_graph = "full"` is emitted ONLY when the overlay
