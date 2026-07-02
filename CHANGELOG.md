@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`HnswIndex::insert_batch` takes borrowed ids (`&[(&str, &[f32])]`) — the incremental insert path no longer clones every chunk-id `String` (#2120).** The signature required owned `String`s, so the watch incremental path (`events.rs`) and the background-rebuild delta replay (`rebuild.rs`) each built their `items` vec with a per-element `id.clone()` purely to satisfy it; the method then copied the bytes again into its `Box<str>` id_map. Both call sites now borrow (`id.as_str()`) into a `Vec<(&str, &[f32])>`, so the only copy is the intrinsic one into the `Box<str>` id_map. The `reindex.rs` interim pre-allocation that stood in for the real fix is gone (the returned `content_hashes` vec keeps its owned `String`s — they outlive the borrowed `chunks`, so that copy is intrinsic, not a signature workaround). No behavior change: a compile-time-only refactor with the existing HNSW/watch/build suites green. `insert_batch` is inherent to `HnswIndex` (not on the `VectorIndex` trait, which is search-only), so no sibling backend signature moves in lockstep.
+
 ### Fixed
 
 - **`cqs search --ref <name>` no longer overclaims the `skipped-no-daemon` overlay marker (#2144).** `cmd_query` recorded the CLI-direct degradation marker BEFORE the `--ref` branch, so a pure ref-scoped query from a worktree with no daemon (`--overlay --ref foo`) emitted a spurious `_meta.worktree_overlay = "skipped-no-daemon"` — but the ref-scoped retrieval (`retrieve_ref_scoped`) searches only the reference store and never applies the worktree overlay, so no degradation actually occurred. The marker call is now gated to skip pure ref-scoped queries (`ref_name.is_none()`), mirroring the seed family's gate and the daemon (whose ref-scoped path is parent-truth by construction). `--include-refs` is unaffected — its project half overlays for real, so it keeps the marker; overlay eligibility for a ref-scoped query now resolves to `false`, matching the daemon's ref fan-out.

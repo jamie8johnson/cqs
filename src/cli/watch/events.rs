@@ -471,9 +471,9 @@ pub(super) fn process_file_changes(
                     // `pairs` carries content_hash as the third tuple
                     // slot for the rebuild-window path; the
                     // incremental insert only needs (id, embedding).
-                    let items: Vec<(String, &[f32])> = pairs
+                    let items: Vec<(&str, &[f32])> = pairs
                         .iter()
-                        .map(|(id, emb, _hash)| (id.clone(), emb.as_slice()))
+                        .map(|(id, emb, _hash)| (id.as_str(), emb.as_slice()))
                         .collect();
                     match index.insert_batch(&items) {
                         Ok(n) => {
