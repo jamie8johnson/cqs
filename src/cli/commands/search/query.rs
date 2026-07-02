@@ -1151,6 +1151,7 @@ pub(crate) struct LegChunkMeta {
 pub(crate) struct SearchLegsOutput {
     /// Echo of the resolved query string.
     pub query: String,
+    // always-emit: null distinguishes "fusion did not run" from a leg set.
     /// The three pre-fusion legs, or `None` when fusion did not run.
     pub legs: Option<cqs::search::SearchLegs>,
     /// Chunk metadata for the final ranked result set (path/name/lines), in

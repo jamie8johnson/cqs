@@ -43,21 +43,27 @@ pub(crate) struct StatsOutput {
     pub model: String,
     /// Embedding dimension for vectors in this index (read from `Store::dim()`).
     pub dim: usize,
+    // always-emit: stable stats field set; null = SPLADE metadata not written.
     /// SPLADE model identifier from metadata, if recorded. `None` until a
     /// SPLADE-aware index pipeline writes the metadata key.
     pub splade_model: Option<String>,
+    // always-emit: stable stats field set; null = no SPLADE index on disk.
     /// Size in bytes of `splade.index.bin`. `None` when the file does not
     /// exist (no SPLADE pass has run yet, or persistence is disabled).
     pub splade_index_size_bytes: Option<u64>,
+    // always-emit: stable stats field set; null = empty corpus (no 0/0 ratio).
     /// SPLADE coverage as a percentage of `total_chunks`. `None` when there
     /// are no chunks at all (avoids spurious 0/0 reporting on a fresh DB).
     pub splade_coverage_pct: Option<f64>,
+    // always-emit: stable stats field set; null = HNSW not built (brute-force).
     /// Size in bytes of `index.hnsw.data`. `None` when the file does not
     /// exist (HNSW not built yet — falls back to brute-force search).
     pub hnsw_data_bytes: Option<u64>,
+    // always-emit: stable stats field set; null = HNSW not built.
     /// Size in bytes of `index.hnsw.graph`. `None` when the file does not
     /// exist (HNSW not built yet).
     pub hnsw_graph_bytes: Option<u64>,
+    // always-emit: stable stats field set; null = no CAGRA index on disk.
     /// Size in bytes of `index.cagra` (cuVS GPU index). `None` when absent
     /// (no GPU available, sub-threshold corpus, or persistence disabled).
     pub cagra_size_bytes: Option<u64>,
@@ -73,6 +79,7 @@ pub(crate) struct StatsOutput {
     /// honest "what fraction of the corpus has a summary" metric — orphans
     /// don't contribute.
     pub llm_summary_chunks_covered: usize,
+    // always-emit: stable stats field set; null = empty corpus (no 0/0 ratio).
     /// `llm_summary_chunks_covered` as a percentage of `total_chunks`. `None`
     /// when there are no chunks at all (avoids spurious 0/0 reporting on a
     /// fresh DB).

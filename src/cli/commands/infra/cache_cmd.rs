@@ -73,7 +73,9 @@ pub(crate) struct CacheStatsOutput {
     pub total_entries: u64,
     pub total_size_bytes: u64,
     pub unique_models: u64,
+    // always-emit: stable stats field set; null = empty cache (no entries).
     pub oldest_timestamp: Option<i64>,
+    // always-emit: stable stats field set; null = empty cache (no entries).
     pub newest_timestamp: Option<i64>,
     /// Always present; 0 when the persistent QueryCache file doesn't exist yet.
     pub query_cache_size_bytes: u64,
@@ -87,6 +89,7 @@ pub(crate) struct CacheStatsOutput {
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct CacheClearOutput {
     pub deleted: usize,
+    // always-emit: echoes the scope of the clear; null = all-models clear.
     pub model: Option<String>,
 }
 

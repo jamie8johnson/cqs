@@ -172,6 +172,7 @@ struct ModelListEntry {
 #[derive(Debug, Serialize)]
 struct ModelListOutput {
     models: Vec<ModelListEntry>,
+    // always-emit: canonical active-model pointer; null = no index yet.
     current: Option<String>,
 }
 
@@ -224,6 +225,7 @@ struct ModelSwapOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     count_error: Option<String>,
     elapsed_secs: f64,
+    // always-emit: reports whether a backup was made; null = none created.
     backup_path: Option<String>,
 }
 

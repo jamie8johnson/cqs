@@ -348,6 +348,8 @@ pub(crate) struct FullChunkEntry {
     pub signature: String,
     pub line_start: u32,
     pub line_end: u32,
+    // always-emit: core result field — null = the chunk has no doc-comment;
+    // `content` below skips because it is opt-in (populated only with --content).
     pub doc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
