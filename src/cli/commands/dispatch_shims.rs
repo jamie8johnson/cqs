@@ -848,6 +848,8 @@ pub fn cmd_gather_dispatch(
             max_tokens: args.tokens,
             ref_name: args.ref_name.as_deref(),
             json: cli.json || output.json,
+            overlay_on: args.overlay.overlay,
+            overlay_off: args.overlay.no_overlay,
         })
     })
 }
@@ -958,6 +960,8 @@ pub fn cmd_scout_dispatch(
             args.search_limit,
             args.search_threshold,
             args.min_gap_ratio,
+            args.overlay.overlay,
+            args.overlay.no_overlay,
         )
     })
 }
@@ -995,6 +999,8 @@ pub fn cmd_task_dispatch(
             cli.json || output.json,
             args.tokens,
             args.brief,
+            args.overlay.overlay,
+            args.overlay.no_overlay,
         )
     })
 }

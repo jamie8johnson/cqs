@@ -145,11 +145,20 @@ pub(crate) fn cmd_scout(
     search_limit: Option<usize>,
     search_threshold: Option<f32>,
     min_gap_ratio: Option<f32>,
+    overlay_on: bool,
+    overlay_off: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
     let store = &ctx.store;
     let root = &ctx.root;
     let embedder = ctx.embedder()?;
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Scout's
+    // seed overlay builds daemon-side only (phase 1); reaching this in-process CLI
+    // path means no daemon answered, so the seed serves the parent index. Mark the
+    // envelope `skipped-no-daemon` when the overlay was wanted-and-skipped — the
+    // shared helper `search` uses, so the two surfaces cannot diverge.
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(root, overlay_on, overlay_off);
 
     // JSON path routes through the shared `scout_core` (same code the daemon
     // runs), so the wire shape is identical across surfaces.
@@ -162,7 +171,7 @@ pub(crate) fn cmd_scout(
             search_threshold,
             min_gap_ratio,
         };
-        // CLI surface serves the parent index (overlay is daemon-only, ).
+        // CLI surface serves the parent index (overlay builds daemon-side only).
         let (output, _token_info) = scout_core(store, embedder, root, &args, None)?;
         crate::cli::json_envelope::emit_json(&output)?;
         return Ok(());
