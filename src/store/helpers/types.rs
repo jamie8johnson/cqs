@@ -52,6 +52,9 @@ pub struct ChunkSummary {
     /// Full source code
     pub content: String,
     /// Documentation comment if present
+    // always-emit: uniform chunk-metadata key; null = no doc comment. The
+    // derived shape is behavior-preserving here — skip-when-none is a wire-shape
+    // change deferred to #2156's survey (strong skip-candidate).
     pub doc: Option<String>,
     /// Starting line number (1-indexed)
     pub line_start: u32,
@@ -60,10 +63,16 @@ pub struct ChunkSummary {
     /// Content hash (blake3) for embedding cache and summary lookup
     pub content_hash: String,
     /// Window index (None = not windowed, 0 = first window, 1+ = subsequent)
+    // always-emit: uniform chunk-metadata key; null = not windowed. Behavior-
+    // preserving; skip-when-none deferred to #2156's survey (skip-candidate).
     pub window_idx: Option<i32>,
     /// Parent chunk ID if this is a child chunk (table, windowed)
+    // always-emit: uniform chunk-metadata key; null = top-level chunk. Behavior-
+    // preserving; skip-when-none deferred to #2156's survey (skip-candidate).
     pub parent_id: Option<String>,
     /// For methods: name of enclosing class/struct/impl
+    // always-emit: uniform chunk-metadata key; null = not a method. Behavior-
+    // preserving; skip-when-none deferred to #2156's survey (skip-candidate).
     pub parent_type_name: Option<String>,
     /// Parser logic stamp. Defaults to 0 when the loading SELECT didn't
     /// include the column.
@@ -607,8 +616,12 @@ pub struct ChunkIdentity {
     /// Programming language
     pub language: Language,
     /// Parent chunk ID (for windowed chunks)
+    // always-emit: uniform chunk-identity key; null = top-level chunk. Behavior-
+    // preserving; skip-when-none deferred to #2156's survey (skip-candidate).
     pub parent_id: Option<String>,
     /// Window index within parent (for long functions split into windows)
+    // always-emit: uniform chunk-identity key; null = not windowed. Behavior-
+    // preserving; skip-when-none deferred to #2156's survey (skip-candidate).
     pub window_idx: Option<u32>,
 }
 

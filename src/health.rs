@@ -37,6 +37,10 @@ pub struct HealthReport {
     pub untested_hotspots: Vec<Hotspot>,
     pub note_count: u64,
     pub note_warnings: u64,
+    /// Vector count in the HNSW sidecar. `None` when the index is not
+    /// HNSW-backed or the sidecar is unreadable — distinct from a count of 0.
+    // always-emit: null ("no HNSW index") is load-bearing versus a zero count;
+    // uniform diagnostic key agents read without existence checks.
     pub hnsw_vectors: Option<usize>,
     /// Non-fatal warnings from degraded sub-queries
     pub warnings: Vec<String>,
