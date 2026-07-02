@@ -1632,6 +1632,103 @@ fn drain_pending_rebuild_leaves_pending_when_still_running() {
     );
 }
 
+/// Compute `rebuild_in_flight` the way `publish_watch_snapshot` does — off
+/// `state.pending_rebuild.is_some()` — so the idle-drain test asserts against
+/// the real freshness derivation, not a hand-rolled proxy.
+fn snapshot_rebuild_in_flight(state: &WatchState) -> bool {
+    cqs::watch_status::WatchSnapshot::compute(cqs::watch_status::WatchSnapshotInput::new(
+        state.pending_files.len(),
+        state.pending_notes,
+        state.pending_rebuild.is_some(),
+        state
+            .pending_rebuild
+            .as_ref()
+            .map(|p| p.delta_saturated)
+            .unwrap_or(false),
+        state.incremental_count,
+        state.dropped_this_cycle,
+        state.last_event,
+        None,
+    ))
+    .rebuild_in_flight
+}
+
+/// Regression guard for the freshness wedge: a background HNSW rebuild that
+/// completes while the repo is quiet — no file events, so `process_file_changes`
+/// never runs — must be drained by the watch loop's idle path. Without the idle
+/// drain, `pending_rebuild` stays `Some` forever and every snapshot reports
+/// `rebuild_in_flight = true`, blocking `--require-fresh` consumers indefinitely.
+///
+/// This test exercises `drain_completed_rebuild_idle`, the exact call the loop
+/// makes on each idle tick (`if !flush_due { drain_completed_rebuild_idle(...) }`
+/// in `cmd_watch`). RED without that call wired in: the idle tick leaves
+/// `pending_rebuild` `Some` and the snapshot stays wedged.
+#[test]
+fn idle_tick_drains_completed_rebuild_and_unwedges_freshness() {
+    let dim = 4;
+    let new_idx = synthetic_owned_index(3, dim);
+    assert_eq!(new_idx.len(), 3);
+
+    // A rebuild whose worker thread has already finished: the result is
+    // enqueued and the sender dropped, exactly the state a completed
+    // background rebuild leaves behind before anyone drains it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Ok(Some(RebuildResult {
+        index: new_idx,
+        snapshot_keys: std::collections::HashSet::new(),
+    })))
+    .unwrap();
+    drop(tx);
+
+    let mut state = test_watch_state();
+    state.pending_rebuild = Some(PendingRebuild {
+        rx,
+        delta: Vec::new(),
+        started_at: std::time::Instant::now(),
+        handle: None,
+        delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+
+    // Precondition: the wedge. A completed-but-undrained rebuild reads as
+    // in-flight, which is what pins the freshness gate at `Rebuilding`.
+    assert!(
+        snapshot_rebuild_in_flight(&state),
+        "an undrained completed rebuild must report rebuild_in_flight (the wedge)"
+    );
+
+    let fix = drain_test_fixture(dim);
+    let cfg = test_watch_config(
+        fix.tmp.path(),
+        fix.tmp.path(),
+        &fix.notes_path,
+        &fix.supported_ext,
+    );
+
+    // The idle-tick drain — no pending files, no pairs, just the periodic
+    // drain the fix adds to the watch loop.
+    let outcome = drain_completed_rebuild_idle(&cfg, &fix.store, &mut state);
+
+    assert_eq!(
+        outcome,
+        DrainOutcome::Swapped,
+        "a finished rebuild must swap in on the idle tick"
+    );
+    assert!(
+        state.pending_rebuild.is_none(),
+        "idle tick must drain the completed rebuild (fix for #2133 wedge)"
+    );
+    let idx = state
+        .hnsw_index
+        .as_ref()
+        .expect("completed rebuild must be swapped into hnsw_index");
+    assert_eq!(idx.len(), 3, "swapped-in index carries the rebuilt vectors");
+    assert!(
+        !snapshot_rebuild_in_flight(&state),
+        "after the idle drain the snapshot must no longer report rebuild_in_flight"
+    );
+}
+
 // ── reindex_files consults the global EmbeddingCache ─────────────
 
 /// `reindex_files` must read from `global_cache` before calling the
