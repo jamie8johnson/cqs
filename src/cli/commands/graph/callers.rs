@@ -334,9 +334,13 @@ pub(crate) fn callers_core(
 /// never over-claims: `overlay.is_some()` means "the worktree has some dirty
 /// file", NOT "this answer reflects the delta".
 ///
-/// The kind-fallback early-return stays parent-truth by design: it returns a
-/// definitions-redirect, not a caller graph, so the `"full"` marker (a
-/// caller-set completeness claim) has nothing to describe.
+/// The kind-fallback routing decision is overlay-aware: the name is
+/// classified against the worktree-merged chunk landscape, so a delta that
+/// changes a name's kind either routes to the (overlay-merged) call-graph query
+/// or emits a redirect whose `definitions[]` reflect the worktree. But the
+/// fallback early-return still reports `false`: a redirect is a definitions
+/// list, not a caller graph, so the `"full"` marker (a caller-set completeness
+/// claim) has nothing to describe.
 pub(crate) fn callers_overlay(
     store: &Store<ReadOnly>,
     args: &CallersArgs,
@@ -360,14 +364,15 @@ pub(crate) fn callers_overlay(
     }
 
     // Polymorphic-routing kind detection: dispatch the kind-mismatch fallback
-    // before the call-graph query. This stays parent-truth by design, not
-    // omission — a kind fallback returns a definitions-redirect, NOT a caller
-    // graph, so the `overlay_graph = "full"` marker (a caller-set completeness
-    // claim) has nothing to describe. The verdict is classified from the parent
-    // store; a worktree that changed a name's *kind* is a classification-
-    // freshness concern orthogonal to this call-graph merge. Report `false` so
-    // the honest absent marker stands.
-    let (chunks, fallback) = super::detect_fallback(store, &args.name);
+    // before the call-graph query. The verdict is classified against the
+    // worktree-merged chunk landscape, so a delta that adds `fn Foo`
+    // where main has only `struct Foo` is visible: it either routes to the
+    // (overlay-merged) call-graph query below when the kind resolves to a
+    // function, or emits a redirect whose `definitions[]` reflect the worktree.
+    // Either way the fallback RETURN stays marker-absent by design — a redirect
+    // is a definitions list, NOT a caller graph, so the `overlay_graph = "full"`
+    // caller-set-completeness marker has nothing to describe. Report `false`.
+    let (chunks, fallback) = super::detect_fallback_overlay(store, overlay, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callers(fk);
         return Ok((
@@ -487,39 +492,76 @@ fn callers_qualified(
     edge_kind: Option<CallEdgeKind>,
     limit: usize,
 ) -> Result<(CallersCoreOutput, bool)> {
-    // Definition landscape across both stores. The overlay store holds only
-    // delta-file chunks, so its defs are the worktree's fresh view of the edited
-    // files. The union (presence of a type across either store) gates:
+    // Origin-aware definition landscape across both stores. Each row is
+    // a def SITE `(type, origin)`, so a parent def whose origin is delta-touched
+    // can be MASKED before the union — an origin-blind count cannot express that.
+    // The overlay store holds only delta-file chunks, so its rows are the
+    // worktree's fresh view of the edited files. The surviving landscape
+    // (unmasked parent sites ∪ every overlay site) gates:
     //   - `qual_defines`: does the queried type define `method` anywhere in the
-    //     worktree (parent-unchanged OR overlay-added)? Enables the bare-method
-    //     arm so a bare call site in a delta file is attributed even when the
-    //     def lives in an unedited file.
-    //   - `other_owner_types`: every OTHER type owning a same-named method,
-    //     driving the heuristic exclusion.
-    let parent_defs = store
-        .count_method_defs_by_type(method)
+    //     worktree (parent-unchanged OR overlay-added, but NOT worktree-deleted)?
+    //     Enables the bare-method arm so a bare call site in a delta file is
+    //     attributed even when the def lives in an unedited file — and, when the
+    //     def is deleted in the worktree, correctly flips false so the query
+    //     redirects instead of stale-attributing.
+    //   - `other_owner_types`: every OTHER surviving type owning a same-named
+    //     method, driving the heuristic exclusion — a worktree-deleted other
+    //     owner drops out, so its callers stop being excluded.
+    let parent_def_rows = store
+        .get_method_defs_by_type_with_origins(method)
         .context("Failed to enumerate method definitions")?;
-    let overlay_defs = match overlay {
+    let overlay_def_rows = match overlay {
         Some(ov) => ov
             .store
-            .count_method_defs_by_type(method)
+            .get_method_defs_by_type_with_origins(method)
             .context("Failed to enumerate overlay method definitions")?,
         None => Vec::new(),
     };
-    let qual_defines = parent_defs
+    let def_masked = |origin: &std::path::Path| -> bool {
+        overlay
+            .map(|ov| ov.masked_origins.contains(origin))
+            .unwrap_or(false)
+    };
+    // Surviving owner types: unmasked parent sites, then every overlay site.
+    let surviving_types: Vec<&Option<String>> = parent_def_rows
         .iter()
-        .chain(overlay_defs.iter())
-        .any(|(ty, _)| ty.as_deref() == Some(qual_type));
+        .filter(|(_, origin)| !def_masked(origin))
+        .map(|(ty, _)| ty)
+        .chain(overlay_def_rows.iter().map(|(ty, _)| ty))
+        .collect();
+    let qual_defines = surviving_types
+        .iter()
+        .any(|ty| ty.as_deref() == Some(qual_type));
     let other_owner_types: std::collections::HashSet<String> = if qual_defines {
-        parent_defs
+        surviving_types
             .iter()
-            .chain(overlay_defs.iter())
+            .filter_map(|ty| (*ty).clone())
+            .filter(|t| t != qual_type)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // Parent-truth landscape (what `overlay = None` would compute), used to
+    // detect whether the masking/union actually changed the attribution inputs
+    // — a worktree-deleted def flips `qual_defines` or shrinks
+    // `other_owner_types`, which is a genuine overlay contribution to THIS
+    // answer even when no edge row moved. Folds into `participated` so the
+    // deletion redirect / re-attribution carries the honest `"full"` marker.
+    let raw_qual_defines = parent_def_rows
+        .iter()
+        .any(|(ty, _)| ty.as_deref() == Some(qual_type));
+    let raw_other_owner_types: std::collections::HashSet<String> = if raw_qual_defines {
+        parent_def_rows
+            .iter()
             .filter_map(|(ty, _)| ty.clone())
             .filter(|t| t != qual_type)
             .collect()
     } else {
         std::collections::HashSet::new()
     };
+    let landscape_participated = overlay.is_some()
+        && (raw_qual_defines != qual_defines || raw_other_owner_types != other_owner_types);
 
     // Parent attributed callers plus the origins of parent exclusions.
     let (mut attributed, mut excluded_origins) = store
@@ -528,10 +570,11 @@ fn callers_qualified(
 
     // Overlay merge, mirroring the bare-name path: drop parent rows (attributed
     // AND excluded) whose call-site origin is delta-touched, then union the
-    // overlay's fresh rows from those same origins. `participated` is true when
-    // the merge consulted the delta for this answer — a parent row masked, or an
-    // overlay row unioned.
-    let mut participated = false;
+    // overlay's fresh rows from those same origins. `participated` starts from
+    // the def-landscape signal (a worktree deletion that flipped the attribution
+    // inputs) and additionally becomes true when the edge merge consulted the
+    // delta for this answer — a parent row masked, or an overlay row unioned.
+    let mut participated = landscape_participated;
     if let Some(ov) = overlay {
         let incl_before = attributed.len();
         attributed.retain(|a| !ov.masked_origins.contains(&a.caller.file));
@@ -541,7 +584,8 @@ fn callers_qualified(
             .store
             .get_callers_attributed(method, qual_type, &other_owner_types, qual_defines)
             .context("Failed to load overlay attributed callers")?;
-        participated = attributed.len() != incl_before
+        participated = participated
+            || attributed.len() != incl_before
             || excluded_origins.len() != excl_before
             || !ov_attr.is_empty()
             || !ov_excluded.is_empty();
@@ -554,8 +598,9 @@ fn callers_qualified(
     }
 
     // Genuine unknown qualifier: no local def anywhere AND no attributed edges.
-    // Surface the real owners (merged across both stores) as candidates instead
-    // of an empty result that looks like "no callers".
+    // Surface the real owners (the SURVIVING masked landscape, so a
+    // worktree-deleted owner no longer appears) as candidates instead of an
+    // empty result that looks like "no callers".
     if !qual_defines && attributed.is_empty() {
         return Ok((
             CallersCoreOutput::Callers(CallersOutput {
@@ -563,7 +608,7 @@ fn callers_qualified(
                 callers: Vec::new(),
                 count: 0,
                 total: 0,
-                candidates: merged_candidates(&parent_defs, &overlay_defs, method),
+                candidates: surviving_candidates(&surviving_types, method),
                 excluded_other_owner: 0,
             }),
             participated,
@@ -632,6 +677,29 @@ fn defs_to_candidates(defs: &[(Option<String>, usize)], method: &str) -> Vec<Def
             count: *count,
         })
         .collect()
+}
+
+/// Project the SURVIVING (origin-masked ∪ overlay) owner-type list into
+/// candidate `Type::method` forms for the qualified unknown-qualifier redirect
+/// path. Each entry in `surviving_types` is one def SITE, so a type's site
+/// count is its occurrence count. Groups by type (preserving stability with a
+/// deterministic count-desc-then-name sort) so a worktree-deleted owner —
+/// already absent from `surviving_types` — cannot resurface as a "did you mean"
+/// candidate the way an origin-blind union would.
+fn surviving_candidates(surviving_types: &[&Option<String>], method: &str) -> Vec<DefCandidate> {
+    // Group def sites into (type, site-count). N is tiny (defs of one method
+    // name), so a linear Vec group beats a HashMap and keeps output stable.
+    let mut grouped: Vec<(Option<String>, usize)> = Vec::new();
+    for ty in surviving_types {
+        match grouped.iter_mut().find(|(t, _)| t == *ty) {
+            Some((_, n)) => *n += 1,
+            None => grouped.push(((*ty).clone(), 1)),
+        }
+    }
+    // Deterministic order: most-defined type first, then by name (mirrors
+    // `count_method_defs_by_type`'s `n DESC, parent_type_name`).
+    grouped.sort_by(|(t1, n1), (t2, n2)| n2.cmp(n1).then_with(|| t1.cmp(t2)));
+    defs_to_candidates(&grouped, method)
 }
 
 /// Map a [`cqs::store::CallerAttribution`] to the skip-when-empty wire field:
@@ -707,7 +775,10 @@ pub(crate) fn callees_overlay(
         return callees_qualified(store, overlay, qual_type, method, args.edge_kind, limit);
     }
 
-    let (chunks, fallback) = super::detect_fallback(store, &args.name);
+    // Overlay-aware kind detection: the merged landscape decides whether
+    // a redirect fires or the overlay-merged callee query runs. The fallback
+    // return stays marker-absent (a redirect is not a callee graph).
+    let (chunks, fallback) = super::detect_fallback_overlay(store, overlay, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::callees(fk);
         return Ok((

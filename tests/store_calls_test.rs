@@ -1404,6 +1404,40 @@ fn count_method_defs_groups_by_type() {
     assert!(types.contains("Index"));
 }
 
+/// `get_method_defs_by_type_with_origins` keeps each definition SITE's origin
+/// (unlike the origin-blind `count_method_defs_by_type`), so the qualified
+/// overlay path can mask a def whose file is delta-touched before the union.
+/// One row per site, `(parent_type_name, origin)`.
+#[test]
+fn method_defs_with_origins_keep_each_site_origin() {
+    let store = TestStore::new();
+    store
+        .upsert_chunk(
+            &method_chunk("store.rs", "search", 10, Some("Store")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+    store
+        .upsert_chunk(
+            &method_chunk("index.rs", "search", 10, Some("Index")),
+            &mock_embedding(1.0),
+            Some(1),
+        )
+        .unwrap();
+
+    let rows = store
+        .get_method_defs_by_type_with_origins("search")
+        .unwrap();
+    assert_eq!(rows.len(), 2, "one row per def SITE, origin retained");
+    assert!(rows
+        .iter()
+        .any(|(t, o)| t.as_deref() == Some("Store") && o == std::path::Path::new("store.rs")));
+    assert!(rows
+        .iter()
+        .any(|(t, o)| t.as_deref() == Some("Index") && o == std::path::Path::new("index.rs")));
+}
+
 /// `get_type_method_def_sites` resolves the `(file, line_start)` site(s)
 /// defining `Type::method`, scoping the callees `Type::method` path to the
 /// exact definition.

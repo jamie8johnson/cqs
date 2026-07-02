@@ -96,6 +96,41 @@ impl<Mode> Store<Mode> {
         })
     }
 
+    /// Method-definition owner types paired with their def-site origin file:
+    /// one row per definition site `(parent_type_name, origin)`. Unlike
+    /// [`count_method_defs_by_type`] (which GROUPs BY type into an
+    /// origin-blind count), this keeps each site's origin so the worktree
+    /// overlay can mask a def whose file is delta-touched — a worktree-deleted
+    /// or -moved `Type::method` is dropped from the definition landscape before
+    /// the parent∪overlay union, so `qual_defines` / the other-owner exclusion
+    /// set reflect the worktree rather than resurrecting the deleted def. The
+    /// origin-blind count query cannot express that masking. Only callable
+    /// chunk kinds qualify.
+    pub fn get_method_defs_by_type_with_origins(
+        &self,
+        method: &str,
+    ) -> Result<Vec<(Option<String>, PathBuf)>, StoreError> {
+        let _span = tracing::debug_span!("get_method_defs_by_type_with_origins", method = %method)
+            .entered();
+        self.rt.block_on(async {
+            let callable = crate::parser::ChunkType::callable_sql_list();
+            let sql = format!(
+                "SELECT parent_type_name, origin
+                 FROM chunks
+                 WHERE name = ?1 AND chunk_type IN ({callable})"
+            );
+            let rows: Vec<(Option<String>, String)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(method)
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows
+                .into_iter()
+                .map(|(ty, origin)| (ty, PathBuf::from(origin)))
+                .collect())
+        })
+    }
+
     /// Definition sites `(origin, line_start)` where a `Type::method` is
     /// defined. Used by the callees `Type::method` path to scope
     /// `get_callees_full` to the right definition — both the file AND the
