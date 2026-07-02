@@ -46,8 +46,12 @@
 //! rebuild against that slot. Chunk/FTS/call-graph state is what
 //! converges here.
 //!
-//! Slots created after daemon startup are not discovered until restart —
-//! same contract as slot promotion.
+//! Slots created after daemon startup are not discovered until they become
+//! active. A same-model `cqs slot promote` re-binds the daemon on the next
+//! idle tick (`maybe_rebind_active_slot`), which re-runs [`SiblingSet::discover`]
+//! against the new active slot — the old active becomes a sibling, the promoted
+//! slot leaves the set. A brand-new slot that is never promoted still needs a
+//! restart to enter the sibling set.
 
 use super::*;
 use cqs::watch_status::{FreshnessState, ReindexLatency, SlotWatchStatus, WatchErrorInfo};
@@ -479,7 +483,12 @@ impl SiblingSet {
 /// it against the active slot's resolved config. `Err(message)` when the
 /// model can't be determined or isn't a known preset (we couldn't build
 /// an embedder for it, so propagation would be wrong-dim corruption).
-fn classify_slot_model(
+///
+/// Reused by the idle-tick slot re-bind (`maybe_rebind_active_slot`) as the
+/// same-model gate: a promote that classifies `SameModel` against the
+/// currently-bound model is hot-reloadable; a `Foreign` (or unclassifiable)
+/// promote requires the restart path.
+pub(super) fn classify_slot_model(
     index_path: &Path,
     active_model: &ModelConfig,
 ) -> Result<SiblingKind, String> {

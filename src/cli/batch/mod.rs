@@ -875,6 +875,110 @@ mod tests {
         );
     }
 
+    /// Query-side self-heal on a same-model `cqs slot promote` (the daemon's
+    /// read side converges with no restart). The daemon receives no promote
+    /// signal, but the
+    /// BatchContext's `cqs_dir` is the PROJECT `.cqs/`, so every
+    /// `check_index_staleness` re-resolves the active slot via
+    /// `resolve_index_db`. Promoting a sibling slot (writing `active_slot`)
+    /// flips the resolved `index.db` to a different inode — an identity change
+    /// the staleness check must catch on the very next query: caches
+    /// invalidate, the store re-opens against the promoted slot, and the served
+    /// data is the promoted slot's, all with no restart. Two same-model slots
+    /// carry distinct note counts (1 vs 2) so the "served data flipped" claim
+    /// is checked directly, not just the resolved path.
+    #[cfg(unix)]
+    #[test]
+    fn same_model_slot_promote_self_heals_query_side() {
+        use cqs::note::Note;
+        use cqs::slot::{slot_dir, write_active_slot};
+
+        fn note(text: &str) -> Note {
+            Note {
+                id: format!("note:{text}"),
+                text: text.to_string(),
+                sentiment: 0.0,
+                mentions: Vec::new(),
+                kind: None,
+            }
+        }
+
+        // Project `.cqs/` with two SAME-MODEL slots, each a real index.db.
+        // Slot `a` holds 1 note, slot `b` holds 2 — distinct served data.
+        let dir = tempfile::tempdir().unwrap();
+        let project_cqs = dir.path().join(".cqs");
+        let slot_a = slot_dir(&project_cqs, "a");
+        let slot_b = slot_dir(&project_cqs, "b");
+        std::fs::create_dir_all(&slot_a).unwrap();
+        std::fs::create_dir_all(&slot_b).unwrap();
+        let a_index = slot_a.join(cqs::INDEX_DB_FILENAME);
+        let b_index = slot_b.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = Store::open(&a_index).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store
+                .upsert_notes_batch(&[note("a-1")], std::path::Path::new("docs/notes.toml"), 0)
+                .unwrap();
+        }
+        {
+            let store = Store::open(&b_index).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store
+                .upsert_notes_batch(
+                    &[note("b-1"), note("b-2")],
+                    std::path::Path::new("docs/notes.toml"),
+                    0,
+                )
+                .unwrap();
+        }
+
+        // Active = a. BatchContext's cqs_dir is the PROJECT dir so the
+        // staleness check re-resolves the slot each time; the store opens at a.
+        write_active_slot(&project_cqs, "a").unwrap();
+        let store_a = Store::<ReadOnly>::open_readonly_after_init(&a_index, |_| Ok(())).unwrap();
+        let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&project_cqs));
+        let ctx = context::BatchContext::new(
+            store_a,
+            dir.path().to_path_buf(),
+            project_cqs.clone(),
+            ModelConfig::resolve(None, None).apply_env_overrides(),
+            index_id,
+        );
+
+        // Baseline query serves slot a (1 note). `store()` runs the staleness
+        // check, establishing the identity baseline with no invalidation.
+        assert_eq!(
+            ctx.store().note_count().unwrap(),
+            1,
+            "baseline query must serve the active slot (a)"
+        );
+        *ctx.notes_cache.lock().unwrap() = tagged(&ctx, std::sync::Arc::new(vec![]));
+
+        // Same-model promote: write the active-slot pointer to b. No daemon
+        // signal is sent — the query side must self-heal.
+        write_active_slot(&project_cqs, "b").unwrap();
+        // Clear the throttle so the next `store()` check runs (mirrors the
+        // rename-over test rather than sleeping past the rate limit).
+        ctx.last_staleness_check.set(None);
+
+        // Next query self-heals: served store now reflects slot b (2 notes).
+        let served = ctx.store();
+        assert_eq!(
+            served.note_count().unwrap(),
+            2,
+            "next query after promote must serve the promoted slot's data (b)"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_none(),
+            "promote must invalidate the query-side caches"
+        );
+        assert_eq!(
+            ctx.index_id.get(),
+            DbFileIdentity::from_path(&b_index),
+            "query side must re-resolve index identity to the promoted slot"
+        );
+    }
+
     /// The daemon runs WAL mode — the watch loop's
     /// incremental writes go to `index.db-wal`, and the main file's identity
     /// (inode/size/mtime) doesn't change until checkpoint. Identity alone

@@ -413,7 +413,9 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
     write_active_slot(project_cqs_dir, name)?;
 
     let warning = format!(
-        "Active slot changed to '{}'. To serve queries from the new slot, restart the daemon:\n    systemctl --user restart cqs-watch",
+        "Active slot changed to '{}'. A running daemon (cqs watch --serve) hot-reloads a \
+         same-model promote within about a second — no restart needed. A promote that changes \
+         the embedding model still requires a restart:\n    systemctl --user restart cqs-watch",
         name
     );
     if json {
