@@ -712,10 +712,19 @@ pub(crate) fn run_git_diff(base: Option<&str>, cwd: &std::path::Path) -> anyhow:
 ///
 /// `overlay_root` is the worktree root ([`crate::worktree_overlay::WorktreeOverlay::worktree_root`],
 /// registry-validated on the daemon path) when a worktree overlay is active,
-/// else `None` (diff `ctx_root`, the served project). The `--relative` frame
-/// invariant [`run_git_diff`] documents holds either way: a worktree shares the
-/// repo-relative layout, so its toplevel-relative paths match the overlay's
-/// `masked_origins` and the parent index chunk paths without re-basing.
+/// else `None` (diff `ctx_root`, the served project).
+///
+/// SUBDIR-FRAME INVARIANT: `run_git_diff`'s `--relative` frame is anchored to
+/// the diff CWD, and the index frame is `ctx_root` (the served root). When the
+/// served root IS its git toplevel (every real config today) the worktree root
+/// is that toplevel's counterpart, so diffing at `overlay_root` frames paths to
+/// match `masked_origins` and the parent index directly. But `overlay_root` is
+/// always the worktree's git TOPLEVEL, so when `ctx_root` sits in a
+/// SUBDIRECTORY of its repo (a cqs project under `monorepo/subproj/`), diffing
+/// at the toplevel emits `subproj/…`-prefixed paths that match nothing in the
+/// `subproj/`-relative index — a silent false "no impact". [`overlay_diff_cwd`]
+/// re-applies the served root's within-repo offset inside the worktree so the
+/// frame stays index-aligned in both layouts.
 ///
 /// OPT-OUT INVARIANT: `--no-overlay` / `CQS_WORKTREE_OVERLAY=0` means full
 /// parent-truth on EVERY surface — `overlay_root` is `None`, so the diff subject
@@ -729,7 +738,58 @@ pub(crate) fn run_git_diff_for_overlay(
     ctx_root: &std::path::Path,
     overlay_root: Option<&std::path::Path>,
 ) -> anyhow::Result<String> {
-    run_git_diff(base, overlay_root.unwrap_or(ctx_root))
+    match overlay_root {
+        Some(wt) => run_git_diff(base, &overlay_diff_cwd(ctx_root, wt)),
+        None => run_git_diff(base, ctx_root),
+    }
+}
+
+/// Resolve the CWD to run the overlay diff in so `--relative` frames paths
+/// against the SERVED-root (index) frame, not the worktree git toplevel.
+///
+/// The index chunk paths and the overlay's `masked_origins` are relative to the
+/// served root (`ctx_root`), which may sit below its own git toplevel. The
+/// worktree (`worktree_root`) is a checkout of that same repo, so the served
+/// root's counterpart inside the worktree is `worktree_root / <offset>`, where
+/// `offset` is `ctx_root` relative to ITS git toplevel. Diffing there strips the
+/// subdir prefix so `+++ b/src/foo.rs` matches the index instead of the
+/// toplevel-relative `+++ b/subproj/src/foo.rs` that mis-frames to nothing.
+///
+/// Returns `worktree_root` unchanged when the served root IS its git toplevel
+/// (empty offset — every real config today), when no git toplevel is resolvable
+/// for the served root, or when the offset points at a path absent from the
+/// worktree (a sparse checkout): the last case warns rather than failing the
+/// whole diff, preserving the prior toplevel-framed behavior as a fallback.
+fn overlay_diff_cwd(
+    ctx_root: &std::path::Path,
+    worktree_root: &std::path::Path,
+) -> std::path::PathBuf {
+    let Some(main_top) = cqs::worktree::enclosing_git_root(ctx_root) else {
+        // Served root not under any git repo — nothing to reframe.
+        return worktree_root.to_path_buf();
+    };
+    // Canonicalize `ctx_root` the same way `enclosing_git_root` canonicalizes
+    // its returned toplevel, so `strip_prefix` compares like-for-like paths.
+    let ctx_canonical = dunce::canonicalize(ctx_root).unwrap_or_else(|_| ctx_root.to_path_buf());
+    let Ok(offset) = ctx_canonical.strip_prefix(&main_top) else {
+        return worktree_root.to_path_buf();
+    };
+    if offset.as_os_str().is_empty() {
+        // Served root == git toplevel: worktree root is already the counterpart.
+        return worktree_root.to_path_buf();
+    }
+    let reframed = worktree_root.join(offset);
+    if reframed.is_dir() {
+        reframed
+    } else {
+        tracing::warn!(
+            worktree_root = %worktree_root.display(),
+            offset = %offset.display(),
+            "overlay diff: served-root subdir absent in worktree; framing at \
+             worktree toplevel (diff paths may mis-align with the index)"
+        );
+        worktree_root.to_path_buf()
+    }
 }
 
 /// Resolve the worktree-overlay root the CLI-direct diff sites (`review` / `ci`
@@ -1572,6 +1632,109 @@ mod tests {
             !diff.contains("+++ b/sub/src/foo.rs"),
             "diff path must NOT carry the `sub/` toplevel prefix; got:\n{diff}"
         );
+    }
+
+    // Build a main repo with the served project in `subproj/`, one commit, plus a
+    // linked worktree of the whole repo. Returns (canonical base, main_repo,
+    // served subproj, worktree root). The served project's index frame is
+    // `subproj`-relative (`src/foo.rs`); the worktree's git toplevel carries the
+    // `subproj/` prefix — the subdir mis-frame vector this guards.
+    #[cfg(test)]
+    fn subdir_repo_with_worktree() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = dunce::canonicalize(tmp.path()).expect("canonicalize tmp");
+        let main_repo = base.join("mainrepo");
+        let subproj = main_repo.join("subproj");
+        std::fs::create_dir_all(subproj.join("src")).expect("create subproj/src");
+
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .expect("git invocation");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        git(&main_repo, &["init", "-q"]);
+        git(&main_repo, &["config", "user.email", "t@t.t"]);
+        git(&main_repo, &["config", "user.name", "t"]);
+        std::fs::write(subproj.join("src/foo.rs"), "fn foo() {}\n").expect("write foo");
+        git(&main_repo, &["add", "-A"]);
+        git(&main_repo, &["commit", "-qm", "init"]);
+
+        // Linked worktree of the whole repo (mirrors `.claude/worktrees/<agent>`).
+        let wt = base.join("wt");
+        git(
+            &main_repo,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "HEAD"],
+        );
+        (tmp, main_repo, subproj, wt)
+    }
+
+    // When the served root is a repo SUBDIR, the overlay diff must be framed to
+    // the served root (index frame), NOT the worktree git toplevel.
+    // The overlay runs the diff on the worktree tree; framing it at the toplevel
+    // emits `subproj/src/foo.rs`, which matches nothing in the `subproj/`-relative
+    // index — a silent false "no impact". RED at the toplevel frame, GREEN once
+    // `overlay_diff_cwd` re-applies the `subproj` offset inside the worktree.
+    #[test]
+    fn run_git_diff_for_overlay_reframes_subdir_served_root() {
+        let (_tmp, _main_repo, subproj, wt) = subdir_repo_with_worktree();
+
+        // Modify the served file inside the worktree so the diff is non-empty.
+        std::fs::write(wt.join("subproj/src/foo.rs"), "fn foo() { let _x = 1; }\n")
+            .expect("modify foo in worktree");
+
+        // Overlay active: ctx_root is the served subproj, overlay_root the worktree
+        // toplevel — exactly what the CLI/daemon diff sites pass.
+        let diff = run_git_diff_for_overlay(None, &subproj, Some(wt.as_path()))
+            .expect("overlay diff on subdir served root");
+
+        assert!(
+            diff.contains("+++ b/src/foo.rs"),
+            "overlay diff path must be served-root-relative (`src/foo.rs`); got:\n{diff}"
+        );
+        assert!(
+            !diff.contains("+++ b/subproj/src/foo.rs"),
+            "overlay diff path must NOT carry the `subproj/` toplevel prefix \
+             (would mis-frame vs the index); got:\n{diff}"
+        );
+    }
+
+    // The reframe applies the served root's within-repo offset to the worktree.
+    #[test]
+    fn overlay_diff_cwd_applies_subdir_offset() {
+        let (_tmp, _main_repo, subproj, wt) = subdir_repo_with_worktree();
+        assert_eq!(overlay_diff_cwd(&subproj, &wt), wt.join("subproj"));
+    }
+
+    // Backward-compat: when the served root IS its git toplevel (every real config
+    // today), the offset is empty and the worktree root passes through unchanged.
+    #[test]
+    fn overlay_diff_cwd_passthrough_when_served_root_is_toplevel() {
+        let (_tmp, main_repo, _subproj, wt) = subdir_repo_with_worktree();
+        assert_eq!(overlay_diff_cwd(&main_repo, &wt), wt);
+    }
+
+    // Sparse-checkout / absent-subdir fallback: an offset that does not exist in
+    // the worktree reverts to the worktree toplevel (warn, don't fail the diff).
+    #[test]
+    fn overlay_diff_cwd_falls_back_when_subdir_absent_in_worktree() {
+        let (_tmp, _main_repo, subproj, wt) = subdir_repo_with_worktree();
+        std::fs::remove_dir_all(wt.join("subproj")).expect("remove subproj from worktree");
+        assert_eq!(overlay_diff_cwd(&subproj, &wt), wt);
     }
 
     // ===== Honest-relay completeness guard (onboard content-relay) =====
