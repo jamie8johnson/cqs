@@ -750,6 +750,7 @@ pub(crate) fn cli_diff_overlay_root(
     use crate::cli::commands::search::query::{overlay_env_signal, overlay_force_off};
     // Force-off wins before any probe (the opted-out fast path).
     if overlay_force_off(overlay.no_overlay) {
+        tracing::debug!("worktree overlay opted out; diff subject reverts to the served root");
         return None;
     }
     let probe = std::env::current_dir()
@@ -804,6 +805,10 @@ pub(crate) fn cli_parent_diff_root(root: &std::path::Path) -> std::path::PathBuf
     } = cqs::worktree::lookup_main_cqs_dir(root)
     {
         if worktree_root != main_root {
+            tracing::debug!(
+                main_root = %main_root.display(),
+                "out-of-tree worktree: parent-truth diff subject re-rooted to main"
+            );
             return main_root;
         }
     }
