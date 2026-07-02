@@ -107,6 +107,58 @@ fn watch_idle_block_reopens_store_on_force_replacement() {
          `cqs index --force` DB replacement — it keeps serving the orphaned inode. \
          Restore the idle-tick reopen in src/cli/watch/mod.rs's idle block."
     );
+
+    // ORDERING is load-bearing, not a style choice: the identity check must run
+    // BEFORE the idle drain, and the drain must stay gated on the no-mismatch
+    // arm. The drain's `drain_pending_rebuild` saves the finished index through
+    // the loop's Store handle; if a refactor hoists the drain above the identity
+    // check (or makes it unconditional), a rebuild completed against a
+    // `--force`-replaced DB gets saved via the ORPHANED handle — the under-lock
+    // stamp re-read cannot see the new inode, so the stale sidecar silently
+    // overwrites the replacement's fresh one. This block has been reshaped
+    // repeatedly; the structural guard here is what keeps that reorder loud.
+    let idle_window = &lines[idle_guard..window_end];
+    let check_at = idle_window
+        .iter()
+        .position(|l| l.contains("current_id != db_id"))
+        .expect(
+            "SITE MOVED: the idle block no longer gates on `current_id != db_id` — \
+             update this wiring test to track the identity check's new shape, and \
+             verify the idle drain still runs only when the DB was NOT replaced.",
+        );
+    let reopen_at = idle_window
+        .iter()
+        .position(|l| l.contains("reopen_store_after_replacement("))
+        .expect("checked above");
+    let drain_at = idle_window
+        .iter()
+        .position(|l| l.contains("drain_completed_rebuild_idle("))
+        .expect(
+            "SITE MOVED: the idle drain call left the identity-check window — if it \
+             moved, it MUST stay ordered after (and gated by) the `current_id != db_id` \
+             check, or a stale rebuild saves through an orphaned Store handle.",
+        );
+    assert!(
+        check_at < reopen_at && reopen_at < drain_at,
+        "ORDERING BROKEN: expected identity check (line {check_at}) < reopen \
+         (line {reopen_at}) < idle drain (line {drain_at}) inside the idle block. \
+         Draining before the identity check saves a stale rebuild through the \
+         orphaned Store handle onto a `--force`-replaced DB's fresh sidecar."
+    );
+    // The drain must be NESTED under the check (the else arm), not a sibling
+    // statement after the if/else — an unconditional drain after the reopen arm
+    // would still pass the position assert but re-run against a store the reopen
+    // branch just invalidated the pending rebuild for.
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    assert!(
+        indent(idle_window[drain_at]) > indent(idle_window[check_at]),
+        "NESTING BROKEN: `drain_completed_rebuild_idle` (indent {}) is no longer \
+         nested under the `current_id != db_id` check (indent {}) — it must stay \
+         gated on the no-mismatch arm so a replaced DB's pending rebuild is \
+         discarded, never drained.",
+        indent(idle_window[drain_at]),
+        indent(idle_window[check_at])
+    );
 }
 
 /// (2) The rebuild worker must capture the DB identity at spawn and pass the
