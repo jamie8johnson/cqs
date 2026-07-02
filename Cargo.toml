@@ -344,6 +344,14 @@ serial_test = "3"
 # Used only under `cfg(test)` behind the `llm-summaries` feature.
 httpmock = "0.8"
 
+# Source walker for the JSON-noise discipline guard (tests/json_noise_guard.rs).
+# syn parses the CLI JSON-emission modules; proc-macro2's span-locations feature
+# gives per-field line numbers so the guard can read the `// always-emit` marker
+# comments syn otherwise drops. Both are already in the build graph via the
+# proc-macro derive crates; span-locations is additive and test-only.
+syn = { version = "2", features = ["full", "parsing"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
 # Permutation/model checker for the concurrency models (#1826 interleaving-auditor).
 # Pulled in ONLY under our private `--cfg cqs_loom` so a normal build/test never
 # compiles it; the loom models live in `*_interleaving_model.rs` modules (each

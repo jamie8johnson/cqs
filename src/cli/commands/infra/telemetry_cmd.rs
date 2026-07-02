@@ -64,6 +64,7 @@ pub(crate) struct TelemetryOutput {
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct TelemetryResetOutput {
     pub archived_events: usize,
+    // always-emit: reports the archive slot; null = no-op (nothing to archive).
     pub archive_path: Option<String>,
     pub lock_path: String,
 }

@@ -227,11 +227,17 @@ If shipped, the `--lean` flag's behavior:
 
 ## Discipline follow-up: prevent re-decay
 
-The audit produces a clean snapshot. Without an enforcement mechanism, new fields added later will default to always-emit and the noise rebuilds. **File a separate tracking issue** for:
+The audit produces a clean snapshot. Without an enforcement mechanism, new fields added later will default to always-emit and the noise rebuilds.
 
-- A discipline test that walks all `Serialize`-deriving structs in JSON-emitting paths and asserts every field has either an explicit `// always-emit` comment OR a `skip_serializing_if` attribute. Hard to write without a custom syn-based check, but plausible as a clippy lint or a small custom test.
+**Shipped.** The guard is `tests/json_noise_guard.rs` (test `json_emitting_option_fields_are_skip_or_marked`): a syn source walker over the CLI JSON-emission layer that asserts every `Option<T>` field on a `Serialize`-deriving struct carries EITHER a `#[serde(skip_serializing_if = ...)]` / `skip` / `flatten` attribute OR an explicit `// always-emit: <reason>` marker comment in the field's preamble (proc-macro2's `span-locations` feature recovers the line the marker sits on, which syn drops). An unannotated `Option` fails the test, forcing an explicit skip-or-always-emit decision.
 
-This is OUT OF SCOPE for the audit PR itself; file it as a follow-up so the audit's work doesn't decay over the next year of feature additions.
+Scope and rationale as landed:
+
+- **Field type: `Option<T>` only.** `null`/absence are near-synonyms, so an unannotated `Option` is the canonical noise vector. `Vec`/map/set (`[]`/`{}`) and `String` (`""`) have load-bearing empty states (precedence rule #3, cf. `score: 0.0`) and are legitimately always-emit, so mandating a marker on each would bury the signal — extending the guard to them is a possible follow-up.
+- **Module scope: the CLI emission layer** — `src/cli/commands/**`, `src/cli/batch/**`, `src/cli/json_envelope.rs`, `src/cli/display.rs`. The lib payload types (`src/gather.rs`, `src/impact/`, `src/review.rs`, `src/store/helpers/types.rs`, ...) are the actual serialized payloads but reachability from the command adapters is not resolved by the walker; extending it there is a follow-up. Persistence / API-request / web-viz `Serialize` types (`src/config.rs`, `src/note.rs`, `src/eval/schema.rs`, `src/llm/`, `src/serve/data.rs`) stay out — different contracts where skip-when-default can be wrong.
+- The test enumerates its scanned files and asserts a floor count + anchor-file presence, so a glob that silently stops matching (a moved module) fails the guard rather than passing vacuously.
+
+The existing in-scope `Option` fields were all resolved with `// always-emit` markers (behavior-preserving: no serialized shape change) because their `null` is load-bearing — envelope-contract fields, diagnostic report fields whose `null` means "not applicable / not available" (the `stats`/`doctor` shape tests already pin their presence), or uniform-shape result keys. De-noising any of these to `skip_serializing_if` is a serialized-shape change that the "semantic bet" section requires a consumer survey for, so it stays a separate follow-up rather than riding the guard PR.
 
 ## Out of scope
 
