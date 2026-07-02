@@ -161,6 +161,52 @@ fn watch_idle_block_reopens_store_on_force_replacement() {
     );
 }
 
+/// (1c) The watch loop must call `maybe_rebind_active_slot` at the top of its
+/// iteration, gated on a quiescent state, so a same-model `cqs slot promote`
+/// hot-reloads the write side onto the promoted slot. The helper's unit tests
+/// pin the swap in isolation; deleting the call site leaves them green (its only
+/// other tripwire would be a dead-code warning, which an `#[allow]` or a stray
+/// use can mask), so this scan is the wiring tripwire.
+///
+/// RED if the idle-tick re-bind call is deleted from the loop: the daemon then
+/// silently keeps writing the pre-promote slot until a manual restart.
+#[test]
+fn watch_loop_calls_maybe_rebind_active_slot() {
+    let src = read("src/cli/watch/mod.rs");
+    let lines: Vec<&str> = src.lines().collect();
+
+    // Anchor on the outer watch `loop {`. The re-bind must sit inside it, ahead
+    // of the recv/flush work, so the write side swaps before the tick's reindex.
+    let loop_at = lines.iter().position(|l| l.trim() == "loop {").expect(
+        "SITE MOVED: src/cli/watch/mod.rs no longer has a bare `loop {` watch loop — \
+             update this wiring test to track the loop's new shape.",
+    );
+
+    // Scan a window inside the loop for the CALL (not the `fn` definition, which
+    // lives far above). Require the assignment form so the returned store is
+    // rebound — a bare call that dropped the return would strand the swap.
+    let window_end = (loop_at + 40).min(lines.len());
+    let called = lines[loop_at..window_end]
+        .iter()
+        .any(|l| l.contains("maybe_rebind_active_slot(") && !l.contains("fn "));
+    assert!(
+        called,
+        "WIRING GONE: the watch loop no longer calls `maybe_rebind_active_slot` at the top \
+         of its iteration. A same-model `cqs slot promote` then never hot-reloads — the daemon \
+         keeps writing the pre-promote slot until a manual restart. Restore the idle-tick \
+         re-bind call in src/cli/watch/mod.rs's loop."
+    );
+    let rebinds_store = lines[loop_at..window_end]
+        .iter()
+        .any(|l| l.contains("store = maybe_rebind_active_slot("));
+    assert!(
+        rebinds_store,
+        "WIRING BROKEN: `maybe_rebind_active_slot` is called but its returned store is not \
+         assigned back to `store`. The swapped-in store would be dropped and the loop would \
+         keep the old handle."
+    );
+}
+
 /// (2) The rebuild worker must capture the DB identity at spawn and pass the
 /// `db_replaced` guard closure into BOTH thread-side build/save helpers, or the
 /// worker's orphaned-handle save can overwrite a `--force` replacement's fresh

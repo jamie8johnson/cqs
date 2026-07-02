@@ -2049,6 +2049,388 @@ fn reopen_after_replacement_keeps_wal_when_lock_held_by_other() {
     drop(held);
 }
 
+// ── maybe_rebind_active_slot: same-model slot-promote hot-reload ─────────────
+
+/// Fixture for the idle-tick slot re-bind: a project `.cqs/` with two slots.
+/// Slot `a` is the initially-bound (active) slot with `a_notes` notes; slot `b`
+/// is the promote target with `b_notes` notes. `b_model` sets slot b's recorded
+/// embedding model so the same-model gate can be exercised both ways.
+struct RebindFixture {
+    // Held only to keep the tempdir alive for the fixture's lifetime.
+    _tmp: tempfile::TempDir,
+    project_cqs: PathBuf,
+    a_dir: PathBuf,
+    b_dir: PathBuf,
+    a_index: PathBuf,
+    b_index: PathBuf,
+}
+
+fn note(text: &str) -> cqs::note::Note {
+    cqs::note::Note {
+        id: format!("note:{text}"),
+        text: text.to_string(),
+        sentiment: 0.0,
+        mentions: Vec::new(),
+        kind: None,
+    }
+}
+
+/// Build the two-slot fixture. Slot `a` records the default model; slot `b`
+/// records `b_model` (pass `ModelInfo::default()` for same-model, or a foreign
+/// preset for the model-change gate).
+fn build_rebind_fixture(
+    a_notes: usize,
+    b_notes: usize,
+    b_model: cqs::store::ModelInfo,
+) -> RebindFixture {
+    use cqs::slot::{slot_dir, write_active_slot};
+    use cqs::store::ModelInfo;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let project_cqs = tmp.path().join(".cqs");
+    let a_dir = slot_dir(&project_cqs, "a");
+    let b_dir = slot_dir(&project_cqs, "b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let a_index = a_dir.join(cqs::INDEX_DB_FILENAME);
+    let b_index = b_dir.join(cqs::INDEX_DB_FILENAME);
+
+    let notes_src = std::path::Path::new("docs/notes.toml");
+    {
+        let store = Store::open(&a_index).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        let batch: Vec<_> = (0..a_notes).map(|i| note(&format!("a-{i}"))).collect();
+        store.upsert_notes_batch(&batch, notes_src, 0).unwrap();
+    }
+    {
+        let store = Store::open(&b_index).unwrap();
+        store.init(&b_model).unwrap();
+        let batch: Vec<_> = (0..b_notes).map(|i| note(&format!("b-{i}"))).collect();
+        store.upsert_notes_batch(&batch, notes_src, 0).unwrap();
+    }
+    // Start bound to slot a.
+    write_active_slot(&project_cqs, "a").unwrap();
+
+    RebindFixture {
+        _tmp: tmp,
+        project_cqs,
+        a_dir,
+        b_dir,
+        a_index,
+        b_index,
+    }
+}
+
+/// A same-model `cqs slot promote` (active_slot flipped a → b) must re-bind the
+/// watch loop's write side onto slot b on the idle tick: the returned RW store
+/// serves slot b's data, `state.active_slot`, `cqs_dir`, `index_path`, and
+/// `db_id` all move to b, and the sibling set is re-discovered (old active `a`
+/// becomes a sibling; promoted `b` leaves the set).
+#[test]
+#[serial(sibling_env)]
+fn maybe_rebind_active_slot_swaps_to_promoted_same_model_slot() {
+    use cqs::slot::write_active_slot;
+    use cqs::store::ModelInfo;
+
+    // Sibling propagation on so re-discovery is observable via status entries.
+    let _g = EnvVarGuard::remove("CQS_WATCH_SIBLING_SLOTS");
+
+    let fix = build_rebind_fixture(1, 2, ModelInfo::default());
+    let rt = build_shared_runtime().unwrap();
+    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+
+    let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
+    let mut state = test_watch_state();
+    state.active_slot = "a".to_string();
+    // Seed the in-flight rebuild / in-memory HNSW state that the re-bind MUST
+    // discard and reset — all three carry slot-A contents. Without seeding
+    // these, the discard (`pending_rebuild.take()`) and reset assertions below
+    // are vacuous (the fixture starts them empty), so deleting those lines would
+    // pass a green suite while `drain_completed_rebuild_idle` later saved slot-A
+    // vectors as slot-B's HNSW under B's freshly-reset stamp (a cross-slot
+    // #2141-class corruption). A sentinel `observed_stamp` distinct from B's
+    // real {0,0} stamp makes the stamp reset bite too.
+    let (rb_tx, rb_rx) = std::sync::mpsc::channel::<RebuildOutcome>();
+    drop(rb_tx);
+    state.pending_rebuild = Some(PendingRebuild {
+        rx: rb_rx,
+        delta: Vec::new(),
+        started_at: std::time::Instant::now(),
+        handle: None,
+        delta_saturated: false,
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+    state.hnsw_index = Some(synthetic_owned_index(2, 4));
+    state.incremental_count = 7;
+    state.observed_stamp = Some(cqs::hnsw::StoreStamp {
+        chunk_count: 999,
+        splade_generation: 999,
+    });
+    // Slot b's real stamp — what the reset must land on (both slots are
+    // chunk-less note-only stores, so this is {0, 0}, distinct from the sentinel).
+    let b_stamp =
+        cqs::hnsw::StoreStamp::read(&Store::open_readonly(&fix.b_index).unwrap()).unwrap();
+
+    let mut cqs_dir = fix.a_dir.clone();
+    let mut index_path = fix.a_index.clone();
+    let mut db_id = db_file_identity(&index_path);
+    let mut siblings = SiblingSet::discover(
+        &fix.project_cqs,
+        "a",
+        &model_config,
+        SiblingPolicy::from_env(),
+    );
+
+    // Promote b (same model). No signal reaches the daemon.
+    write_active_slot(&fix.project_cqs, "b").unwrap();
+
+    let store = maybe_rebind_active_slot(
+        &fix.project_cqs,
+        None,
+        &model_config,
+        store,
+        &mut state,
+        &mut cqs_dir,
+        &mut index_path,
+        &mut db_id,
+        &mut siblings,
+        &rt,
+        &[],
+    );
+
+    assert_eq!(
+        state.active_slot, "b",
+        "write side must re-bind to promoted slot"
+    );
+    assert_eq!(
+        store.note_count().unwrap(),
+        2,
+        "re-bound store must serve the promoted slot's data (b)"
+    );
+    assert_eq!(index_path, fix.b_index, "index_path must move to slot b");
+    assert_eq!(
+        cqs_dir,
+        dunce::canonicalize(&fix.b_dir).unwrap(),
+        "cqs_dir must move to slot b (canonicalized)"
+    );
+    assert_eq!(
+        db_id,
+        db_file_identity(&fix.b_index),
+        "db_id must track slot b's index.db identity"
+    );
+    // The in-flight rebuild built against slot a MUST be discarded (never
+    // drained into slot b), and the in-memory HNSW state reset for the new
+    // slot. Each assert bites because the state was seeded non-empty above.
+    assert!(
+        state.pending_rebuild.is_none(),
+        "the slot-a in-flight rebuild must be discarded on re-bind, not carried \
+         into slot b (a drain would save slot-a vectors as slot-b's HNSW)"
+    );
+    assert!(
+        state.hnsw_index.is_none(),
+        "the in-memory slot-a HNSW index must be dropped on re-bind"
+    );
+    assert_eq!(
+        state.incremental_count, 0,
+        "the incremental counter must reset for the new slot"
+    );
+    assert_eq!(
+        state.observed_stamp,
+        Some(b_stamp),
+        "observed_stamp must be re-read from slot b's store, not left at slot a's \
+         value — a stale stamp lets a later save clear the dirty flag on a \
+         mismatched index"
+    );
+
+    // Siblings re-discovered against b: old active `a` is now a sibling, and the
+    // promoted `b` is no longer in the set.
+    let names: Vec<String> = siblings
+        .status_entries()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(
+        names.contains(&"a".to_string()),
+        "old active slot `a` must become a sibling after re-bind; got {names:?}"
+    );
+    assert!(
+        !names.contains(&"b".to_string()),
+        "promoted slot `b` must leave the sibling set; got {names:?}"
+    );
+}
+
+/// The promoted slot's not-yet-drained sibling deltas must be carried into the
+/// active `pending_files` on re-bind — otherwise re-discovery drops slot b's
+/// queue and those files stay stale in the now-active slot until a reconcile
+/// that never runs on a non-serve daemon / `CQS_WATCH_RECONCILE=0`.
+#[test]
+#[serial(sibling_env)]
+fn maybe_rebind_carries_promoted_slot_pending_deltas() {
+    use cqs::slot::write_active_slot;
+    use cqs::store::ModelInfo;
+
+    let _g = EnvVarGuard::remove("CQS_WATCH_SIBLING_SLOTS");
+
+    let fix = build_rebind_fixture(1, 2, ModelInfo::default());
+    let rt = build_shared_runtime().unwrap();
+    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+
+    let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
+    let mut state = test_watch_state();
+    state.active_slot = "a".to_string();
+    let mut cqs_dir = fix.a_dir.clone();
+    let mut index_path = fix.a_index.clone();
+    let mut db_id = db_file_identity(&index_path);
+    let mut siblings = SiblingSet::discover(
+        &fix.project_cqs,
+        "a",
+        &model_config,
+        SiblingPolicy::from_env(),
+    );
+
+    // While bound to `a`, active-cycle edits propagate to sibling `b`'s queue.
+    let f1 = PathBuf::from("src/carried_one.rs");
+    let f2 = PathBuf::from("src/carried_two.rs");
+    siblings.enqueue(&[f1.clone(), f2.clone()]);
+    assert_eq!(
+        siblings.queued_files_for("b").len(),
+        2,
+        "precondition: sibling `b` holds the two undrained deltas"
+    );
+
+    // Promote b, then re-bind.
+    write_active_slot(&fix.project_cqs, "b").unwrap();
+    let _store = maybe_rebind_active_slot(
+        &fix.project_cqs,
+        None,
+        &model_config,
+        store,
+        &mut state,
+        &mut cqs_dir,
+        &mut index_path,
+        &mut db_id,
+        &mut siblings,
+        &rt,
+        &[],
+    );
+
+    assert_eq!(state.active_slot, "b");
+    assert!(
+        state.pending_files.contains(&f1) && state.pending_files.contains(&f2),
+        "the promoted slot's undrained deltas must be carried into the active \
+         reindex queue; got {:?}",
+        state.pending_files
+    );
+    assert!(
+        state.first_pending_event.is_some(),
+        "carrying deltas must arm the debounce clock so they flush"
+    );
+}
+
+/// A promote to a slot recording a DIFFERENT embedding model must be declined
+/// (stage 2 territory): the daemon stays bound to the current slot and emits a
+/// restart-required warn rather than half-binding a wrong-dim store.
+#[test]
+#[serial(sibling_env)]
+fn maybe_rebind_active_slot_declines_model_change() {
+    use cqs::slot::write_active_slot;
+    use cqs::store::ModelInfo;
+
+    let _g = EnvVarGuard::remove("CQS_WATCH_SIBLING_SLOTS");
+
+    // Slot b records a foreign preset (e5-base) — a real model, different name.
+    let fix = build_rebind_fixture(1, 2, ModelInfo::new("intfloat/e5-base-v2", 768));
+    let rt = build_shared_runtime().unwrap();
+    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+
+    let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
+    let mut state = test_watch_state();
+    state.active_slot = "a".to_string();
+    let mut cqs_dir = fix.a_dir.clone();
+    let mut index_path = fix.a_index.clone();
+    let mut db_id = db_file_identity(&index_path);
+    let mut siblings = SiblingSet::empty();
+
+    write_active_slot(&fix.project_cqs, "b").unwrap();
+
+    let store = maybe_rebind_active_slot(
+        &fix.project_cqs,
+        None,
+        &model_config,
+        store,
+        &mut state,
+        &mut cqs_dir,
+        &mut index_path,
+        &mut db_id,
+        &mut siblings,
+        &rt,
+        &[],
+    );
+
+    assert_eq!(
+        state.active_slot, "a",
+        "a model-changing promote must NOT re-bind — restart still required"
+    );
+    assert_eq!(index_path, fix.a_index, "index_path must stay on slot a");
+    assert_eq!(cqs_dir, fix.a_dir, "cqs_dir must stay on slot a");
+    assert_eq!(
+        store.note_count().unwrap(),
+        1,
+        "still-bound store must keep serving slot a"
+    );
+}
+
+/// An explicit `--slot X` binding pins the write side: a promote of a different
+/// slot must NOT steal a pinned daemon. (Explicit pin beats the active_slot
+/// file — the query side's independent following is tracked separately.)
+#[test]
+#[serial(sibling_env)]
+fn maybe_rebind_active_slot_respects_explicit_slot_pin() {
+    use cqs::slot::write_active_slot;
+    use cqs::store::ModelInfo;
+
+    let _g = EnvVarGuard::remove("CQS_WATCH_SIBLING_SLOTS");
+
+    let fix = build_rebind_fixture(1, 2, ModelInfo::default());
+    let rt = build_shared_runtime().unwrap();
+    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+
+    let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
+    let mut state = test_watch_state();
+    state.active_slot = "a".to_string();
+    let mut cqs_dir = fix.a_dir.clone();
+    let mut index_path = fix.a_index.clone();
+    let mut db_id = db_file_identity(&index_path);
+    let mut siblings = SiblingSet::empty();
+
+    write_active_slot(&fix.project_cqs, "b").unwrap();
+
+    let store = maybe_rebind_active_slot(
+        &fix.project_cqs,
+        Some("a"), // explicit --slot a: pinned
+        &model_config,
+        store,
+        &mut state,
+        &mut cqs_dir,
+        &mut index_path,
+        &mut db_id,
+        &mut siblings,
+        &rt,
+        &[],
+    );
+
+    assert_eq!(
+        state.active_slot, "a",
+        "explicit --slot pin must not re-bind on a promote of another slot"
+    );
+    assert_eq!(index_path, fix.a_index);
+    assert_eq!(
+        store.note_count().unwrap(),
+        1,
+        "pinned daemon keeps serving its slot"
+    );
+}
+
 // ── reindex_files consults the global EmbeddingCache ─────────────
 
 /// `reindex_files` must read from `global_cache` before calling the

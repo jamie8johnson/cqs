@@ -92,7 +92,7 @@ use events::max_pending_files;
 use events::{collect_events, process_file_changes, process_note_changes};
 
 mod siblings;
-use siblings::{SiblingPolicy, SiblingSet};
+use siblings::{classify_slot_model, SiblingKind, SiblingPolicy, SiblingSet};
 
 mod reindex;
 #[cfg(target_os = "linux")]
@@ -101,7 +101,7 @@ use reindex::count_watchable_dirs;
 use reindex::splade_batch_size;
 use reindex::{
     build_splade_encoder_for_watch, db_file_identity, encode_splade_for_changed_files,
-    reindex_files, reindex_notes,
+    reindex_files, reindex_notes, DbFileId,
 };
 
 // Re-export the incremental pipeline entry so the worktree overlay builder
@@ -430,6 +430,217 @@ fn reopen_store_after_replacement(
         );
     }
     Ok(store)
+}
+
+/// Idle-tick hot re-bind for a same-model `cqs slot promote`.
+///
+/// `slot_promote` writes `.cqs/active_slot` under the slots lock and signals
+/// nothing; the daemon resolves the active slot only at startup. This poll —
+/// once per quiescent idle tick — detects that the active-slot pointer now names
+/// a different slot and, when the promote is hot-reloadable, swaps the watch
+/// loop's write side onto it: the RW `Store`, `cqs_dir` (HNSW / dirty-marker /
+/// index-lock root), `index_path`, `db_id`, `state.active_slot`, and the sibling
+/// set all move to the new slot before the next snapshot publish, and the
+/// promoted slot's not-yet-drained sibling deltas are carried into the active
+/// reindex queue so a quiet non-serve daemon does not leave them stale. The
+/// query side (the daemon's `BatchContext`) already self-heals via the per-check
+/// `resolve_index_db(project_cqs_dir)`, so after this the two sides converge on
+/// the promoted slot with no restart.
+///
+/// Declines (returns the store unchanged, staying bound to the current slot) on:
+/// - an explicit `--slot` binding — an operator-pinned daemon is not stolen by a
+///   promote (the query side's independent active-slot following is a
+///   pre-existing divergence tracked separately);
+/// - a promoted slot with no `index.db` yet (nothing to bind to);
+/// - a **model change** — a foreign-model or unclassifiable promote needs a
+///   different-dim embedder (and, for CAGRA, a rebuilt index), so it stays on the
+///   restart path with a loud `warn!`;
+/// - a failed open of the new slot's store — decline rather than half-bind.
+///
+/// Never half-binds: the new store is opened *before* the old one is dropped, so
+/// every failure path leaves the daemon on a live store, and once the new store
+/// is open the remaining swap is infallible.
+#[allow(clippy::too_many_arguments)]
+fn maybe_rebind_active_slot(
+    project_cqs_dir: &Path,
+    explicit_slot: Option<&str>,
+    model_config: &ModelConfig,
+    store: Store,
+    state: &mut WatchState,
+    cqs_dir: &mut PathBuf,
+    index_path: &mut PathBuf,
+    db_id: &mut Option<DbFileId>,
+    sibling_slots: &mut SiblingSet,
+    shared_rt: &Arc<tokio::runtime::Runtime>,
+    vendored_prefixes: &[String],
+) -> Store {
+    // Explicit `--slot X` pins the write side to X for the daemon's lifetime;
+    // an active-slot promote must not steal a pinned daemon. Fast, per-tick.
+    if explicit_slot.is_some() {
+        return store;
+    }
+    // Pre-migration projects (`.cqs/index.db`, no `slots/`) have no active-slot
+    // pointer to chase.
+    if !cqs::slot::slots_root(project_cqs_dir).exists() {
+        return store;
+    }
+    // One small pointer-file read per idle tick.
+    let new_slot = match cqs::slot::read_active_slot(project_cqs_dir) {
+        Some(name) if name != state.active_slot => name,
+        _ => return store,
+    };
+
+    let _span = info_span!(
+        "maybe_rebind_active_slot",
+        from = %state.active_slot,
+        to = %new_slot
+    )
+    .entered();
+
+    let new_slot_dir = cqs::resolve_slot_dir(project_cqs_dir, &new_slot);
+    let new_index_path = new_slot_dir.join(cqs::INDEX_DB_FILENAME);
+    if !new_index_path.exists() {
+        warn!(
+            slot = %new_slot,
+            path = %new_index_path.display(),
+            "active slot changed but the promoted slot has no index.db — staying bound \
+             to the current slot until it is populated (cqs index --slot {})",
+            new_slot
+        );
+        return store;
+    }
+
+    // Same-model gate: only a promote to a slot recording the same model as the
+    // currently-bound one is hot-reloadable. A different model needs a
+    // different-dim embedder (stage 2), so decline and keep the restart path.
+    match classify_slot_model(&new_index_path, model_config) {
+        Ok(SiblingKind::SameModel) => {}
+        Ok(SiblingKind::Foreign { model }) => {
+            warn!(
+                slot = %new_slot,
+                promoted_model = %model,
+                bound_model = %model_config.name,
+                "active slot promoted to a DIFFERENT embedding model — hot re-bind \
+                 declined (dim/model mismatch); staying bound to the current slot. \
+                 Restart the daemon to serve the new model: \
+                 systemctl --user restart cqs-watch"
+            );
+            return store;
+        }
+        Err(e) => {
+            warn!(
+                slot = %new_slot,
+                error = %e,
+                "active slot changed but the promoted slot's model could not be \
+                 classified — hot re-bind declined; staying bound to the current slot"
+            );
+            return store;
+        }
+    }
+
+    // Open the new slot's store BEFORE dropping the old one so a failed open
+    // leaves the daemon on a live store rather than none.
+    let new_store = match Store::open_with_runtime(&new_index_path, Arc::clone(shared_rt)) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(
+                slot = %new_slot,
+                path = %new_index_path.display(),
+                error = %e,
+                "active slot changed but the promoted slot's store failed to open — \
+                 hot re-bind declined; staying bound to the current slot"
+            );
+            return store;
+        }
+    };
+    // The old store's Drop checkpoints the OLD slot's index.db. From here the
+    // swap is infallible — never half-bind.
+    drop(store);
+    new_store.set_vendored_prefixes(vendored_prefixes.to_vec());
+
+    // Discard any in-flight HNSW rebuild — it was built against the old slot's
+    // store and is meaningless for the new one (mirrors
+    // `reopen_store_after_replacement`).
+    if state.pending_rebuild.take().is_some() {
+        info!("discarded in-flight HNSW rebuild after slot re-bind");
+    }
+    state.hnsw_index = None;
+    state.incremental_count = 0;
+    state.observed_stamp = cqs::hnsw::StoreStamp::read(&new_store).ok();
+
+    // Canonicalize `cqs_dir` (matches the startup path); `index_path` stays
+    // uncanonicalized, exactly as startup builds it from the pre-canonical dir.
+    let canonical_dir = dunce::canonicalize(&new_slot_dir).unwrap_or_else(|e| {
+        tracing::debug!(
+            path = %new_slot_dir.display(),
+            error = %e,
+            "canonicalize failed on slot re-bind, using original"
+        );
+        new_slot_dir.clone()
+    });
+    *cqs_dir = canonical_dir;
+    *index_path = new_index_path;
+    *db_id = db_file_identity(index_path);
+
+    let old_slot = std::mem::replace(&mut state.active_slot, new_slot.clone());
+
+    // Carry the promoted slot's not-yet-drained sibling deltas into the active
+    // reindex queue BEFORE re-discovery drops them: while the slot was a
+    // sibling, active-cycle edits were propagated to its queue but may not have
+    // drained yet. Re-discovery (below) rebuilds the set without the promoted
+    // slot, so its queue would be lost — leaving those files stale in the
+    // now-active slot until a reconcile that never runs on a non-serve daemon
+    // or under `CQS_WATCH_RECONCILE=0`. The re-bind gate guarantees
+    // `pending_files` is empty here, so this is a clean transfer; the cap and
+    // the reconcile net still bound any overflow.
+    let carried = sibling_slots.queued_files_for(&new_slot);
+
+    // Re-discover siblings against the new active slot: the old active becomes a
+    // sibling, the promoted slot leaves the set.
+    *sibling_slots = if cqs::slot::slots_root(project_cqs_dir).exists() {
+        SiblingSet::discover(
+            project_cqs_dir,
+            &new_slot,
+            model_config,
+            SiblingPolicy::from_env(),
+        )
+    } else {
+        SiblingSet::empty()
+    };
+
+    if !carried.is_empty() {
+        let cap = max_pending_files();
+        let before = state.pending_files.len();
+        for f in carried {
+            if state.pending_files.len() >= cap {
+                break;
+            }
+            state.pending_files.insert(f);
+        }
+        let carried_in = state.pending_files.len() - before;
+        if carried_in > 0 {
+            // Arm the debounce clocks so the carried files flush into the new
+            // active slot on the next quiet-gap tick (and can't be starved past
+            // the max-latency cap by a continuous event stream).
+            state.last_event = std::time::Instant::now();
+            if state.first_pending_event.is_none() {
+                state.first_pending_event = Some(state.last_event);
+            }
+            info!(
+                carried = carried_in,
+                "carried promoted slot's pending sibling deltas into the active reindex queue"
+            );
+        }
+    }
+
+    info!(
+        old_slot = %old_slot,
+        new_slot = %new_slot,
+        index_path = %index_path.display(),
+        "daemon re-bound to promoted slot (same model) on idle tick"
+    );
+
+    new_store
 }
 
 /// Best-effort removal of `index.db`'s `-wal` / `-shm` sidecar files.
@@ -836,7 +1047,7 @@ pub fn cmd_watch(
     } else {
         project_cqs_dir.clone()
     };
-    let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+    let mut index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
 
     if !index_path.exists() {
         bail!("No index found at {}. Run 'cqs index' first (or 'cqs index --slot {}' if the slot exists but is empty).", index_path.display(), active_slot.name);
@@ -1263,7 +1474,8 @@ pub fn cmd_watch(
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
     let notes_path = root.join("docs/notes.toml");
-    let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
+    // `mut` so the idle-tick slot re-bind can swap this onto a promoted slot.
+    let mut cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
         tracing::debug!(path = %cqs_dir.display(), error = %e, "canonicalize failed, using original");
         cqs_dir
     });
@@ -1525,19 +1737,12 @@ pub fn cmd_watch(
     };
     let global_cache_ref: Option<&cqs::cache::EmbeddingCache> = global_cache_storage.as_ref();
 
-    let watch_cfg = WatchConfig {
-        root: &root,
-        cqs_dir: &cqs_dir,
-        notes_path: &notes_path,
-        supported_ext: &supported_ext,
-        parser: &parser,
-        embedder: shared_embedder.as_ref(),
-        quiet: cli.quiet,
-        model_config,
-        gitignore: &gitignore,
-        splade_encoder: splade_encoder_ref,
-        global_cache: global_cache_ref,
-    };
+    // `WatchConfig` is (re)built at the top of each loop iteration rather than
+    // hoisted here: it borrows `&cqs_dir`, and the idle-tick slot re-bind
+    // (`maybe_rebind_active_slot`) needs `&mut cqs_dir` to swap the watch loop
+    // onto a promoted slot. A hoisted borrow would pin `cqs_dir` for the whole
+    // loop and forbid the swap. The struct is all references, so rebuilding it
+    // per ~100 ms tick is free.
 
     let mut state = WatchState {
         embedder_backoff: EmbedderBackoff::new(),
@@ -1614,6 +1819,46 @@ pub fn cmd_watch(
     let mut last_reconcile = std::time::Instant::now();
 
     loop {
+        // Idle-tick hot re-bind: a same-model `cqs slot promote` writes
+        // `.cqs/active_slot` and signals nothing, so poll it here while the
+        // loop is quiescent (no queued reindex work) and swap the write side
+        // onto the promoted slot before this tick's reindex / GC / reconcile
+        // work. Placed at the top of the iteration — ahead of the `WatchConfig`
+        // build below — because the swap needs `&mut cqs_dir`, which a live
+        // `WatchConfig` borrow would forbid. Skipped while files/notes are
+        // pending so an in-flight burst flushes to its own slot first.
+        if state.pending_files.is_empty() && !state.pending_notes {
+            store = maybe_rebind_active_slot(
+                &project_cqs_dir,
+                cli.slot.as_deref(),
+                model_config,
+                store,
+                &mut state,
+                &mut cqs_dir,
+                &mut index_path,
+                &mut db_id,
+                &mut sibling_slots,
+                &shared_rt,
+                &vendored_prefixes_for_store,
+            );
+        }
+
+        // (Re)build the per-iteration WatchConfig from the current slot binding
+        // — see the note where the hoisted build used to sit.
+        let watch_cfg = WatchConfig {
+            root: &root,
+            cqs_dir: &cqs_dir,
+            notes_path: &notes_path,
+            supported_ext: &supported_ext,
+            parser: &parser,
+            embedder: shared_embedder.as_ref(),
+            quiet: cli.quiet,
+            model_config,
+            gitignore: &gitignore,
+            splade_encoder: splade_encoder_ref,
+            global_cache: global_cache_ref,
+        };
+
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 collect_events(&event, &watch_cfg, &mut state);
