@@ -145,11 +145,18 @@ pub(crate) fn impact_core(
 /// `_meta.overlay_graph = "callers-only"` marker — NOT `"full"` — when this
 /// returns `participated == true`.
 ///
+/// The kind-fallback routing decision is overlay-aware: the name is classified
+/// against the worktree-merged chunk landscape (via `detect_fallback_overlay`),
+/// so a delta that changes a name's kind either routes to the (overlay-merged)
+/// direct-callers analysis or emits a redirect whose `definitions[]` reflect the
+/// worktree. Either way the fallback early-return reports `false`: a redirect is
+/// a definitions list, not a caller set, so impact's `"callers-only"` marker (a
+/// direct-callers-section claim) has nothing to describe.
+///
 /// Returns `(output, overlay_participated)`. Participation is true only when the
 /// direct-callers merge consulted the delta for THIS target (a parent caller
-/// masked OR ≥1 overlay caller unioned). The kind-fallback early-return (the
-/// kind is classified from the parent store, so the verdict never reflects the
-/// overlay) reports `false`, as does every no-overlay call.
+/// masked OR ≥1 overlay caller unioned). The kind-fallback early-return reports
+/// `false`, as does every no-overlay call.
 pub(crate) fn impact_overlay(
     store: &Store<ReadOnly>,
     root: &std::path::Path,
@@ -161,9 +168,17 @@ pub(crate) fn impact_overlay(
     let depth = args.depth.clamp(1, crate::cli::IMPACT_DEPTH_CAP);
     let limit = args.limit.clamp(1, crate::cli::GRAPH_LIMIT_CAP);
 
-    // Kind detection is classified from the parent store, so a fallback verdict
-    // never reflects the overlay — parent-truth, report `false`.
-    let (chunks, fallback) = super::detect_fallback(store, &args.name);
+    // Kind detection is classified against the worktree-merged chunk landscape
+    // (mask parent name-matches in delta origins, union the overlay's) via
+    // `detect_fallback_overlay`, so a delta that changes a name's kind is visible
+    // to the routing decision: `fn Foo` added over main's `struct Foo` classifies
+    // ambiguous (the redirect surfaces both defs), and replacing the struct with
+    // the fn resolves to a function — routing to the real (overlay-merged)
+    // call-graph analysis below instead of a blind "Foo is a type" redirect. The
+    // fallback RETURN still reports `false`: a redirect is a definitions list, not
+    // a caller set, so impact's `"callers-only"` marker (a direct-callers-section
+    // claim) has nothing to describe.
+    let (chunks, fallback) = super::detect_fallback_overlay(store, overlay, &args.name);
     if let Some(fk) = fallback {
         let text = notes_text::impact(fk);
         return Ok((
