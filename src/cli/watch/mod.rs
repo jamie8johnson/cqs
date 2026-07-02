@@ -386,12 +386,15 @@ fn reopen_store_after_replacement(
     // Removal is only safe while the index lock is held: with the lock, no
     // `cqs index --force` is mid-reindex, so `index.db-wal` cannot be the new
     // writer's LIVE WAL — committed frames not yet checkpointed into the new
-    // main file, whose deletion would lose data. Once `--force` has released
-    // the lock its own checkpoint has already flushed every committed frame
-    // into the new main file (no reader on the new inode holds that checkpoint
-    // back), so any residual `-wal` is redundant-or-orphaned and safe to
-    // unlink. Without the lock a writer owns the live WAL, so we skip the
-    // unlink and let the reopen replay it — correct for that inode.
+    // main file, whose deletion would lose data. `cqs index --force` `close()`s
+    // its new store UNDER the lock (a 30s-bounded TRUNCATE, see `cmd_index`),
+    // folding the WAL tail into the new main file before it releases the lock —
+    // its implicit `Drop` would run only a 1s PASSIVE checkpoint that BAILS
+    // against the daemon's self-healed read-only pool on the new inode, so the
+    // explicit close is what makes this true. Hence any residual `-wal` a lock
+    // holder sees is redundant-or-orphaned and safe to unlink. Without the lock
+    // a writer owns the live WAL, so we skip the unlink and let the reopen
+    // replay it — correct for that inode.
     if index_lock_held {
         remove_stale_wal_sidecars(index_path);
     } else {
@@ -437,6 +440,12 @@ fn reopen_store_after_replacement(
 /// removed them); those are silently ignored. Any other I/O error is logged
 /// and swallowed: a leftover sidecar risks a stale replay, but aborting the
 /// reopen would strand the watch loop on the orphaned inode, which is worse.
+///
+/// Unlinking `-shm` while an in-process read-only pool still has it mmap'd
+/// leaves that reader on the now-unlinked (ghost) inode until it re-opens;
+/// its next open creates a fresh `-shm`. Harmless — a ghost reader keeps a
+/// consistent past snapshot, and the handle being rotated here is the watch
+/// loop's own.
 fn remove_stale_wal_sidecars(index_path: &Path) {
     for suffix in ["-wal", "-shm"] {
         let mut sidecar = index_path.as_os_str().to_os_string();
