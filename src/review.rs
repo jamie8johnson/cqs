@@ -102,6 +102,15 @@ pub fn review_diff<Mode>(
 /// does every no-overlay call. The daemon adapter emits the honest
 /// `_meta.overlay_graph = "callers-only"` marker gated on this bool — NOT
 /// `"full"`, because the tests + risk-scoring sections stay parent-truth.
+///
+/// INVARIANT: when `overlay` is `Some`, `diff_text` MUST describe
+/// `overlay.worktree_root`'s working tree — the same tree the overlay was built
+/// for. Splicing a diff of a DIFFERENT tree (e.g. the served parent root) with the
+/// worktree's caller-graph delta yields a chimera: the wrong changed functions
+/// certified worktree-aware. The enforcement is the caller — every adapter
+/// acquires the diff via `run_git_diff_for_overlay`, which diffs
+/// `overlay.worktree_root` whenever the overlay is present; this contract is that
+/// helper's reason to exist.
 pub fn review_diff_overlay<Mode>(
     store: &Store<Mode>,
     diff_text: &str,

@@ -88,11 +88,16 @@ pub(crate) fn cmd_affected(
     // Get diff text — `--stdin` lets agents pipe a captured diff
     // (`git diff main | cqs affected --stdin --json`) without re-shelling
     // git. Mirrors the path in `cmd_review`/`cmd_ci`/`cmd_impact_diff`.
-    // Adapter owns I/O.
+    // Adapter owns I/O. `affected` is CLI-only (no daemon dispatcher), so the
+    // non-stdin branch diffs the worktree directly when this invocation lives in
+    // one — same worktree-subject fix the review/ci/impact-diff siblings apply.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base, root)?
+        let overlay_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
+        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
     };
 
     if json {

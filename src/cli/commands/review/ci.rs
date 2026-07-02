@@ -126,11 +126,16 @@ pub(crate) fn cmd_ci(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // Get diff text — adapter owns I/O (CLI supports stdin; daemon git only).
+    // Get diff text — adapter owns I/O (CLI supports stdin; daemon git only). The
+    // `--stdin` branch stays byte-identical; the non-stdin branch diffs the
+    // worktree when this invocation lives in one (see `cmd_review`).
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base, root)?
+        let overlay_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
+        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
     };
 
     // The gate `passed` flag drives the process exit code below, so both

@@ -1150,6 +1150,20 @@ impl Commands {
         }
     }
 
+    /// `true` when this invocation is `impact-diff`.
+    ///
+    /// `impact-diff` is daemon-marked but — unlike `review` / `ci` — carries NO
+    /// worktree-overlay plumbing (it is absent from the daemon overlay-forward
+    /// list). The daemon `dispatch_impact_diff` therefore always diffs the served
+    /// PARENT root; forwarding a worktree-originated invocation would review the
+    /// wrong tree (the parent working tree, disjoint from the lane's edits). The
+    /// dispatch-forward gate uses this to keep a worktree `impact-diff` on the CLI
+    /// path, where `cmd_impact_diff` diffs the worktree — the same bypass shape the
+    /// `--stdin` and text-mode invocations use.
+    pub(crate) fn is_impact_diff(&self) -> bool {
+        matches!(self, Commands::ImpactDiff { .. })
+    }
+
     /// The worktree-overlay tri-state `(overlay, no_overlay)` for the
     /// overlay-capable subcommands — the seed-overlaid graph-adjacent commands
     /// (`scout` / `gather` / `task`, Part A) plus the call-graph commands
@@ -1655,6 +1669,35 @@ mod tests {
         match cli.command {
             Some(Commands::Affected { stdin, .. }) => assert!(stdin),
             _ => panic!("expected Affected command"),
+        }
+    }
+
+    /// `Commands::is_impact_diff()` classifies ONLY `impact-diff`. The
+    /// daemon-forward gate composes this predicate with a worktree probe to keep a
+    /// worktree-originated `impact-diff` on the CLI path (the daemon handler has no
+    /// overlay plumbing and would diff the served parent tree — the wrong subject).
+    /// A false positive would strand review/ci on the CLI; a false negative would
+    /// re-expose the wrong-tree bug for impact-diff.
+    #[test]
+    fn is_impact_diff_classifies_only_impact_diff() {
+        use clap::Parser;
+        let yes = Cli::try_parse_from(["cqs", "impact-diff"]).unwrap();
+        assert!(
+            yes.command.unwrap().is_impact_diff(),
+            "impact-diff must classify as is_impact_diff"
+        );
+        for argv in [
+            vec!["cqs", "review"],
+            vec!["cqs", "ci"],
+            vec!["cqs", "affected"],
+            vec!["cqs", "impact", "foo"],
+            vec!["cqs", "scout", "foo"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert!(
+                !cli.command.unwrap().is_impact_diff(),
+                "is_impact_diff must be false for {argv:?}"
+            );
         }
     }
 

@@ -574,6 +574,30 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     }
 
+    // `impact-diff` invoked from a worktree stays on the CLI path (same bypass
+    // shape as the `--stdin` gate above). The daemon `dispatch_impact_diff` has no
+    // worktree-overlay plumbing and acquires its diff from the served PARENT root,
+    // so forwarding a worktree-originated invocation would review the parent tree —
+    // disjoint from the lane's edits, the wrong subject. The CLI path's
+    // `cmd_impact_diff` acquires the diff from the worktree, so keeping it local is
+    // the correct-subject route.
+    if let Some(cmd) = cli.command.as_ref() {
+        if cmd.is_impact_diff() {
+            let resolved_root = find_project_root();
+            let from_worktree = std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cqs::worktree::overlay_root(&cwd, &resolved_root))
+                .is_some();
+            if from_worktree {
+                tracing::debug!(
+                    cmd = cmd_label,
+                    "impact-diff from a worktree kept on CLI path: daemon diffs the parent root"
+                );
+                return Ok(None);
+            }
+        }
+    }
+
     let sock_path = super::daemon_socket_path(cqs_dir);
     if !sock_path.exists() {
         return Ok(None);

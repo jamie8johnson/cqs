@@ -43,6 +43,6 @@ None — operates on the current git diff.
 
 ## Rules
 
-- If `cqs review` returns no changed functions, the changes may be in non-indexed files (docs, config) — note this and skip the impact analysis
+- If `cqs review` returns no changed functions, first confirm the diff is genuinely non-code (docs, config) with `git diff --stat`. From a `.claude/worktrees/` lane an empty review despite real `.rs` edits is a RED FLAG — `cqs review` diffs the worktree, so an empty result means either no indexed function changed or something is wrong; do NOT rationalize it away, verify against `git diff` before skipping the impact analysis
 - If risk is High, recommend the user review each affected caller manually before committing
 - If no tests cover the changed functions, flag prominently

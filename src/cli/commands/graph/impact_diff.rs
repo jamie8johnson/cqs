@@ -33,11 +33,17 @@ pub(crate) fn cmd_impact_diff(
     let store = &ctx.store;
     let root = &ctx.root;
 
-    // 1. Get diff text
+    // 1. Get diff text. The non-stdin branch diffs the worktree when this
+    // invocation lives in one (see `cmd_review`); the daemon `dispatch_impact_diff`
+    // has no overlay plumbing, so a worktree `impact-diff` is kept on THIS CLI path
+    // by the client dispatch gate. `--stdin` stays byte-identical.
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        crate::cli::commands::run_git_diff(base, root)?
+        let overlay_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| cqs::worktree::overlay_root(&cwd, root));
+        crate::cli::commands::run_git_diff_for_overlay(base, root, overlay_root.as_deref())?
     };
 
     // 2. Parse hunks

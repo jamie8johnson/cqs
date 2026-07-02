@@ -480,8 +480,14 @@ pub(in crate::cli::batch) fn dispatch_impact_diff(
     let base = args.base.as_deref();
     let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
 
-    // Diff runs in the served project (`ctx.root`), NOT the daemon's launch cwd.
-    let diff_text = crate::cli::commands::run_git_diff(base, &ctx.root)?;
+    // `dispatch_impact_diff` has NO worktree-overlay plumbing (impact-diff is not
+    // in the daemon overlay-forward list), so it acquires the diff from the served
+    // project (`ctx.root`), NOT the daemon's launch cwd. That is correct ONLY
+    // because the client keeps a worktree-originated `impact-diff` on the CLI path
+    // (dispatch.rs) — mirroring the `--stdin` gate — so this daemon handler never
+    // sees a worktree invocation whose parent diff would be the wrong subject.
+    // `None` overlay-root ⇒ diff `ctx.root`.
+    let diff_text = crate::cli::commands::run_git_diff_for_overlay(base, &ctx.root, None)?;
     let hunks = cqs::parse_unified_diff(&diff_text);
 
     if hunks.is_empty() {
@@ -3712,11 +3718,16 @@ mod tests {
             &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // One-tree marker-honesty test: re-point worktree_root at the test repo so
+        // the diff-acquisition helper (which diffs `overlay.worktree_root`) reads
+        // the tree that holds the edit. Two-tree diff-subject tests live below.
+        let mut overlay = overlay_with_edges(
             &[("src/edited.rs", "fresh_caller")],
             &[("fresh_caller", "src/edited.rs", 1, "target")],
             &["src/edited.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json =
             super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
@@ -3739,12 +3750,16 @@ mod tests {
             &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
             &[("the_caller", "src/stable.rs", 1, "target")],
         );
-        // Active, non-trivial overlay touching an UNRELATED file.
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // Active, non-trivial overlay touching an UNRELATED file. Re-point
+        // worktree_root at the test repo (one-tree marker-honesty test) so the
+        // diff-acquisition helper reads the tree that holds the edit.
+        let mut overlay = overlay_with_edges(
             &[("src/unrelated.rs", "noise")],
             &[("noise", "src/unrelated.rs", 1, "other")],
             &["src/unrelated.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json =
             super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
@@ -3769,11 +3784,14 @@ mod tests {
             &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // One-tree marker-honesty test: re-point worktree_root at the test repo.
+        let mut overlay = overlay_with_edges(
             &[("src/edited.rs", "fresh_caller")],
             &[("fresh_caller", "src/edited.rs", 1, "target")],
             &["src/edited.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json =
             super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
@@ -4080,11 +4098,14 @@ mod tests {
             &[("src/edited.rs", "old_caller"), ("src/lib.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // One-tree marker-honesty test: re-point worktree_root at the test repo.
+        let mut overlay = overlay_with_edges(
             &[("src/edited.rs", "fresh_caller")],
             &[("fresh_caller", "src/edited.rs", 1, "target")],
             &["src/edited.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
             .expect("dispatch_ci");
@@ -4107,11 +4128,14 @@ mod tests {
             &[("src/stable.rs", "the_caller"), ("src/lib.rs", "target")],
             &[("the_caller", "src/stable.rs", 1, "target")],
         );
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // One-tree marker-honesty test: re-point worktree_root at the test repo.
+        let mut overlay = overlay_with_edges(
             &[("src/unrelated.rs", "noise")],
             &[("noise", "src/unrelated.rs", 1, "other")],
             &["src/unrelated.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
             .expect("dispatch_ci");
@@ -4135,11 +4159,14 @@ mod tests {
             &[("src/edited.rs", "old_caller"), ("src/other.rs", "target")],
             &[("old_caller", "src/edited.rs", 1, "target")],
         );
-        let overlay = std::sync::Arc::new(overlay_with_edges(
+        // One-tree marker-honesty test: re-point worktree_root at the test repo.
+        let mut overlay = overlay_with_edges(
             &[("src/edited.rs", "fresh_caller")],
             &[("fresh_caller", "src/edited.rs", 1, "target")],
             &["src/edited.rs"],
-        ));
+        );
+        overlay.worktree_root = repo.path().to_path_buf();
+        let overlay = std::sync::Arc::new(overlay);
         let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
         let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
             .expect("dispatch_ci");
@@ -4147,6 +4174,163 @@ mod tests {
             overlay_graph_marker(&json),
             None,
             "an empty diff (no changed functions) must leave ci's marker absent: {json}"
+        );
+    }
+
+    // ─── Two-tree diff-subject correctness ─────────────────────────────────────
+    //
+    // The marker-honesty tests above build ONE tree (ctx.root == overlay's
+    // worktree_root == the same repo) — the config where the parent diff and the
+    // worktree diff coincide, so a review that diffs the WRONG tree still passes.
+    // Production is the two-tree config: the overlay activates ONLY in a worktree
+    // whose reads redirect to the parent index, so ctx.root (served parent) and
+    // overlay.worktree_root (worktree) are DISJOINT working trees. These build that
+    // config — a parent repo committed + CLEAN, a linked worktree with an
+    // uncommitted edit. Diffing the parent yields an EMPTY review (RED, the
+    // wrong-tree bug); diffing overlay.worktree_root reviews the lane's edit (GREEN).
+
+    /// Parent repo committed on `main` (src/lib.rs = `target`, src/other.rs =
+    /// `unrelated`), CLEAN; a linked worktree `wt` with an uncommitted edit to
+    /// src/lib.rs. Returns `(holder, parent, wt)`. The caller builds the store via
+    /// `parent_store_in(&parent, …)` — its `.cqs` is created AFTER the commit, so it
+    /// stays untracked and never appears in the parent's `git diff`.
+    fn two_tree_repo() -> (TempDir, PathBuf, PathBuf) {
+        let holder = TempDir::new().expect("tempdir");
+        let parent = holder.path().join("parent");
+        std::fs::create_dir_all(parent.join("src")).expect("mkdir parent/src");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&parent)
+                .output()
+                .expect("git invocation")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        std::fs::write(parent.join("src/lib.rs"), "fn target() { let x = 1; }\n")
+            .expect("write lib.rs");
+        std::fs::write(
+            parent.join("src/other.rs"),
+            "fn unrelated() { let y = 1; }\n",
+        )
+        .expect("write other.rs");
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@e.com"]);
+        git(&["config", "user.name", "T"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let wt = holder.path().join("wt");
+        git(&["worktree", "add", "-q", "-b", "lane", wt.to_str().unwrap()]);
+        // Uncommitted lane edit in the WORKTREE only — the parent stays clean.
+        std::fs::write(wt.join("src/lib.rs"), "fn target() { let x = 2; }\n")
+            .expect("edit wt lib.rs");
+        (holder, parent, wt)
+    }
+
+    /// `changed_functions` names from a serialized `ReviewOutput` (flattened, so the
+    /// array is top-level).
+    fn changed_function_names(json: &serde_json::Value) -> Vec<String> {
+        json.get("changed_functions")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `changed_functions` names from a serialized `CiOutput` (nested under
+    /// `review`).
+    fn ci_changed_function_names(json: &serde_json::Value) -> Vec<String> {
+        json.get("review")
+            .and_then(|r| r.get("changed_functions"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// RED/GREEN: with an active overlay, `dispatch_review` must acquire the
+    /// diff from `overlay.worktree_root` (the worktree, holding the lane's edit),
+    /// NOT ctx.root (the CLEAN served parent). Pre-fix the parent diff is empty →
+    /// `changed_functions == []`; post-fix the review names the lane's `target`.
+    #[test]
+    fn dispatch_review_diffs_worktree_not_parent() {
+        let (_holder, parent, wt) = two_tree_repo();
+        let ctx = parent_store_in(&parent, &[("src/lib.rs", "target")], &[]);
+        let mut overlay = overlay_with_edges(&[("src/lib.rs", "target")], &[], &["src/lib.rs"]);
+        overlay.worktree_root = wt.clone();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
+                .expect("dispatch_review");
+        let names = changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "target"),
+            "review must diff the worktree (which edits `target`), not the clean parent: {json}"
+        );
+    }
+
+    /// Variant: the parent working tree is DIRTY on an unrelated tracked
+    /// file. The lane review must describe the WORKTREE's edit (`target`) and must
+    /// NOT leak the parent's dirty `unrelated` function. Pre-fix the diff came from
+    /// the parent, so `unrelated` (and not `target`) appeared — the wrong-subject
+    /// leak this pins shut.
+    #[test]
+    fn dispatch_review_ignores_dirty_parent_reviews_worktree() {
+        let (_holder, parent, wt) = two_tree_repo();
+        // Dirty the parent working tree on an unrelated tracked file.
+        std::fs::write(
+            parent.join("src/other.rs"),
+            "fn unrelated() { let y = 2; }\n",
+        )
+        .expect("dirty parent");
+        let ctx = parent_store_in(
+            &parent,
+            &[("src/lib.rs", "target"), ("src/other.rs", "unrelated")],
+            &[],
+        );
+        let mut overlay = overlay_with_edges(&[("src/lib.rs", "target")], &[], &["src/lib.rs"]);
+        overlay.worktree_root = wt.clone();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json =
+            super::super::analysis::dispatch_review(&ctx.build_view(None), &review_wire_args())
+                .expect("dispatch_review");
+        let names = changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "target"),
+            "review subject must be the worktree's edit `target`: {json}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "unrelated"),
+            "the parent's dirty `unrelated` function must NOT leak into the lane review: {json}"
+        );
+    }
+
+    /// For `cqs ci`: the bundled review's diff must come from the worktree, so
+    /// the gate + review describe the lane's edit — not the clean parent's empty
+    /// diff (which would gate trivially green regardless of the lane).
+    #[test]
+    fn dispatch_ci_diffs_worktree_not_parent() {
+        let (_holder, parent, wt) = two_tree_repo();
+        let ctx = parent_store_in(&parent, &[("src/lib.rs", "target")], &[]);
+        let mut overlay = overlay_with_edges(&[("src/lib.rs", "target")], &[], &["src/lib.rs"]);
+        overlay.worktree_root = wt.clone();
+        let overlay = std::sync::Arc::new(overlay);
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+        let json = super::super::analysis::dispatch_ci(&ctx.build_view(None), &ci_wire_args())
+            .expect("dispatch_ci");
+        let names = ci_changed_function_names(&json);
+        assert!(
+            names.iter().any(|n| n == "target"),
+            "ci review must diff the worktree (which edits `target`), not the clean parent: {json}"
         );
     }
 }
