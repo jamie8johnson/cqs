@@ -85,3 +85,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
         run: cargo check --verbose
+
+  windows-check:
+    # ubuntu-latest is the only build target above, so a sibling-target HARD
+    # ERROR — an ungated unix-only API (E0432, the class that broke serve on
+    # Windows) or an E0277 unsized-cfg-arm binding (the class that skipped the
+    # v1.46.0 release) — is invisible until the release.yml v* tag cross-build.
+    # This native windows-latest check catches that hard-error class at PR time,
+    # with real type info, closing the actually-costly "release skips a binary"
+    # gap before the tag rather than after it.
+    #
+    # It does NOT set `-D warnings`: Windows carries a large dead_code backlog of
+    # daemon-client / MCP-bridge code that is live only via the (unix-only)
+    # socket path and becomes live on Windows once the named-pipe transport
+    # lands — so enforcing the dead-code-warning shape now would mean annotating
+    # ~100 items that then invert. That warning-shape enforcement is deferred to
+    # the transport work; the hard-error gate here is the durable, churn-free
+    # part (a hard error is fatal with or without `-D warnings`).
+    #
+    # Default features (no cuda/tiered) to match release.yml's Windows build and
+    # keep the runner buildable; `check` (not clippy/test) to bound runner time.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Windows cargo check (sibling hard-error gate)
+        run: cargo check --verbose
