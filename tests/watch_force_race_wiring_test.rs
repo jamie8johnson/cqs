@@ -27,8 +27,9 @@ fn read(rel: &str) -> String {
 
 /// (1) The watch loop's idle housekeeping block (`if !flush_due { … }`) must
 /// call `drain_completed_rebuild_idle`. Without this the completed-rebuild
-/// freshness wedge re-emerges AND the DB-replacement discard never runs on the
-/// quiet-repo path (no flush tick fires to reach the flush path's own guard).
+/// freshness wedge re-emerges on the quiet-repo path (no flush tick fires to
+/// reach the flush path's own drain). The DB-replacement recovery is pinned
+/// separately by `watch_idle_block_reopens_store_on_force_replacement` below.
 ///
 /// RED if the call site is deleted from the idle block: the helper's unit tests
 /// stay green, so this scan is the only tripwire.
@@ -60,10 +61,51 @@ fn watch_idle_block_calls_drain_completed_rebuild_idle() {
     assert!(
         called,
         "WIRING GONE: the watch loop's `if !flush_due` idle block no longer calls \
-         `drain_completed_rebuild_idle`. The idle-tick freshness drain and the \
-         DB-replacement discard both run through that call — its unit tests pin the \
-         helper, not this call site, so deleting it is invisible to them. Restore the \
-         call in src/cli/watch/mod.rs's idle block."
+         `drain_completed_rebuild_idle`. The idle-tick freshness drain runs through \
+         that call — its unit test pins the helper, not this call site, so deleting \
+         it is invisible to it. Restore the call in src/cli/watch/mod.rs's idle block."
+    );
+}
+
+/// (1b) The watch loop's idle housekeeping block must also reopen the Store on a
+/// `cqs index --force` DB replacement, via `reopen_store_after_replacement`.
+/// Without this idle-tick reopen the served Store handle stays orphaned on the
+/// old inode whenever the repo is quiet (no file event to reach the flush path's
+/// reopen, and no reconcile tick when `CQS_WATCH_RECONCILE=0`), so reindex
+/// writes, GC, and the rebuild worker all keep operating on the stale DB.
+///
+/// RED if the idle-tick reopen is deleted: the helper's unit test stays green (it
+/// drives `reopen_store_after_replacement` directly), so this scan is the only
+/// tripwire for the call site.
+#[test]
+fn watch_idle_block_reopens_store_on_force_replacement() {
+    let src = read("src/cli/watch/mod.rs");
+    let lines: Vec<&str> = src.lines().collect();
+
+    let idle_guard = lines
+        .iter()
+        .position(|l| l.contains("if !flush_due("))
+        .expect(
+            "SITE MOVED: src/cli/watch/mod.rs no longer has an `if !flush_due(` idle guard — \
+             update this wiring test to track the idle block's new shape.",
+        );
+
+    // The reopen gates the drain / GC / reconcile work on a fresh Store, so it
+    // sits near the top of the idle block. Scan a window past the guard for a
+    // `reopen_store_after_replacement(` reference — the `fn` definition lives
+    // ~1200 lines above, well outside this window, so any occurrence is a call.
+    let window_end = (idle_guard + 50).min(lines.len());
+    let reopens = lines[idle_guard..window_end]
+        .iter()
+        .any(|l| l.contains("reopen_store_after_replacement("));
+
+    assert!(
+        reopens,
+        "WIRING GONE: the watch loop's `if !flush_due` idle block no longer calls \
+         `reopen_store_after_replacement`. On a quiet repo (no file event, or \
+         CQS_WATCH_RECONCILE=0) the served Store then never reopens after a \
+         `cqs index --force` DB replacement — it keeps serving the orphaned inode. \
+         Restore the idle-tick reopen in src/cli/watch/mod.rs's idle block."
     );
 }
 
