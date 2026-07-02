@@ -574,18 +574,60 @@ pub fn take_overlay_meta() -> Option<OverlayMeta> {
     OVERLAY_META.with(|cell| cell.borrow_mut().take())
 }
 
+/// A raw file descriptor for the pinned worktree directory (the Linux
+/// `/proc/self/fd` overlay pin). Threaded to [`git_capture`] so the git child
+/// can clear `FD_CLOEXEC` and resolve `git -C /proc/self/fd/<n>`; `None` for a
+/// git op against a real path (the parent root) or on a platform without the
+/// pin. Kept a portable `i32` (== unix `RawFd`) so the overlay module still
+/// compiles off-unix, where it is always `None`.
+pub type PinFd = i32;
+
 /// Run `git -C <dir> <args...>` capturing stdout bytes. `-z` outputs embed
 /// NUL separators, so stdout is returned raw rather than as a `String`.
-fn git_capture(dir: &Path, args: &[&str], context: &str) -> Result<Vec<u8>, OverlayError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|e| OverlayError::Git {
-            context: context.to_string(),
-            message: format!("failed to spawn git: {e}. Is git installed?"),
-        })?;
+///
+/// `pin_fd` is the pinned worktree's fd when `dir` is its `/proc/self/fd/<n>`
+/// ops path (the TOCTOU-defense pin). The pin fd is held `O_CLOEXEC`
+/// (closed-on-exec) so it never leaks into arbitrary daemon children; this is
+/// the ONE spawn that re-opens the door, clearing `FD_CLOEXEC` for the git
+/// child alone so `git -C /proc/self/fd/<n>` can resolve the held inode. Pass
+/// `None` for ops against a real path (`parent_root` / `served_root`).
+fn git_capture(
+    dir: &Path,
+    args: &[&str],
+    context: &str,
+    pin_fd: Option<PinFd>,
+) -> Result<Vec<u8>, OverlayError> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+
+    #[cfg(unix)]
+    if let Some(fd) = pin_fd {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `pre_exec` runs in the forked child AFTER fork and BEFORE
+        // exec, where only async-signal-safe work is permitted. The closure
+        // performs a single `fcntl(F_SETFD, 0)` syscall and nothing else — no
+        // allocation, no locking, no Rust-runtime calls (`Error::last_os_error`
+        // only wraps errno, no heap) — so it is async-signal-safe. It clears
+        // FD_CLOEXEC on the O_PATH pin fd so the git child can resolve
+        // `git -C /proc/self/fd/<n>`; on failure it returns errno, aborting the
+        // exec → git fails → the overlay falls back to the parent index with a
+        // loud wire error (fail-closed).
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pin_fd;
+
+    let output = cmd.output().map_err(|e| OverlayError::Git {
+        context: context.to_string(),
+        message: format!("failed to spawn git: {e}. Is git installed?"),
+    })?;
     if !output.status.success() {
         return Err(OverlayError::Git {
             context: context.to_string(),
@@ -622,6 +664,9 @@ pub fn registered_worktrees(served_root: &Path) -> Result<Vec<PathBuf>, OverlayE
         served_root,
         &["worktree", "list", "--porcelain"],
         "worktree list",
+        // Runs against `served_root` (a real path the daemon controls), not the
+        // pinned worktree ops path — no pin fd needed.
+        None,
     )?;
     let text = String::from_utf8_lossy(&raw);
     // Porcelain format: stanzas separated by blank lines, each beginning with
@@ -650,7 +695,9 @@ pub fn registered_worktrees(served_root: &Path) -> Result<Vec<PathBuf>, OverlayE
 /// base with no option-injection surface.
 pub fn parent_head_oid(parent_root: &Path) -> Result<String, OverlayError> {
     let _span = tracing::info_span!("overlay_parent_head_oid").entered();
-    let out = git_capture(parent_root, &["rev-parse", "HEAD"], "rev-parse HEAD")?;
+    // Runs against `parent_root` (a real path), not the pinned worktree ops
+    // path — no pin fd needed.
+    let out = git_capture(parent_root, &["rev-parse", "HEAD"], "rev-parse HEAD", None)?;
     let oid = String::from_utf8_lossy(&out).trim().to_string();
     // SHA-1 = 40 hex, SHA-256 = 64 hex. Reject anything else (option text,
     // "HEAD" on an unborn branch, stray output) before it becomes a ref arg.
@@ -797,16 +844,23 @@ fn normalize_str(path: &str) -> String {
 /// Builds `masked_origins` (every touched origin) and `parse_set` (the
 /// subset worth indexing — regular files, supported extension, under the
 /// size cap). Enforces [`overlay_max_files`].
-pub fn discover_delta(worktree_root: &Path, parent_root: &Path) -> Result<Delta, OverlayError> {
+pub fn discover_delta(
+    worktree_root: &Path,
+    parent_root: &Path,
+    pin_fd: Option<PinFd>,
+) -> Result<Delta, OverlayError> {
     let _span = tracing::info_span!("overlay_discover_delta").entered();
 
     let oid = parent_head_oid(parent_root)?;
 
-    // Tracked delta (committed + uncommitted) vs parent HEAD.
+    // Tracked delta (committed + uncommitted) vs parent HEAD. Runs against
+    // `worktree_root` — the pinned `/proc/self/fd/<n>` ops path in production —
+    // so the git child clears FD_CLOEXEC on the pin fd to resolve it.
     let tracked_raw = git_capture(
         worktree_root,
         &["diff", "--name-status", "-z", "--find-renames", &oid],
         "diff --name-status",
+        pin_fd,
     )?;
     let mut records = parse_name_status_z(&tracked_raw);
 
@@ -851,6 +905,7 @@ pub fn discover_delta(worktree_root: &Path, parent_root: &Path) -> Result<Delta,
         worktree_root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
         "ls-files --others",
+        pin_fd,
     )?;
     for field in untracked_raw.split(|&b| b == 0).filter(|f| !f.is_empty()) {
         let path = normalize_str(&String::from_utf8_lossy(field));

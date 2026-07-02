@@ -38,6 +38,10 @@ use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeO
 ///   `discover_delta` + the parse-set file reads follow the held fd to the
 ///   validated inode, immune to a post-validation path-component swap (TOCTOU).
 ///   For non-daemon / CLI callers it is just the canonical worktree path.
+/// - `pin_fd`: the pin's raw fd when `ops_root` is a `/proc/self/fd/<n>` path,
+///   so the git children in `discover_delta` clear `FD_CLOEXEC` and can resolve
+///   it (the fd is held closed-on-exec by default). `None` when `ops_root` is a
+///   real path (CLI callers, off-Linux).
 /// - `canonical_root`: the worktree's stable canonical path, recorded as the
 ///   overlay's identity (`WorktreeOverlay::worktree_root`). NOT used for ops —
 ///   a live `/proc/self/fd/<n>` path is meaningless once the fd closes, and the
@@ -64,8 +68,10 @@ use cqs::worktree_overlay::{discover_delta, fingerprint, OverlayStats, WorktreeO
 // (PR-3) is the production caller. Exercised under `slow-tests` by
 // `build_overlay_indexes_dirty_delta` below.
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_overlay<M>(
     ops_root: &Path,
+    pin_fd: Option<cqs::worktree_overlay::PinFd>,
     canonical_root: &Path,
     parent_root: &Path,
     parser: &CqParser,
@@ -80,7 +86,7 @@ pub(crate) fn build_overlay<M>(
     .entered();
     let started = Instant::now();
 
-    let delta = discover_delta(ops_root, parent_root)?;
+    let delta = discover_delta(ops_root, parent_root, pin_fd)?;
     // Fold the parent's notes-revision token into the overlay's cache identity.
     // Notes are copied into the shadow store below (so its `note_boost` matches
     // the parent), so they must participate in the fingerprint too: a parent
@@ -242,9 +248,18 @@ mod tests {
         let parent_model = ModelInfo::new(&embedder.model_config().repo, embedder.embedding_dim());
         parent_store.init(&parent_model).expect("init parent store");
 
-        let overlay = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
-            .expect("build_overlay")
-            .expect("non-clean worktree yields Some(overlay)");
+        let overlay = build_overlay(
+            &wt,
+            None,
+            &wt,
+            &parent,
+            &parser,
+            &embedder,
+            &parent_store,
+            None,
+        )
+        .expect("build_overlay")
+        .expect("non-clean worktree yields Some(overlay)");
 
         assert!(
             overlay
@@ -321,9 +336,18 @@ mod tests {
             .upsert_notes_batch(&[note], std::path::Path::new("docs/notes.toml"), 100)
             .expect("seed parent note");
 
-        let overlay = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
-            .expect("build_overlay")
-            .expect("non-clean worktree yields Some(overlay)");
+        let overlay = build_overlay(
+            &wt,
+            None,
+            &wt,
+            &parent,
+            &parser,
+            &embedder,
+            &parent_store,
+            None,
+        )
+        .expect("build_overlay")
+        .expect("non-clean worktree yields Some(overlay)");
 
         // The note crossed into the shadow store's notes table (public API:
         // `cached_note_boost_index` is lib-crate-private, so assert through the
@@ -437,9 +461,18 @@ mod tests {
             .upsert_notes_batch(&[note_neg], std::path::Path::new("docs/notes.toml"), 100)
             .expect("seed parent note");
 
-        let overlay0 = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
-            .expect("build_overlay (neg)")
-            .expect("non-clean worktree yields Some(overlay)");
+        let overlay0 = build_overlay(
+            &wt,
+            None,
+            &wt,
+            &parent,
+            &parser,
+            &embedder,
+            &parent_store,
+            None,
+        )
+        .expect("build_overlay (neg)")
+        .expect("non-clean worktree yields Some(overlay)");
         let fp0 = overlay0.fingerprint;
 
         // Mutate the parent note's sentiment (the `cqs notes update` path):
@@ -455,9 +488,18 @@ mod tests {
             .upsert_notes_batch(&[note_pos], std::path::Path::new("docs/notes.toml"), 200)
             .expect("update parent note");
 
-        let overlay1 = build_overlay(&wt, &wt, &parent, &parser, &embedder, &parent_store, None)
-            .expect("build_overlay (pos)")
-            .expect("non-clean worktree yields Some(overlay)");
+        let overlay1 = build_overlay(
+            &wt,
+            None,
+            &wt,
+            &parent,
+            &parser,
+            &embedder,
+            &parent_store,
+            None,
+        )
+        .expect("build_overlay (pos)")
+        .expect("non-clean worktree yields Some(overlay)");
         let fp1 = overlay1.fingerprint;
 
         // The fingerprint moved — so the LRU treats overlay1 as a miss and
@@ -618,6 +660,7 @@ mod tests {
             let parent_store_for_build = Store::open(&parent_db).expect("open parent for build");
             build_overlay(
                 &wt,
+                None,
                 &wt,
                 &parent,
                 &parser,

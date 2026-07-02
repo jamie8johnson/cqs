@@ -165,11 +165,16 @@ impl PinnedWorktree {
     /// `/proc/self/fd` to express the pinned path for `git -C`) or on any open
     /// error — the caller treats `None` as "do not overlay" (fail closed).
     ///
-    /// The fd is opened **without** `O_CLOEXEC` on purpose: `git -C
-    /// /proc/self/fd/<n>` only resolves if fd `<n>` is open in the git child,
-    /// so it must inherit across fork+exec. It is an `O_PATH` directory fd
-    /// (cannot read data, only resolve paths) held for the brief overlay-build
-    /// window, so the inheritance exposure is narrow.
+    /// The fd is opened **with** `O_CLOEXEC` (closed-on-exec by default), so it
+    /// does NOT leak into arbitrary child processes the daemon forks while the
+    /// pin is held. The single consumer that needs it — the git subprocess
+    /// resolving `git -C /proc/self/fd/<n>` — clears `FD_CLOEXEC` for its own
+    /// child only, in a `pre_exec` hook ([`Self::ops_fd`] +
+    /// `worktree_overlay::git_capture`). This makes "fds are closed-on-exec"
+    /// the structural default and confines the one exception to exactly the git
+    /// child, rather than relying on every spawn site to avoid inheriting an
+    /// always-open fd. It is an `O_PATH` directory fd (cannot read data, only
+    /// resolve paths) held for the brief overlay-build window.
     pub fn pin(canonical: &Path) -> Option<Self> {
         #[cfg(target_os = "linux")]
         {
@@ -204,6 +209,20 @@ impl PinnedWorktree {
         use std::os::fd::AsRawFd;
         PathBuf::from(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
     }
+
+    /// The raw fd backing [`Self::ops_path`], for handing to the git child that
+    /// resolves `git -C /proc/self/fd/<n>`. The fd is opened `O_CLOEXEC`
+    /// (closed-on-exec), so the git spawn MUST clear `FD_CLOEXEC` on this number
+    /// in a `pre_exec` hook (`worktree_overlay::git_capture`) for the fd to
+    /// survive into the git child; every other forked child inherits the closed
+    /// default and never sees it. Returns a borrowed fd number, valid only while
+    /// `self` (which owns the fd) is alive — the caller must keep the pin held
+    /// across the spawn.
+    #[cfg(target_os = "linux")]
+    pub fn ops_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.fd.as_raw_fd()
+    }
 }
 
 /// Open `dir` as a directory rejecting symlinked components, returning the
@@ -228,11 +247,14 @@ fn open_dir_no_symlinks_linux(dir: &Path) -> Option<std::os::fd::OwnedFd> {
         resolve: u64,
     }
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-    // No O_CLOEXEC: the fd must inherit so `git -C /proc/self/fd/<n>` resolves
-    // in the git child (see `pin` docs). O_PATH: we only resolve paths through
+    // O_CLOEXEC: closed-on-exec by default, so the fd never leaks into an
+    // arbitrary child the daemon forks. The one consumer that needs it — the
+    // git subprocess resolving `git -C /proc/self/fd/<n>` — clears FD_CLOEXEC
+    // for its OWN child only, in a pre_exec hook (see `pin` docs /
+    // `worktree_overlay::git_capture`). O_PATH: we only resolve paths through
     // it, never read its data directly.
     let how = OpenHow {
-        flags: (libc::O_DIRECTORY | libc::O_PATH) as u64,
+        flags: (libc::O_DIRECTORY | libc::O_PATH | libc::O_CLOEXEC) as u64,
         mode: 0,
         resolve: RESOLVE_NO_SYMLINKS,
     };
@@ -255,13 +277,14 @@ fn open_dir_no_symlinks_linux(dir: &Path) -> Option<std::os::fd::OwnedFd> {
     // openat2 unavailable (ENOSYS on pre-5.6) or rejected the path: fall back
     // to a no-follow directory open. This still pins the inode and rejects a
     // symlinked FINAL component; intermediate components were already
-    // canonicalized by the caller (real dirs at validation time). No O_CLOEXEC
-    // (inherit for `git -C`); O_PATH (path-resolution only).
+    // canonicalized by the caller (real dirs at validation time). O_CLOEXEC
+    // (closed-on-exec default; the git child clears FD_CLOEXEC for itself);
+    // O_PATH (path-resolution only).
     // SAFETY: standard `open(2)` with a valid NUL-terminated path and flags.
     let raw = unsafe {
         libc::open(
             c_path.as_ptr(),
-            libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_PATH,
+            libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_PATH | libc::O_CLOEXEC,
         )
     };
     if raw < 0 {
@@ -1140,5 +1163,58 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("does-not-exist");
         assert!(PinnedWorktree::pin(&missing).is_none());
+    }
+
+    /// The pin fd is opened `O_CLOEXEC` (closed-on-exec): `F_GETFD` reports
+    /// `FD_CLOEXEC` set. This is the structural guarantee that the fd never
+    /// leaks into an arbitrary child the daemon forks — only the git spawn
+    /// clears the flag, and only for its own child
+    /// (`worktree_overlay::git_capture`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_worktree_fd_is_cloexec() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("wt");
+        std::fs::create_dir_all(&target).unwrap();
+        let canon = dunce::canonicalize(&target).unwrap();
+
+        let pin = PinnedWorktree::pin(&canon).expect("pin a real dir");
+        // SAFETY: `F_GETFD` reads the descriptor flags of a valid, owned fd; it
+        // performs no mutation and the fd outlives the call (owned by `pin`).
+        let flags = unsafe { libc::fcntl(pin.ops_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "F_GETFD must succeed on the pinned fd");
+        assert_eq!(
+            flags & libc::FD_CLOEXEC,
+            libc::FD_CLOEXEC,
+            "the pin fd must be opened close-on-exec so it never leaks into a child"
+        );
+    }
+
+    /// End-to-end proof of the no-leak default: a child spawned WITHOUT the
+    /// git-path `pre_exec` clear does not inherit the pin fd — after `exec` the
+    /// fd is closed, so `/proc/self/fd/<n>` does not exist in the child and
+    /// `test -e` exits non-zero. This is the exact leak the `O_CLOEXEC` default
+    /// closes; the complementary "git CAN reach it once cleared" direction is
+    /// guarded by the overlay pin/ops_path integration tests.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_worktree_fd_not_inherited_by_default_child() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("wt");
+        std::fs::create_dir_all(&target).unwrap();
+        let canon = dunce::canonicalize(&target).unwrap();
+
+        let pin = PinnedWorktree::pin(&canon).expect("pin a real dir");
+        let fd = pin.ops_fd();
+
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("test -e /proc/self/fd/{fd}"))
+            .status()
+            .expect("spawn sh");
+        assert!(
+            !status.success(),
+            "a default child must NOT inherit the CLOEXEC pin fd (fd {fd} leaked into the child)"
+        );
     }
 }

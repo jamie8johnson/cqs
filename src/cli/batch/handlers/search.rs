@@ -1821,11 +1821,10 @@ mod tests {
         // T1 — validation pins the real worktree's inode.
         view.set_validated_overlay_request(&wt)
             .expect("real registered worktree must validate + pin");
-        let ops_path = {
+        let (ops_path, ops_fd) = {
             let pin = view.overlay_pin.borrow();
-            pin.as_ref()
-                .expect("pin must be held after validation")
-                .ops_path()
+            let p = pin.as_ref().expect("pin must be held after validation");
+            (p.ops_path(), p.ops_fd())
         };
 
         // T1→T2 swap: hide the real worktree, point its name at the attacker.
@@ -1837,7 +1836,10 @@ mod tests {
         // attacker tree — `discover_delta` against it sees the attacker's secret.
         // (This is exactly the primitive the pin closes; asserting it here pins
         // that the swap is real and effective on the unprotected path.)
-        let via_string = discover_delta(&wt, &parent).expect("discover via swapped path string");
+        // The swapped path is a real path (not a `/proc/self/fd/<n>` ops path),
+        // so git resolves it directly — no pin fd needed.
+        let via_string =
+            discover_delta(&wt, &parent, None).expect("discover via swapped path string");
         let string_paths: Vec<String> = via_string
             .parse_set
             .iter()
@@ -1864,8 +1866,13 @@ mod tests {
         );
 
         // The fix: ops through the PINNED fd path see the REAL worktree's
-        // untracked file and NEVER the attacker's, despite the swap.
-        let via_pin = discover_delta(&ops_path, &parent).expect("discover via pinned ops_path");
+        // untracked file and NEVER the attacker's, despite the swap. Passing
+        // `Some(ops_fd)` makes the git child clear FD_CLOEXEC so it can resolve
+        // the `/proc/self/fd/<n>` ops path — the pin fd is held closed-on-exec
+        // by default. If that clear regressed, this `discover_delta` would fail
+        // (git can't reach the fd) and the test fails loudly.
+        let via_pin =
+            discover_delta(&ops_path, &parent, Some(ops_fd)).expect("discover via pinned ops_path");
         let pin_paths: Vec<String> = via_pin
             .parse_set
             .iter()
@@ -2057,6 +2064,9 @@ mod tests {
             &view.overlays,
             &wt,
             &wt,
+            // `ops_root` here is a real path (`&wt`), not a `/proc/self/fd/<n>`
+            // ops path, so git resolves it directly — no pin fd.
+            None,
             &view.root,
             &parser,
             embedder_ref,
