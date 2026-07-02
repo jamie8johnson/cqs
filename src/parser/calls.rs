@@ -449,8 +449,11 @@ pub(crate) fn collect_rust_fn_names(
 ///      function/const signal (variables are bare), and bare-last-segment
 ///      resolution matches the rest of the call graph.
 /// The cross-file BARE-identifier case (`f(handler)` where `handler` is a `use`d
-/// free fn from another module) is the residual gap — it needs a query-time
-/// edge_kind filter (schema v30), out of scope here.
+/// free fn from another module) is deliberately dropped by this confident pass —
+/// the intra-file `known_fns` gate is the precision guard.
+/// `collect_fn_pointer_arg_candidates` records exactly those drops in
+/// `candidate_edges` (`bare_arg_unresolved`) for query-time low-confidence
+/// consumers such as the dead-code pass.
 ///
 /// Also descends into `tuple_expression` and `array_expression` arguments
 /// (`register((a, b))`, `dispatch([handler_a, handler_b])`) applying the same

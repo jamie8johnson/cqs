@@ -2237,6 +2237,18 @@ mod tests {
             None
         );
         assert_eq!(
+            (Language::ObjC.def().extract_return_nl)("- (void)doThing"),
+            None
+        );
+        assert_eq!(
+            (Language::ObjC.def().extract_return_nl)("- (NSString *)name"),
+            Some("Returns n s string *".to_string())
+        );
+        assert_eq!(
+            (Language::ObjC.def().extract_return_nl)("+ (instancetype)shared"),
+            Some("Returns instancetype".to_string())
+        );
+        assert_eq!(
             (Language::Protobuf.def().extract_return_nl)("message User {"),
             None
         );
