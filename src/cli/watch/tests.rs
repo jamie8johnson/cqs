@@ -1800,8 +1800,16 @@ fn reopen_store_after_replacement_swaps_to_new_db_and_discards_rebuild() {
 
     // Perform the recovery the idle tick runs on identity mismatch.
     let rt = build_shared_runtime().unwrap();
-    let new_store =
-        reopen_store_after_replacement(fix.store, &mut state, &index_path, &rt, &[]).unwrap();
+    let new_store = reopen_store_after_replacement(
+        fix.store,
+        &mut state,
+        &index_path,
+        fix.tmp.path(),
+        false,
+        &rt,
+        &[],
+    )
+    .unwrap();
 
     // The reopened Store reads the REPLACEMENT DB's metadata, not the orphaned
     // inode's — proving the handle actually rotated to the new file.
@@ -1827,6 +1835,218 @@ fn reopen_store_after_replacement_swaps_to_new_db_and_discards_rebuild() {
         !cqs::HnswIndex::exists(fix.tmp.path(), "index"),
         "the discarded rebuild must not have written sidecars"
     );
+}
+
+/// Path of a SQLite sidecar (`-wal` / `-shm`) for a main DB file. `with_extension`
+/// can't build these — `index.db-wal` appends, it doesn't replace the extension.
+fn sqlite_sidecar(index_path: &Path, suffix: &str) -> PathBuf {
+    let mut s = index_path.as_os_str().to_os_string();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// A freshly-swapped `index.db` (new inode, holds row `NEW_ONLY`) paired with a
+/// staged, populated orphan `-wal` (holds row `OLD_ONLY`, uncheckpointed) — the
+/// exact "committed WAL frame with no matching main-file checkpoint" state a
+/// dropped store's TRUNCATE→PASSIVE degrade leaves behind. [`Self::assemble`]
+/// installs the pristine orphan at `index.db` for a reopen to face.
+struct OrphanWalFixture {
+    tmp: tempfile::TempDir,
+    index_path: PathBuf,
+    staged_main: PathBuf,
+    staged_wal: PathBuf,
+    new_origin: String,
+    old_origin: String,
+}
+
+impl OrphanWalFixture {
+    /// Install the pristine orphan at `index.db`: main file with `NEW_ONLY`,
+    /// the staged `-wal` adding `OLD_ONLY`, and no `-shm` (so a fresh open runs
+    /// WAL recovery from the `-wal`).
+    fn assemble(&self) {
+        std::fs::copy(&self.staged_main, &self.index_path).unwrap();
+        std::fs::copy(&self.staged_wal, sqlite_sidecar(&self.index_path, "-wal")).unwrap();
+        let _ = std::fs::remove_file(sqlite_sidecar(&self.index_path, "-shm"));
+    }
+}
+
+fn build_orphan_wal_fixture(dim: usize) -> OrphanWalFixture {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let index_path = tmp.path().join(cqs::INDEX_DB_FILENAME);
+    let new_rel = PathBuf::from("NEW_ONLY.rs");
+    let old_rel = PathBuf::from("OLD_ONLY.rs");
+    let new_origin = cqs::normalize_path(&new_rel);
+    let old_origin = cqs::normalize_path(&old_rel);
+    let mut emb = vec![0.0_f32; dim];
+    emb[0] = 1.0;
+    let embedding = cqs::Embedding::new(emb);
+
+    // 1. New main DB: one chunk (NEW_ONLY), checkpointed into the main file.
+    {
+        let mut s = Store::open(&index_path).unwrap();
+        s.init(&cqs::store::ModelInfo::new("new/model", dim))
+            .unwrap();
+        s.set_dim(dim);
+        s.upsert_chunks_batch(
+            &[(
+                make_gc_test_chunk(&new_rel, "new_only", 1),
+                embedding.clone(),
+            )],
+            Some(0),
+        )
+        .unwrap();
+        s.close().unwrap();
+    }
+
+    // 2. Fabricate the populated orphan WAL: copy the clean DB to a donor, insert
+    //    OLD_ONLY (lands in the donor WAL, uncheckpointed under the 1000-page
+    //    autocheckpoint), and snapshot the (main, wal) pair WHILE the writer is
+    //    still open — before its Drop checkpoint folds OLD_ONLY into the main.
+    let donor = tmp.path().join("donor.db");
+    std::fs::copy(&index_path, &donor).unwrap();
+    let staged_main = tmp.path().join("staged.main");
+    let staged_wal = tmp.path().join("staged.wal");
+    {
+        let mut ds = Store::open(&donor).unwrap();
+        ds.set_dim(dim);
+        ds.upsert_chunks_batch(
+            &[(
+                make_gc_test_chunk(&old_rel, "old_only", 1),
+                embedding.clone(),
+            )],
+            Some(0),
+        )
+        .unwrap();
+        std::fs::copy(&donor, &staged_main).unwrap();
+        std::fs::copy(sqlite_sidecar(&donor, "-wal"), &staged_wal).unwrap();
+        drop(ds);
+    }
+    assert!(
+        std::fs::metadata(&staged_wal).map(|m| m.len()).unwrap_or(0) > 0,
+        "fixture must capture a populated donor WAL, else the orphan test is vacuous"
+    );
+
+    let fixture = OrphanWalFixture {
+        tmp,
+        index_path,
+        staged_main,
+        staged_wal,
+        new_origin,
+        old_origin,
+    };
+
+    // Prove the assembled orphan actually replays OLD_ONLY on open (guarding
+    // against a vacuous GREEN where the fixture never built a live orphan).
+    // Use a throwaway copy so the replay doesn't disturb the real index.db.
+    fixture.assemble();
+    {
+        let probe_dir = fixture.tmp.path().join("probe");
+        std::fs::create_dir_all(&probe_dir).unwrap();
+        let probe_db = probe_dir.join(cqs::INDEX_DB_FILENAME);
+        std::fs::copy(&fixture.staged_main, &probe_db).unwrap();
+        std::fs::copy(&fixture.staged_wal, sqlite_sidecar(&probe_db, "-wal")).unwrap();
+        let probe = Store::open(&probe_db).unwrap();
+        assert!(
+            !probe
+                .get_chunks_by_origin(&fixture.old_origin)
+                .unwrap()
+                .is_empty(),
+            "fixture invalid: the assembled orphan WAL must replay OLD_ONLY on open"
+        );
+    }
+    fixture
+}
+
+/// WSL-contention-shaped regression guard: a populated `index.db-wal` left over a
+/// freshly-swapped `index.db` (SQLite binds a `-wal` to its main file by PATH,
+/// not inode) must NOT be replayed over the new main file on reopen. The
+/// lock-free idle path takes the free index lock, drops the orphan `-wal`/`-shm`,
+/// and reopens clean — the reopened store sees the new DB's own row, never the
+/// orphan's.
+///
+/// RED without the unlink: `Store::open_with_runtime` recovers the orphan WAL and
+/// the reopened store surfaces `OLD_ONLY` (old-WAL data) over the new DB.
+#[test]
+fn reopen_after_replacement_drops_orphan_wal_under_free_lock() {
+    let fix = build_orphan_wal_fixture(4);
+    fix.assemble();
+
+    let rt = build_shared_runtime().unwrap();
+    let mut state = test_watch_state();
+    // The dropped handle plays the role of the loop's orphaned old-inode store;
+    // open it on a distinct path so nothing touches the assembled index.db.
+    let dropped = Store::open(&fix.tmp.path().join("dropped.db")).unwrap();
+    let new_store = reopen_store_after_replacement(
+        dropped,
+        &mut state,
+        &fix.index_path,
+        fix.tmp.path(),
+        false, // idle path — helper takes the free lock and unlinks the orphan
+        &rt,
+        &[],
+    )
+    .unwrap();
+
+    assert!(
+        !new_store
+            .get_chunks_by_origin(&fix.new_origin)
+            .unwrap()
+            .is_empty(),
+        "the reopened store must see the new DB's own row (NEW_ONLY)"
+    );
+    assert!(
+        new_store
+            .get_chunks_by_origin(&fix.old_origin)
+            .unwrap()
+            .is_empty(),
+        "the reopened store must NOT replay the orphan WAL's row (OLD_ONLY)"
+    );
+    assert_eq!(
+        new_store.stats().unwrap().total_chunks,
+        1,
+        "only the new DB's single chunk survives; the orphan WAL must be dropped"
+    );
+}
+
+/// The lock gate is load-bearing: when the index lock is held by another process
+/// (a real `cqs index --force` mid-reindex owns the LIVE `index.db-wal`), the
+/// lock-free idle path must NOT unlink it — deleting a live WAL loses committed
+/// data. We hold the lock across the reopen and assert the WAL survived (its row
+/// is replayed, never silently dropped). `flock` denies the helper's own
+/// second acquisition from this process, exactly as a cross-process holder would.
+#[test]
+fn reopen_after_replacement_keeps_wal_when_lock_held_by_other() {
+    let fix = build_orphan_wal_fixture(4);
+    fix.assemble();
+
+    // Simulate the concurrent `--force` writer holding the index lock.
+    let held = try_acquire_index_lock(fix.tmp.path())
+        .unwrap()
+        .expect("index lock must be free for the test to take it");
+
+    let rt = build_shared_runtime().unwrap();
+    let mut state = test_watch_state();
+    let dropped = Store::open(&fix.tmp.path().join("dropped.db")).unwrap();
+    let new_store = reopen_store_after_replacement(
+        dropped,
+        &mut state,
+        &fix.index_path,
+        fix.tmp.path(),
+        false, // idle path — helper try-acquires and is DENIED (lock held)
+        &rt,
+        &[],
+    )
+    .unwrap();
+
+    assert!(
+        !new_store
+            .get_chunks_by_origin(&fix.old_origin)
+            .unwrap()
+            .is_empty(),
+        "under a held index lock the helper must NOT unlink the live WAL — the \
+         writer's committed row (OLD_ONLY) must survive the reopen"
+    );
+    drop(held);
 }
 
 // ── reindex_files consults the global EmbeddingCache ─────────────
