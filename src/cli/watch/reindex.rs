@@ -29,18 +29,26 @@ pub(super) fn count_watchable_dirs(root: &Path) -> usize {
     count
 }
 
+/// Platform-specific fingerprint of a database file, named so callers can
+/// hold and compare a captured identity without cfg noise at each site.
+/// On Unix it is `(device, inode)`; elsewhere it is the last-modified time.
+#[cfg(unix)]
+pub(super) type DbFileId = (u64, u64);
+#[cfg(not(unix))]
+pub(super) type DbFileId = SystemTime;
+
 /// Opaque identity of a database file for detecting replacements.
 /// On Unix uses (device, inode) — survives renames that preserve the inode
 /// and detects replacements where `index --force` creates a new file.
 #[cfg(unix)]
-pub(super) fn db_file_identity(path: &Path) -> Option<(u64, u64)> {
+pub(super) fn db_file_identity(path: &Path) -> Option<DbFileId> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.dev(), meta.ino()))
 }
 
 #[cfg(not(unix))]
-pub(super) fn db_file_identity(path: &Path) -> Option<SystemTime> {
+pub(super) fn db_file_identity(path: &Path) -> Option<DbFileId> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
 /// Build the resident SPLADE encoder for the daemon's incremental

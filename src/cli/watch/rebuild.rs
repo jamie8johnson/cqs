@@ -19,7 +19,7 @@ use cqs::embedder::{Embedder, Embedding, ModelConfig};
 use cqs::hnsw::HnswIndex;
 use cqs::store::Store;
 
-use super::{WatchConfig, WatchState};
+use super::{db_file_identity, WatchConfig, WatchState};
 
 /// Whether the tiered index backend is the active served backend
 /// (`CQS_TIERED_INDEX=1`, compiled with the `tiered-index` feature).
@@ -160,9 +160,9 @@ pub(super) enum DrainOutcome {
     /// New index swapped in; the pending delta was replayed into it first.
     Swapped,
     /// Pending cleared without a swap (thread error, empty store, saturated
-    /// delta, stale-stamp discard, or channel disconnect). Any delta entries
-    /// were dropped — SQLite remains the source of truth and the next
-    /// threshold rebuild recovers them.
+    /// delta, stale-stamp discard, DB-replacement discard, or channel
+    /// disconnect). Any delta entries were dropped — SQLite remains the source
+    /// of truth and the next threshold rebuild recovers them.
     Cleared,
 }
 
@@ -381,6 +381,19 @@ pub(super) fn spawn_hnsw_rebuild(
         .spawn(move || {
             let _enter = span.entered();
             let result: RebuildOutcome = (|| -> RebuildOutcome {
+                // Capture the DB identity BEFORE opening the read-only store so
+                // a `cqs index --force` that replaces index.db during this
+                // rebuild is detectable before the thread-side sidecar saves.
+                // The saves below stream from a Store handle that is orphaned on
+                // the old inode after a replacement, so `save_stamped`'s
+                // under-lock stamp re-read cannot see the swap and would
+                // overwrite the replacement's fresh sidecar with this stale
+                // build. Capturing before the open keeps the error safe: if a
+                // replacement races the open itself, `db_replaced` reports true
+                // and the save is skipped (a wasted build the next rebuild
+                // recovers) rather than a stale write masquerading as current.
+                let db_id_at_spawn = db_file_identity(&index_path);
+                let db_replaced = || db_file_identity(&index_path) != db_id_at_spawn;
                 // Use the lower-footprint readonly open instead of
                 // `open_readonly_pooled`. The watch loop's main (read-write)
                 // store is already resident with 256 MiB mmap + 16 MiB cache;
@@ -403,6 +416,7 @@ pub(super) fn spawn_hnsw_rebuild(
                     &store,
                     &cqs_dir,
                     Some(&shutdown_for_thread),
+                    Some(&db_replaced),
                 )?;
                 // The thread-side save may come back DiscardedStale when the
                 // watch loop (or an external `cqs index`) committed chunks
@@ -426,6 +440,7 @@ pub(super) fn spawn_hnsw_rebuild(
                     &store,
                     &cqs_dir,
                     Some(&shutdown_for_thread),
+                    Some(&db_replaced),
                 ) {
                     Ok(Some((n, cqs::hnsw::SaveOutcome::Saved))) => {
                         tracing::info!(vectors = n, "base HNSW rebuilt in background")

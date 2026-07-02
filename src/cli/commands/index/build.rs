@@ -1145,7 +1145,7 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
 
         // Also build the base (non-enriched) HNSW index. Non-fatal
         // if it fails — fall back to enriched-only at query time.
-        match build_hnsw_base_index(&store, &cqs_dir, None) {
+        match build_hnsw_base_index(&store, &cqs_dir, None, None) {
             Ok(Some((total, cqs::hnsw::SaveOutcome::Saved))) => {
                 if let Err(e) = store.set_hnsw_dirty(HnswKind::Base, false) {
                     tracing::warn!(error = %e, "Failed to clear base HNSW dirty flag after base HNSW save");
@@ -1470,7 +1470,8 @@ pub(crate) fn build_hnsw_index(
     store: &Store,
     cqs_dir: &Path,
 ) -> Result<Option<(usize, cqs::hnsw::SaveOutcome)>> {
-    Ok(build_hnsw_index_owned(store, cqs_dir, None)?.map(|(h, _, outcome)| (h.len(), outcome)))
+    Ok(build_hnsw_index_owned(store, cqs_dir, None, None)?
+        .map(|(h, _, outcome)| (h.len(), outcome)))
 }
 
 /// 64-bit fingerprint of `(id, content_hash)` used by
@@ -1519,6 +1520,7 @@ pub(crate) fn build_hnsw_index_owned<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    skip_save: Option<&dyn Fn() -> bool>,
 ) -> Result<
     Option<(
         HnswIndex,
@@ -1570,6 +1572,20 @@ pub(crate) fn build_hnsw_index_owned<M>(
     {
         anyhow::bail!("shutdown requested — skipping HNSW save (next start rebuilds)");
     }
+    // Skip the save when the caller's identity guard reports the backing DB was
+    // replaced since this build began (a concurrent `cqs index --force`). This
+    // `store` is orphaned on the old inode, so `save_stamped`'s under-lock stamp
+    // re-read cannot see the replacement and would overwrite its fresh sidecar
+    // with this stale build. Report `DiscardedStale` (the existing stale
+    // variant) and still return the built index — the caller decides whether to
+    // swap it, and the dirty flag stays set so the next rebuild recovers.
+    if skip_save.map(|f| f()).unwrap_or(false) {
+        return Ok(Some((
+            hnsw,
+            snapshot_keys,
+            cqs::hnsw::SaveOutcome::DiscardedStale,
+        )));
+    }
     let outcome = hnsw.save_stamped(cqs_dir, "index", store, snapshot)?;
 
     Ok(Some((hnsw, snapshot_keys, outcome)))
@@ -1593,6 +1609,7 @@ pub(crate) fn build_hnsw_base_index<M>(
     store: &cqs::store::Store<M>,
     cqs_dir: &Path,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+    skip_save: Option<&dyn Fn() -> bool>,
 ) -> Result<Option<(usize, cqs::hnsw::SaveOutcome)>> {
     let _span = tracing::info_span!("build_hnsw_base_index").entered();
 
@@ -1625,6 +1642,11 @@ pub(crate) fn build_hnsw_base_index<M>(
         .unwrap_or(false)
     {
         anyhow::bail!("shutdown requested — skipping base HNSW save (next start rebuilds)");
+    }
+    // Skip the save when the DB was replaced since this build began — same
+    // orphaned-handle reasoning as `build_hnsw_index_owned`.
+    if skip_save.map(|f| f()).unwrap_or(false) {
+        return Ok(Some((hnsw.len(), cqs::hnsw::SaveOutcome::DiscardedStale)));
     }
     let outcome = hnsw.save_stamped(cqs_dir, "index_base", store, snapshot)?;
 
@@ -1794,7 +1816,7 @@ mod tests {
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
 
-        let (idx, snapshot_keys, outcome) = build_hnsw_index_owned(&store, &cqs_dir, None)
+        let (idx, snapshot_keys, outcome) = build_hnsw_index_owned(&store, &cqs_dir, None, None)
             .expect("build_hnsw_index_owned must succeed")
             .expect("non-empty store must produce an index");
         assert_eq!(
@@ -1835,7 +1857,7 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(0, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_index_owned(&store, &cqs_dir, None).expect("must not error");
+        let result = build_hnsw_index_owned(&store, &cqs_dir, None, None).expect("must not error");
         assert!(
             result.is_none(),
             "empty store must yield None (no on-disk index, no in-memory index)"
@@ -1856,7 +1878,7 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(n, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_base_index(&store, &cqs_dir, None).expect("must not error");
+        let result = build_hnsw_base_index(&store, &cqs_dir, None, None).expect("must not error");
         assert_eq!(
             result,
             Some((n, cqs::hnsw::SaveOutcome::Saved)),
@@ -1870,10 +1892,100 @@ mod tests {
         let (_tmp, cqs_dir) = seed_store(0, dim);
         let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
         let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
-        let result = build_hnsw_base_index(&store, &cqs_dir, None).expect("must not error");
+        let result = build_hnsw_base_index(&store, &cqs_dir, None, None).expect("must not error");
         assert!(
             result.is_none(),
             "empty store must yield None for base HNSW build"
+        );
+    }
+
+    /// The `skip_save` guard makes the thread-side enriched save a no-op when a
+    /// concurrent `cqs index --force` replaced the backing DB mid-build: the
+    /// index is still returned (the caller's drain decides whether to swap),
+    /// the outcome is the existing `DiscardedStale` variant, and NO sidecar is
+    /// written — so a build from the orphaned inode can't overwrite the
+    /// replacement's fresh sidecar.
+    ///
+    /// RED without the guard: `skip_save` is ignored, the save lands (`Saved`),
+    /// and the sidecar exists.
+    #[test]
+    fn build_hnsw_index_owned_skips_save_when_db_replaced() {
+        let dim = 16;
+        let n = 5;
+        let (_tmp, cqs_dir) = seed_store(n, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+
+        // Guard reports the DB was replaced → save is skipped.
+        let skip: &dyn Fn() -> bool = &|| true;
+        let (idx, _keys, outcome) = build_hnsw_index_owned(&store, &cqs_dir, None, Some(skip))
+            .expect("must not error")
+            .expect("non-empty store must still return an index");
+        assert_eq!(
+            outcome,
+            cqs::hnsw::SaveOutcome::DiscardedStale,
+            "a replaced DB must surface as DiscardedStale, not Saved"
+        );
+        assert_eq!(
+            idx.len(),
+            n,
+            "the built index is still returned to the drain"
+        );
+        assert!(
+            !cqs::HnswIndex::exists(&cqs_dir, "index"),
+            "a skipped save must not write the enriched sidecar"
+        );
+
+        // Guard reports no replacement → the save lands as before.
+        let keep: &dyn Fn() -> bool = &|| false;
+        let (_idx, _keys, outcome) = build_hnsw_index_owned(&store, &cqs_dir, None, Some(keep))
+            .expect("must not error")
+            .expect("non-empty store must produce an index");
+        assert_eq!(
+            outcome,
+            cqs::hnsw::SaveOutcome::Saved,
+            "no replacement → the save must land"
+        );
+        assert!(
+            cqs::HnswIndex::exists(&cqs_dir, "index"),
+            "the unguarded save must write the enriched sidecar"
+        );
+    }
+
+    /// Same `skip_save` contract for the base HNSW: replacement → `DiscardedStale`
+    /// and no `index_base` sidecar; no replacement → `Saved` and the sidecar lands.
+    #[test]
+    fn build_hnsw_base_index_skips_save_when_db_replaced() {
+        let dim = 16;
+        let n = 4;
+        let (_tmp, cqs_dir) = seed_store(n, dim);
+        let index_path = cqs_dir.join(cqs::INDEX_DB_FILENAME);
+        let store = Store::open_readonly_after_init(&index_path, |_| Ok(())).expect("ro store");
+
+        let skip: &dyn Fn() -> bool = &|| true;
+        let result =
+            build_hnsw_base_index(&store, &cqs_dir, None, Some(skip)).expect("must not error");
+        assert_eq!(
+            result,
+            Some((n, cqs::hnsw::SaveOutcome::DiscardedStale)),
+            "a replaced DB must surface as DiscardedStale for the base build too"
+        );
+        assert!(
+            !cqs::HnswIndex::exists(&cqs_dir, "index_base"),
+            "a skipped base save must not write the base sidecar"
+        );
+
+        let keep: &dyn Fn() -> bool = &|| false;
+        let result =
+            build_hnsw_base_index(&store, &cqs_dir, None, Some(keep)).expect("must not error");
+        assert_eq!(
+            result,
+            Some((n, cqs::hnsw::SaveOutcome::Saved)),
+            "no replacement → the base save must land"
+        );
+        assert!(
+            cqs::HnswIndex::exists(&cqs_dir, "index_base"),
+            "the unguarded base save must write the base sidecar"
         );
     }
 

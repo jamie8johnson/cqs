@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`cqs index --force` no longer races the watch rebuild worker into a stale-sidecar overwrite (#2134).** A background HNSW rebuild streams from a read-only Store opened on `index.db`; a concurrent `cqs index --force` replaces that file (new inode), orphaning the worker's handle. `save_stamped`'s under-lock stamp re-read goes through the orphaned handle and cannot observe the replacement, so the stamps match and a stale build "successfully" overwrites the replacement's fresh sidecar — and, since the #2133 idle-tick drain, swaps the old-DB index into memory. Two guards close it: the idle drain now checks the live DB file identity and discards the pending rebuild on mismatch (mirroring the flush path, which already did this on its own tick), and the rebuild worker captures the DB identity at spawn and skips its thread-side enriched/base saves (reporting `DiscardedStale`) when the DB was replaced mid-build. A source-scan test pins both call sites so deleting the wiring can't pass a green helper suite.
+
 ## [1.52.0] - 2026-07-02
 
 The worktree-overlay diff-subject truth campaign (three fixes closing the wrong-tree family: worktree-lane review/ci/impact-diff diffed the served parent; daemon impact-diff lacked overlay plumbing; `--no-overlay` diverged CLI vs daemon), plus serve/cache teardown-abort fixes, the pdf-script embed (TOCTOU removed), a windows-latest hard-error PR gate, and a repo-wide comment-archaeology sweep (15 new tracking issues, 12 truth fixes). Scoring is byte-identical to v1.51.0 — a same-corpus binary A/B (v1.51.0 cuda build vs current, same index, both fixtures) returned identical R@K; the snapshot shift (47.2/70.7/86.7 → 46.8/68.8/84.4 R@1/R@5/R@20 aggregate) is corpus growth at ~17.6k chunks.
