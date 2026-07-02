@@ -55,6 +55,22 @@ fn load_sparse_chunk_id_batch() -> i64 {
     n.min(i64::MAX as u64) as i64
 }
 
+/// Count the non-finite weights across a batch of sparse vectors.
+///
+/// `upsert_sparse_vectors` scrubs these at write time — NaN/±Inf (e.g. a
+/// poisoned SPLADE forward pass) must never reach disk — and this aggregate
+/// drives the single per-upsert warn: one line with a total, never one per
+/// token, so a corrupt encoder output can't spam thousands of log lines.
+/// Sole source of truth for the scrub count so the warn and the insert loop
+/// can't disagree.
+fn count_non_finite_sparse_weights(vectors: &[(String, SparseVector)]) -> usize {
+    vectors
+        .iter()
+        .flat_map(|(_, sparse)| sparse.iter())
+        .filter(|(_, w)| !w.is_finite())
+        .count()
+}
+
 /// Bump the SPLADE generation counter inside an existing write transaction.
 ///
 /// This is the one place the counter gets incremented. Every write path that
@@ -207,6 +223,11 @@ impl Store<ReadWrite> {
             // batches, letting other in-process writers (daemon RPC
             // threads) interleave. SQLite-side WAL writer lock is also
             // released on `tx.commit()`.
+            // Count non-finite weights scrubbed across the whole upsert so
+            // we warn once below, not per token — a poisoned encoder forward
+            // pass can emit thousands and must not spam the log. The insert
+            // loop skips the same tokens; this is the shared count.
+            let scrubbed = count_non_finite_sparse_weights(vectors);
             let inner_result: Result<usize, StoreError> = async {
                 let mut total = 0usize;
                 for chunk_batch in vectors.chunks(chunks_per_tx) {
@@ -229,6 +250,16 @@ impl Store<ReadWrite> {
                     let mut pending: Vec<(&str, u32, f32)> = Vec::with_capacity(ROWS_PER_INSERT);
                     for (chunk_id, sparse) in chunk_batch {
                         for &(token_id, weight) in sparse {
+                            // Scrub non-finite weights at write time: NaN/±Inf
+                            // (e.g. a poisoned SPLADE forward pass) must never
+                            // reach disk. A vector whose every token is scrubbed
+                            // degrades to zero rows — the same on-disk shape as
+                            // an empty sparse vector. The read-side filter in
+                            // `load_all_sparse_vectors` is defense-in-depth for
+                            // rows a past version or hand-edit already persisted.
+                            if !weight.is_finite() {
+                                continue;
+                            }
                             pending.push((chunk_id.as_str(), token_id, weight));
                             if pending.len() >= ROWS_PER_INSERT {
                                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
@@ -264,6 +295,16 @@ impl Store<ReadWrite> {
                 Ok(total)
             }
             .await;
+
+            // One warn per upsert with the aggregate count, whether or not the
+            // bulk fully committed — the skipped tokens never became rows.
+            if scrubbed > 0 {
+                tracing::warn!(
+                    scrubbed,
+                    chunks = vectors.len(),
+                    "upsert_sparse_vectors: skipped non-finite SPLADE weights at write time (NaN/±Inf never reach disk)"
+                );
+            }
 
             // Step 3: recreate the secondary index in its own tx. SQLite
             // builds the index in one O(n log n) pass from the now-fully-
@@ -414,6 +455,10 @@ impl<Mode> Store<Mode> {
                         );
                         continue;
                     }
+                    // Defense-in-depth: the write path scrubs non-finite
+                    // weights so fresh rows never carry NaN/±Inf. This filter
+                    // still guards rows a past version or an external hand-edit
+                    // persisted before the write-time scrub existed.
                     let weight_f32 = weight as f32;
                     if !weight_f32.is_finite() {
                         tracing::warn!(
@@ -633,6 +678,22 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.init(&crate::store::ModelInfo::default()).unwrap();
         (store, dir)
+    }
+
+    /// Read raw `(token_id, weight)` rows for a chunk straight from the
+    /// table, bypassing `load_all_sparse_vectors`'s read-side filter — so a
+    /// test can assert what actually landed on disk (the write-time scrub
+    /// contract is about bytes, not the masked read).
+    fn raw_sparse_rows(store: &Store, chunk_id: &str) -> Vec<(i64, f64)> {
+        store.rt.block_on(async {
+            sqlx::query_as::<_, (i64, f64)>(
+                "SELECT token_id, weight FROM sparse_vectors WHERE chunk_id = ?1 ORDER BY token_id",
+            )
+            .bind(chunk_id)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+        })
     }
 
     /// Insert a chunk with explicit name, signature, and optional doc.
@@ -1091,71 +1152,139 @@ mod tests {
         });
     }
 
-    /// Pin write-path behavior for non-finite weights. The read path filters
-    /// NaN/Inf at load time; the write path binds the f32 directly via
-    /// `push_bind`. Document the current contract so a future write-side
-    /// scrubber is a deliberate change.
+    /// Write-time scrub contract: non-finite SPLADE weights never reach disk.
+    /// `upsert_sparse_vectors` skips NaN/±Inf tokens before binding, so the
+    /// rows never land; the read-side filter in `load_all_sparse_vectors`
+    /// stays as defense-in-depth for rows a past version already persisted.
     ///
-    /// Current behavior (pinned by this test):
-    /// - `+Infinity` weight: SQLite stores `Inf`; load_all_sparse_vectors
-    ///   filters it out at read time so the row is silently skipped.
-    /// - `NaN` weight: SQLite's binding of NaN is implementation-defined;
-    ///   may store NaN (filtered at read) or coerce. We assert the
-    ///   upsert succeeds without panic and that the read-side filter
-    ///   masks any non-finite values from downstream search.
-    ///
-    /// The "right" long-term fix is to scrub at write-time so the bytes
-    /// never reach disk. This test will need flipping when that lands.
+    /// Pinned here: a +Inf token in a mixed vector is dropped at write time
+    /// (no on-disk row, excluded from the returned count) while the finite
+    /// token in the same vector survives with its exact weight.
     #[test]
-    fn test_upsert_sparse_vectors_inf_weight_filtered_at_read() {
+    fn test_upsert_sparse_vectors_inf_weight_scrubbed_at_write() {
         let (store, _dir) = setup_store();
         insert_test_chunk(&store, "c1");
         // Mix one finite weight with one +Inf weight.
-        let result = store.upsert_sparse_vectors(&[(
-            "c1".to_string(),
-            vec![(1u32, 0.5f32), (2u32, f32::INFINITY)],
-        )]);
+        let count = store
+            .upsert_sparse_vectors(&[(
+                "c1".to_string(),
+                vec![(1u32, 0.5f32), (2u32, f32::INFINITY)],
+            )])
+            .expect("finite tokens still upsert cleanly");
+        // The +Inf token is not counted as written.
+        assert_eq!(count, 1, "only the finite token is written");
+
+        // Raw table (bypassing the read-side filter) holds only the finite
+        // row — the non-finite bytes never reached disk. This assertion is
+        // the RED/GREEN witness: on unfixed code the +Inf row lands too.
+        let raw = raw_sparse_rows(&store, "c1");
+        assert_eq!(raw.len(), 1, "only the finite row lands on disk: {raw:?}");
+        assert_eq!(raw[0].0, 1, "surviving token id");
+        assert!((raw[0].1 - 0.5).abs() < 1e-6, "surviving weight preserved");
         assert!(
-            result.is_ok(),
-            "upsert with +Inf weight currently succeeds (write-path doesn't validate); err = {:?}",
-            result.err()
+            raw.iter().all(|(_, w)| w.is_finite()),
+            "no non-finite weight on disk: {raw:?}"
         );
-        // Read-side filter must mask non-finite: only the finite token 1
-        // survives the load.
+
+        // The load path agrees.
         let loaded = store.load_all_sparse_vectors().unwrap();
-        let c1 = &loaded[0];
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].1.len(), 1);
+        assert_eq!(loaded[0].1[0].0, 1);
+    }
+
+    /// NaN weights are scrubbed identically. A vector whose only token is NaN
+    /// degrades to the empty-sparse-vector shape: zero rows on disk, and the
+    /// chunk simply absent from `load_all_sparse_vectors` — no error, no panic.
+    #[test]
+    fn test_upsert_sparse_vectors_nan_weight_scrubbed_at_write() {
+        let (store, _dir) = setup_store();
+        insert_test_chunk(&store, "c1");
+        let count = store
+            .upsert_sparse_vectors(&[("c1".to_string(), vec![(1u32, f32::NAN)])])
+            .expect("an all-non-finite vector upserts cleanly to zero rows");
+        assert_eq!(count, 0, "no rows written for an all-NaN vector");
+
+        // Empty representation: no rows for c1 on disk...
         assert!(
-            c1.1.iter().all(|(_, w)| w.is_finite()),
-            "read path must filter non-finite weights: {:?}",
-            c1.1
+            raw_sparse_rows(&store, "c1").is_empty(),
+            "NaN weight must not land on disk"
         );
+        // ...and the chunk is absent from the load result entirely.
+        let loaded = store.load_all_sparse_vectors().unwrap();
         assert!(
-            c1.1.iter().any(|(t, _)| *t == 1),
-            "finite weight survives the round-trip"
+            loaded.iter().all(|(id, _)| id != "c1"),
+            "all-scrubbed chunk degrades to the empty sparse vector (absent from load)"
         );
     }
 
+    /// The count that drives the single per-upsert warn is an aggregate over
+    /// the whole batch — one number spanning every chunk and every token, so
+    /// the warn fires once with a total, never per token. Testing the shared
+    /// helper directly (rather than capturing the log) keeps this
+    /// deterministic: log capture across a parallel test suite races on
+    /// tracing's global callsite-interest cache.
     #[test]
-    fn test_upsert_sparse_vectors_nan_weight_does_not_panic() {
-        let (store, _dir) = setup_store();
-        insert_test_chunk(&store, "c1");
-        // NaN binding behavior is sqlx-dependent; some drivers coerce
-        // NaN→NULL, which would violate the NOT NULL constraint and
-        // surface as Err. We accept either outcome — what we pin is
-        // "doesn't panic" and "if it succeeds, read-side filter masks".
-        let result = store.upsert_sparse_vectors(&[("c1".to_string(), vec![(1u32, f32::NAN)])]);
-        if let Ok(_count) = result {
-            let loaded = store.load_all_sparse_vectors().unwrap();
-            for (_id, weights) in &loaded {
-                for (_, w) in weights {
-                    assert!(
-                        w.is_finite(),
-                        "NaN must not survive the round-trip: weight = {w}"
-                    );
-                }
-            }
-        }
-        // If Err, the contract is "writes reject NaN" — also acceptable
-        // and pinned by the assertion that we got Ok-or-Err, not panic.
+    fn test_count_non_finite_sparse_weights_aggregates_across_batch() {
+        let batch = vec![
+            (
+                "c1".to_string(),
+                vec![
+                    (1u32, 0.5f32),
+                    (2u32, f32::INFINITY),
+                    (3u32, f32::NEG_INFINITY),
+                ],
+            ),
+            (
+                "c2".to_string(),
+                vec![(4u32, f32::NAN), (5u32, 0.25f32), (6u32, 0.1f32)],
+            ),
+        ];
+        // 3 non-finite tokens (Inf, -Inf, NaN) spread across 2 chunks → one
+        // aggregate count. `scrubbed > 0` is the warn gate.
+        assert_eq!(count_non_finite_sparse_weights(&batch), 3);
+    }
+
+    /// Clean encoder output ⇒ zero count ⇒ the warn is gated off (the common
+    /// case must not add log noise).
+    #[test]
+    fn test_count_non_finite_sparse_weights_clean_is_zero() {
+        let batch = vec![
+            ("c1".to_string(), vec![(1u32, 0.5f32), (2u32, 0.3f32)]),
+            ("c2".to_string(), vec![]),
+        ];
+        assert_eq!(count_non_finite_sparse_weights(&batch), 0);
+    }
+
+    /// Round-trip equivalence: upserting a vector with non-finite tokens
+    /// produces the exact same on-disk rows as upserting the pre-filtered
+    /// (finite-only) vector.
+    #[test]
+    fn test_upsert_sparse_vectors_scrub_matches_prefiltered() {
+        let (store_a, _da) = setup_store();
+        insert_test_chunk(&store_a, "c1");
+        store_a
+            .upsert_sparse_vectors(&[(
+                "c1".to_string(),
+                vec![
+                    (1u32, 0.5f32),
+                    (2u32, f32::INFINITY),
+                    (3u32, 0.25f32),
+                    (4u32, f32::NAN),
+                ],
+            )])
+            .unwrap();
+
+        let (store_b, _db) = setup_store();
+        insert_test_chunk(&store_b, "c1");
+        store_b
+            .upsert_sparse_vectors(&[("c1".to_string(), vec![(1u32, 0.5f32), (3u32, 0.25f32)])])
+            .unwrap();
+
+        assert_eq!(
+            raw_sparse_rows(&store_a, "c1"),
+            raw_sparse_rows(&store_b, "c1"),
+            "scrubbed write must equal the pre-filtered write row-for-row"
+        );
     }
 }
