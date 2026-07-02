@@ -6,11 +6,10 @@
 //! `src/cli/commands/search/query.rs` — same SPLADE alpha resolution, same
 //! routing decisions, same code-types default.
 //!
-//! Future Task C1 will reuse this scoring path with a side-built temporary
-//! index (`--with-model`). To keep that swap mechanical, the search-and-score
-//! loop is intentionally factored as a single helper that takes a
-//! `CommandContext`-compatible store + embedder + index. C1 will add a
-//! parallel helper that takes the same trio sourced from a temp dir.
+//! Alternate-model evals go through slots (`cqs eval --slot <name>` against a
+//! slot built with that model). The search-and-score loop is factored as a
+//! single helper taking a store + embedder + index trio, so it stays agnostic
+//! to which slot the index came from.
 
 use std::collections::BTreeMap;
 use std::path::Path;

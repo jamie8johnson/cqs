@@ -352,7 +352,7 @@ test_all_flags_still_work                   --lang, --include-type, --ref with r
 |--------|-----------|---------------|------|
 | NameOnly for identifiers | +1-2pp | -50ms for ~36% of queries | Low (fallback on miss) |
 | Type boost for structural | +0-1pp | +0ms (scoring only) | Low (boost not filter) |
-| SPLADE routing | TBD (needs eval) | +50-100ms when selected | Medium (model dependent) |
+| SPLADE routing | shipped — hybrid SPLADE fusion with per-category α, swept on the v3/v4 fixtures (see eval results log) | +50-100ms when selected | Medium (model dependent) |
 | **v1 total** | **+2-4pp** | **-20ms avg** | **Low** |
 | v2 dual embeddings | +10-15pp additional | +2x index time | Medium (schema change) |
 

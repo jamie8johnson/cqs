@@ -286,7 +286,7 @@ Acceptance criteria:
 ## Known limitations
 
 - **Parser runs per-slot on full rebuild.** Cost: parse time × slot count. Acceptable — parse is <10% of a reindex; cache eliminates the expensive re-embed.
-- **Daemon doesn't auto-reload on slot promote.** Manual `systemctl --user restart cqs-watch` required. Filed as follow-up issue.
+- **Daemon doesn't auto-reload on slot promote.** Manual `systemctl --user restart cqs-watch` required. Filed as #2128.
 - **Cache is project-scoped.** Same source file in two projects re-embeds in each. Acceptable — chunks with identical content across projects is rare in practice.
 - **No `cqs index --all-slots`.** User runs `cqs index --slot <each>` manually. Add later if it bites.
 - **Slot promotion invalidates daemon HNSW warmth.** Pre-existing concern around HNSW warm-state; not made worse by this change, but flagged so the follow-up reload work is aware.

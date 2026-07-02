@@ -191,14 +191,14 @@ The convert module spawns external processes for format conversion:
 
 **Attack surface:**
 
-- **`CQS_PDF_SCRIPT` env var**: If set, the convert module executes the specified script instead of the default PDF conversion logic. This allows arbitrary script execution under the user's permissions.
+- **`CQS_PDF_SCRIPT` env var**: By default the PDF converter script is embedded in the binary (`include_str!`) and materialized to a temp file at exec time — there is no CWD or binary-relative script search (that TOCTOU surface was removed). If `CQS_PDF_SCRIPT` is set, the named script is executed instead — arbitrary script execution under the user's permissions — gated by a `.py`-extension check and, on unix, an ownership + permissions check (owned by the current effective user, not group/world-writable). A nonexistent override path falls back to the embedded script rather than executing anything.
 - **Output directory**: Generated Markdown files are written to the `--output` directory. The output path is not sandboxed beyond normal filesystem permissions.
 
 **Mitigations:**
 
 - Symlink filtering: Symlinks are skipped during directory walks and archive extraction
 - Zip-slip containment: Extracted paths are validated to stay within the output directory
-- Page count limits: PDF conversion enforces a maximum page count to bound processing time
+- Output size limits: PDF conversion caps converter stdout at `CQS_PDF_MAX_BYTES` (100 MiB default); CHM / web-help conversion caps processed pages at `CQS_CONVERT_MAX_PAGES` (1000 default)
 
 ### Model Export (`cqs export-model`)
 
