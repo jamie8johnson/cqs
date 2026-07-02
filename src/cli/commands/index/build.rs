@@ -1255,6 +1255,44 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
         })?;
     }
 
+    // Fold the freshly-rebuilt index's WAL tail into its main file while the
+    // index lock (`_lock`) is still held. `--force` swapped in a NEW `index.db`
+    // inode; the implicit `Store::drop` runs only a 1s PASSIVE checkpoint that
+    // BAILS the moment a reader is attached — and the daemon's per-query
+    // self-heal (`BatchContext::check_index_staleness`) reopens a read-only
+    // pool onto exactly this new inode mid-build. A PASSIVE that bails would
+    // leave committed tail frames (final chunk batches, the HNSW stamp) in
+    // `index.db-wal` after the lock releases, and the watch loop's post-`--force`
+    // reopen unlinks stale `-wal`/`-shm` before reopening (see
+    // `reopen_store_after_replacement`) — discarding them. `close()` runs the
+    // 30s-bounded TRUNCATE checkpoint here, under the lock, folding the tail
+    // into the main file so any residual `-wal` a lock holder later sees is
+    // redundant-or-orphaned. A reader that starves TRUNCATE past 30s degrades
+    // it back to PASSIVE (logged) — the accepted bound. Guarded on `force`
+    // because only that path rotated the inode a live daemon could be reading.
+    if force {
+        match Arc::try_unwrap(store) {
+            Ok(store) => {
+                if let Err(e) = store.close() {
+                    tracing::warn!(
+                        error = %e,
+                        "New store close() failed after --force rebuild; the WAL tail may not \
+                         be folded into the main file before the index lock releases"
+                    );
+                }
+            }
+            Err(shared) => {
+                // A lingering Arc clone means the pipeline didn't fully join —
+                // fall back to the implicit PASSIVE-on-drop (current behavior).
+                tracing::warn!(
+                    "New store still shared after --force rebuild; skipping explicit close() \
+                     (implicit PASSIVE checkpoint on drop only)"
+                );
+                drop(shared);
+            }
+        }
+    }
+
     Ok(())
 }
 

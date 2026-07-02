@@ -2212,6 +2212,99 @@ mod tests {
         drop(writer);
     }
 
+    /// `Store::close()` must fold the WAL tail into the main DB file — and
+    /// truncate the `-wal` — even while a second (read-only pooled) connection
+    /// is attached to the same DB. This is the guarantee `cqs index --force`
+    /// relies on: it `close()`s the freshly-rebuilt store under the index lock
+    /// so that after the lock releases, `index.db-wal` holds no committed tail
+    /// for the watch loop's post-swap reopen to strand when it unlinks stale
+    /// sidecars. The implicit `Store::drop` runs only a 1s PASSIVE checkpoint
+    /// (which does not truncate the `-wal` and bails against an active reader),
+    /// so this truncation guarantee is specific to the explicit close path.
+    #[test]
+    fn close_truncates_wal_and_folds_tail_with_reader_attached() {
+        use crate::embedder::Embedding;
+        use crate::parser::{Chunk, ChunkType, Language};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+
+        let writer = Store::open(&db_path).unwrap();
+        writer.init(&ModelInfo::default()).unwrap();
+
+        let content = "fn tail() {}";
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = Chunk {
+            id: format!("tail.rs:1:{}", &hash[..8]),
+            file: std::path::PathBuf::from("tail.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "tail".to_string(),
+            signature: "fn tail()".to_string(),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            byte_start: 0,
+            content_hash: hash,
+            canonical_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+        };
+        let mut v = vec![0.0f32; writer.dim()];
+        if !v.is_empty() {
+            v[0] = 1.0;
+        }
+        writer
+            .upsert_chunk(&chunk, &Embedding::new(v), Some(100))
+            .unwrap();
+
+        let wal = {
+            let mut s = db_path.as_os_str().to_os_string();
+            s.push("-wal");
+            std::path::PathBuf::from(s)
+        };
+        assert!(
+            std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0) > 0,
+            "precondition: the committed write must populate the WAL"
+        );
+
+        // Attach an idle read-only pool — the shape of the daemon's per-query
+        // self-heal reader that makes an implicit PASSIVE drop bail.
+        let reader = Store::open_readonly_pooled(&db_path).unwrap();
+        assert_eq!(reader.stats().unwrap().total_chunks, 1);
+
+        // The fix relies on this: close() truncates the WAL despite the
+        // attached reader, folding the tail into the main file.
+        writer.close().unwrap();
+        assert_eq!(
+            std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0),
+            0,
+            "close() must truncate the -wal (fold the tail into the main file) \
+             even with a reader attached"
+        );
+
+        // The row is durable in the MAIN file: drop the reader, remove the
+        // (empty) sidecars, and a fresh open still sees it — proving close()
+        // FOLDED the tail rather than leaving it only in a now-removed WAL.
+        drop(reader);
+        let _ = std::fs::remove_file(&wal);
+        let shm = {
+            let mut s = db_path.as_os_str().to_os_string();
+            s.push("-shm");
+            std::path::PathBuf::from(s)
+        };
+        let _ = std::fs::remove_file(&shm);
+        let reopened = Store::open_readonly(&db_path).unwrap();
+        assert_eq!(
+            reopened.stats().unwrap().total_chunks,
+            1,
+            "the chunk must be in the main file after close(), not stranded in the removed WAL"
+        );
+    }
+
     /// A second connection holding `BEGIN IMMEDIATE` (an exclusive write
     /// reservation) while the `Store` attempts a write must surface a
     /// recognizable "database is locked" error within the busy_timeout

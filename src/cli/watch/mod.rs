@@ -355,14 +355,62 @@ fn publish_watch_snapshot(
 /// gates the call on a `db_file_identity` mismatch; this performs the recovery
 /// unconditionally and returns the fresh Store (the caller updates its own
 /// `db_id` to the new identity after).
+///
+/// `index_lock_held` records whether the caller already owns the index lock
+/// (true on the flush tick, which reopens under the lock it took to reindex;
+/// false on the idle tick, which runs lock-free). It gates the stale-WAL
+/// cleanup below — see [`remove_stale_wal_sidecars`] for why removal is only
+/// safe under the lock. The flush caller passes `true` rather than having this
+/// re-acquire, because `flock` denies a second acquisition from the same
+/// process via a different descriptor.
 fn reopen_store_after_replacement(
     store: Store,
     state: &mut WatchState,
     index_path: &Path,
+    cqs_dir: &Path,
+    index_lock_held: bool,
     shared_rt: &Arc<tokio::runtime::Runtime>,
     vendored_prefixes: &[String],
 ) -> Result<Store> {
     drop(store);
+
+    // Guard against replaying an orphaned `index.db-wal` over the freshly
+    // swapped `index.db`. `cqs index --force` renames the old `index.db` out
+    // and creates a new inode; SQLite binds a `-wal` to its main file by PATH,
+    // not inode, so a populated `index.db-wal` left behind — the dropped
+    // store's own uncheckpointed frames (its `Drop` TRUNCATE checkpoint can
+    // degrade to PASSIVE without truncating under WSL 9P/NTFS contention) or a
+    // stale journal from the rotated-out DB — is replayed as old-page frames
+    // over the new main file on the read-write reopen below, corrupting it.
+    //
+    // Removal is only safe while the index lock is held: with the lock, no
+    // `cqs index --force` is mid-reindex, so `index.db-wal` cannot be the new
+    // writer's LIVE WAL — committed frames not yet checkpointed into the new
+    // main file, whose deletion would lose data. `cqs index --force` `close()`s
+    // its new store UNDER the lock (a 30s-bounded TRUNCATE, see `cmd_index`),
+    // folding the WAL tail into the new main file before it releases the lock —
+    // its implicit `Drop` would run only a 1s PASSIVE checkpoint that BAILS
+    // against the daemon's self-healed read-only pool on the new inode, so the
+    // explicit close is what makes this true. Hence any residual `-wal` a lock
+    // holder sees is redundant-or-orphaned and safe to unlink. Without the lock
+    // a writer owns the live WAL, so we skip the unlink and let the reopen
+    // replay it — correct for that inode.
+    if index_lock_held {
+        remove_stale_wal_sidecars(index_path);
+    } else {
+        match try_acquire_index_lock(cqs_dir) {
+            Ok(Some(_lock)) => remove_stale_wal_sidecars(index_path),
+            Ok(None) => tracing::debug!(
+                "index lock held by another process during store reopen; skipping stale-WAL \
+                 cleanup (a concurrent writer owns the live WAL — the reopen replays it)"
+            ),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "failed to acquire index lock for stale-WAL cleanup before store reopen; skipping"
+            ),
+        }
+    }
+
     // Reuse the shared runtime on re-open so the replacement store keeps running
     // on the same multi-thread worker pool as its predecessor.
     let store = Store::open_with_runtime(index_path, Arc::clone(shared_rt)).with_context(|| {
@@ -382,6 +430,40 @@ fn reopen_store_after_replacement(
         );
     }
     Ok(store)
+}
+
+/// Best-effort removal of `index.db`'s `-wal` / `-shm` sidecar files.
+///
+/// Callers MUST hold the index lock — see [`reopen_store_after_replacement`]
+/// for why unlinking a live WAL under a concurrent writer would lose committed
+/// data. Missing sidecars are the common case (a clean `--force` already
+/// removed them); those are silently ignored. Any other I/O error is logged
+/// and swallowed: a leftover sidecar risks a stale replay, but aborting the
+/// reopen would strand the watch loop on the orphaned inode, which is worse.
+///
+/// Unlinking `-shm` while an in-process read-only pool still has it mmap'd
+/// leaves that reader on the now-unlinked (ghost) inode until it re-opens;
+/// its next open creates a fresh `-shm`. Harmless — a ghost reader keeps a
+/// consistent past snapshot, and the handle being rotated here is the watch
+/// loop's own.
+fn remove_stale_wal_sidecars(index_path: &Path) {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = index_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match std::fs::remove_file(&sidecar) {
+            Ok(()) => tracing::info!(
+                path = %sidecar.display(),
+                "removed stale SQLite WAL sidecar before store reopen"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                path = %sidecar.display(),
+                error = %e,
+                "failed to remove stale SQLite WAL sidecar before store reopen"
+            ),
+        }
+    }
 }
 
 /// Drain a completed background HNSW rebuild from the watch loop's periodic
@@ -1639,6 +1721,8 @@ pub fn cmd_watch(
                             store,
                             &mut state,
                             &index_path,
+                            &cqs_dir,
+                            false, // idle tick runs lock-free — the helper try-acquires
                             &shared_rt,
                             &vendored_prefixes_for_store,
                         )?;
@@ -1930,6 +2014,8 @@ pub fn cmd_watch(
                     store,
                     &mut state,
                     &index_path,
+                    &cqs_dir,
+                    true, // flush tick already holds the index lock (acquired above)
                     &shared_rt,
                     &vendored_prefixes_for_store,
                 )?;
