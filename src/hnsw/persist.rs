@@ -2296,6 +2296,284 @@ mod tests {
         );
     }
 
+    // ===== frozen legacy-state (pre-manifest) guards =====
+    //
+    // Every fixture built by the current code is born at the manifest-
+    // generation layout; it can never construct the fixed-name sidecar set a
+    // pre-manifest binary wrote (`{basename}.hnsw.{graph,data,ids,meta,
+    // checksum}` with no `.hnsw.manifest`), nor the old staging directory, nor
+    // the legacy `.hnsw.meta` header. The guards below hand-build those
+    // old-world shapes faithfully and pin how the current reader/migrator
+    // handles each: absent → rebuild, GC on the next save, never a misparse and
+    // never a wedge. The single existing migration test only exercises the
+    // COMPLETE five-file happy path (and with placeholder bytes); these cover
+    // the partial-crash, mixed, staging-debris, legacy-header, and read-only
+    // (reference-dir) shapes it does not.
+
+    /// The faithful `.hnsw.meta` JSON a post-metric-header, pre-manifest binary
+    /// wrote (magic `CQSHNSW`, version 1, a `metric` string, optional stamp).
+    /// Reproduced by hand because the current code has no encoder for it.
+    fn legacy_meta_json(metric: &str, stamp: Option<(u64, u64)>) -> Vec<u8> {
+        match stamp {
+            Some((cc, sg)) => format!(
+                r#"{{"magic":"CQSHNSW","version":1,"metric":"{metric}","chunk_count":{cc},"splade_generation":{sg}}}"#
+            )
+            .into_bytes(),
+            None => {
+                format!(r#"{{"magic":"CQSHNSW","version":1,"metric":"{metric}"}}"#).into_bytes()
+            }
+        }
+    }
+
+    /// The faithful `.hnsw.checksum` manifest a pre-manifest binary wrote:
+    /// `{ext}:{blake3hex}` lines over the three data files. Content is not
+    /// load-bearing to the current reader (nothing opens this file anymore) —
+    /// written for fixture fidelity so the shape on disk is the real one.
+    fn legacy_checksum_text(dir: &Path, basename: &str) -> String {
+        let mut lines = Vec::new();
+        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+            let path = dir.join(format!("{basename}.{ext}"));
+            if path.exists() {
+                lines.push(format!("{ext}:{}", hash_test_file(&path)));
+            }
+        }
+        lines.join("\n")
+    }
+
+    /// Write a faithful pre-manifest ("legacy") sidecar set for `basename`.
+    /// `exts` selects which of the five fixed-name files exist (so partial-
+    /// crash shapes are expressible); `meta_metric`, when `Some`, controls the
+    /// `.hnsw.meta` header's metric string.
+    fn write_legacy_set(dir: &Path, basename: &str, exts: &[&str], meta_metric: Option<&str>) {
+        for ext in exts {
+            let path = dir.join(format!("{basename}.{ext}"));
+            match *ext {
+                "hnsw.meta" => {
+                    let metric = meta_metric.unwrap_or("cosine");
+                    std::fs::write(&path, legacy_meta_json(metric, Some((3, 5)))).unwrap();
+                }
+                "hnsw.checksum" => { /* written last, after the data files exist */ }
+                _ => std::fs::write(&path, b"legacy-hnsw-bytes").unwrap(),
+            }
+        }
+        if exts.contains(&"hnsw.checksum") {
+            std::fs::write(
+                dir.join(format!("{basename}.hnsw.checksum")),
+                legacy_checksum_text(dir, basename),
+            )
+            .unwrap();
+        }
+    }
+
+    /// Partial legacy set — a crash mid old-scheme promote left graph+data+ids
+    /// but no meta/checksum. Every current read path must treat it as absent
+    /// (no manifest), routing to rebuild — never a partial-parse or a wedge.
+    #[test]
+    fn legacy_partial_set_reads_as_absent() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        write_legacy_set(
+            tmp.path(),
+            basename,
+            &["hnsw.graph", "hnsw.data", "hnsw.ids"],
+            None,
+        );
+
+        assert!(
+            read_manifest(tmp.path(), basename).unwrap().is_none(),
+            "a partial legacy set has no manifest"
+        );
+        assert!(!HnswIndex::exists(tmp.path(), basename));
+        assert!(matches!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM),
+            Err(HnswError::NotFound(_))
+        ));
+        assert!(HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM).is_none());
+        assert!(
+            HnswIndex::count_vectors(tmp.path(), basename).is_none(),
+            "count_vectors must not read a legacy id-map without a manifest"
+        );
+    }
+
+    /// A COMPLETE legacy set carrying a real `.hnsw.meta` header and a real
+    /// `.hnsw.checksum` manifest must NOT be misparsed by any current lenient
+    /// reader: `read_manifest` sees no manifest, `stored_metric` returns the
+    /// no-manifest default (cosine) rather than tripping over the legacy meta,
+    /// and `exists` is false. Pins that the retired sidecars are inert to the
+    /// current readers, not accidentally consumed as current metadata.
+    #[test]
+    fn legacy_meta_and_checksum_are_not_read_as_current_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("cosine"));
+
+        assert!(
+            read_manifest(tmp.path(), basename).unwrap().is_none(),
+            "a legacy .hnsw.meta / .hnsw.checksum must not read as a .hnsw.manifest"
+        );
+        assert_eq!(
+            HnswIndex::stored_metric(tmp.path(), basename).unwrap(),
+            DistanceMetric::Cosine,
+            "no manifest → cosine; the legacy meta header must not be parsed here"
+        );
+        assert!(!HnswIndex::exists(tmp.path(), basename));
+    }
+
+    /// The legacy-metric drop, pinned. A pre-manifest binary that built with
+    /// `CQS_DISTANCE_METRIC=dot` wrote `.hnsw.meta` with `"metric":"dot"`, and
+    /// the README promised "Stored in the index" (honored on load without the
+    /// env var). The manifest reader does not read `.hnsw.meta`, so on upgrade
+    /// the persisted `dot` is dropped: `stored_metric` returns cosine, and the
+    /// index reads as absent → rebuilds with the env-resolved metric. This
+    /// guard PINS that current behavior (the legacy dot header is inert). It is
+    /// the observable half of a real migration lossiness — see the audit report
+    /// (silent metric downgrade when un-normalized embeddings + a
+    /// [metric-header, manifest) build window + an unset env var coincide).
+    #[test]
+    fn legacy_dot_metric_header_is_dropped_by_manifest_reader() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("dot"));
+
+        // The legacy header says dot; the current reader can't see it.
+        assert!(read_manifest(tmp.path(), basename).unwrap().is_none());
+        assert_eq!(
+            HnswIndex::stored_metric(tmp.path(), basename).unwrap(),
+            DistanceMetric::Cosine,
+            "legacy .hnsw.meta metric=dot is silently dropped — stored_metric can only \
+             report cosine because it reads the (absent) manifest, not the legacy header"
+        );
+        assert!(!HnswIndex::exists(tmp.path(), basename));
+    }
+
+    /// Mixed state: a valid new-format index (real build + manifest) with
+    /// legacy fixed-name sidecars still on disk — the shape a crash between the
+    /// manifest commit and the post-commit GC leaves. The load must serve the
+    /// NEW generation (not the legacy bytes), and the next save's GC must sweep
+    /// the legacy sidecars even though a manifest already exists.
+    #[test]
+    fn mixed_manifest_and_legacy_sidecars_load_new_gen_then_gc() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+
+        HnswIndex::build_with_dim(
+            (1..=4)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+        // A committed manifest exists; drop legacy fixed-name debris beside it.
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("dot"));
+
+        // The load resolves the manifest generation, not the legacy bytes.
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            4,
+            "the manifest generation must win over coexisting legacy sidecars"
+        );
+
+        // The next save GCs the legacy sidecars under the lock.
+        HnswIndex::build_with_dim(
+            (1..=6)
+                .map(|i| (format!("next{}", i), make_embedding(i + 9)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            assert!(
+                !tmp.path().join(format!("{basename}.{ext}")).exists(),
+                "GC must sweep legacy {ext} even when a manifest is already present"
+            );
+        }
+        assert_eq!(
+            HnswIndex::load_with_dim(tmp.path(), basename, crate::EMBEDDING_DIM)
+                .unwrap()
+                .len(),
+            6
+        );
+    }
+
+    /// Old-scheme staging directory left by a crashed pre-manifest save:
+    /// `.{basename}.<rand>.tmp/` holding the in-flight fixed-name files. Pins
+    /// the ACTUAL production cleanup timing: `try_load_*` short-circuits on
+    /// `exists()` for a legacy-only dir, so the staging dir survives the first
+    /// (brute-force) query; once a real save writes a manifest, the next
+    /// `try_load_*` reaches `load_with_dim`, whose stale-temp sweep removes it.
+    #[test]
+    fn legacy_staging_tmp_dir_cleaned_after_migration_not_before() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        // Faithful old staging dir name: `.{basename}.<16 hex>.tmp/` with the
+        // in-flight fixed-name files inside.
+        let staging = tmp.path().join(format!(".{basename}.0123456789abcdef.tmp"));
+        std::fs::create_dir_all(&staging).unwrap();
+        for ext in ["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+            std::fs::write(staging.join(format!("{basename}.{ext}")), b"staged").unwrap();
+        }
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("cosine"));
+
+        // Production entry on a legacy-only dir: brute-force fallback (None),
+        // and the staging dir is NOT yet cleaned (load_with_dim never runs).
+        assert!(HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM).is_none());
+        assert!(
+            staging.exists(),
+            "a legacy-only dir short-circuits before load_with_dim, so the old \
+             staging dir is not cleaned on the pre-migration query"
+        );
+
+        // Migrate: first new-format save.
+        HnswIndex::build_with_dim(
+            (1..=3)
+                .map(|i| (format!("vec{}", i), make_embedding(i)))
+                .collect(),
+            crate::EMBEDDING_DIM,
+        )
+        .unwrap()
+        .save(tmp.path(), basename)
+        .unwrap();
+
+        // Now exists() is true → try_load reaches load_with_dim → stale-temp
+        // sweep removes the old staging dir.
+        assert!(HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM).is_some());
+        assert!(
+            !staging.exists(),
+            "load_with_dim's stale-temp sweep must remove the old staging dir \
+             once the index is migrated"
+        );
+    }
+
+    /// Reference-dir read-only shape: a reference points at a project whose
+    /// `.cqs/` still carries a legacy set and is never re-indexed by the
+    /// current binary. `try_load_with_ef` (the exact reference load call) must
+    /// return None (brute-force fallback) WITHOUT mutating the read-only dir —
+    /// no misparse, no crash, and the legacy files stay put (a read never GCs).
+    #[test]
+    fn legacy_reference_dir_loads_none_without_mutating() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "index";
+        write_legacy_set(tmp.path(), basename, LEGACY_HNSW_EXTENSIONS, Some("cosine"));
+
+        assert!(
+            HnswIndex::try_load_with_ef(tmp.path(), None, crate::EMBEDDING_DIM).is_none(),
+            "a legacy reference index reads as absent → brute-force fallback"
+        );
+        // A read must not touch the on-disk legacy files (no GC on the read path).
+        for ext in LEGACY_HNSW_EXTENSIONS {
+            assert!(
+                tmp.path().join(format!("{basename}.{ext}")).exists(),
+                "read-only load must not delete legacy {ext} in a reference dir"
+            );
+        }
+    }
+
     // ===== distance metric persistence =====
 
     /// Roundtrip: build with DotProduct → save → load → metric preserved
