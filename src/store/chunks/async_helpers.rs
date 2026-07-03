@@ -263,7 +263,7 @@ impl<Mode> Store<Mode> {
 ///
 /// `content_hash` is the FTS skip key. `parser_version` makes chunks whose
 /// source bytes are unchanged but whose parser logic moved on (e.g.
-/// `extract_doc_fallback_for_short_chunk`) still trigger a refresh.
+/// `extract_leading_comment_doc`) still trigger a refresh.
 #[derive(Clone)]
 pub(super) struct ChunkSnapshot {
     pub content_hash: String,

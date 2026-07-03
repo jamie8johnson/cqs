@@ -64,7 +64,16 @@ use super::Parser;
 /// bare-list L5X/L5K file re-parsed under v14 produces call + type edges it did
 /// not under v13, so a refresh is required even when the file's bytes are
 /// unchanged.
-pub const PARSER_VERSION: u32 = 14;
+/// 15: leading-comment `doc` fallback now applies to chunks of ANY length (was
+/// gated on chunks spanning <= 5 lines) and uses strict adjacency — the block
+/// must be glued to the definition, a blank line breaks it, and shebang /
+/// encoding modelines are excluded. A byte-identical file re-parsed under v15
+/// can gain a `doc` on a long definition that carries a glued leading comment
+/// block, and can lose a previously-captured `doc` where a blank line separated
+/// the block from the definition (that path is now handled only by the
+/// sibling-walk). Either way `doc` — and thus the embedding text — can change,
+/// so a refresh is required even when the file's bytes are unchanged.
+pub const PARSER_VERSION: u32 = 15;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -374,15 +383,15 @@ impl Parser {
         // Extract signature
         let signature = extract_signature(&content, language);
 
-        // Extract doc comments. For short chunks (typically tree-sitter
-        // captures of `CREATE TABLE`, type aliases, or thin helper fns) the
-        // tree-sitter sibling walk often misses the leading comment block
-        // because the grammar surfaces blank-line gaps as siblings that stop
-        // the walk. Fall back to a comment-only preceding-lines scan in that
-        // case so the embedding gets a richer NL signal.
-        let doc = extract_doc_comment(node, source, language).or_else(|| {
-            extract_doc_fallback_for_short_chunk(node, source, line_start, line_end, language, path)
-        });
+        // Extract doc comments. When the tree-sitter sibling walk surfaces no
+        // doc-syntax comment (common for grammars whose blank-line gaps stop the
+        // walk, or codebases that document with plain `//`/`--`/`#` comment runs
+        // rather than doc syntax), fall back to the contiguous leading
+        // ordinary-comment block glued to the definition so the embedding still
+        // gets the developer's stated intent. Doc syntax always wins via
+        // `or_else`; the fallback never overrides or concatenates with it.
+        let doc = extract_doc_comment(node, source, language)
+            .or_else(|| extract_leading_comment_doc(node, source, language, path));
 
         // Determine chunk type - only infer for functions (to detect methods)
         let (chunk_type, parent_type_name) = if base_chunk_type == ChunkType::Function {
@@ -564,6 +573,14 @@ fn extract_doc_comment(
 
         if doc_nodes.contains(&kind) {
             let text = &source[sibling.byte_range()];
+            // A shebang / encoding modeline is a doc-node comment in several
+            // grammars (tree-sitter parses `#!...` as a `comment`), but it
+            // documents the file's interpreter/encoding, not the definition —
+            // skip it so it never pollutes `doc`, and keep walking past it.
+            if is_shebang_or_modeline(text) {
+                current = sibling.prev_sibling();
+                continue;
+            }
             comments.push(text.to_string());
             current = sibling.prev_sibling();
         } else if kind.contains("comment") {
@@ -616,17 +633,10 @@ fn extract_doc_comment(
     Some(comments.join("\n"))
 }
 
-/// Maximum line count for a chunk to be considered "short" and eligible for
-/// the leading-comment fallback. The check is `line_end - line_start <
-/// SHORT_CHUNK_LINE_THRESHOLD`, so chunks spanning **5 or fewer lines**
-/// qualify (a 5-line chunk has `line_end - line_start = 4`). Matches the
-/// `truncated_gold` failure-mode threshold from
-/// `evals/audit_r5_failure_modes.py`.
-const SHORT_CHUNK_LINE_THRESHOLD: u32 = 5;
-
-/// Maximum number of preceding source lines to capture as a fallback `doc`
-/// for short chunks. Bounded so the fallback can't pull in a large preceding
-/// function body when the chunk happens to follow non-comment code.
+/// Maximum number of preceding source lines to capture as a fallback `doc`.
+/// Bounded so a runaway leading-comment block can't inflate the `doc` field
+/// (and, with the reverse tail read, so per-chunk work stays O(lines captured)
+/// regardless of file size).
 const FALLBACK_DOC_MAX_LINES: usize = 8;
 
 /// Maximum whitespace-only siblings that `extract_doc_comment` will skip past
@@ -717,60 +727,89 @@ fn line_looks_comment_like(line: &str, lang: Language) -> bool {
     false
 }
 
-/// Fallback `doc` enrichment for short chunks (chunks spanning 5 or fewer
-/// source lines, gated by [`SHORT_CHUNK_LINE_THRESHOLD`]) that have no
-/// tree-sitter-attached doc comment. Walks back up to
-/// [`FALLBACK_DOC_MAX_LINES`] preceding source lines from
-/// `node.start_position` and returns them as a single string, but only if
-/// every captured line looks comment-like — otherwise returns `None` so we
-/// never pull arbitrary code in.
+/// Returns true if a comment's first line is a shebang (`#!...`) or an
+/// editor/encoding modeline (`# -*- coding: utf-8 -*-`, `# vim: ...`, etc.).
+/// These lead a file but never document a definition, so both the sibling walk
+/// and the leading-comment fallback drop them: they are neither captured as
+/// `doc` nor allowed to sit in a captured block. Without this, a Python file
+/// opening with `#!/usr/bin/env python` + `# -*- coding: utf-8 -*-` would
+/// attach those lines to its first function as `doc`.
 ///
-/// This addresses the `truncated_gold` failure mode (~13 queries on
-/// `v3_test.v2`, 11 on `v3_dev.v2`): SQL `CREATE TABLE` definitions, short
-/// type aliases, and tiny helper functions that ship with leading file-level
-/// comments which the normal sibling walk fails to surface (typically because
-/// of grammar-emitted blank-line gap nodes).
+/// Only the first physical line is inspected, and a modeline must both start
+/// with a comment marker and carry a modeline signature — so an ordinary block
+/// comment that merely contains `-*-` in its prose is not misclassified.
+fn is_shebang_or_modeline(text: &str) -> bool {
+    let first = text.lines().next().unwrap_or("").trim_start();
+    if first.starts_with("#!") {
+        return true;
+    }
+    (first.starts_with('#') || first.starts_with("//"))
+        && (first.contains("-*-")
+            || first.contains("coding:")
+            || first.contains("coding=")
+            || first.contains("vim:"))
+}
+
+/// Fallback `doc` enrichment for a chunk whose tree-sitter sibling walk
+/// ([`extract_doc_comment`]) surfaced no doc-syntax comment. Captures the
+/// contiguous block of ordinary (non-doc-syntax) comment lines immediately
+/// preceding the definition and returns it as the chunk's `doc`, so codebases
+/// and grammars that document with plain `//` / `--` / `#` runs — or where the
+/// sibling walk misses the block behind grammar-emitted gap nodes — still get
+/// the developer's stated intent into the embedding text.
 ///
-/// **Performance:** Only the last `FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS`
-/// lines of the prefix are split into a `Vec<&str>`. We locate that tail by
-/// walking the prefix bytes in reverse from `start_byte`, counting newlines,
-/// and stopping once enough are seen. This bounds per-chunk work to O(8
-/// lines) regardless of file size — splitting the entire prefix per call
-/// would be O(N²) on files with many short chunks.
-fn extract_doc_fallback_for_short_chunk(
+/// Applies to chunks of ANY length. (It formerly gated on chunks spanning <= 5
+/// lines, so a long procedure with a leading `--` header block lost its doc;
+/// that gate is removed.)
+///
+/// Rules:
+/// - **Strict adjacency.** The block must be glued to the definition: the line
+///   immediately preceding the def must be comment-like and non-blank. A blank
+///   line terminates the block (it is NOT crossed) and any non-comment code
+///   line terminates it. A distant comment (one for an earlier construct, or a
+///   file banner set off by a blank line) therefore never leaks onto the
+///   following definition.
+/// - **Shebang / modeline exclusion.** A leading `#!` shebang or an
+///   editor/encoding modeline is a hard stop, never part of the block
+///   ([`is_shebang_or_modeline`]).
+/// - **Precedence.** Only reached via `extract_doc_comment(...).or_else(...)`,
+///   so a real doc-syntax comment always wins; the fallback never overrides or
+///   concatenates with it.
+///
+/// Comment markers (`//`, `--`, `#`, ...) are kept verbatim, matching the
+/// raw-with-markers convention of the primary `extract_doc_comment` path so the
+/// `doc` field has one consistent shape regardless of which path filled it.
+///
+/// **License-header trade-off.** Because the block must be glued with no blank
+/// line, a license/copyright banner — near-universally set off from code by a
+/// blank line — is rejected by the adjacency rule and can never leak onto a
+/// later definition. The one residual false positive is a banner glued with no
+/// blank directly above the file's FIRST definition, which is captured as that
+/// def's doc; this is accepted (rare in practice, and a content-based license
+/// sniff is locale/format-fragile). A blank-separated banner, the common form,
+/// is not captured.
+///
+/// **Performance:** only the last `FALLBACK_DOC_MAX_LINES + 2` lines of the
+/// prefix are materialized. The tail is located by walking prefix bytes in
+/// reverse counting newlines, bounding per-chunk work to O(lines captured)
+/// regardless of file size — splitting the whole prefix per call would be
+/// O(N^2) on files with many chunks.
+fn extract_leading_comment_doc(
     node: tree_sitter::Node,
     source: &str,
-    line_start: u32,
-    line_end: u32,
     language: Language,
     path: &Path,
 ) -> Option<String> {
-    if line_end.saturating_sub(line_start) >= SHORT_CHUNK_LINE_THRESHOLD {
-        return None;
-    }
     let _span = tracing::trace_span!(
-        "extract_doc_fallback_for_short_chunk",
-        line_start,
-        line_end,
+        "extract_leading_comment_doc",
         path = %path.display()
     )
     .entered();
 
-    // Cap the run of consecutive blanks so a malformed file with kilobytes
-    // of empty siblings can't stall.
-    const MAX_CONSECUTIVE_BLANKS: usize = 16;
-
-    // Walk the prefix bytes in REVERSE only as far back as the
-    // (FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS + 1)-th newline. We
-    // grant the blank budget on top of the comment budget so a leading
-    // comment block separated from the chunk by up to MAX_CONSECUTIVE_BLANKS
-    // blanks is still reachable — matching the walk-back loop's tolerance
-    // below. Any prefix beyond that tail is unreachable and not split.
-    //
     // tree-sitter occasionally surfaces non-codepoint-boundary `start_byte`
     // values on injection-rooted nodes. Emit a warn (rather than silently
-    // dropping via `?`) so a pathological grammar change or malformed input
-    // is visible in the journal.
+    // dropping via `?`) so a pathological grammar change or malformed input is
+    // visible in the journal.
     let start_byte = node.start_byte();
     let prefix = match source.get(..start_byte) {
         Some(p) => p,
@@ -778,14 +817,22 @@ fn extract_doc_fallback_for_short_chunk(
             tracing::warn!(
                 start_byte,
                 path = %path.display(),
-                "extract_doc_fallback_for_short_chunk: start_byte not on UTF-8 boundary — \
+                "extract_leading_comment_doc: start_byte not on UTF-8 boundary — \
                  skipping fallback for this chunk"
             );
             return None;
         }
     };
+    if prefix.is_empty() {
+        return None;
+    }
+
+    // Read only the tail we could possibly capture: FALLBACK_DOC_MAX_LINES
+    // comment lines + the def's own-line fragment + a small margin. Locate it by
+    // reverse newline-counting so a file with many chunks stays O(lines) per
+    // call rather than O(prefix).
     let bytes = prefix.as_bytes();
-    let max_newlines = FALLBACK_DOC_MAX_LINES + MAX_CONSECUTIVE_BLANKS + 1;
+    let max_newlines = FALLBACK_DOC_MAX_LINES + 2;
     let mut newline_count = 0usize;
     let mut tail_start = 0usize;
     for i in (0..bytes.len()).rev() {
@@ -798,53 +845,58 @@ fn extract_doc_fallback_for_short_chunk(
         }
     }
     let tail = &prefix[tail_start..];
-    // `str::lines()` already strips trailing `\r` from `\r\n` line
-    // terminators, so no separate `\r` trim is needed.
+    // `str::lines()` already strips trailing `\r` from `\r\n` line terminators.
     let lines: Vec<&str> = tail.lines().collect();
     if lines.is_empty() {
         return None;
     }
 
-    // Walk back from the line immediately preceding the chunk. Spend the
-    // FALLBACK_DOC_MAX_LINES budget only on non-blank comment-like lines so
-    // a blank gap between the chunk and the leading comment block doesn't
-    // silently truncate the captured doc.
-    let mut start = lines.len();
-    let mut comment_lines_taken = 0usize;
-    let mut consecutive_blanks = 0usize;
-    while start > 0 && comment_lines_taken < FALLBACK_DOC_MAX_LINES {
+    // The def's own line contributes a trailing fragment (its indentation) when
+    // the prefix does not end at a newline. If that fragment carries
+    // non-whitespace, code sits on the def's line before it (`struct A; fn b`):
+    // there is no leading comment block, so bail. Otherwise drop the fragment
+    // and scan the lines above it.
+    let mut scan_end = lines.len();
+    if !prefix.ends_with('\n') {
+        if let Some(last) = lines.last() {
+            if !last.trim().is_empty() {
+                return None;
+            }
+        }
+        scan_end -= 1;
+    }
+
+    // Strict-adjacency backward scan: a blank line, a non-comment line, or a
+    // shebang/modeline terminates the block. No blank-gap tolerance — the block
+    // must be glued to the definition.
+    let mut start = scan_end;
+    let mut taken = 0usize;
+    while start > 0 && taken < FALLBACK_DOC_MAX_LINES {
         let candidate = lines[start - 1];
+        if candidate.trim().is_empty() {
+            break;
+        }
+        if is_shebang_or_modeline(candidate) {
+            break;
+        }
         if !line_looks_comment_like(candidate, language) {
             break;
         }
-        if candidate.trim().is_empty() {
-            if consecutive_blanks >= MAX_CONSECUTIVE_BLANKS {
-                break;
-            }
-            consecutive_blanks += 1;
-        } else {
-            consecutive_blanks = 0;
-            comment_lines_taken += 1;
-        }
         start -= 1;
+        taken += 1;
     }
-    // Strip leading blank lines from the selection so we don't return an
-    // empty/whitespace-only `doc`.
-    while start < lines.len() && lines[start].trim().is_empty() {
-        start += 1;
-    }
-    if start >= lines.len() {
+    if taken == 0 {
         return None;
     }
-    let captured: String = lines[start..].join("\n");
+
+    let captured: String = lines[start..scan_end].join("\n");
     if captured.trim().is_empty() {
         return None;
     }
     tracing::debug!(
-        prepended_lines = lines.len() - start,
-        line_start,
+        captured_lines = taken,
         path = %path.display(),
-        "extract_doc_fallback_for_short_chunk: filled empty doc for short chunk"
+        "extract_leading_comment_doc: filled empty doc from leading comment block"
     );
     Some(captured)
 }
@@ -2297,18 +2349,16 @@ public class Calculator {
             }
         }
 
-        // ─── extract_doc_fallback_for_short_chunk via Parser end-to-end ─────
+        // ─── extract_leading_comment_doc via Parser end-to-end ─────────────
 
-        /// Happy path 1: SQL `CREATE TABLE` with leading `--` comment block
-        /// and a blank line gap (the canonical `truncated_gold` shape).
-        /// Either the sibling-walk tolerance OR the preceding-lines fallback
-        /// must surface the comment.
+        /// Happy path 1: SQL `CREATE TABLE` with a glued leading `--` comment
+        /// block (the canonical `truncated_gold` shape) — the fallback must
+        /// surface the comment as `doc`.
         #[test]
-        fn sql_short_table_with_blank_line_gap_gets_doc() {
+        fn sql_table_with_glued_comment_gets_doc() {
             let content = "\
 -- Stores per-row metadata for cqs chunks.
 -- Indexed by chunk id; bumped on every reindex.
-
 CREATE TABLE metadata (
     chunk_id TEXT PRIMARY KEY,
     value TEXT
@@ -2325,6 +2375,33 @@ CREATE TABLE metadata (
             assert!(
                 doc.contains("per-row metadata"),
                 "expected leading comment to be captured, got: {doc:?}"
+            );
+        }
+
+        /// Strict adjacency: a `--` header block separated from the definition
+        /// by a blank line is NOT captured by the fallback (blank breaks the
+        /// block). The sibling-walk does not surface it either for this SQL
+        /// shape, so `doc` is `None`. Pins the deliberate v15 behavior change.
+        #[test]
+        fn sql_table_with_blank_separated_comment_keeps_doc_none() {
+            let content = "\
+-- Stores per-row metadata for cqs chunks.
+
+CREATE TABLE metadata (
+    chunk_id TEXT PRIMARY KEY
+);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "metadata")
+                .expect("metadata chunk should exist");
+            assert!(
+                chunk.doc.is_none(),
+                "blank-separated header must not be captured under strict adjacency, got: {:?}",
+                chunk.doc
             );
         }
 
@@ -2387,10 +2464,47 @@ type Tiny = u8;
             assert!(chunk.doc.is_none());
         }
 
-        /// Sad path 3: long chunk with no doc must not trigger the fallback
-        /// (the threshold is short-chunks-only on purpose).
+        /// A LONG Rust chunk with a glued leading plain-comment block gets a
+        /// `doc` (here via the sibling walk's generic `comment` doc-node). The
+        /// SQL-specific fallback path for long chunks is pinned separately by
+        /// `long_sql_chunk_gets_leading_comment_via_fallback`.
         #[test]
-        fn long_chunk_does_not_get_fallback_doc() {
+        fn long_rust_chunk_with_leading_comment_gets_doc() {
+            let content = "\
+// Recomputes the running balance, applying reversals and holds.
+// Idempotent: safe to call twice for the same account.
+fn recompute_balance() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let _ = a + b + c + d + e;
+}
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "recompute_balance")
+                .expect("recompute_balance chunk should exist");
+            // Well past the old 5-line short-chunk gate.
+            assert!(
+                chunk.line_end - chunk.line_start >= 5,
+                "chunk must be a long chunk to pin the long-chunk fix"
+            );
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("running balance"),
+                "long chunk with glued leading comment must get fallback doc, got: {doc:?}"
+            );
+        }
+
+        /// Sad path 3: long chunk with NO leading comment must still get no
+        /// fallback `doc` — the fallback only fires on a real comment block.
+        #[test]
+        fn long_chunk_without_comment_keeps_doc_none() {
             let content = "\
 fn longish() {
     let a = 1;
@@ -2410,7 +2524,7 @@ fn longish() {
                 .expect("longish chunk should exist");
             assert!(
                 chunk.doc.is_none(),
-                "long chunk should not trigger fallback, got: {:?}",
+                "long chunk without a leading comment must have no fallback doc, got: {:?}",
                 chunk.doc
             );
         }
@@ -2421,7 +2535,6 @@ fn longish() {
         fn fallback_handles_utf8_in_leading_comment() {
             let content = "\
 -- caf\u{00e9} table — s\u{00e9}rieux
-
 CREATE TABLE notes (id TEXT);
 ";
             let file = write_temp_file(content, "sql");
@@ -2585,10 +2698,14 @@ type WithDoc = u8;
             );
         }
 
-        // ─── walk-back blank-line budget ───────────────────────────────────
+        // ─── strict adjacency: internal blank breaks the block ─────────────
 
+        /// A blank line WITHIN the leading comment run terminates the block:
+        /// only the glued run (`comment 3`) is captured; the pre-blank comments
+        /// (`comment 1`/`2`) are NOT. Inverts the old blank-tolerance behavior
+        /// removed in v15.
         #[test]
-        fn fallback_walks_past_blank_gap_to_capture_earlier_comments() {
+        fn fallback_stops_at_internal_blank_gap() {
             let content = "\
 -- header comment 1
 -- header comment 2
@@ -2602,12 +2719,12 @@ CREATE TABLE x (id TEXT);
             let chunk = chunks.iter().find(|c| c.name == "x").expect("x chunk");
             let doc = chunk.doc.as_deref().unwrap_or("");
             assert!(
-                doc.contains("header comment 1"),
-                "expected header comment 1 to survive blank gap, got: {doc:?}"
+                doc.contains("header comment 3"),
+                "glued comment 3 must be captured, got: {doc:?}"
             );
             assert!(
-                doc.contains("header comment 3"),
-                "expected header comment 3 to be captured, got: {doc:?}"
+                !doc.contains("header comment 1") && !doc.contains("header comment 2"),
+                "pre-blank comments must NOT survive the internal blank gap, got: {doc:?}"
             );
         }
 
@@ -2651,9 +2768,9 @@ CREATE TABLE x (id TEXT);
             }
         }
 
-        /// Exact 5-line-span boundary: a chunk whose `line_end - line_start`
-        /// is exactly 4 (a 5-line CREATE TABLE) MUST get the fallback —
-        /// the skip semantics are `>= SHORT_CHUNK_LINE_THRESHOLD`.
+        /// A 5-line CREATE TABLE with a glued `--` header still gets the
+        /// fallback. Formerly a boundary case for the removed short-chunk gate;
+        /// now just a length-agnostic happy path.
         #[test]
         fn fallback_runs_for_chunk_spanning_exactly_5_lines() {
             // 5-line body so `line_end - line_start == 4`. Three columns +
@@ -2812,6 +2929,232 @@ CREATE TABLE five_line (
                     .contains("doc for table_199"),
                 "bounded walk-back must still find immediate leading comment, got: {:?}",
                 last.doc
+            );
+        }
+
+        // ─── #2126: leading-comment fallback across languages & guards ─────
+
+        /// The fallback fires for a LONG SQL chunk (past the old 5-line gate)
+        /// whose leading `--` header the sibling walk misses. This is the core
+        /// long-chunk fix: RED before v15 (the fallback was short-only, so the
+        /// header was dropped and the embedding lost the stated intent).
+        #[test]
+        fn long_sql_chunk_gets_leading_comment_via_fallback() {
+            let content = "\
+-- Ledger of every posted transaction, one row per entry.
+CREATE TABLE ledger (
+    id TEXT PRIMARY KEY,
+    account TEXT,
+    amount INTEGER,
+    balance INTEGER,
+    posted_at TEXT,
+    memo TEXT
+);
+";
+            let file = write_temp_file(content, "sql");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "ledger")
+                .expect("ledger chunk should exist");
+            assert!(
+                chunk.line_end - chunk.line_start >= 5,
+                "ledger must be a long chunk (span {})",
+                chunk.line_end - chunk.line_start
+            );
+            assert!(
+                chunk
+                    .doc
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("Ledger of every posted transaction"),
+                "long SQL chunk must get its glued header as doc, got: {:?}",
+                chunk.doc
+            );
+        }
+
+        /// Per-language leading plain-comment block populates `doc`. `#` for
+        /// Python/Ruby/Bash, `//` and `/* */` for the C family. (Most of these
+        /// go through the sibling walk's generic `comment` doc-node; pinned here
+        /// so a change to either the walk or the fallback surfaces loudly.)
+        #[test]
+        fn leading_plain_comment_populates_doc_per_language() {
+            let cases: &[(&str, &str, &str, &str)] = &[
+                (
+                    "py",
+                    "# Frobnicates the widget thoroughly.\ndef frob():\n    return 1\n",
+                    "frob",
+                    "Frobnicates the widget",
+                ),
+                (
+                    "rb",
+                    "# Computes the tax owed on the order.\ndef tax\n  0\nend\n",
+                    "tax",
+                    "Computes the tax owed",
+                ),
+                (
+                    "sh",
+                    "# Deploys the release artifact to prod.\ndeploy() {\n  echo hi\n}\n",
+                    "deploy",
+                    "Deploys the release artifact",
+                ),
+                (
+                    "c",
+                    "// Computes the CRC over the frame.\nint crc(void) { return 0; }\n",
+                    "crc",
+                    "Computes the CRC",
+                ),
+                (
+                    "c",
+                    "/* Validates the incoming request body. */\nint validate(void) { return 0; }\n",
+                    "validate",
+                    "Validates the incoming request",
+                ),
+            ];
+            for (ext, content, name, needle) in cases {
+                let file = write_temp_file(content, ext);
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                let chunk = chunks
+                    .iter()
+                    .find(|c| c.name == *name)
+                    .unwrap_or_else(|| panic!("{name} chunk should exist for .{ext}"));
+                assert!(
+                    chunk.doc.as_deref().unwrap_or("").contains(needle),
+                    "{ext} {name}: expected doc to contain {needle:?}, got: {:?}",
+                    chunk.doc
+                );
+            }
+        }
+
+        /// Doc-syntax precedence: a Python docstring (no leading comment)
+        /// populates `doc` via the body-docstring path; the leading-comment
+        /// fallback never runs to override it.
+        #[test]
+        fn python_docstring_populates_doc_over_fallback() {
+            let content = "\
+def documented():
+    \"\"\"The real docstring for documented.\"\"\"
+    return 1
+";
+            let file = write_temp_file(content, "py");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "documented")
+                .expect("documented chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                doc.contains("The real docstring for documented"),
+                "docstring must populate doc, got: {doc:?}"
+            );
+        }
+
+        /// A shebang alone yields no `doc`; a shebang followed by a real
+        /// description yields only the description; a shebang + encoding
+        /// modeline yields no `doc`. Covers both the sibling walk and fallback.
+        #[test]
+        fn shebang_and_encoding_lines_never_become_doc() {
+            let shebang_only = "#!/usr/bin/env python\ndef main():\n    return 1\n";
+            let shebang_desc =
+                "#!/usr/bin/env python\n# Runs the batch job end to end.\ndef main():\n    return 1\n";
+            let shebang_encoding =
+                "#!/usr/bin/env python\n# -*- coding: utf-8 -*-\ndef main():\n    return 1\n";
+
+            let doc_of = |content: &str| -> Option<String> {
+                let file = write_temp_file(content, "py");
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                chunks
+                    .iter()
+                    .find(|c| c.name == "main")
+                    .and_then(|c| c.doc.clone())
+            };
+
+            assert!(
+                doc_of(shebang_only).is_none(),
+                "shebang alone must not be doc, got: {:?}",
+                doc_of(shebang_only)
+            );
+            let desc = doc_of(shebang_desc).unwrap_or_default();
+            assert!(
+                desc.contains("Runs the batch job") && !desc.contains("#!"),
+                "shebang must be dropped, description kept, got: {desc:?}"
+            );
+            assert!(
+                doc_of(shebang_encoding).is_none(),
+                "shebang + encoding modeline must not be doc, got: {:?}",
+                doc_of(shebang_encoding)
+            );
+        }
+
+        /// A comment block between two definitions attaches to the FOLLOWING
+        /// definition only, never the preceding one.
+        #[test]
+        fn comment_between_defs_attaches_to_following_only() {
+            let content = "\
+fn earlier() {
+    let x = 1;
+}
+// doc for later only
+fn later() {
+    let y = 2;
+}
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let earlier = chunks
+                .iter()
+                .find(|c| c.name == "earlier")
+                .expect("earlier");
+            let later = chunks.iter().find(|c| c.name == "later").expect("later");
+            assert!(
+                earlier.doc.as_deref().unwrap_or("").is_empty()
+                    || !earlier
+                        .doc
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("doc for later"),
+                "comment must not attach to the preceding def, got: {:?}",
+                earlier.doc
+            );
+            assert!(
+                later.doc.as_deref().unwrap_or("").contains("doc for later"),
+                "comment must attach to the following def, got: {:?}",
+                later.doc
+            );
+        }
+
+        /// A realistic file-top license header (banner + blank + imports +
+        /// blank + first def) does NOT become the first def's `doc`: the
+        /// intervening `use` stops the sibling walk and the blank stops the
+        /// fallback. Pins the banner-safety intent for the common license shape.
+        #[test]
+        fn file_top_license_header_does_not_become_first_def_doc() {
+            let content = "\
+// Copyright 2026 The cqs Authors.
+// Licensed under the MIT License.
+
+use std::fmt;
+
+pub fn first_function() -> u32 {
+    0
+}
+";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let chunk = chunks
+                .iter()
+                .find(|c| c.name == "first_function")
+                .expect("first_function chunk");
+            let doc = chunk.doc.as_deref().unwrap_or("");
+            assert!(
+                !doc.contains("Copyright") && !doc.contains("Licensed"),
+                "license banner must not leak onto the first def, got: {doc:?}"
             );
         }
     }

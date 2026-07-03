@@ -124,7 +124,7 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   skips chunks whose coords are NULL, so the feature is fully optional.
 /// - v21: parser_version column on chunks — incremental UPSERT refreshes rows
 ///   whose `content_hash` is unchanged but whose `parser_version` bumped,
-///   e.g. when `extract_doc_fallback_for_short_chunk`
+///   e.g. when `extract_leading_comment_doc`
 ///   logic changes the value of `doc` for a previously-indexed chunk. Without
 ///   this column the watch path's content-hash short-circuit silently
 ///   discards the new `doc`. See `parser::chunk::PARSER_VERSION` for the

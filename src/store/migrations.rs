@@ -820,7 +820,7 @@ async fn migrate_v19_to_v20(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// The watch path UPSERTs chunks with an
 /// `ON CONFLICT(id) DO UPDATE ... WHERE chunks.content_hash != excluded.content_hash`
 /// short-circuit, which is correct when the only thing that changes is the
-/// source bytes. But `extract_doc_fallback_for_short_chunk` can change `doc`
+/// source bytes. But `extract_leading_comment_doc` can change `doc`
 /// for a chunk whose source bytes are byte-identical to a previously-indexed
 /// version — without a parser stamp that change is silently discarded on
 /// incremental update. A `parser_version` stamp lets the UPSERT invalidate
