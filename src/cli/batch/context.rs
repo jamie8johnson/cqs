@@ -243,6 +243,16 @@ pub(crate) struct BatchContext {
     pub(super) cross_project: Arc<Mutex<Option<CachedCrossProject>>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
+    /// Explicit `--slot X` pin (the flag the watch side reads), or `None` for
+    /// the common no-`--slot` deployment. When `Some`, every slot resolution on
+    /// this context — the staleness check, the data_version probe, the store
+    /// re-open — goes through [`cqs::resolve_index_db_for_slot`] and resolves
+    /// directly from the pinned slot, ignoring the `active_slot` file. This is
+    /// what keeps a pinned serving daemon on its bound slot when a concurrent
+    /// `cqs slot promote` flips the active-slot pointer: the query side no
+    /// longer self-heals off the pin. `None` preserves byte-identical
+    /// active-slot-following behavior.
+    pub(super) explicit_slot: Option<String>,
     pub model_config: cqs::embedder::ModelConfig,
     /// Last-seen identity (inode + size + mtime on unix; size + mtime
     /// elsewhere) of index.db, used to detect concurrent index updates.
@@ -344,6 +354,7 @@ impl BatchContext {
         cqs_dir: PathBuf,
         model_config: cqs::embedder::ModelConfig,
         index_id: Option<DbFileIdentity>,
+        explicit_slot: Option<String>,
     ) -> Self {
         let runtime = Arc::clone(store.runtime());
         let ctx = Self {
@@ -370,6 +381,7 @@ impl BatchContext {
             overlays: Arc::new(Mutex::new(lru::LruCache::new(super::overlays_lru_size()))),
             root,
             cqs_dir,
+            explicit_slot,
             model_config,
             index_id: Cell::new(index_id),
             data_version_probe: RefCell::new(None),
@@ -393,7 +405,10 @@ impl BatchContext {
         // and the first check are observed as a change rather than silently
         // absorbed into a late baseline. Failure is non-fatal — the open
         // helper warns and the check falls back to identity-only.
-        ctx.rebaseline_data_version_probe(&cqs::resolve_index_db(&ctx.cqs_dir));
+        ctx.rebaseline_data_version_probe(&cqs::resolve_index_db_for_slot(
+            &ctx.cqs_dir,
+            ctx.explicit_slot.as_deref(),
+        ));
         ctx
     }
 
@@ -523,8 +538,12 @@ impl BatchContext {
         }
         self.last_staleness_check.set(Some(now));
 
-        // Slot-aware index resolution.
-        let index_path = cqs::resolve_index_db(&self.cqs_dir);
+        // Slot-aware index resolution. An explicit `--slot` pin resolves
+        // straight from the bound slot so a concurrent `cqs slot promote`
+        // (which flips the `active_slot` file) cannot self-heal the query
+        // side off the pin.
+        let index_path =
+            cqs::resolve_index_db_for_slot(&self.cqs_dir, self.explicit_slot.as_deref());
         let current_id = match DbFileIdentity::from_path(&index_path) {
             Some(id) => id,
             None => {
@@ -631,7 +650,10 @@ impl BatchContext {
             None => {
                 // Earlier open failed (or the probe was dropped after a query
                 // error) — retry. Freshly baselined, so nothing to compare.
-                *slot = self.open_data_version_probe(&cqs::resolve_index_db(&self.cqs_dir));
+                *slot = self.open_data_version_probe(&cqs::resolve_index_db_for_slot(
+                    &self.cqs_dir,
+                    self.explicit_slot.as_deref(),
+                ));
                 false
             }
             Some(probe) => match probe.changed(&self.runtime) {
@@ -790,8 +812,9 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_manual_invalidation").entered();
         self.invalidate_mutable_caches();
 
-        // Slot-aware index resolution.
-        let index_path = cqs::resolve_index_db(&self.cqs_dir);
+        // Slot-aware index resolution (honors an explicit `--slot` pin).
+        let index_path =
+            cqs::resolve_index_db_for_slot(&self.cqs_dir, self.explicit_slot.as_deref());
         // Re-baseline the data_version probe before the Store re-open (same
         // ordering rationale as check_index_staleness): a write landing
         // between the two is caught on the next check instead of absorbed.
@@ -997,12 +1020,15 @@ impl BatchContext {
         // Surface overflow as None (treated same as "missing mtime") instead
         // of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        // Slot-aware index resolution.
-        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|d| i64::try_from(d.as_secs()).ok());
+        // Slot-aware index resolution (honors an explicit `--slot` pin).
+        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db_for_slot(
+            &self.cqs_dir,
+            self.explicit_slot.as_deref(),
+        ))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_secs()).ok());
         // SPLADE encoder slot is `OnceLock<Option<...>>`: only "loaded" if
         // the inner Option is Some. A user with no SPLADE model configured
         // populates the OnceLock with None on first sparse query; that's
@@ -1535,6 +1561,7 @@ impl BatchContext {
             model_config: self.model_config.clone(),
             root: self.root.clone(),
             cqs_dir: self.cqs_dir.clone(),
+            explicit_slot: self.explicit_slot.clone(),
             error_count: Arc::clone(&self.error_count),
             query_count: Arc::clone(&self.query_count),
             started_at: self.started_at,

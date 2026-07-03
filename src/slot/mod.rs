@@ -1466,6 +1466,80 @@ mod tests {
         assert_eq!(read_active_slot(&cqs).as_deref(), Some(DEFAULT_SLOT));
     }
 
+    /// `resolve_index_db_for_slot(dir, Some(name))` resolves DIRECTLY from the
+    /// named slot, ignoring the `active_slot` file (and the `CQS_SLOT` env) —
+    /// the "pin beats the file" contract that keeps a pinned serving daemon on
+    /// its bound slot across a `cqs slot promote`. Env-insensitive by
+    /// construction: the `Some` arm never consults `resolve_slot_name`, so this
+    /// assertion does not depend on ambient `CQS_SLOT`.
+    #[test]
+    fn resolve_index_db_for_slot_pins_past_active_file() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let slot_a = slot_dir(&cqs, "a");
+        let slot_b = slot_dir(&cqs, "b");
+        fs::create_dir_all(&slot_a).unwrap();
+        fs::create_dir_all(&slot_b).unwrap();
+        // Both slots have a real index.db; active_slot points at b.
+        fs::write(slot_a.join(crate::INDEX_DB_FILENAME), b"a-db").unwrap();
+        fs::write(slot_b.join(crate::INDEX_DB_FILENAME), b"b-db").unwrap();
+        write_active_slot(&cqs, "b").unwrap();
+
+        // Pin to a resolves a's index.db even though the active file says b.
+        assert_eq!(
+            crate::resolve_index_db_for_slot(&cqs, Some("a")),
+            slot_a.join(crate::INDEX_DB_FILENAME),
+            "explicit --slot pin must resolve the pinned slot, not the active_slot file"
+        );
+        // Pin to b resolves b — a distinct path, proving the pin is what steers.
+        assert_eq!(
+            crate::resolve_index_db_for_slot(&cqs, Some("b")),
+            slot_b.join(crate::INDEX_DB_FILENAME),
+        );
+    }
+
+    /// The pin is forward-looking: a `Some(name)` for a slot whose `index.db`
+    /// does not exist yet still returns that slot's path (mirroring
+    /// `resolve_index_db`'s tail) so the caller's "not found" error points at
+    /// the pinned layout rather than silently falling back to another slot.
+    #[test]
+    fn resolve_index_db_for_slot_pins_even_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        // Only slot `default` exists on disk; pin to a non-existent `ghost`.
+        let default = slot_dir(&cqs, DEFAULT_SLOT);
+        fs::create_dir_all(&default).unwrap();
+        fs::write(default.join(crate::INDEX_DB_FILENAME), b"db").unwrap();
+
+        assert_eq!(
+            crate::resolve_index_db_for_slot(&cqs, Some("ghost")),
+            slot_dir(&cqs, "ghost").join(crate::INDEX_DB_FILENAME),
+            "a pin to a not-yet-populated slot must return that slot's forward-looking path"
+        );
+    }
+
+    /// A malformed pin name is defense-in-depth: instead of building a path
+    /// join from unvalidated input (a `../` traversal), it falls back to the
+    /// active-slot resolution. The result must never contain the invalid
+    /// segment.
+    #[test]
+    fn resolve_index_db_for_slot_invalid_name_falls_back() {
+        let dir = TempDir::new().unwrap();
+        let cqs = dir.path().join(".cqs");
+        let default = slot_dir(&cqs, DEFAULT_SLOT);
+        fs::create_dir_all(&default).unwrap();
+        fs::write(default.join(crate::INDEX_DB_FILENAME), b"db").unwrap();
+
+        let bad = "../evil";
+        assert!(validate_slot_name(bad).is_err());
+        let resolved = crate::resolve_index_db_for_slot(&cqs, Some(bad));
+        assert!(
+            !resolved.to_string_lossy().contains("evil"),
+            "invalid pin must not build a traversal path; got {}",
+            resolved.display()
+        );
+    }
+
     /// `checkpoint_legacy_index` must open via `.filename()` so a project path
     /// containing URL-significant characters (spaces, `#`, `%`) still drains the
     /// WAL rather than silently targeting a wrong/empty path. Builds a real WAL

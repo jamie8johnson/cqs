@@ -144,10 +144,10 @@ fn command_names() -> Vec<String> {
 /// # Panics
 ///
 /// Panics if the history size configuration (1000) is invalid, though this should never occur with a valid u64 value.
-pub(crate) fn cmd_chat() -> Result<()> {
+pub(crate) fn cmd_chat(explicit_slot: Option<String>) -> Result<()> {
     let _span = tracing::info_span!("cmd_chat").entered();
 
-    let ctx = batch::create_context()?;
+    let ctx = batch::create_context(explicit_slot)?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
 
     // `CQS_CHAT_HISTORY=0` opts out of disk-persisted history.

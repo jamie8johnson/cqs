@@ -220,13 +220,13 @@ pub fn cmd_serve_dispatch(
 }
 
 pub fn cmd_batch_dispatch(
-    _cli: &Cli,
+    cli: &Cli,
     _ctx: Option<&CommandContext<'_, ReadOnly>>,
     _project_cqs_dir: &Path,
     cmd: &Commands,
 ) -> Result<()> {
     must_be!(cmd, Commands::Batch => {
-        crate::cli::batch::cmd_batch()
+        crate::cli::batch::cmd_batch(cli.slot.clone())
     })
 }
 
@@ -244,13 +244,13 @@ pub fn cmd_mcp_dispatch(
 }
 
 pub fn cmd_chat_dispatch(
-    _cli: &Cli,
+    cli: &Cli,
     _ctx: Option<&CommandContext<'_, ReadOnly>>,
     _project_cqs_dir: &Path,
     cmd: &Commands,
 ) -> Result<()> {
     must_be!(cmd, Commands::Chat => {
-        crate::cli::chat::cmd_chat()
+        crate::cli::chat::cmd_chat(cli.slot.clone())
     })
 }
 
