@@ -700,6 +700,68 @@ mod tests {
         );
     }
 
+    /// Counting unification (daemon surface): a command dispatched through the
+    /// daemon entry point `dispatch_via_view` writes exactly ONE invoke event
+    /// tagged `surface: "daemon"` into the served project's telemetry file.
+    /// Before the fix the daemon path wrote no invoke event, so daemon-served
+    /// traffic was invisible in `commands[cmd]` while its fallbacks were fully
+    /// visible — this pins the closed gap.
+    ///
+    /// Uses `ping` (no model load) to stay fast, and activates telemetry via
+    /// the file-exists rule (pre-created `telemetry.jsonl`) rather than mutating
+    /// the process-global `CQS_TELEMETRY`, so it never races a parallel test's
+    /// env writes.
+    #[test]
+    fn dispatch_via_view_logs_one_daemon_surface_invoke() {
+        let (_dir, cqs_dir) = setup_test_store();
+        // Activate telemetry for this project via the file-exists rule.
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let view = ctx.build_view(None);
+
+        let mut out = Vec::new();
+        dispatch_via_view(&view, "ping", &[], &mut out);
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "exactly one invoke event for one daemon dispatch, got: {body}"
+        );
+        let r: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(r["cmd"], "ping");
+        assert_eq!(r["surface"], "daemon", "daemon entry point tags `daemon`");
+        assert!(
+            r["event"].is_null(),
+            "it's an invoke event (counted), not a `complete` event (dropped)"
+        );
+    }
+
+    /// The JSON-args daemon entry point (`dispatch_via_view_json`, the MCP
+    /// bridge's relay path) tags its invoke event `surface: "mcp"`, so the
+    /// dashboard can split MCP traffic from CLI-forwarded daemon traffic without
+    /// a later schema change.
+    #[test]
+    fn dispatch_via_view_json_logs_one_mcp_surface_invoke() {
+        let (_dir, cqs_dir) = setup_test_store();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let view = ctx.build_view(None);
+
+        let mut out = Vec::new();
+        // `stats` is JSON-args-capable and reads store metadata only (no model
+        // load); an empty object satisfies its typed-deserialize shape check.
+        dispatch_via_view_json(&view, "stats", &serde_json::json!({}), &mut out);
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "exactly one invoke event, got: {body}");
+        let r: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(r["cmd"], "stats");
+        assert_eq!(r["surface"], "mcp", "JSON-args entry point tags `mcp`");
+    }
+
     /// A reference-config fingerprint mismatch forces a rebuild even though
     /// the cell is populated and the epoch is unchanged. Simulated by seating
     /// a context with a deliberately wrong fingerprint and confirming the next

@@ -137,6 +137,21 @@ pub(crate) fn dispatch_via_view(
                 }
                 return;
             }
+            // Daemon-surface invoke event (counting unification). Logged here
+            // — at the argv daemon entry point — rather than inside
+            // `commands::dispatch`, because that chokepoint is shared with the
+            // in-process `cqs batch` / `cqs chat` / stdin paths; logging there
+            // would mis-tag their sub-commands as daemon traffic. These two
+            // `dispatch_via_view*` functions are the daemon's only callers, so
+            // the surface tag is unambiguous. Redaction is applied inside
+            // `log_command`; `query()` is `None` for non-query commands.
+            crate::cli::telemetry::log_command(
+                &view.cqs_dir,
+                input.cmd.command_name(),
+                input.cmd.query(),
+                None,
+                crate::cli::telemetry::CommandSurface::Daemon,
+            );
             match commands::dispatch(view, input.cmd) {
                 Ok(value) => {
                     let _ = write_json_line(out, &value);
@@ -246,6 +261,17 @@ pub(crate) fn dispatch_via_view_json(
         return;
     }
 
+    // MCP-surface invoke event (counting unification). The JSON-args wire shape
+    // is the MCP bridge's relay path, so it tags `mcp` — distinguishable here
+    // from the argv `dispatch_via_view` (`daemon`) even though both run in the
+    // daemon process. Same redaction + `query()` contract as the argv path.
+    crate::cli::telemetry::log_command(
+        &view.cqs_dir,
+        cmd.command_name(),
+        cmd.query(),
+        None,
+        crate::cli::telemetry::CommandSurface::Mcp,
+    );
     match commands::dispatch(view, cmd) {
         Ok(value) => {
             let _ = write_json_line(out, &value);
