@@ -131,8 +131,8 @@ diff --git a/src/unrelated.txt b/src/unrelated.txt
     assert_eq!(parsed["data"]["risk_summary"]["medium"], 0);
     assert_eq!(parsed["data"]["risk_summary"]["low"], 0);
     assert!(
-        parsed["data"]["stale_warning"].is_null(),
-        "stale_warning is null on the empty branch"
+        parsed["data"].get("stale_warning").is_none(),
+        "stale_warning omitted on the empty branch (skip-when-none: no stale files)"
     );
 }
 

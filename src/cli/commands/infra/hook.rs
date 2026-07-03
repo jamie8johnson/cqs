@@ -137,13 +137,14 @@ struct FireReport {
     hook: String,
     args: Vec<String>,
     sent_to_daemon: bool,
-    // always-emit: stable report shape; null = daemon reachable (no fallback).
     /// Set when the daemon was unreachable. The path of the touched
     /// fallback marker. Normalized to forward-slashes for JSON output.
+    /// `None` when the daemon was reachable (no fallback).
+    #[serde(skip_serializing_if = "Option::is_none")]
     dirty_marker: Option<String>,
-    // always-emit: stable report shape; null = no daemon error.
     /// Daemon error text (if any). Surfaces a connect failure without
     /// failing the hook — the dirty marker is the recovery path.
+    #[serde(skip_serializing_if = "Option::is_none")]
     daemon_error: Option<String>,
 }
 

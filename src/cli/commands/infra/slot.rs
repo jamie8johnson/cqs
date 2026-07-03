@@ -28,17 +28,17 @@ pub(crate) struct SlotListEntry {
     /// `true` if `<slot_dir>/index.db` is present. False slots are valid
     /// "create-and-not-yet-indexed" states.
     pub indexed: bool,
-    // always-emit: stable per-slot shape; null = index missing/unreadable.
     /// Number of chunks in the slot's index. `None` if the index is missing
-    /// or unreadable; the slot still shows up in the list.
+    /// or unreadable; the slot still shows up in the list (guard: `indexed`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chunks: Option<u64>,
-    // always-emit: stable per-slot shape; null = un-indexed slot.
     /// Embedding model recorded in the slot's metadata (e.g.
     /// `BAAI/bge-large-en-v1.5`). `None` for un-indexed slots.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    // always-emit: stable per-slot shape; null = un-indexed slot.
     /// Embedding dimension recorded in the slot's metadata. `None` for
     /// un-indexed slots.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dim: Option<u64>,
     /// Slot dir absolute path.
     pub path: String,
@@ -65,9 +65,9 @@ pub(crate) struct SlotActiveOutput {
 pub(crate) struct SlotCreateOutput {
     pub name: String,
     pub path: String,
-    // always-emit: echoes the requested model; null = no `--model` passed.
     /// Resolved canonical repo for the requested preset/HF id, if `--model`
-    /// was passed.
+    /// was passed. `None` when no `--model` was passed.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
@@ -86,7 +86,8 @@ pub(crate) struct SlotPromoteOutput {
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct SlotRemoveOutput {
     pub removed: String,
-    // always-emit: reports any auto-promotion; null = active slot unchanged.
+    /// Reports any auto-promotion. `None` when the active slot is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub new_active: Option<String>,
 }
 

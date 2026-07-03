@@ -33,9 +33,9 @@ pub struct CallerDetail {
     #[serde(rename = "line_start")]
     pub line: u32,
     pub call_line: u32,
-    // always-emit: uniform per-caller shape; null = snippet unavailable
-    // (extraction failed / batch-degraded), distinct from an empty snippet.
-    // Skip-when-none is a wire-shape change deferred to #2156's survey.
+    /// Call-site snippet. Skip-when-none: absent = snippet unavailable
+    /// (extraction failed / batch-degraded), distinct from an empty snippet ("").
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     /// Provenance of the call edge from this caller to the impacted target
     /// (skip-when-default: absent ⇒ `call`).

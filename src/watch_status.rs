@@ -113,12 +113,14 @@ pub struct SlotWatchStatus {
     /// Freshness state of this slot's index.
     pub state: FreshnessState,
     /// Unix timestamp (UTC seconds) of the last completed reindex for
-    /// this slot (`index.db` mtime). `None` when missing/unreadable.
-    // always-emit: stable per-slot shape (`cqs status --slot X --json` emits
-    // this entry verbatim); null = slot index missing/unreadable.
+    /// this slot (`index.db` mtime). Skip-when-none: absent = slot index
+    /// missing/unreadable. `default` reconstructs `None` on the deserialize
+    /// side of the daemon socket round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_synced_at: Option<i64>,
     /// Latency of the most recent reindex pass against this slot.
-    // always-emit: stable per-slot shape; null = no reindex yet this session.
+    /// Skip-when-none: absent = no reindex yet this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reindex: Option<ReindexLatency>,
     /// Files queued for this slot but not yet drained. For the active
     /// slot this mirrors [`WatchSnapshot::modified_files`]; for sibling
@@ -128,10 +130,9 @@ pub struct SlotWatchStatus {
     /// Most recent error observed against this slot (sticky, same
     /// semantics as [`WatchOpsStats::last_error`]). For sibling slots
     /// this is how a stale-schema / locked-DB / missing-index slot
-    /// surfaces without poisoning the watch loop.
-    // always-emit: stable per-slot shape; null = no error observed (sticky
-    // once set, so null unambiguously means "clean this session").
-    #[serde(default)]
+    /// surfaces without poisoning the watch loop. Skip-when-none: absent = no
+    /// error observed (sticky once set, so absence means "clean this session").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<WatchErrorInfo>,
 }
 
@@ -158,15 +159,14 @@ pub struct WatchOpsStats {
     /// drained it yet). Together with [`WatchSnapshot::state`] this is
     /// the reconcile-visible state.
     pub reconcile_pending: bool,
-    /// Latency of the most recent completed reindex pass. `None` until
-    /// the first save-triggered reindex of the session.
-    // always-emit: stable ops shape (`cqs status --watch` renders a fixed
-    // field set); null = no reindex yet this session.
+    /// Latency of the most recent completed reindex pass. Skip-when-none:
+    /// absent = no reindex yet this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reindex: Option<ReindexLatency>,
     /// Most recent reindex/notes-reindex error. Sticky across
-    /// subsequent successes — see [`WatchErrorInfo`].
-    // always-emit: stable ops shape; null = no error observed (sticky once
-    // set, so null unambiguously means "clean this session").
+    /// subsequent successes — see [`WatchErrorInfo`]. Skip-when-none:
+    /// absent = no error observed (clean this session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<WatchErrorInfo>,
     /// Per-slot freshness. Exactly one entry today (the active slot);
     /// The slot-parallel reindex work extends this vec.
@@ -216,10 +216,10 @@ pub struct WatchSnapshot {
     /// stale the moment the client reads it N seconds later.
     pub last_event_unix_secs: i64,
     /// Unix timestamp (UTC seconds) of the last completed reindex —
-    /// the mtime of `index.db` after the most recent write. `None`
-    /// when the file is missing or unreadable.
-    // always-emit: stable watch-snapshot shape; null = index.db missing or
-    // unreadable.
+    /// the mtime of `index.db` after the most recent write. Skip-when-none:
+    /// absent = index.db missing or unreadable. `default` reconstructs `None`
+    /// on the deserialize side of the daemon socket round-trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_synced_at: Option<i64>,
     /// Unix timestamp (UTC seconds) when this snapshot was published.
     /// Lets clients tell how stale the *snapshot itself* is (stale
@@ -958,6 +958,67 @@ mod tests {
         assert!(ops.last_reindex.is_none());
         assert!(ops.last_error.is_none());
         assert_eq!(ops.slots.len(), 1);
+    }
+
+    /// Skip-when-none flip for the sticky-diagnostic Option fields
+    /// (`last_synced_at` / `last_reindex` / `last_error`): they are omitted from
+    /// the wire when `None`, while the presence-semantics fields (`snapshot_at`,
+    /// `active_slot`, `ops`) stay always-emitted. The daemon-socket round-trip
+    /// reconstructs `None` from the absent keys (serde `default`), so the flip
+    /// is lossless across the CLI==daemon boundary.
+    #[test]
+    fn skip_when_none_omits_diagnostic_nulls_but_round_trips() {
+        // Slot level.
+        let slot = SlotWatchStatus {
+            name: "default".to_string(),
+            state: FreshnessState::Fresh,
+            last_synced_at: None,
+            last_reindex: None,
+            queue_depth: 0,
+            last_error: None,
+        };
+        let slot_wire = serde_json::to_value(&slot).expect("serialize slot");
+        let slot_obj = slot_wire.as_object().expect("slot is an object");
+        assert!(!slot_obj.contains_key("last_synced_at"));
+        assert!(!slot_obj.contains_key("last_reindex"));
+        assert!(!slot_obj.contains_key("last_error"));
+        let slot_back: SlotWatchStatus =
+            serde_json::from_value(slot_wire).expect("deserialize slot");
+        assert_eq!(slot_back, slot, "absent slot keys round-trip to None");
+
+        // Ops level.
+        let ops = WatchOpsStats {
+            in_flight_clients: 0,
+            reconcile_pending: false,
+            last_reindex: None,
+            last_error: None,
+            slots: vec![slot],
+        };
+        let ops_wire = serde_json::to_value(&ops).expect("serialize ops");
+        let ops_obj = ops_wire.as_object().expect("ops is an object");
+        assert!(!ops_obj.contains_key("last_reindex"));
+        assert!(!ops_obj.contains_key("last_error"));
+        let ops_back: WatchOpsStats = serde_json::from_value(ops_wire).expect("deserialize ops");
+        assert_eq!(ops_back, ops, "absent ops keys round-trip to None");
+
+        // Snapshot level: `last_synced_at` flips; `snapshot_at` / `active_slot`
+        // / `ops` stay always-emitted (presence semantics).
+        let snap = WatchSnapshot::unknown();
+        let snap_wire = serde_json::to_value(&snap).expect("serialize snapshot");
+        let snap_obj = snap_wire.as_object().expect("snapshot is an object");
+        assert!(!snap_obj.contains_key("last_synced_at"));
+        assert!(
+            snap_obj.contains_key("snapshot_at"),
+            "snapshot_at stays always-emit"
+        );
+        assert!(
+            snap_obj.contains_key("active_slot"),
+            "active_slot stays always-emit"
+        );
+        assert!(snap_obj.contains_key("ops"), "ops stays always-emit");
+        let snap_back: WatchSnapshot =
+            serde_json::from_value(snap_wire).expect("deserialize snapshot");
+        assert_eq!(snap_back.last_synced_at, None);
     }
 
     /// CLI==daemon parity pin: both surfaces serialize/deserialize the
