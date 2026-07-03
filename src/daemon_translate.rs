@@ -416,6 +416,84 @@ pub fn resolve_daemon_timeout_ms() -> std::time::Duration {
     )
 }
 
+/// Multiplier applied to the base [`resolve_daemon_timeout_ms`] budget for
+/// [`heavy_command`]s. The heavy set routinely runs 12-31 s against a large
+/// index on a slow filesystem (WSL v9fs), which straddles the 30 s base — 4×
+/// (120 s at the default) gives an honest budget for the slow-but-live case
+/// without letting a genuinely wedged daemon pin the client for minutes.
+const HEAVY_COMMAND_TIMEOUT_MULTIPLIER: u32 = 4;
+
+/// Wire command names whose daemon-side work (call-graph BFS, corpus scans,
+/// multi-stage context assembly) routinely runs many seconds on a large index
+/// — enough to straddle the base `CQS_DAEMON_TIMEOUT_MS` on a slow filesystem.
+/// They get [`HEAVY_COMMAND_TIMEOUT_MULTIPLIER`]× the base budget via
+/// [`resolve_daemon_timeout_for_command`].
+///
+/// Single source of truth for both relay surfaces (the CLI auto-connect forward
+/// in `cli::dispatch::try_daemon_query` and the MCP bridge via
+/// [`daemon_json_args_request`]). The names match the daemon dispatch table
+/// (`cli::batch::commands`) — keep this list in step with it if the heavy set
+/// changes.
+pub fn heavy_command(command: &str) -> bool {
+    matches!(
+        command,
+        "task" | "gather" | "ci" | "dead" | "suggest" | "health" | "stats"
+    )
+}
+
+/// Resolve the effective relay read/write timeout for a specific wire command.
+/// [`heavy_command`]s get [`HEAVY_COMMAND_TIMEOUT_MULTIPLIER`]× the base
+/// [`resolve_daemon_timeout_ms`] budget; everything else inherits the base
+/// unchanged. `CQS_DAEMON_TIMEOUT_MS` stays the single base knob — raising it
+/// lifts both the light and heavy budgets proportionally.
+///
+/// `saturating_mul` keeps a huge base override from overflowing `Duration`.
+pub fn resolve_daemon_timeout_for_command(command: &str) -> std::time::Duration {
+    let base = resolve_daemon_timeout_ms();
+    if heavy_command(command) {
+        base.saturating_mul(HEAVY_COMMAND_TIMEOUT_MULTIPLIER)
+    } else {
+        base
+    }
+}
+
+/// Build the honest message for a daemon relay read that exceeded its budget.
+/// Names the tuning env var, the *effective* (post-heavy-multiplier) budget
+/// that expired, and that the daemon may still be processing — so a
+/// slow-but-live daemon on a slow filesystem reads as a budget, not a broken
+/// transport. `command` is the wire command; `timeout` is the deadline applied.
+pub fn daemon_timeout_message(command: &str, timeout: std::time::Duration) -> String {
+    format!(
+        "no response for '{command}' within the CQS_DAEMON_TIMEOUT_MS budget ({}ms); \
+         the daemon may still be processing the request — raise CQS_DAEMON_TIMEOUT_MS to allow more time",
+        timeout.as_millis()
+    )
+}
+
+/// Classify a daemon socket READ error into the right typed variant.
+///
+/// A `WouldBlock`/`TimedOut` kind is the read-timeout expiry — on Linux the
+/// `SO_RCVTIMEO` deadline surfaces as `EAGAIN` → [`std::io::ErrorKind::WouldBlock`],
+/// whose raw strerror ("Resource temporarily unavailable") is the misleading
+/// transport-looking text this fix replaces. Map it to [`DaemonRpcError::Timeout`]
+/// with the honest [`daemon_timeout_message`]. Any other kind (connection reset,
+/// broken pipe, ECONNREFUSED surfaced late) is a genuine transport failure and
+/// stays [`DaemonRpcError::Transport`], so a dead daemon is not mislabeled a
+/// timeout. `timeout` is the effective budget applied to this read.
+#[cfg(unix)]
+pub fn classify_daemon_read_error(
+    e: &std::io::Error,
+    command: &str,
+    timeout: std::time::Duration,
+) -> DaemonRpcError {
+    use std::io::ErrorKind;
+    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+        DaemonRpcError::Timeout(daemon_timeout_message(command, timeout))
+    } else {
+        DaemonRpcError::Transport(format!("read response failed: {e}"))
+    }
+}
+
 /// Extract the value of `--model` from the raw argv, if present. Used by the
 /// caller to emit a "daemon ignores your --model" warning without duplicating
 /// the arg-scanning logic here. Supports both `--model VAL` and `--model=VAL`.
@@ -676,12 +754,27 @@ pub enum DaemonRpcError {
     /// (or was stopped). Operator action: start `cqs watch --serve`.
     #[error("daemon socket missing: {0}")]
     SocketMissing(String),
-    /// Connect / read / write / timeout / set_*_timeout failure. The
-    /// socket file exists but the daemon isn't responding. Operator
-    /// action: check `journalctl --user -u cqs-watch` and consider
-    /// restarting the unit.
+    /// Connect / read / write / set_*_timeout failure. The socket file
+    /// exists but the daemon isn't responding. Operator action: check
+    /// `journalctl --user -u cqs-watch` and consider restarting the unit.
+    ///
+    /// Distinct from [`Self::Timeout`]: a genuine transport failure
+    /// (`ECONNREFUSED`, connection reset, broken pipe) means the daemon is
+    /// gone or wedged, whereas a `Timeout` means it is likely still working,
+    /// just slower than the read budget allowed.
     #[error("daemon transport failure: {0}")]
     Transport(String),
+    /// The socket read deadline (`CQS_DAEMON_TIMEOUT_MS`, adjusted by the
+    /// per-command heavy multiplier) expired before the daemon answered. On
+    /// Linux the `SO_RCVTIMEO` expiry surfaces as `EAGAIN`
+    /// (`ErrorKind::WouldBlock`), whose raw strerror ("Resource temporarily
+    /// unavailable") reads like a broken transport — so this variant names the
+    /// budget and notes the daemon may still be processing instead of leaking
+    /// the EAGAIN. Kept separate from [`Self::Transport`] so the operator
+    /// advice is "raise the budget", not "restart the wedged daemon". The
+    /// `message` names `CQS_DAEMON_TIMEOUT_MS` and the resolved value.
+    #[error("daemon timed out: {0}")]
+    Timeout(String),
     /// Envelope JSON parse, missing/non-string `status` field, or the
     /// dispatch payload deserialize failed. The daemon answered but the
     /// response is unparseable — most often a CLI/daemon version skew.
@@ -883,7 +976,10 @@ pub fn daemon_json_args_request(
         DaemonRpcError::Transport(format!("connect to {} failed: {e}", sock_path.display()))
     })?;
 
-    let timeout = resolve_daemon_timeout_ms();
+    // Per-command budget: the heavy set (task/gather/ci/…) gets the multiplied
+    // deadline so a slow-but-live daemon on a slow filesystem isn't cut off at
+    // the base 30 s. The base knob stays `CQS_DAEMON_TIMEOUT_MS`.
+    let timeout = resolve_daemon_timeout_for_command(command);
     if let Err(e) = stream.set_read_timeout(Some(timeout)) {
         tracing::warn!(stage = "set_read_timeout", error = %e, command, "daemon json-args request failed");
         return Err(DaemonRpcError::Transport(format!(
@@ -926,7 +1022,11 @@ pub fn daemon_json_args_request(
     let mut response_line = String::new();
     let bytes_read = reader.read_line(&mut response_line).map_err(|e| {
         tracing::warn!(stage = "read", error = %e, command, "daemon json-args request failed");
-        DaemonRpcError::Transport(format!("read response failed: {e}"))
+        // A read-deadline expiry surfaces as EAGAIN (`WouldBlock`); classify it
+        // as a `Timeout` naming the budget rather than leaking the raw
+        // "Resource temporarily unavailable". A real transport break stays
+        // `Transport`.
+        classify_daemon_read_error(&e, command, timeout)
     })?;
 
     // Reading more than the cap means the payload was truncated mid-line.
@@ -1396,6 +1496,16 @@ pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWai
         }
         Err(DaemonRpcError::Transport(msg)) => {
             tracing::info!(error = %msg, "wait_for_fresh: transport failure");
+            FreshnessWait::Transport(msg)
+        }
+        Err(DaemonRpcError::Timeout(msg)) => {
+            // The typed `wait-fresh` RPC path sets its own deadline
+            // (`wait_secs` + grace), NOT `CQS_DAEMON_TIMEOUT_MS`, and returns
+            // `Transport` on a read expiry — so this arm is defensive for
+            // enum exhaustiveness rather than a live path. A socket read
+            // deadline here means the daemon didn't answer within budget, i.e.
+            // a wedged/slow daemon: fold it into the transport wait state.
+            tracing::info!(error = %msg, "wait_for_fresh: read timed out");
             FreshnessWait::Transport(msg)
         }
         Err(DaemonRpcError::BadResponse(msg)) => {
@@ -3037,5 +3147,154 @@ mod tests {
             {"data": 1, "error": {"code": "x", "message": "y"}}
         ))
         .is_none());
+    }
+
+    // ---- relay timeout honesty + heavy-command budget ----
+
+    /// The heavy set the higher relay budget applies to matches the wire
+    /// command names of the daemon dispatch table (`cli::batch::commands`).
+    #[test]
+    fn heavy_command_predicate_matches_the_known_heavy_set() {
+        for cmd in ["task", "gather", "ci", "dead", "suggest", "health", "stats"] {
+            assert!(heavy_command(cmd), "{cmd} should be a heavy command");
+        }
+        for cmd in [
+            "search", "callers", "callees", "impact", "scout", "explain", "read",
+        ] {
+            assert!(!heavy_command(cmd), "{cmd} should not be a heavy command");
+        }
+    }
+
+    /// A heavy command gets `HEAVY_COMMAND_TIMEOUT_MULTIPLIER`× the base
+    /// budget; a light one inherits the base unchanged. Asserted RELATIVE to the
+    /// resolved base so it holds regardless of any `CQS_DAEMON_TIMEOUT_MS`
+    /// override in the runner's environment — no fragile env mutation, no real
+    /// wait.
+    #[test]
+    fn heavy_commands_get_the_multiplied_budget_light_ones_the_base() {
+        let base = resolve_daemon_timeout_ms();
+        assert_eq!(
+            resolve_daemon_timeout_for_command("task"),
+            base * HEAVY_COMMAND_TIMEOUT_MULTIPLIER,
+            "a heavy command must get the multiplied budget"
+        );
+        assert_eq!(
+            resolve_daemon_timeout_for_command("search"),
+            base,
+            "a light command must inherit the base budget unchanged"
+        );
+    }
+
+    /// The honest timeout text names the tuning env var, the elapsed budget in
+    /// ms, the command, and that the daemon may still be working.
+    #[test]
+    fn daemon_timeout_message_names_env_command_and_budget() {
+        let msg = daemon_timeout_message("gather", std::time::Duration::from_millis(48_000));
+        assert!(
+            msg.contains("CQS_DAEMON_TIMEOUT_MS"),
+            "names the env var: {msg}"
+        );
+        assert!(msg.contains("48000ms"), "names the elapsed budget: {msg}");
+        assert!(msg.contains("gather"), "names the command: {msg}");
+        assert!(
+            msg.contains("still be processing"),
+            "notes the daemon may still be working: {msg}"
+        );
+    }
+
+    /// A read-deadline expiry (`WouldBlock`/`TimedOut` — the `SO_RCVTIMEO`
+    /// EAGAIN) classifies to `Timeout` with the honest budget message; a genuine
+    /// transport failure (reset/refused/broken pipe) stays `Transport` and makes
+    /// no timeout claim.
+    #[cfg(unix)]
+    #[test]
+    fn classify_read_error_splits_timeout_from_transport() {
+        use std::io::{Error, ErrorKind};
+        let budget = std::time::Duration::from_millis(120_000);
+
+        for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+            match classify_daemon_read_error(&Error::from(kind), "task", budget) {
+                DaemonRpcError::Timeout(msg) => {
+                    assert!(msg.contains("CQS_DAEMON_TIMEOUT_MS"), "{kind:?}: {msg}");
+                    assert!(msg.contains("120000ms"), "{kind:?}: {msg}");
+                    assert!(msg.contains("task"), "{kind:?}: {msg}");
+                }
+                other => panic!("{kind:?} should classify as Timeout, got: {other:?}"),
+            }
+        }
+
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::BrokenPipe,
+        ] {
+            match classify_daemon_read_error(&Error::from(kind), "task", budget) {
+                DaemonRpcError::Transport(msg) => {
+                    assert!(
+                        !msg.contains("CQS_DAEMON_TIMEOUT_MS"),
+                        "a real transport failure must not claim a timeout: {msg}"
+                    );
+                }
+                other => panic!("{kind:?} should classify as Transport, got: {other:?}"),
+            }
+        }
+    }
+
+    /// RED/GREEN, end-to-end at the relay boundary: a daemon that accepts the
+    /// connection but never answers trips the read deadline, and the client
+    /// returns a `Timeout` naming `CQS_DAEMON_TIMEOUT_MS` and the budget — NOT
+    /// the raw EAGAIN ("Resource temporarily unavailable") that read like a
+    /// broken transport. `CQS_DAEMON_TIMEOUT_MS` floors to 1000ms, so a
+    /// non-heavy command ("search", 1× multiplier) keeps this ~1s deterministic.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_timeout_env)]
+    fn json_args_read_timeout_names_the_budget_not_eagain() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        std::env::set_var("CQS_DAEMON_TIMEOUT_MS", "1");
+
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // Consume the request line, then never write a reply — hold the
+            // connection open past the client's read deadline so the read times
+            // out rather than hitting EOF.
+            let mut req = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut req);
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        });
+
+        let result = daemon_json_args_request(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+        std::env::remove_var("CQS_DAEMON_TIMEOUT_MS");
+
+        match result {
+            Err(DaemonRpcError::Timeout(msg)) => {
+                assert!(
+                    msg.contains("CQS_DAEMON_TIMEOUT_MS"),
+                    "the timeout error must name the tuning env var, got: {msg}"
+                );
+                assert!(
+                    msg.contains("still be processing"),
+                    "the timeout error must note the daemon may still be working, got: {msg}"
+                );
+                assert!(
+                    !msg.contains("Resource temporarily unavailable"),
+                    "the timeout error must NOT leak the raw EAGAIN strerror, got: {msg}"
+                );
+            }
+            other => panic!("expected a Timeout naming the budget, got: {other:?}"),
+        }
     }
 }

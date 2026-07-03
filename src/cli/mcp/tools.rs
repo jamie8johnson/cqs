@@ -915,6 +915,18 @@ fn relay_and_classify(cqs_dir: &Path, command: &str, arguments: &Value) -> CallO
                 format!("cqs daemon transport failure: {msg}"),
             );
         }
+        Err(DaemonRpcError::Timeout(msg)) => {
+            // A read-budget expiry, NOT a broken transport: the daemon is
+            // likely still processing a heavy query (task/gather/…) on a slow
+            // filesystem. Surface the honest text — which names
+            // CQS_DAEMON_TIMEOUT_MS and the elapsed budget — through the -32603
+            // payload so the MCP client sees a budget to raise, not an opaque
+            // "Resource temporarily unavailable" transport error.
+            return CallOutcome::ProtocolError(
+                lifecycle::INTERNAL_ERROR,
+                format!("cqs daemon {msg}"),
+            );
+        }
         Err(DaemonRpcError::DaemonError(msg)) => {
             // Socket-layer `status:"error"` — a bad relay / NUL / missing
             // command. Our request was malformed at the transport layer.
@@ -1506,5 +1518,65 @@ mod tests {
         assert!(validate_max_depth(&serde_json::json!({ "max_depth": 5 })).is_ok());
         // Absent max_depth is fine (the daemon defaults it).
         assert!(validate_max_depth(&serde_json::json!({ "name": "a" })).is_ok());
+    }
+
+    /// A relay read timeout reaches the MCP client as an honest -32603
+    /// payload that names `CQS_DAEMON_TIMEOUT_MS` and notes the daemon may still
+    /// be working — NOT the raw EAGAIN ("Resource temporarily unavailable") that
+    /// read like a broken transport. Drives the real relay path against a socket
+    /// that accepts but never answers; `CQS_DAEMON_TIMEOUT_MS` floors to 1000ms,
+    /// so the non-heavy "search" command keeps this ~1s deterministic.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(daemon_timeout_env)]
+    fn relay_read_timeout_reaches_client_as_honest_internal_error() {
+        use cqs::daemon_translate::{daemon_socket_path, set_socket_dir_override_for_test};
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        std::env::set_var("CQS_DAEMON_TIMEOUT_MS", "1");
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut req);
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        });
+
+        let outcome = relay_and_classify(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+        std::env::remove_var("CQS_DAEMON_TIMEOUT_MS");
+
+        match outcome {
+            CallOutcome::ProtocolError(code, msg) => {
+                assert_eq!(
+                    code,
+                    lifecycle::INTERNAL_ERROR,
+                    "a relay timeout must map to -32603: {msg}"
+                );
+                assert!(
+                    msg.contains("CQS_DAEMON_TIMEOUT_MS"),
+                    "the -32603 payload must name the tuning env var, got: {msg}"
+                );
+                assert!(
+                    msg.contains("still be processing"),
+                    "the payload must note the daemon may still be working, got: {msg}"
+                );
+                assert!(
+                    !msg.contains("Resource temporarily unavailable"),
+                    "the payload must NOT leak the raw EAGAIN strerror, got: {msg}"
+                );
+            }
+            CallOutcome::Result(_) => panic!("expected a protocol error on a relay timeout"),
+        }
     }
 }
