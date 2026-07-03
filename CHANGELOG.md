@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.54.0] - 2026-07-03
+
 ### Added
 
 - **The leading-comment `doc` fallback now applies to chunks of ANY length, so a long definition documented with a plain (non-doc-syntax) comment block finally gets that intent into its embedding text (#2126).** Previously `extract_doc_fallback_for_short_chunk` fired only for chunks spanning <= 5 lines, so e.g. a 50-line SQL procedure with a `--` header block — a grammar shape the tree-sitter sibling walk misses — got no `doc` and its embedding lost the stated intent, exactly the mechanism behind the shipped short-chunk win but absent for long chunks. The function (renamed `extract_leading_comment_doc`) now runs at any length and uses **strict adjacency**: it captures the contiguous run of ordinary comment lines glued directly to the definition; a blank line breaks the block (it is not crossed) and any non-comment code line stops it, so a distant comment or a blank-separated file banner can never leak onto the following definition. Doc-syntax comments keep absolute precedence (the fallback runs only when the sibling walk returns `None`, and never overrides or concatenates with a real doc). **Shebang and encoding/editor modelines** (`#!...`, `# -*- coding: utf-8 -*-`, `# vim: ...`) are now dropped from `doc` on BOTH the sibling-walk and fallback paths, so a Python file opening with a shebang no longer attaches `#!/usr/bin/env python` to its first function. Comment markers (`//`, `--`, `#`) are kept verbatim, matching the raw-with-markers shape of the primary doc path. Language coverage is grammar-agnostic (any language whose `line_comment_prefixes` are registered, plus a conservative global fallback): verified for Rust, the C family (`//` and `/* */`), Python, Ruby, Bash, and SQL. **PARSER_VERSION 14 -> 15:** a byte-identical file re-parsed under v15 can gain a `doc` on a long definition with a glued leading comment, and can lose a `doc` where a blank line separated the block from the definition (that shape is now handled only by the sibling walk), so `doc` — and thus the embedding text — can change and a reindex/refresh is required even for unchanged bytes. Retrieval impact is left to a separate paired-reindex A/B (the ~4pp HNSW reconstruction noise floor makes an inline claim unreliable).
@@ -4043,6 +4045,7 @@ Second 14-category audit completed (117 findings). 107 of 109 actionable finding
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[1.54.0]: https://github.com/jamie8johnson/cqs/compare/v1.53.0...v1.54.0
 [1.53.0]: https://github.com/jamie8johnson/cqs/compare/v1.52.0...v1.53.0
 [1.52.0]: https://github.com/jamie8johnson/cqs/compare/v1.51.0...v1.52.0
 [1.51.0]: https://github.com/jamie8johnson/cqs/compare/v1.50.1...v1.51.0
