@@ -74,6 +74,10 @@ pub use helpers::CallEdgeMeta;
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
 
+/// Trust/overlay-aware ordering for a merged parent∪overlay caller list, so a
+/// downstream cap keeps the strongest-evidence AND freshest rows.
+pub use helpers::order_overlay_merged_callers;
+
 /// A caller of a `Type::method` query plus its receiver-type attribution.
 pub use helpers::{AttributedCaller, CallerAttribution};
 

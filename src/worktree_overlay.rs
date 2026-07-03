@@ -303,12 +303,32 @@ impl WorktreeOverlay {
             overlay = overlay.len()
         )
         .entered();
-        let mut merged: Vec<crate::store::CallerInfo> = parent
+        // Reorder ONLY when the overlay actually unioned rows for this node.
+        // Masking alone drops parent rows via `retain`, which preserves their SQL
+        // order, so an inert overlay (dirty worktree, nothing relevant to this
+        // node) must leave the parent order untouched — otherwise a
+        // `participated == false` answer would carry a permuted window, the exact
+        // marker-over-claim this reorder is meant to prevent. When the overlay
+        // does contribute, tag provenance (parent = `false`, overlay = `true`)
+        // and reorder so a `truncate(limit)` in the core keeps the strongest-trust
+        // AND freshest callers rather than dropping the appended overlay rows off
+        // the tail.
+        if overlay.is_empty() {
+            return parent
+                .into_iter()
+                .filter(|c| !self.masked_origins.contains(&c.file))
+                .collect();
+        }
+        let mut merged: Vec<(bool, crate::store::CallerInfo)> = parent
             .into_iter()
             .filter(|c| !self.masked_origins.contains(&c.file))
+            .map(|c| (false, c))
+            .chain(overlay.into_iter().map(|c| (true, c)))
             .collect();
-        merged.extend(overlay);
-        merged
+        crate::store::order_overlay_merged_callers(&mut merged, |c| {
+            (c.edge_kind.trust_rank(), c.file.clone(), c.line)
+        });
+        merged.into_iter().map(|(_, c)| c).collect()
     }
 
     /// Merge the overlay's call-graph callees into a parent `callees(X)` result.

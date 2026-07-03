@@ -336,11 +336,32 @@ fn build_caller_info_overlay<Mode>(
 
     // Project each half against its own store so snippets match the body that
     // produced the edge.
-    let (mut callers, mut degraded) = project_callers_with_snippets(store, &kept_parent, root);
+    let (parent_callers, parent_degraded) =
+        project_callers_with_snippets(store, &kept_parent, root);
     let (overlay_callers, overlay_degraded) =
         project_callers_with_snippets(&ov.store, &overlay_ctx, root);
-    callers.extend(overlay_callers);
-    degraded = degraded || overlay_degraded;
+    let degraded = parent_degraded || overlay_degraded;
+
+    // Reorder ONLY when the overlay unioned rows for this target. With none, the
+    // kept parent rows retain the SQL order `get_callers_with_context` returned,
+    // so an inert overlay leaves the direct-callers section parent-identical — a
+    // `participated == false` section must not carry a permuted window. When the
+    // overlay contributes, tag provenance (parent = `false`, overlay = `true`) and
+    // reorder so `impact_overlay`'s per-section `truncate(limit)` keeps the fresh
+    // callers rather than dropping the appended overlay rows off the tail:
+    // (trust, overlay-first, origin, line).
+    if overlay_callers.is_empty() {
+        return Ok((parent_callers, degraded, participated));
+    }
+    let mut merged: Vec<(bool, CallerDetail)> = parent_callers
+        .into_iter()
+        .map(|c| (false, c))
+        .chain(overlay_callers.into_iter().map(|c| (true, c)))
+        .collect();
+    crate::store::order_overlay_merged_callers(&mut merged, |c| {
+        (c.edge_kind.trust_rank(), c.file.clone(), c.line)
+    });
+    let callers = merged.into_iter().map(|(_, c)| c).collect();
 
     Ok((callers, degraded, participated))
 }

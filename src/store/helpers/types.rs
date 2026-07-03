@@ -418,6 +418,43 @@ pub struct AttributedCaller {
     pub attribution: CallerAttribution,
 }
 
+/// Order a merged parent∪overlay caller list so a downstream `--limit` / token
+/// cap keeps the strongest evidence AND the lane's own fresh edits.
+///
+/// The worktree overlay exists so a lane sees its own edits. The reverse-caller
+/// merges append the overlay's rows after the parent's; a naive `truncate(limit)`
+/// then drops exactly those fresh rows off the tail. On a hot parent-defined node
+/// (many parent callers, all equal trust) that means a reverse query never shows
+/// a worktree-added caller even though the forward query does — while the answer
+/// is still stamped `overlay_graph = "full"`, which over-claims. This reorders
+/// the union so the truncation window is trust-fair and overlay-aware:
+///
+/// 1. trust rank ASC — `call` (strongest) before `doc_reference` (weakest),
+///    trust-leading like the SQL `ORDER BY trust_rank`;
+/// 2. overlay rows before parent rows WITHIN a trust tier — a fresh edge the lane
+///    just wrote survives the cap over an equal-trust pre-existing parent edge;
+/// 3. `(origin, line)` for a deterministic window.
+///
+/// This key is a COARSENING, not a reproduction, of the SQL order — it drops the
+/// per-query sub-orders (the attributed path's `pick_rank`; `call_line` vs the
+/// def `line`) and `PathBuf` component ordering is not SQLite's `BINARY`
+/// collation. So callers MUST invoke it only when the overlay actually
+/// contributes rows for the queried node (`participated == true`): masking alone
+/// preserves the parent order via `retain`, and an inert overlay that re-sorted
+/// would permute a parent-truth window — the very over-claim this exists to
+/// prevent. Each element is `(is_overlay, item)` (`false` for a parent row);
+/// `key` projects the item to `(trust_rank, origin, line)`.
+pub fn order_overlay_merged_callers<T>(
+    rows: &mut [(bool, T)],
+    key: impl Fn(&T) -> (u8, PathBuf, u32),
+) {
+    rows.sort_by_cached_key(|(is_overlay, item)| {
+        let (rank, file, line) = key(item);
+        // overlay (`true`) → 0 sorts before parent (`false`) → 1 within a tier.
+        (rank, u8::from(!*is_overlay), file, line)
+    });
+}
+
 /// Callee information from the full call graph: the called function's name,
 /// the line of the call, and the provenance of the edge. Returned by
 /// `get_callees_full` so the `callees` surface can carry `edge_kind` and the
