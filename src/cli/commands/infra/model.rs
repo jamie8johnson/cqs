@@ -1103,7 +1103,13 @@ mod tests {
         );
         let json = serde_json::to_value(&out).unwrap();
         assert!(json.get("models").unwrap().is_array());
-        assert!(json.as_object().unwrap().contains_key("current"));
+        // Top-level `current` is skip-when-none: absent when no index exists
+        // (CI), a string when one does (dev machines). Pin the pairing, not
+        // presence — a bare contains_key assert is environment-dependent.
+        match json.get("current") {
+            None => assert!(out.current.is_none(), "absent key must mean None"),
+            Some(v) => assert!(v.is_string(), "present current must be a string"),
+        }
         // Each row carries name/repo/dim/current.
         let first = &json["models"][0];
         assert!(first.get("name").is_some());
