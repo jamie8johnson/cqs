@@ -114,11 +114,21 @@ pub(crate) fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String>
 }
 
 /// Validate that a float parameter is finite (not NaN or Infinity).
+///
+/// A non-finite value is user input (a bad `--threshold` / `--min-drift`) → the
+/// rejection is tagged `invalid_input` client-facing so the daemon surfaces the
+/// actionable message (which names only the parameter and the caller-supplied
+/// value) with that code, not an opaque `internal` chain-id. The message text is
+/// unchanged, so CLI-direct display is byte-stable.
 pub(crate) fn validate_finite_f32(val: f32, name: &str) -> anyhow::Result<f32> {
     if val.is_finite() {
         Ok(val)
     } else {
-        anyhow::bail!("Invalid {name}: {val} (must be a finite number)")
+        Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            format!("Invalid {name}: {val} (must be a finite number)"),
+        )
+        .into())
     }
 }
 

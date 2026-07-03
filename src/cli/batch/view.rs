@@ -302,10 +302,18 @@ pub(crate) fn get_ref_via_refs_lru(
         .cloned()
         .collect();
     if single.is_empty() {
-        anyhow::bail!(
-            "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-            name
-        );
+        // An unknown reference name is user input → not_found client-facing so
+        // the daemon surfaces the actionable "no such reference" message (naming
+        // only the caller-supplied name) with that code, not an opaque internal
+        // chain-id. A reference that IS configured but fails to LOAD below stays
+        // a redacted internal — that is an operator/index-state fault.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            format!(
+                "Reference '{name}' not found. Run 'cqs ref list' to see available references."
+            ),
+        )
+        .into());
     }
     let loaded = cqs::reference::load_references(&single);
     let found = loaded.into_iter().next().ok_or_else(|| {
@@ -1194,9 +1202,17 @@ impl BatchView {
 
         let canonical = dunce::canonicalize(overlay_root).map_err(|e| {
             tracing::warn!(error = %e, "overlay-root canonicalize failed — rejecting");
-            anyhow::anyhow!(
-                "overlay-root {} is not a readable path: {e}",
-                overlay_root.display()
+            // User input (a bad `--overlay-root`), not an internal fault: tag it
+            // ClientFacingError(invalid_input) so the caller learns it passed a
+            // bad arg instead of an opaque `internal`. The message echoes only
+            // the caller-supplied path + the io error kind (no path), safe to
+            // disclose.
+            crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::InvalidInput,
+                format!(
+                    "overlay-root {} is not a readable path: {e}",
+                    overlay_root.display()
+                ),
             )
         })?;
 
@@ -1217,11 +1233,19 @@ impl BatchView {
                     served_root = %root_canonical.display(),
                     "overlay-root is not a worktree of this project — rejecting"
                 );
-                anyhow::bail!(
-                    "overlay-root {} is not a worktree of the served project {}",
-                    canonical.display(),
-                    root_canonical.display()
+                // User input (an `--overlay-root` that is not a worktree of this
+                // project) → invalid_input, not a redacted internal. The message
+                // echoes only the caller-supplied path; the served project's
+                // absolute path stays operator-side (the tracing::warn! above),
+                // out of the client-facing message.
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    format!(
+                        "overlay-root {} is not a worktree of the project this daemon serves",
+                        overlay_root.display()
+                    ),
                 )
+                .into());
             }
         }
 
@@ -1257,11 +1281,18 @@ impl BatchView {
                 "overlay-root is not a registered worktree of the served project \
                  (absent from git worktree list — forged/symlinked/unregistered) — rejecting"
             );
-            anyhow::bail!(
-                "overlay-root {} is not a registered worktree of the served project {}",
-                canonical.display(),
-                root_canonical.display()
+            // User input (an `--overlay-root` git's registry never lists —
+            // forged/symlinked/unregistered) → invalid_input, not a redacted
+            // internal. Echoes only the caller-supplied path; the served
+            // project's absolute path stays operator-side (tracing::warn! above).
+            return Err(crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::InvalidInput,
+                format!(
+                    "overlay-root {} is not a registered worktree of the project this daemon serves",
+                    overlay_root.display()
+                ),
             )
+            .into());
         }
 
         // Membership confirmed. CLOSE THE TOCTOU: pin the validated worktree's

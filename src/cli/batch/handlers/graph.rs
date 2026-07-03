@@ -39,7 +39,17 @@ use cqs::parser::CallEdgeKind;
 fn parse_dispatch_edge_kind(s: Option<&str>) -> Result<Option<CallEdgeKind>> {
     match s {
         None => Ok(None),
-        Some(s) => parse_edge_kind(s).map(Some).map_err(|e| anyhow::anyhow!(e)),
+        // A bad `--edge-kind` is user input → invalid_input client-facing so the
+        // daemon surfaces the "unknown edge kind" message (which names only the
+        // caller-supplied value and the valid set) with that code, not an opaque
+        // internal chain-id.
+        Some(s) => parse_edge_kind(s).map(Some).map_err(|e| {
+            crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::InvalidInput,
+                e,
+            )
+            .into()
+        }),
     }
 }
 
@@ -1658,6 +1668,36 @@ mod tests {
             }
             assert_eq!(daemon, core, "trace parity mismatch for {source}->{target}");
         }
+    }
+
+    /// A `cqs_trace` whose source name resolves to nothing
+    /// must reach a daemon/MCP client as `not_found` — the actionable "that name
+    /// isn't in the index" signal — NOT a redacted `internal` that reads as "the
+    /// daemon is broken." The not-found originates in `resolve_target`
+    /// (StoreError::NotFound), tagged ClientFacingError at the CLI resolution
+    /// seam. RED before the fix (the StoreError redacted to internal).
+    #[test]
+    fn dispatch_trace_unknown_source_redacts_to_not_found() {
+        let (_dir, ctx) = seed_with_const();
+        let view = ctx.build_view(None);
+        let wire = TraceArgs {
+            source: "no_such_symbol_xyz".into(),
+            target: "callee_fn".into(),
+            max_depth: 10,
+            cross_project: false,
+            limit_arg: crate::cli::args::LimitArg { limit: 5 },
+        };
+        let err = dispatch_trace(&view, &wire).expect_err("unknown source must error");
+        let (code, msg) = crate::cli::json_envelope::redact_error(&err);
+        assert_eq!(
+            code,
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            "unknown trace source must surface not_found, not internal; got {code:?} ({msg})"
+        );
+        assert!(
+            !msg.contains("err-"),
+            "a not_found must NOT redact to an internal chain-id, got: {msg}"
+        );
     }
 
     #[test]

@@ -42,7 +42,7 @@
 //! `commands::dispatch` yields output value-equal to the argv path — the
 //! parity guard.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 
 use crate::cli::args::{
@@ -109,8 +109,18 @@ fn output_text() -> OutputArgs {
 /// core fields in the same object and are ignored here; [`overlay_from_args`]
 /// reads them separately and stamps the argv-side `OverlayArgs`.
 fn parse_core<T: DeserializeOwned>(command: &str, arguments: &serde_json::Value) -> Result<T> {
-    serde_json::from_value::<T>(arguments.clone())
-        .map_err(|e| anyhow::anyhow!("invalid arguments for '{command}': {e}"))
+    serde_json::from_value::<T>(arguments.clone()).map_err(|e| {
+        // A malformed `arguments` object is user input (the MCP/wire caller sent
+        // a bad tool-call payload) → parse_error client-facing so the daemon
+        // surfaces the serde diagnostic (which names only the offending
+        // field/type from the caller's own JSON) with that code, not an opaque
+        // internal chain-id that reads as "the daemon is broken."
+        crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::ParseError,
+            format!("invalid arguments for '{command}': {e}"),
+        )
+        .into()
+    })
 }
 
 /// Extract the worktree-overlay tri-state from the raw `arguments` object for an
@@ -553,10 +563,21 @@ pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
             let c: crate::cli::commands::index::IndexArgs = parse_core(command, arguments)?;
             BatchCmd::Index { args: c }
         }
-        other => bail!(
-            "command '{other}' {NO_CORE_REJECTION} \
-             (no Phase-0 core struct); use the argv `args` form"
-        ),
+        // An argv-only / unknown command sent through the JSON-args surface is
+        // user input → invalid_input client-facing so the daemon surfaces the
+        // rejection with that code, not an opaque internal chain-id. The message
+        // MUST keep the `NO_CORE_REJECTION` phrase verbatim: the `#[cfg(test)]`
+        // capability probe (`is_json_args_capable`) keys off that substring.
+        other => {
+            return Err(crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::InvalidInput,
+                format!(
+                    "command '{other}' {NO_CORE_REJECTION} \
+                     (no Phase-0 core struct); use the argv `args` form"
+                ),
+            )
+            .into())
+        }
     };
     Ok(cmd)
 }
@@ -566,13 +587,35 @@ pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
 /// in the bridge's `tools/list`, so a raw socket client cannot bypass it.
 fn require_mutations_enabled(command: &str) -> Result<()> {
     if !crate::cli::mcp::mutations_enabled() {
-        bail!(
-            "command '{command}' is a gated MCP mutation; set \
-             {}=1 to enable the notes-mutation channel",
-            crate::cli::mcp::MUTATIONS_ENV
-        );
+        // A request for a gated mutation the operator has not enabled is a
+        // policy rejection the caller must be able to distinguish from a daemon
+        // fault → invalid_input client-facing (the message names only the
+        // command + the opt-in env var, no internal state) rather than an opaque
+        // internal chain-id.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            format!(
+                "command '{command}' is a gated MCP mutation; set {}=1 to enable \
+                 the notes-mutation channel",
+                crate::cli::mcp::MUTATIONS_ENV
+            ),
+        )
+        .into());
     }
     Ok(())
+}
+
+/// Tag an out-of-range `max_depth` (the clap flag is bounded `1..=50`; the wire
+/// core is an unbounded `usize`) as `invalid_input` client-facing so the daemon
+/// surfaces the range message — which names only the caller-supplied value —
+/// with that code rather than an opaque `internal` chain-id. Shared by
+/// `trace`/`test-map`, whose cores both carry the same bound.
+fn invalid_max_depth(got: usize) -> anyhow::Error {
+    crate::cli::json_envelope::ClientFacingError::new(
+        crate::cli::json_envelope::ErrorCode::InvalidInput,
+        format!("max_depth must be in 1..=50, got {got}"),
+    )
+    .into()
 }
 
 // ─── Core → args.rs converters ─────────────────────────────────────────────
@@ -736,7 +779,7 @@ fn test_map_args_from_core(c: TestMapCoreArgs) -> Result<TestMapArgs> {
     let depth = u16::try_from(c.max_depth)
         .ok()
         .filter(|d| (1..=50).contains(d))
-        .ok_or_else(|| anyhow::anyhow!("max_depth must be in 1..=50, got {}", c.max_depth))?;
+        .ok_or_else(|| invalid_max_depth(c.max_depth))?;
     Ok(TestMapArgs {
         name: c.name,
         depth,
@@ -749,7 +792,7 @@ fn trace_args_from_core(c: TraceCoreArgs) -> Result<TraceArgs> {
     let max_depth = u16::try_from(c.max_depth)
         .ok()
         .filter(|d| (1..=50).contains(d))
-        .ok_or_else(|| anyhow::anyhow!("max_depth must be in 1..=50, got {}", c.max_depth))?;
+        .ok_or_else(|| invalid_max_depth(c.max_depth))?;
     Ok(TraceArgs {
         source: c.source,
         target: c.target,
@@ -1387,6 +1430,14 @@ mod tests {
                 err.is_some_and(|e| !e.is_null()),
                 "an out-of-tree overlay_root must be rejected on the JSON-args path for `{command}`, got: {v}"
             );
+            // A bad `overlay_root` is user input — it must surface
+            // `invalid_input` end-to-end through the daemon envelope, not a
+            // redacted `internal`. And the message must not leak the served root.
+            assert_eq!(
+                v["error"]["code"].as_str(),
+                Some("invalid_input"),
+                "out-of-tree overlay_root must carry invalid_input for `{command}`, got: {v}"
+            );
         }
     }
 
@@ -1410,6 +1461,19 @@ mod tests {
             err.is_some_and(|e| !e.is_null()),
             "a path-traversal `read` must be blocked on the JSON-args path, got: {v}"
         );
+        // The traversal/missing-file rejection surfaces `not_found` end-to-end
+        // (opaque "Invalid path" — same code + text as a plain missing file, so
+        // it is not a path-existence oracle), not a redacted `internal`.
+        assert_eq!(
+            v["error"]["code"].as_str(),
+            Some("not_found"),
+            "path-traversal read must carry not_found, got: {v}"
+        );
+        assert_eq!(
+            v["error"]["message"].as_str(),
+            Some("Invalid path"),
+            "the rejection text must stay the opaque 'Invalid path', got: {v}"
+        );
     }
 
     /// An unknown command with an `arguments` object returns a clean error
@@ -1428,6 +1492,13 @@ mod tests {
         assert!(
             v.get("error").is_some_and(|e| !e.is_null()),
             "unknown command must return an error envelope, got: {v}"
+        );
+        // An unknown/argv-only command sent through the JSON-args surface is
+        // user input → invalid_input, not a redacted `internal`.
+        assert_eq!(
+            v["error"]["code"].as_str(),
+            Some("invalid_input"),
+            "unknown command must carry invalid_input, got: {v}"
         );
     }
 
