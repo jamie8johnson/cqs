@@ -5,8 +5,10 @@ mod download;
 pub mod models;
 mod pooling;
 mod provider;
+mod shared;
 
 pub use models::{EmbeddingConfig, InputNames, ModelConfig, ModelInfo, PoolingStrategy};
+pub use shared::SharedEmbedder;
 
 /// Default embedding dimension (compile-time mirror of `ModelConfig::DEFAULT_DIM`).
 /// A `pub const` for `pub const EMBEDDING_DIM` in `lib.rs` and other `pub const`

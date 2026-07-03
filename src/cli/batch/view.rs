@@ -599,10 +599,22 @@ pub(crate) struct BatchView {
     /// discarded instead of being published over the fresh invalidation.
     pub(super) invalidation_epoch: Arc<AtomicU64>,
     pub(super) checkout_epoch: u64,
-    /// Shared `Arc<OnceLock<...>>` to the BatchContext embedder slot. Init
-    /// from the view propagates to the BatchContext (and any other view
-    /// holding the same Arc).
-    pub(super) embedder_slot: Arc<OnceLock<Arc<Embedder>>>,
+    /// The embedder captured at checkout, paired with `store` + `model_config`
+    /// as one coherent triple: `Some` only when the shared cell's resident
+    /// already matched `model_config` at checkout time. A concurrent foreign-
+    /// model swap after checkout can't tear this — the view keeps its own Arc.
+    /// `None` when nothing matching was resident yet; `embedder()` then falls
+    /// back to a lazy build against `model_config` via `embedder_cell`.
+    pub(super) cached_embedder: Option<Arc<Embedder>>,
+    /// Shared swappable embedder cell, aliasing the BatchContext's. Only the
+    /// lazy-fallback path (`cached_embedder` was `None`) touches it, via
+    /// `resolve_matching(&self.model_config)` — which never returns an embedder
+    /// for a different model, so the fallback stays coherent with this view's
+    /// checkout-time triple even across a concurrent swap.
+    pub(super) embedder_cell: Arc<cqs::embedder::SharedEmbedder>,
+    /// Per-view cache for the lazily-resolved embedder, so `embedder()` can hand
+    /// back a stable `&Embedder` for the rest of the dispatch. Never shared.
+    pub(super) embedder_resolved: OnceLock<Arc<Embedder>>,
     pub(super) reranker_slot: Arc<OnceLock<Arc<dyn cqs::Reranker>>>,
     pub(super) splade_encoder_slot: Arc<OnceLock<Option<cqs::splade::SpladeEncoder>>>,
     /// Shared refs LRU.
@@ -809,18 +821,23 @@ impl BatchView {
         Ok(result)
     }
 
+    /// The embedder for this view's checkout-time triple. Prefers the Arc
+    /// snapshotted at checkout (`cached_embedder`); on a cold miss it resolves
+    /// lazily against THIS view's `model_config` (never against whatever the
+    /// shared cell currently holds), so a foreign-model swap that landed after
+    /// checkout can't pair a mismatched embedder with this view's store snapshot.
     pub fn embedder(&self) -> Result<&Embedder> {
-        if let Some(e) = self.embedder_slot.get() {
+        if let Some(e) = &self.cached_embedder {
+            return Ok(e.as_ref());
+        }
+        if let Some(e) = self.embedder_resolved.get() {
             return Ok(e.as_ref());
         }
         let _span = tracing::info_span!("batch_view_embedder_init").entered();
-        let e = Embedder::new(self.model_config.clone())?;
-        let _ = self.embedder_slot.set(Arc::new(e));
-        Ok(self
-            .embedder_slot
-            .get()
-            .map(|arc| arc.as_ref())
-            .expect("embedder OnceLock populated by set() above"))
+        // `resolve_matching` builds (and shares, when the cell is empty) an
+        // embedder for this view's model_config — the non-clobbering lazy path.
+        let e = self.embedder_cell.resolve_matching(&self.model_config)?;
+        Ok(self.embedder_resolved.get_or_init(|| e).as_ref())
     }
 
     pub fn reranker(&self) -> Result<Arc<dyn cqs::Reranker>> {

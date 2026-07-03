@@ -71,8 +71,10 @@ pub(crate) struct SlotCreateOutput {
     pub model: Option<String>,
 }
 
-/// `cqs slot promote --json` payload. `warning` carries the daemon-restart
-/// reminder so JSON consumers see the same caveat as the text path.
+/// `cqs slot promote --json` payload. `warning` carries the hot-reload contract
+/// (the daemon reloads the promote, model change included, within ~1s; only an
+/// unbuildable-model promote needs a restart) so JSON consumers see the same
+/// caveat as the text path.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct SlotPromoteOutput {
     pub promoted: String,
@@ -413,9 +415,11 @@ fn slot_promote(project_cqs_dir: &Path, name: &str, json: bool) -> Result<()> {
     write_active_slot(project_cqs_dir, name)?;
 
     let warning = format!(
-        "Active slot changed to '{}'. A running daemon (cqs watch --serve) hot-reloads a \
-         same-model promote within about a second — no restart needed. A promote that changes \
-         the embedding model still requires a restart:\n    systemctl --user restart cqs-watch",
+        "Active slot changed to '{}'. A running daemon (cqs watch --serve) hot-reloads the \
+         promote within about a second — no restart needed, including a promote that changes the \
+         embedding model (the daemon swaps the embedder + rebuilds its index for the new model). \
+         Only a promote to a model with no known preset (one the daemon can't build an embedder \
+         for) still needs a restart:\n    systemctl --user restart cqs-watch",
         name
     );
     if json {

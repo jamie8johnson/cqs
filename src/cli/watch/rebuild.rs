@@ -256,34 +256,46 @@ impl EmbedderBackoff {
     }
 }
 
-/// Try to initialize the shared embedder, returning a reference from the
-/// Arc-backed OnceLock. Uses `backoff` to apply exponential backoff on
-/// repeated failures.
+/// Resolve the shared embedder for `model_config`, building it under
+/// exponential `backoff` on repeated init failures.
 ///
-/// The OnceLock is shared with the daemon thread; whichever side initializes
-/// first wins, and the other reuses the same Arc.
-pub(super) fn try_init_embedder<'a>(
-    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
+/// Returns an owned `Arc` (not a borrow) because the resident lives behind the
+/// `SharedEmbedder`'s `RwLock`. Gates on `get_matching(model_config)`, not a
+/// bare "is something resident": after a foreign-model rebind swapped the watch
+/// loop's `model_config`, a stale resident of the OLD model must NOT be reused —
+/// the mismatch forces a rebuild for the new model. On a successful build the
+/// new embedder is `swap`ped in (the watch loop is the cell's single writer, so
+/// replacing a stale resident is safe and avoids per-cycle rebuild churn).
+pub(super) fn try_init_embedder(
+    embedder: &cqs::embedder::SharedEmbedder,
     backoff: &mut EmbedderBackoff,
     model_config: &ModelConfig,
-) -> Option<&'a Embedder> {
-    match embedder.get() {
-        Some(e) => Some(e.as_ref()),
-        None => {
-            if !backoff.should_retry() {
-                return None;
-            }
-            match Embedder::new(model_config.clone()) {
-                Ok(e) => {
-                    backoff.reset();
-                    Some(embedder.get_or_init(|| std::sync::Arc::new(e)).as_ref())
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialize embedder");
-                    backoff.record_failure();
-                    None
-                }
-            }
+) -> Option<std::sync::Arc<Embedder>> {
+    if let Some(e) = embedder.get_matching(model_config) {
+        return Some(e);
+    }
+    if !backoff.should_retry() {
+        return None;
+    }
+    match Embedder::new(model_config.clone()) {
+        Ok(e) => {
+            backoff.reset();
+            let arc = std::sync::Arc::new(e);
+            // Swap (not set_if_empty): the watch loop is this cell's single
+            // writer, so replacing a stale resident of a just-superseded model
+            // after a foreign rebind is safe and avoids per-cycle rebuild churn.
+            info!(
+                model = %model_config.name,
+                dim = model_config.dim,
+                "watch embedder built + swapped in for the current model"
+            );
+            embedder.swap(std::sync::Arc::clone(&arc));
+            Some(arc)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to initialize embedder");
+            backoff.record_failure();
+            None
         }
     }
 }

@@ -217,6 +217,9 @@ pub(super) fn process_file_changes(
         Some(e) => e,
         None => return,
     };
+    // `try_init_embedder` returns an owned `Arc` (the resident lives behind the
+    // SharedEmbedder's RwLock); borrow it for the `&Embedder` reindex API.
+    let emb = emb.as_ref();
 
     // Capture mtimes BEFORE reindexing to avoid race condition
     let pre_mtimes: HashMap<PathBuf, SystemTime> = files

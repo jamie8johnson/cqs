@@ -981,6 +981,185 @@ mod tests {
         );
     }
 
+    /// Stage-2 query-side foreign-model self-heal: a promote to a slot recording
+    /// a DIFFERENT embedding model must swap the embedder AND `model_config` in
+    /// lock-step with the store reopen, so queries embed in the promoted index's
+    /// space. Slot `a` is the default model (768), slot `b` is bge-large (1024).
+    /// After the promote, `model_config` swaps to bge-large and the resident
+    /// embedder is replaced — the pre-swap default embedder must not survive.
+    #[cfg(unix)]
+    #[test]
+    fn foreign_model_slot_promote_swaps_embedder_and_model_config_query_side() {
+        use cqs::slot::{slot_dir, write_active_slot};
+
+        let dir = tempfile::tempdir().unwrap();
+        let project_cqs = dir.path().join(".cqs");
+        let slot_a = slot_dir(&project_cqs, "a");
+        let slot_b = slot_dir(&project_cqs, "b");
+        std::fs::create_dir_all(&slot_a).unwrap();
+        std::fs::create_dir_all(&slot_b).unwrap();
+        let a_index = slot_a.join(cqs::INDEX_DB_FILENAME);
+        let b_index = slot_b.join(cqs::INDEX_DB_FILENAME);
+        // Slot a: default model. Slot b: bge-large (a different name AND dim).
+        Store::open(&a_index)
+            .unwrap()
+            .init(&ModelInfo::default())
+            .unwrap();
+        Store::open(&b_index)
+            .unwrap()
+            .init(&ModelInfo::new("BAAI/bge-large-en-v1.5", 1024))
+            .unwrap();
+
+        write_active_slot(&project_cqs, "a").unwrap();
+        let store_a = Store::<ReadOnly>::open_readonly_after_init(&a_index, |_| Ok(())).unwrap();
+        let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&project_cqs));
+        let default_model = ModelConfig::resolve(None, None).apply_env_overrides();
+        let ctx = context::BatchContext::new(
+            store_a,
+            dir.path().to_path_buf(),
+            project_cqs.clone(),
+            default_model.clone(),
+            index_id,
+            None,
+        );
+        // Seed the cell with a resident embedder for the bound (default) model,
+        // as startup warm would. `Embedder::new_cpu` is lazy (no download).
+        ctx.embedder.swap(std::sync::Arc::new(
+            Embedder::new_cpu(default_model.clone()).unwrap(),
+        ));
+
+        // Baseline: bound to the default model.
+        ctx.store();
+        assert_eq!(*ctx.model_config.borrow(), default_model);
+
+        // Foreign-model promote: flip the active-slot pointer to b.
+        write_active_slot(&project_cqs, "b").unwrap();
+        ctx.last_staleness_check.set(None);
+
+        // Next query self-heals: store reopens onto b AND the model swaps.
+        let _served = ctx.store();
+        let swapped = ctx.model_config.borrow().clone();
+        assert_eq!(
+            swapped.name, "bge-large",
+            "model_config must swap to the promoted slot's model"
+        );
+        assert_eq!(
+            swapped.dim, 1024,
+            "swapped model_config carries the new dim"
+        );
+        assert_ne!(
+            default_model.dim, 1024,
+            "test precondition: the models differ in dim"
+        );
+        assert!(
+            ctx.embedder.get_matching(&swapped).is_some(),
+            "the resident embedder must be swapped to the promoted model"
+        );
+        assert!(
+            ctx.embedder.get_matching(&default_model).is_none(),
+            "the old default-model embedder must not survive the swap"
+        );
+    }
+
+    /// Checkout-time pairing: a `BatchView` checked out before a foreign-model
+    /// swap keeps its own coherent (store, embedder, model_config) triple even
+    /// after the BatchContext swaps to a new model. The in-flight view must never
+    /// see a torn triple (new embedder against its old store snapshot) — its
+    /// captured Arcs stay alive under it (Arc semantics).
+    #[test]
+    fn checkout_view_keeps_consistent_triple_across_model_swap() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let bound_model = ctx.model_config.borrow().clone();
+        // Resident embedder for the bound model, then check out a view — it
+        // snapshots (store, embedder, model_config) as one triple.
+        ctx.embedder.swap(std::sync::Arc::new(
+            Embedder::new_cpu(bound_model.clone()).unwrap(),
+        ));
+        let view = ctx.build_view(None);
+        let view_store = std::sync::Arc::as_ptr(&view.store());
+
+        // Simulate a foreign-model swap on the BatchContext AFTER checkout.
+        let foreign = ModelConfig::bge_large();
+        assert_ne!(foreign, bound_model, "precondition: models differ");
+        ctx.embedder.swap(std::sync::Arc::new(
+            Embedder::new_cpu(foreign.clone()).unwrap(),
+        ));
+        *ctx.model_config.borrow_mut() = foreign.clone();
+
+        // The view's triple is unchanged: its model_config is still the bound
+        // model, its cached embedder still matches THAT model, and its store
+        // snapshot Arc is the pre-swap one (nothing freed under it).
+        assert_eq!(
+            view.model_config, bound_model,
+            "the view keeps its checkout-time model_config across a swap"
+        );
+        let view_embedder = view.embedder().expect("view embedder resolves");
+        assert_eq!(
+            view_embedder.model_config(),
+            &bound_model,
+            "the view's embedder stays paired with its checkout-time model_config, \
+             never the newly-swapped foreign model"
+        );
+        assert_eq!(
+            std::sync::Arc::as_ptr(&view.store()),
+            view_store,
+            "the view's store snapshot Arc is stable across the swap"
+        );
+    }
+
+    /// `adopt_embedder` must DECLINE a shared embedder built for a different
+    /// model than the context resolved, leaving the cell empty so `warm` builds
+    /// the right one — otherwise a foreign-model promote landing in the daemon
+    /// boot window would strand the ctx cell on the wrong model (reconcile only
+    /// fires on a reopen, `resolve_matching` never clobbers a mismatch, `warm`
+    /// gates on presence not model → a private embedder built every query,
+    /// silently). RED without the model gate: the cell would hold the mismatched
+    /// resident and `warm` would no-op.
+    #[test]
+    fn adopt_embedder_declines_mismatched_model_then_warm_installs_right_one() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let ctx_model = ctx.model_config.borrow().clone();
+        // A shared embedder for a DIFFERENT model (the boot-window foreign cell).
+        let foreign = ModelConfig::bge_large();
+        assert_ne!(foreign, ctx_model, "precondition: models differ");
+        let foreign_embedder = std::sync::Arc::new(Embedder::new_cpu(foreign.clone()).unwrap());
+
+        // Adopt must decline the mismatch and leave the cell empty.
+        assert!(
+            !ctx.adopt_embedder(foreign_embedder),
+            "adopt_embedder must decline an embedder for a different model"
+        );
+        assert!(
+            ctx.embedder.get().is_none(),
+            "a declined adopt must leave the cell empty (not install the mismatch)"
+        );
+
+        // warm() then builds the ctx's own model into the empty cell.
+        ctx.warm();
+        assert!(
+            ctx.embedder.get_matching(&ctx_model).is_some(),
+            "warm must install an embedder for the context's own model"
+        );
+        assert!(
+            ctx.embedder.get_matching(&foreign).is_none(),
+            "the mismatched foreign model must never become resident"
+        );
+
+        // A matching adopt still succeeds (the gate is model-specific, not a
+        // blanket refusal): a fresh ctx adopts its own model's embedder.
+        let (_dir2, cqs_dir2) = setup_test_store();
+        let ctx2 = create_test_context(&cqs_dir2).unwrap();
+        let ctx2_model = ctx2.model_config.borrow().clone();
+        let matching = std::sync::Arc::new(Embedder::new_cpu(ctx2_model.clone()).unwrap());
+        assert!(
+            ctx2.adopt_embedder(matching),
+            "adopt_embedder must accept an embedder for the context's own model"
+        );
+        assert!(ctx2.embedder.get_matching(&ctx2_model).is_some());
+    }
+
     /// The inverse of the self-heal contract: an explicit `--slot X` pin makes
     /// the query side IGNORE a `cqs slot promote`. The write side is already
     /// pinned (`maybe_rebind_active_slot` declines on an explicit slot); this

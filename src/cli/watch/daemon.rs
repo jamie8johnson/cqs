@@ -12,7 +12,7 @@
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ impl Drop for InFlightGuard {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_daemon_thread(
     listener: UnixListener,
-    daemon_embedder: Arc<OnceLock<Arc<Embedder>>>,
+    daemon_embedder: Arc<cqs::embedder::SharedEmbedder>,
     daemon_model_config: ModelConfig,
     daemon_runtime: Arc<tokio::runtime::Runtime>,
     daemon_watch_snapshot: cqs::watch_status::SharedWatchSnapshot,
@@ -94,23 +94,28 @@ pub(super) fn spawn_daemon_thread(
             daemon_explicit_slot,
         ) {
             Ok(ctx) => {
-                // Seed the BatchContext's OnceLock if the shared slot is
-                // already populated; otherwise
-                // populate the shared slot with a fresh Embedder
-                // so the outer watch loop sees it on first use.
-                if let Some(existing) = daemon_embedder.get() {
-                    ctx.adopt_embedder(std::sync::Arc::clone(existing));
+                // Seed the BatchContext's embedder cell from the shared watch
+                // cell ONLY when it holds an embedder for THIS ctx's model —
+                // `adopt_embedder` declines a mismatch, so a foreign-model promote
+                // that swapped the shared cell mid-boot doesn't strand the ctx on
+                // the wrong model (it stays empty and `warm` builds the right one).
+                // On a miss/decline, build our own and share it back iff the cell
+                // is still empty (never clobber a foreign resident the watch side
+                // installed). The two cells are distinct after startup (each
+                // self-heals its own model), but sharing the initial Arc avoids
+                // loading the model twice at boot.
+                let adopted = daemon_embedder
+                    .get()
+                    .is_some_and(|existing| ctx.adopt_embedder(existing));
+                if adopted {
                     tracing::info!("Daemon adopted shared embedder");
                 } else {
                     match Embedder::new(daemon_model_config) {
                         Ok(emb) => {
                             let arc = std::sync::Arc::new(emb);
-                            // Try to install in the shared slot;
-                            // another thread may have raced us.
-                            let winning_arc =
-                                daemon_embedder.get_or_init(|| std::sync::Arc::clone(&arc));
-                            ctx.adopt_embedder(std::sync::Arc::clone(winning_arc));
-                            tracing::info!("Daemon built and shared embedder");
+                            daemon_embedder.set_if_empty(std::sync::Arc::clone(&arc));
+                            ctx.adopt_embedder(arc);
+                            tracing::info!("Daemon built embedder for its model");
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "Daemon embedder init failed — will retry lazily");
