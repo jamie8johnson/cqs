@@ -114,6 +114,10 @@ pub(crate) struct OverlayArgs {
     /// forces off, unset = default. `--overlay` forces on; `--no-overlay`
     /// forces off (opt-out wins). Search-family overlays build on the daemon
     /// path (JSON forward); the diff commands also honor the overlay CLI-direct.
+    /// CLI-direct with no daemon, the wholesale-parent-truth commands (search,
+    /// seed family, callers/callees/impact/dead) mark
+    /// `_meta.worktree_overlay = "skipped-no-daemon"`; the diff commands don't
+    /// (their diff subject is overlaid locally, so "skipped" would overclaim).
     #[arg(long, conflicts_with = "no_overlay")]
     pub overlay: bool,
 
