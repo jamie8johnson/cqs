@@ -17,6 +17,19 @@ mod context;
 /// command. Absent from a normal build.
 #[cfg(all(cqs_loom, test))]
 mod cross_project_interleaving_model;
+/// Loom model of the swappable shared-embedder protocol behind the stage-2
+/// foreign-model slot-promote hot-swap (the interleaving-auditor lane). Same
+/// `--cfg cqs_loom` + test-build
+/// gate as the sibling models. Proves COHERENCE (resolve_matching never returns
+/// a foreign model), NON-CLOBBER (a lazy resolve never overwrites a deliberate
+/// swap), the double-check SHARING branch, and the daemon boot-seed +
+/// watch-cell convergence under the F1 adopt gate; carries one `#[ignore]`d
+/// reproduction of a protocol-level cleared-cell re-strand convergence gap that
+/// is not reachable in current production (a latent-fragility guard — the only
+/// `clear()` caller sits behind an effectively-infallible lazy `Embedder::new`).
+/// See the module docs for the run command. Absent from a normal build.
+#[cfg(all(cqs_loom, test))]
+mod embedder_swap_interleaving_model;
 mod handlers;
 /// Loom model of the cache-invalidation epoch protocol (the
 /// interleaving-auditor lane). Compiled only under `--cfg cqs_loom` AND in a
