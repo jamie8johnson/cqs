@@ -10,7 +10,7 @@ use colored::Colorize;
 // Output structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SuggestEntry {
     pub text: String,
     pub sentiment: f64,
@@ -18,7 +18,7 @@ pub(crate) struct SuggestEntry {
     pub reason: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SuggestOutput {
     pub suggestions: Vec<SuggestEntry>,
     pub count: usize,

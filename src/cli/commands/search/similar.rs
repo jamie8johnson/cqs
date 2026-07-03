@@ -53,7 +53,7 @@ impl Default for SimilarArgs {
 /// `results` carries the canonical per-result `SearchResult::to_json()` shape
 /// (the 9-field code-result schema with `type` + `has_parent`) so this surface
 /// can never drift from the rest of the CLI on the chunk schema.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SimilarOutput {
     /// Resolved name of the queried chunk.
     pub target: String,

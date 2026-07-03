@@ -35,6 +35,11 @@ mod lifecycle;
 mod tools;
 
 pub use bridge::serve_stdio;
+// The per-command MCP `outputSchema` generator, re-exported so the shape-truth
+// guard in `commands::graph::callers` (which owns the `CallersCoreOutput` type)
+// can assert a real serialized response is described by the published schema.
+#[cfg(test)]
+pub(crate) use tools::command_output_schema;
 
 /// The operator opt-in for the MCP gated-mutation channel (Phase 2a).
 ///
@@ -709,5 +714,57 @@ mod tests {
              fallback inputSchema and rejects every call; a rowed command absent \
              from the table is a stale registry row.\ntabled: {tabled:?}\nrowed: {rowed:?}"
         );
+    }
+
+    /// Output-map totality (mirror of the input map-row guard): every command in
+    /// `tool_table()` must be a rowed `command_output_map!` entry, and vice
+    /// versa. A tabled command absent from the output registry silently
+    /// advertises the permissive object fallback instead of its declared schema;
+    /// a rowed command absent from the table is a stale row. Flag ON so the gated
+    /// mutators are in the table.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn every_tool_table_command_has_an_output_map_row() {
+        let _guard = MutationsEnvGuard::set(true);
+        let rowed: std::collections::BTreeSet<&str> =
+            tools::OUTPUT_MAP_COMMANDS.iter().copied().collect();
+        let tabled: std::collections::BTreeSet<&str> =
+            tools::tool_table().iter().map(|t| t.command).collect();
+        assert_eq!(
+            tabled, rowed,
+            "every tool_table command must have a command_output_map! row (and vice \
+             versa).\ntabled: {tabled:?}\nrowed: {rowed:?}"
+        );
+    }
+
+    /// Wiring guard: the rendered `tools/list` array carries a non-empty
+    /// `outputSchema` on EVERY tool entry (both flag states). Pins that
+    /// `render_tools` actually emits the schema onto the wire — not just that the
+    /// generator exists — so a dropped field in the JSON builder goes RED here.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn every_tools_list_entry_carries_output_schema() {
+        for on in [false, true] {
+            let _guard = MutationsEnvGuard::set(on);
+            let listed = tools::list();
+            let arr = listed
+                .get("tools")
+                .and_then(|t| t.as_array())
+                .expect("tools array");
+            assert!(!arr.is_empty());
+            for t in arr {
+                let name = t
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("<unnamed>");
+                let os = t
+                    .get("outputSchema")
+                    .unwrap_or_else(|| panic!("tool `{name}` missing outputSchema (flag={on})"));
+                assert!(
+                    os.as_object().is_some_and(|o| !o.is_empty()),
+                    "tool `{name}` outputSchema must be a non-empty JSON object (flag={on}): {os}"
+                );
+            }
+        }
     }
 }

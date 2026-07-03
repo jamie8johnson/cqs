@@ -18,7 +18,7 @@ use crate::cli::{find_project_root, Cli};
 // ---------------------------------------------------------------------------
 
 /// JSON output for note mutation commands (add, update, remove).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 struct NoteMutationOutput {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,7 +38,7 @@ struct NoteMutationOutput {
 /// emit. `id` + `type` came from the CLI path; `sentiment_label` came from the
 /// daemon path; the union carries all of them so a consumer gets the same
 /// fields regardless of which surface served the request.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 struct NoteListEntry {
     id: String,
     sentiment: f32,
@@ -64,8 +64,8 @@ struct NoteListEntry {
 /// (worktree-staleness) onto it — a bare array drops `_meta` in the
 /// slim-envelope translation. `count` mirrors the array length for cheap
 /// pagination/summary reads.
-#[derive(Debug, serde::Serialize)]
-struct NotesListOutput {
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct NotesListOutput {
     notes: Vec<NoteListEntry>,
     count: usize,
 }

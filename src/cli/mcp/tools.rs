@@ -181,6 +181,86 @@ fn schema_with_overlay<T: schemars::JsonSchema>() -> Value {
     s
 }
 
+// ─── outputSchema (MCP structuredContent contract) ─────────────────────────
+//
+// `tools/call` returns the daemon slim envelope's `data` payload as the MCP
+// `structuredContent` (the envelope `_meta` is lifted to a `CallToolResult._meta`
+// sibling, NOT into `data` — see `write_json_line_lifting_meta` and
+// `classify_output`). So a tool's `outputSchema` must describe exactly that
+// `data` object, with no envelope wrapper: matching the WRONG wrapper is worse
+// than publishing nothing (the docs-lie rule applies to schemas). Every daemon
+// dispatcher returns a JSON OBJECT for `data`, so object-ness is the one claim
+// every tool's schema can make honestly.
+//
+// Two shapes, per [`command_output_map!`]:
+// - `typed(T)`: the dispatcher serializes a typed `T` (`serde_json::to_value`)
+//   verbatim into `data`, so the derived `schema_for!(T)` describes it — with
+//   `required` stripped (see [`strip_required`]).
+// - `object`: the dispatcher builds `data` from a bespoke `json!`, an untyped
+//   `serde_json::Value` core, or a typed output whose JsonSchema derive is
+//   blocked by a borrowed / library field type. The honest schema is a bare
+//   object (no field claims). The command-core-completion follow-up upgrades
+//   these to `typed` as their cores gain derivable typed outputs.
+
+/// Recursively strip every `required` array from a JSON-Schema value — top
+/// level and inside `$defs` / `properties` / `items` / `anyOf` / `allOf` /
+/// `oneOf`. schemars 1.2 lists a `#[serde(skip_serializing_if = "…")]` field as
+/// `required` even though serde OMITS it from the serialized output when the
+/// predicate fires (`candidates` / `edge_kind` / `excluded_*` are all
+/// skip-when-empty yet land in the derived `required`). A raw derived schema
+/// would therefore over-require every skip-when-empty field, and a real response
+/// omitting them would fail validation. An `outputSchema` describes what
+/// `structuredContent` MAY carry; dropping `required` keeps it honest — it never
+/// claims a field is guaranteed present — while every field's declared TYPE is
+/// retained for discoverability. (No cqs output field is literally named
+/// `required`, so removing that key is unambiguous here.)
+fn strip_required(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            map.remove("required");
+            for child in map.values_mut() {
+                strip_required(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                strip_required(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Derived `outputSchema` for a typed daemon `data` payload: `schema_for!(T)`
+/// with all `required` arrays stripped ([`strip_required`]). No `properties`
+/// normalization: an untagged `*CoreOutput` enum (callers / callees / deps /
+/// test-map / trace / plan) renders as a top-level `anyOf` with no `type` /
+/// `properties`, so forcing an empty `properties` onto it would be misleading.
+/// The totality guard checks non-empty-object, not a `properties` key, so both
+/// the struct (`type:object` + `properties`) and enum (`anyOf`) shapes pass.
+fn output_schema<T: schemars::JsonSchema>() -> Value {
+    let mut s = serde_json::to_value(schemars::schema_for!(T))
+        .unwrap_or_else(|_| serde_json::json!({ "type": "object" }));
+    strip_required(&mut s);
+    s
+}
+
+/// Permissive-but-honest `outputSchema` for a command whose daemon `data` shape
+/// is bespoke (`json!`), an untyped `serde_json::Value` core, or a typed output
+/// whose JsonSchema derive is blocked by a borrowed / library field type.
+/// `structuredContent` is ALWAYS a JSON object (the slim-envelope `data`), so
+/// asserting object-ness is true and nothing else is claimed — it can never
+/// describe the wrong wrapper. Carries a `properties: {}` so the totality guard
+/// sees the same object shape a typed schema has.
+fn object_output_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "description": "Structured result object. This tool does not yet publish a \
+                        field-level output schema; read structuredContent directly."
+    })
+}
+
 // Core struct aliases — identical import paths to
 // `cli::batch::json_args`, so the schema source and the daemon deserialize
 // target are provably the same type.
@@ -208,6 +288,25 @@ use crate::cli::commands::{
     DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, ImpactDiffCoreArgs,
     PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs,
     TraceCoreArgs,
+};
+
+// Output (result `data`) core types for the `command_output_map!` — the typed
+// value each daemon dispatcher serializes verbatim into the slim-envelope
+// `data` (== the MCP `structuredContent`). Only the `typed(T)` commands need a
+// named type here; the `object` commands describe a bare object.
+use crate::cli::commands::diff::DiffOutput;
+use crate::cli::commands::drift::DriftOutput;
+use crate::cli::commands::explain::ExplainOutput;
+use crate::cli::commands::notes::NotesListOutput;
+use crate::cli::commands::review::dead::DeadOutput;
+use crate::cli::commands::review::suggest::SuggestOutput;
+use crate::cli::commands::search::gather::GatherOutput;
+use crate::cli::commands::search::related::RelatedOutput;
+use crate::cli::commands::search::similar::SimilarOutput;
+use crate::cli::commands::search::where_cmd::WhereOutput;
+use crate::cli::commands::{
+    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, StaleOutput, StatsOutput,
+    TestMapCoreOutput, TraceCoreOutput,
 };
 
 /// The composed tool table for `tools/list` — the Phase-1 read tools, plus the
@@ -623,6 +722,10 @@ fn render_tools(defs: &[ToolDef]) -> Vec<Value> {
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": command_input_schema(t.command),
+                // The result contract (MCP structuredContent): describes the
+                // slim-envelope `data` object the daemon returns for this
+                // command, with no envelope wrapper — see `command_output_map!`.
+                "outputSchema": command_output_schema(t.command),
                 // Per-tool annotations (§3) — hints, not enforcement (the
                 // daemon's path/overlay gates + the §2 opt-in flag are the real
                 // boundary). Read tools carry the read-quartet; mutators differ.
@@ -891,6 +994,89 @@ command_core_map! {
     "notes-update" => NotesUpdateArgs, plain;
     "notes-remove" => NotesRemoveArgs, plain;
     "index" => IndexCore, plain;
+}
+
+/// Single source of truth for the per-command OUTPUT schema (the MCP
+/// `outputSchema`). Each row maps a bare daemon command to the shape of the
+/// slim-envelope `data` it returns (== the `structuredContent` the bridge hands
+/// back):
+/// - `(T)`: the dispatcher serializes a typed `T` verbatim (`to_value(&output)`),
+///   so the derived [`output_schema::<T>`] describes it (with `required`
+///   stripped, since serde skip-when-empty fields must not read as guaranteed).
+/// - `object`: `data` is a bespoke `json!`, an untyped `serde_json::Value` core,
+///   or a typed output whose JsonSchema derive is blocked by a borrowed /
+///   library field type — the honest schema is a bare object
+///   ([`object_output_schema`]).
+///
+/// Emits [`command_output_schema`] (the advertised schema generator) and, in
+/// test, [`OUTPUT_MAP_COMMANDS`] (pinned command-for-command against
+/// `tool_table` by `every_tool_table_command_has_an_output_map_row`). The
+/// `object` rows are the command-core-completion follow-up's upgrade candidates:
+/// as a command's core gains a derivable typed output, its row flips to `(T)`.
+macro_rules! command_output_map {
+    ( $( $cmd:literal => $mode:tt ; )+ ) => {
+        /// Advertised `outputSchema` for a tool, keyed by its bare daemon
+        /// command. An unrowed command degrades to the permissive object schema
+        /// rather than poisoning `tools/list`; the totality guard pins that every
+        /// real tool IS rowed (so a new tool without a row goes RED there rather
+        /// than silently advertising the fallback).
+        pub(crate) fn command_output_schema(command: &str) -> Value {
+            match command {
+                $( $cmd => command_output_map!(@schema $mode), )+
+                _ => object_output_schema(),
+            }
+        }
+
+        /// Every command this OUTPUT registry rows — pinned set-equal to
+        /// `tool_table` by `every_tool_table_command_has_an_output_map_row`.
+        #[cfg(test)]
+        pub(crate) const OUTPUT_MAP_COMMANDS: &[&str] = &[$($cmd,)+];
+    };
+    // Per-mode emitters: a bare `object` ident → the permissive schema; a
+    // parenthesized `(T)` → the derived, required-stripped schema for `T`.
+    (@schema object) => { object_output_schema() };
+    (@schema ($t:ty)) => { output_schema::<$t>() };
+}
+
+// The single per-command OUTPUT registry, in `tool_table` order. `(T)` rows name
+// the type the dispatcher serializes verbatim into `data`; `object` rows are the
+// bespoke / untyped / derive-blocked commands (see the module `outputSchema`
+// note for the per-command rationale).
+command_output_map! {
+    "search" => object;
+    "gather" => (GatherOutput);
+    "scout" => object;
+    "task" => object;
+    "onboard" => object;
+    "similar" => (SimilarOutput);
+    "callers" => (CallersCoreOutput);
+    "callees" => (CalleesCoreOutput);
+    "deps" => (DepsCoreOutput);
+    "impact" => object;
+    "test-map" => (TestMapCoreOutput);
+    "trace" => (TraceCoreOutput);
+    "explain" => (ExplainOutput);
+    "context" => object;
+    "blame" => object;
+    "diff" => (DiffOutput);
+    "drift" => (DriftOutput);
+    "dead" => (DeadOutput);
+    "ci" => object;
+    "review" => object;
+    "plan" => object;
+    "read" => object;
+    "where" => (WhereOutput);
+    "related" => (RelatedOutput);
+    "stale" => (StaleOutput);
+    "notes" => (NotesListOutput);
+    "suggest" => (SuggestOutput);
+    "impact-diff" => object;
+    "stats" => (StatsOutput);
+    "health" => object;
+    "notes-add" => object;
+    "notes-update" => object;
+    "notes-remove" => object;
+    "index" => object;
 }
 
 /// Relay the JSON-args frame to the daemon and map the response envelope into a
@@ -1607,6 +1793,47 @@ mod tests {
                 );
             }
             CallOutcome::Result(_) => panic!("expected a protocol error on a relay timeout"),
+        }
+    }
+
+    /// outputSchema totality + honesty (both flag states via a sweep): every
+    /// rowed command publishes a NON-EMPTY object `outputSchema`, and NO
+    /// `required` array survives the `strip_required` projection at ANY nesting
+    /// level. schemars marks a `#[serde(skip_serializing_if)]` field as
+    /// `required` even though serde omits it when empty; a surviving `required`
+    /// would over-claim a skip-when-empty field (`candidates` / `edge_kind` /
+    /// `excluded_*`) is guaranteed present, so a real response omitting it would
+    /// fail validation — the docs-lie the strip prevents. Flag ON so the
+    /// mutators' `object` schemas are covered too.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn output_schemas_are_nonempty_objects_with_no_required() {
+        fn has_required(v: &Value) -> bool {
+            match v {
+                Value::Object(m) => m.contains_key("required") || m.values().any(has_required),
+                Value::Array(a) => a.iter().any(has_required),
+                _ => false,
+            }
+        }
+        let prior = std::env::var(crate::cli::mcp::MUTATIONS_ENV).ok();
+        std::env::set_var(crate::cli::mcp::MUTATIONS_ENV, "1");
+        for t in tool_table() {
+            let schema = command_output_schema(t.command);
+            assert!(
+                schema.as_object().is_some_and(|o| !o.is_empty()),
+                "tool `{}` outputSchema must be a non-empty JSON object, got: {schema}",
+                t.name
+            );
+            assert!(
+                !has_required(&schema),
+                "tool `{}` outputSchema must carry no `required` array (strip_required keeps \
+                 skip-when-empty fields honest), got: {schema}",
+                t.name
+            );
+        }
+        match prior {
+            Some(p) => std::env::set_var(crate::cli::mcp::MUTATIONS_ENV, p),
+            None => std::env::remove_var(crate::cli::mcp::MUTATIONS_ENV),
         }
     }
 }

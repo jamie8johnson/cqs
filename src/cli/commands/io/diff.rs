@@ -59,7 +59,7 @@ impl Default for DiffArgs {
 // ---------------------------------------------------------------------------
 
 /// A single entry in the diff output (added, removed, or modified).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DiffEntryOutput {
     name: String,
     file: String,
@@ -70,7 +70,7 @@ pub(crate) struct DiffEntryOutput {
 }
 
 /// Summary counts for the diff.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DiffSummary {
     added: usize,
     removed: usize,
@@ -80,7 +80,7 @@ pub(crate) struct DiffSummary {
 
 /// Top-level JSON output for the diff command — the single JSON-schema source
 /// shared by the CLI and daemon adapters.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DiffOutput {
     source: String,
     target: String,

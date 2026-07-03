@@ -99,7 +99,7 @@ pub(crate) type CalleesArgs = CallersArgs;
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CallerEntry {
     pub name: String,
     pub file: String,
@@ -120,7 +120,7 @@ pub(crate) struct CallerEntry {
     pub attribution: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CalleeEntry {
     pub name: String,
     pub line_start: u32,
@@ -149,7 +149,7 @@ pub(crate) fn edge_kind_field(kind: CallEdgeKind) -> String {
 /// `CallersOutput::candidates` / `CalleesOutput::candidates` when a *bare* name
 /// resolves to more than one definition, so the user learns the qualified forms
 /// they can re-query with.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DefCandidate {
     /// `Type::method`, or the bare method name for a free-function definition
     /// (no enclosing type).
@@ -162,7 +162,7 @@ pub(crate) struct DefCandidate {
 /// total}`. The mirror of [`CalleesOutput`] — both commands share one object
 /// topology so agents key-probe (`callers` vs `calls`) rather than
 /// discriminating array-vs-object.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CallersOutput {
     pub name: String,
     pub callers: Vec<CallerEntry>,
@@ -195,7 +195,7 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CalleesOutput {
     pub name: String,
     pub calls: Vec<CalleeEntry>,
@@ -214,7 +214,7 @@ pub(crate) struct CalleesOutput {
 /// a kind mismatch yields the shared fallback object. Both variants are JSON
 /// objects — agents key-probe (`callers` ⇒ function path, `fallback_from` ⇒
 /// fallback) rather than discriminating by JSON type.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum CallersCoreOutput {
     /// Function path: `{name, callers, count}`.
@@ -225,7 +225,7 @@ pub(crate) enum CallersCoreOutput {
 
 /// Single JSON-schema source for `cqs callees <name>`. Happy path is the
 /// `{name, calls, count}` object; kind mismatch is the shared fallback.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum CalleesCoreOutput {
     /// Function path: `{name, calls, count}`.
@@ -1481,6 +1481,101 @@ mod tests {
         let args: CallersArgs = serde_json::from_str(r#"{"name":"foo"}"#).unwrap();
         assert_eq!(args.name, "foo");
         assert_eq!(args.limit, crate::cli::args::DEFAULT_LIMIT);
+    }
+
+    /// MCP outputSchema shape-truth (the representative typed tool). A REAL
+    /// serialized `callers` response — the happy path with every skip-when-empty
+    /// field populated (`candidates`, per-entry `edge_kind` / `attribution`,
+    /// `excluded_other_owner`) AND the kind-fallback variant — has every emitted
+    /// object key declared as a property somewhere in the published
+    /// `outputSchema`. This pins that the derived `CallersCoreOutput` schema
+    /// actually describes the wire `data` the daemon serializes (== the bridge's
+    /// `structuredContent`): a field added to the output that the derive doesn't
+    /// pick up, or a drift between the two untagged variants and the schema, goes
+    /// RED here. (Keys of the opaque `definitions: Vec<serde_json::Value>` are not
+    /// walked — that field is honestly an "any" array in the schema.)
+    #[test]
+    fn callers_output_schema_describes_real_response() {
+        // Every property name declared anywhere in a JSON schema (top level,
+        // `$defs`, nested `anyOf` variants).
+        fn declared_props(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    if let Some(serde_json::Value::Object(props)) = m.get("properties") {
+                        out.extend(props.keys().cloned());
+                    }
+                    for child in m.values() {
+                        declared_props(child, out);
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|c| declared_props(c, out)),
+                _ => {}
+            }
+        }
+        let top_keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+
+        let schema = crate::cli::mcp::command_output_schema("callers");
+        let mut declared = std::collections::BTreeSet::new();
+        declared_props(&schema, &mut declared);
+
+        // Happy path with every skip-when-empty field populated so no field can
+        // hide from the check by being serde-skipped.
+        let happy = CallersCoreOutput::Callers(CallersOutput {
+            name: "Store::search".into(),
+            callers: vec![CallerEntry {
+                name: "caller_fn".into(),
+                file: "src/x.rs".into(),
+                line_start: 12,
+                project: "cqs".into(),
+                edge_kind: "macro_heuristic".into(),
+                attribution: "ambiguous".into(),
+            }],
+            count: 1,
+            total: 3,
+            candidates: vec![DefCandidate {
+                qualified: "Store::search".into(),
+                count: 2,
+            }],
+            excluded_other_owner: 1,
+        });
+        let fallback = CallersCoreOutput::Fallback(KindFallbackOutput {
+            kind: "type",
+            fallback_from: "callers",
+            name: "Foo".into(),
+            definitions: vec![serde_json::json!({"file": "src/y.rs", "line_start": 1})],
+            note: "Foo is a type, not a function.",
+        });
+
+        let happy_v = serde_json::to_value(&happy).expect("serialize happy");
+        let fallback_v = serde_json::to_value(&fallback).expect("serialize fallback");
+
+        // Top-level result keys of both untagged variants must be declared.
+        for v in [&happy_v, &fallback_v] {
+            for k in top_keys(v) {
+                assert!(
+                    declared.contains(&k),
+                    "callers outputSchema omits emitted result key `{k}`; declared: {declared:?}"
+                );
+            }
+        }
+        // The nested caller-entry and candidate objects (typed structs, no opaque
+        // Value) must be fully declared too.
+        for k in top_keys(&happy_v["callers"][0]) {
+            assert!(
+                declared.contains(&k),
+                "callers outputSchema omits CallerEntry key `{k}`; declared: {declared:?}"
+            );
+        }
+        for k in top_keys(&happy_v["candidates"][0]) {
+            assert!(
+                declared.contains(&k),
+                "callers outputSchema omits DefCandidate key `{k}`; declared: {declared:?}"
+            );
+        }
     }
 
     #[test]

@@ -146,7 +146,7 @@ pub(crate) fn gather_core(
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// Typed JSON output for the gather command.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct GatherOutput {
     pub query: String,
     pub chunks: Vec<serde_json::Value>,
