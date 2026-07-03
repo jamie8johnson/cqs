@@ -955,6 +955,7 @@ Quick index by domain (everything is searchable in the table below):
 | `CQS_RERANKER_BATCH` | `32` | Cross-encoder batch size per ORT run (reduce if reranker OOMs on large `--rerank-k`) |
 | `CQS_RERANKER_MAX_LENGTH` | `512` | Max input length for cross-encoder reranker |
 | `CQS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model for `--rerank` |
+| `CQS_RERANKER_PREAMBLE` | `1` | Rerank on the same `signature + doc + content` preamble the dense leg embeds (R@5 +4.6pp on both fixtures). `0` reverts to content-alone scoring. |
 | `CQS_RERANK_OVER_RETRIEVAL` | `4` | Multiplier on `--limit` for the reranker over-retrieval pool. At `--rerank --limit N`, stage-1 returns `N * MULTIPLIER` candidates so the cross-encoder has recall headroom. Bump for projects where the right answer routinely sits past rank-20 in stage-1. |
 | `CQS_RERANK_POOL_MAX` | `20` | Hard cap on the reranker pool regardless of multiplier. Caps ORT memory + per-batch latency, and avoids weak cross-encoders shuffling noise at deep ranks. Bump on workstations running a known-strong reranker. |
 | `CQS_RRF_K` | `60` | RRF fusion constant (higher = more weight to top results) |
