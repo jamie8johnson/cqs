@@ -797,9 +797,9 @@ struct ResolvedModel {
     dim: usize,
     max_seq_length: usize,
     pooling: String,
-    // always-emit: diagnostic report; null = fresh / pre-model-name index.
     /// Stored model name as recorded in `.cqs/index.db` metadata. `None` for
     /// fresh / pre-model-name indexes.
+    #[serde(skip_serializing_if = "Option::is_none")]
     stored_model_name: Option<String>,
 }
 
@@ -809,14 +809,14 @@ struct ModelFiles {
     /// happens on first `Embedder::new`).
     onnx_path: PathBuf,
     onnx_exists: bool,
-    // always-emit: diagnostic report; null = file absent (not downloaded yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
     onnx_size_bytes: Option<u64>,
     tokenizer_path: PathBuf,
     tokenizer_exists: bool,
-    // always-emit: diagnostic report; null = file absent (not downloaded yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
     tokenizer_size_bytes: Option<u64>,
-    // always-emit: diagnostic report; null = `CQS_ONNX_DIR` unset.
     /// `CQS_ONNX_DIR` directory state (Some when the env var is set).
+    #[serde(skip_serializing_if = "Option::is_none")]
     cqs_onnx_dir: Option<CqsOnnxDirState>,
 }
 
@@ -830,15 +830,15 @@ struct CqsOnnxDirState {
 
 #[derive(Debug, serde::Serialize)]
 struct DaemonState {
-    // always-emit: diagnostic report; null = non-Unix platform (no socket).
     /// Computed socket path. `None` on non-Unix platforms.
+    #[serde(skip_serializing_if = "Option::is_none")]
     socket_path: Option<PathBuf>,
     /// `true` if the path exists on disk.
     socket_exists: bool,
     /// `true` if `UnixStream::connect` succeeded. Implies `socket_exists`.
     connected: bool,
-    // always-emit: diagnostic report; null = connected (no error).
     /// Connect error text, if `connected == false` and the socket exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
     connect_error: Option<String>,
 }
 
@@ -847,25 +847,24 @@ struct IndexMeta {
     /// `.cqs/index.db` path.
     db_path: PathBuf,
     exists: bool,
-    // always-emit: diagnostic report keeps a stable field set; every field
-    // below is null when `exists == false` (index absent) or unreadable, so
-    // null distinguishes "not available" from a real value.
-    /// Rest of the fields populated only when `exists == true`.
+    /// Rest of the fields skip-when-none: absent when `exists == false` (index
+    /// absent) or unreadable; the `exists` flag is the guard the consumer reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
     schema_version: Option<i32>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     dim: Option<usize>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     stored_model_name: Option<String>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     total_chunks: Option<u64>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     total_files: Option<u64>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<String>,
-    // always-emit: diagnostic report; null = index absent/unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_indexed_at: Option<String>,
-    // always-emit: diagnostic report; null = index read succeeded (no error).
     /// Open / stats error text, if reading the index failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
     open_error: Option<String>,
 }
 
@@ -873,8 +872,8 @@ struct IndexMeta {
 struct ConfigSummary {
     project_path: PathBuf,
     project_exists: bool,
-    // always-emit: diagnostic report; null = no home-config path resolvable.
     /// `~/.config/cqs/config.toml` (or platform equivalent).
+    #[serde(skip_serializing_if = "Option::is_none")]
     user_path: Option<PathBuf>,
     user_exists: bool,
     /// One-line summaries for each config section that is set in the merged
