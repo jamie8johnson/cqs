@@ -379,7 +379,7 @@ fn search_for_rank(
             .collect();
         if code_results.len() > 1 {
             reranker
-                .rerank(query, &mut code_results, limit)
+                .rerank_with_preamble(query, &mut code_results, limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
         // `Reranker::rerank` truncates to `limit` internally for impls that
