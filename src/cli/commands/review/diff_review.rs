@@ -171,6 +171,17 @@ pub(crate) fn cmd_review(
         )?
     };
 
+    // No `skipped-no-daemon` degradation marker here (deliberate — NOT an
+    // incomplete sweep vs the graph-only commands). `search` / scout / callers /
+    // callees / impact / dead serve the parent index WHOLESALE on the CLI-direct
+    // no-daemon path, so `_meta.worktree_overlay = skipped-no-daemon` ("results
+    // reflect the parent index") is honest. Review is PARTIAL: the diff-subject
+    // half of the overlay IS applied CLI-direct (`cli_diff_overlay_root` above
+    // diffs the worktree, so `changed_functions` reflect this checkout's
+    // uncommitted edits) — only the caller-graph splice is skipped. A whole-result
+    // skip marker would deny the worktree diff subject, lying in the overstate
+    // direction, so review emits none. (ci / impact-diff / affected share this
+    // diff-subject shape.)
     if json {
         // JSON path goes through the shared core (same as the daemon).
         let output = review_core(store, root, &diff_text, &ReviewArgs { tokens: max_tokens })?;
