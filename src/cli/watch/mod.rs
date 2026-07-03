@@ -59,7 +59,7 @@ use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
 mod socket;
 #[cfg(unix)]
 use socket::{
-    handle_socket_client, max_concurrent_daemon_clients, write_daemon_error, SocketCleanupGuard,
+    handle_socket_client, max_concurrent_daemon_clients, write_daemon_busy, SocketCleanupGuard,
 };
 
 mod runtime;

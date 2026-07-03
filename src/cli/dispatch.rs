@@ -18,13 +18,25 @@ use super::telemetry;
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(cli: Cli) -> Result<()> {
-    // Telemetry (opt-in via CQS_TELEMETRY=1). The invoke event is NOT logged
-    // here: a command that forwards to the daemon is counted daemon-side (at
-    // the daemon dispatch chokepoint), so logging it here too would
-    // double-count it. Instead the CLI-surface invoke lands inside
-    // `run_with_dispatch` at the inline-dispatch chokepoint, which the
-    // daemon-forward branch returns before reaching — so a forwarded command
-    // counts exactly once (daemon), a non-forwarded one exactly once (cli).
+    // Telemetry (opt-in via CQS_TELEMETRY=1). Exactly-once contract: every
+    // invocation books ONE invoke event and ONE complete event; the two may
+    // sit on different surfaces (daemon invoke + cli complete on a fallback),
+    // but never zero and never two of either.
+    //
+    // - The invoke event is NOT logged here. A command served by the daemon is
+    //   counted daemon-side (view::dispatch_via_view, pre-dispatch); the
+    //   daemon-forward branch in `run_with_dispatch` returns before the inline
+    //   chokepoint, so a forwarded command counts once (daemon).
+    // - A non-forwarded command books its invoke at the inline chokepoint
+    //   (once, cli).
+    // - A fallback that occurred AFTER the daemon already booked its invoke
+    //   (read-budget expiry / cap-exceeded / unparseable response) suppresses
+    //   the inline chokepoint via the `daemon_booked` signal from
+    //   `try_daemon_query`, so the retried inline run does not double-book. The
+    //   complete still books cli-side here — one invoke (daemon), one complete
+    //   (cli).
+    // - This complete event ALWAYS books (both surfaces funnel through the
+    //   single Result below), so a daemon invoke never sits orphaned.
     let project_cqs_dir = cqs::resolve_index_dir(&find_project_root());
     let telem_args: Vec<String> = std::env::args().collect();
     let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
@@ -234,16 +246,30 @@ fn run_with_dispatch(
     // `slot::resolve_slot_name`) — bypass the daemon so the requested slot
     // wins instead of silently getting the daemon's startup slot. Note the
     // flag is propagated into `CQS_SLOT` above, so the env check covers both.
+    // Whether the daemon already booked a `surface:"daemon"` invoke event for
+    // this command before the CLI fell back to inline execution. When true, the
+    // inline chokepoint below MUST skip its own invoke log so the invocation
+    // still counts exactly once (see the exactly-once contract in `run_with`).
+    // Non-unix has no daemon path, so it stays false.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut daemon_booked_invoke = false;
     #[cfg(unix)]
     if cli.slot.is_none()
         && !cqs_slot_env_pins_slot()
         && std::env::var("CQS_NO_DAEMON").as_deref() != Ok("1")
     {
-        // Daemon protocol errors surface as `Err`. Transport-level failures
-        // return `Ok(None)` so CLI fallback works for those.
-        if let Some(output) = try_daemon_query(project_cqs_dir, &cli)? {
-            print!("{}", output);
-            return Ok(());
+        // Daemon protocol errors surface as `Err`. Everything else is a
+        // `Fallback` carrying whether the daemon had already booked its invoke
+        // event before the fallback (post-write) or not (never-reached-daemon /
+        // retryable busy reject).
+        match try_daemon_query(project_cqs_dir, &cli)? {
+            DaemonOutcome::Handled(output) => {
+                print!("{}", output);
+                return Ok(());
+            }
+            DaemonOutcome::Fallback { daemon_booked } => {
+                daemon_booked_invoke = daemon_booked;
+            }
         }
     }
 
@@ -280,16 +306,25 @@ fn run_with_dispatch(
     // CLI-surface invoke event. Logged here, at the inline-dispatch chokepoint,
     // rather than at the top of `run_with`: the daemon-forward branch above
     // returns before reaching this point, so a forwarded command is counted
-    // once daemon-side and an inline command once here. This is the
-    // counting-unification fix — the invoke event now lands on exactly the
-    // surface that runs the command.
-    telemetry::log_command(
-        project_cqs_dir,
-        telem_cmd,
-        telem_query,
-        None,
-        telemetry::CommandSurface::Cli,
-    );
+    // once daemon-side and an inline command once here. The invoke event lands
+    // on exactly the surface that runs the command.
+    //
+    // Exception: when the daemon ALREADY booked its invoke before the CLI fell
+    // back (a post-write fallback — read-budget expiry / oversized response /
+    // unparseable response), skip this log. Booking it again would double-count
+    // the same invocation on two surfaces; the daemon's invoke plus this run's
+    // complete event keep it exactly-once. A never-reached-daemon fallback and
+    // a retryable busy reject leave `daemon_booked_invoke` false, so they book
+    // here as normal.
+    if !daemon_booked_invoke {
+        telemetry::log_command(
+            project_cqs_dir,
+            telem_cmd,
+            telem_query,
+            None,
+            telemetry::CommandSurface::Cli,
+        );
+    }
 
     if let std::ops::ControlFlow::Break(result) = dispatch_group_a(&cli, project_cqs_dir) {
         return result;
@@ -533,17 +568,37 @@ fn overlay_force_off_flags(flag_off: bool) -> bool {
     crate::cli::commands::search::query::overlay_force_off(flag_off)
 }
 
+/// Outcome of a daemon-forward attempt.
+///
+/// The `daemon_booked` flag on `Fallback` carries the telemetry exactly-once
+/// signal to the caller: a fallback that occurred AFTER the request was written
+/// to the socket means the daemon already booked its `surface:"daemon"` invoke
+/// event (view::dispatch_via_view books pre-dispatch), so the CLI must NOT book
+/// a second invoke when it re-runs inline. A fallback that never reached the
+/// daemon — or a retryable busy reject the daemon refused before reading the
+/// request — leaves it `false`, so the inline run books its invoke normally.
+#[cfg(unix)]
+enum DaemonOutcome {
+    /// Daemon handled the request successfully — print `output` and return.
+    Handled(String),
+    /// CLI should run the command inline. `daemon_booked` is whether the daemon
+    /// already logged an invoke event for this command (post-write fallback).
+    Fallback { daemon_booked: bool },
+}
+
 /// Try to forward the current command to a running daemon.
 ///
 /// Returns:
-/// - `Ok(Some(output))` — daemon handled the request successfully.
-/// - `Ok(None)` — daemon not present, transport failed, or command isn't
-///   daemon-dispatchable (index/watch/gc/init/etc.); CLI should run inline.
+/// - `Ok(DaemonOutcome::Handled(output))` — daemon handled the request.
+/// - `Ok(DaemonOutcome::Fallback { daemon_booked })` — daemon not present,
+///   transport failed, command isn't daemon-dispatchable, or a post-write
+///   fallback/retryable reject occurred; CLI should run inline. `daemon_booked`
+///   tells the caller whether the daemon already booked its invoke event.
 /// - `Err(_)` — daemon understood the request but returned a protocol-level
 ///   error. Surfaced as a real error rather than warn-and-retry, since CLI
 ///   fallback can produce different results from the daemon path.
 #[cfg(unix)]
-fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<String>, anyhow::Error> {
+fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<DaemonOutcome, anyhow::Error> {
     // Root span so every failed-transport fallback is traceable.
     // Commands doesn't derive Debug so we log the discriminant name instead.
     let cmd_label = cli
@@ -561,7 +616,9 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // None (= default search `cqs "query"`) is always daemon-dispatchable.
     if let Some(cmd) = &cli.command {
         if cmd.batch_support() == BatchSupport::Cli {
-            return Ok(None);
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: false,
+            });
         }
     }
 
@@ -575,7 +632,9 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     // here keeps text output surface-independent at the cost of the daemon
     // fast path for text mode only; `--json` keeps the fast path.
     if !daemon_invocation_is_json(cli) {
-        return Ok(None);
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: false,
+        });
     }
 
     // `--stdin` invocations (review / ci / impact-diff with a piped diff) stay
@@ -590,13 +649,17 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                 cmd = cmd_label,
                 "--stdin invocation kept on CLI path: daemon has no client stdin on the wire"
             );
-            return Ok(None);
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: false,
+            });
         }
     }
 
     let sock_path = super::daemon_socket_path(cqs_dir);
     if !sock_path.exists() {
-        return Ok(None);
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: false,
+        });
     }
 
     use std::io::{BufRead, Write};
@@ -619,7 +682,10 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                 stage = "connect",
                 "{FALLBACK_HINT}"
             );
-            return Ok(None);
+            // Never reached the daemon — it booked nothing.
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: false,
+            });
         }
     };
 
@@ -754,13 +820,21 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     });
 
     let mut stream = stream;
+    // The request-write boundary: a failure at or before the flush means the
+    // daemon never received a complete request, so it booked no invoke. Every
+    // fallback AFTER a successful flush (below) is post-write — the daemon read
+    // the request and booked its invoke — so those carry `daemon_booked: true`.
     if let Err(e) = writeln!(stream, "{}", request) {
         tracing::warn!(error = %e, stage = "write", "{FALLBACK_HINT}");
-        return Ok(None);
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: false,
+        });
     }
     if let Err(e) = stream.flush() {
         tracing::warn!(error = %e, stage = "flush", "{FALLBACK_HINT}");
-        return Ok(None);
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: false,
+        });
     }
 
     // Bound the response so a rogue/buggy daemon can't force us to allocate
@@ -796,7 +870,12 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             } else {
                 tracing::warn!(error = %e, stage = "read", "{FALLBACK_HINT}");
             }
-            return Ok(None);
+            // Post-write: the daemon read the request and booked its invoke
+            // before this read deadline expired, so the inline retry must not
+            // book a second invoke.
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: true,
+            });
         }
     };
     if bytes_read as u64 > max_daemon_response {
@@ -812,14 +891,21 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
             cap_mib,
             "Daemon response exceeded cap — falling back to CLI"
         );
-        return Ok(None);
+        // Post-write: the daemon fully dispatched (it produced an oversized
+        // response) and booked its invoke — don't double-book on the retry.
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: true,
+        });
     }
 
     let resp: serde_json::Value = match serde_json::from_str(response_line.trim()) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, stage = "parse", "{FALLBACK_HINT}");
-            return Ok(None);
+            // Post-write: the daemon responded (unparseably) — it booked.
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: true,
+            });
         }
     };
     let status = match resp.get("status").and_then(|v| v.as_str()) {
@@ -829,7 +915,9 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                 stage = "parse",
                 "Daemon response missing 'status' field — {FALLBACK_HINT}"
             );
-            return Ok(None);
+            return Ok(DaemonOutcome::Fallback {
+                daemon_booked: true,
+            });
         }
     };
     if status == "ok" {
@@ -848,7 +936,9 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                     stage = "parse",
                     "Daemon ok response missing/unserializable output — falling back to CLI"
                 );
-                return Ok(None);
+                return Ok(DaemonOutcome::Fallback {
+                    daemon_booked: true,
+                });
             }
         };
         let text = match output {
@@ -882,7 +972,9 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                                 stage = "parse",
                                 "Daemon payload presentation failed — falling back to CLI"
                             );
-                            return Ok(None);
+                            return Ok(DaemonOutcome::Fallback {
+                                daemon_booked: true,
+                            });
                         }
                     }
                 }
@@ -902,20 +994,43 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
                             stage = "parse",
                             "Daemon ok response missing/unserializable output — falling back to CLI"
                         );
-                        return Ok(None);
+                        return Ok(DaemonOutcome::Fallback {
+                            daemon_booked: true,
+                        });
                     }
                 },
             },
         };
-        return Ok(Some(text));
+        return Ok(DaemonOutcome::Handled(text));
     }
 
-    // Daemon understood the request but surfaced an error. Transport-level
-    // failures (connect/read/write) already returned `Ok(None)` above, so
-    // reaching here means this is a daemon protocol error the user needs to
-    // see. Falling back to CLI here would mask daemon bugs and silently change
-    // results — return Err so the caller exits non-zero with the daemon's
-    // message.
+    // A retryable reject (daemon at its concurrency cap) is refused BEFORE the
+    // daemon reads the request, so it booked no invoke and doesn't even know the
+    // command. Treat it as a fallback, not a hard error: the CLI runs the
+    // command inline and books its own single invoke at the chokepoint. Booking
+    // CLI-side (never daemon-side) is the side that can't double-book on retry —
+    // the daemon never books for a reject, so only the inline run counts, once
+    // per attempt. This is the exactly-once zero-book mirror: a load-shed reject
+    // now counts once (cli), never zero.
+    if resp.get("retryable").and_then(|v| v.as_bool()) == Some(true) {
+        tracing::warn!(
+            error = resp
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("daemon busy"),
+            "daemon refused a connection (retryable) — falling back to CLI"
+        );
+        return Ok(DaemonOutcome::Fallback {
+            daemon_booked: false,
+        });
+    }
+
+    // Daemon understood the request but surfaced a non-retryable error.
+    // Transport-level failures (connect/read/write) already returned a
+    // `Fallback` above, so reaching here means this is a daemon protocol error
+    // the user needs to see. Falling back to CLI here would mask daemon bugs and
+    // silently change results — return Err so the caller exits non-zero with the
+    // daemon's message.
     let msg = resp
         .get("message")
         .and_then(|v| v.as_str())

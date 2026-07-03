@@ -19,7 +19,7 @@ use std::time::Duration;
 use cqs::embedder::{Embedder, ModelConfig};
 
 use super::{
-    daemon_should_exit, handle_socket_client, max_concurrent_daemon_clients, write_daemon_error,
+    daemon_should_exit, handle_socket_client, max_concurrent_daemon_clients, write_daemon_busy,
 };
 
 /// Spawn the daemon's accept-loop thread. Returns the join handle so
@@ -258,8 +258,11 @@ pub(super) fn spawn_daemon_thread(
                     let current = in_flight.load(Ordering::Acquire);
                     if current >= max_clients {
                         let mut s = stream;
+                        // Retryable reject (marker carried on the wire): the
+                        // client falls back to inline CLI and books its own
+                        // single invoke, since this reject books none daemon-side.
                         let _ =
-                            write_daemon_error(&mut s, "daemon busy (too many concurrent clients)");
+                            write_daemon_busy(&mut s, "daemon busy (too many concurrent clients)");
                         tracing::warn!(
                             in_flight = current,
                             cap = max_clients,
