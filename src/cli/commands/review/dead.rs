@@ -654,8 +654,20 @@ pub(crate) fn cmd_dead(
     include_pub: bool,
     min_level: DeadConfidence,
     verdict: Option<DeadVerdict>,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Dead
+    // overlays the merged call graph, and that splice builds daemon-side only; a
+    // CLI-direct run serves the parent index. Mark `_meta.worktree_overlay =
+    // skipped-no-daemon` when the overlay was wanted-and-skipped — the shared
+    // helper `search` / scout use, so the surfaces cannot diverge.
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(
+        &ctx.root,
+        overlay.overlay,
+        overlay.no_overlay,
+    );
 
     let args = DeadArgs {
         include_pub,

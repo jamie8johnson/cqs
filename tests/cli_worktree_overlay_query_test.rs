@@ -15,6 +15,12 @@
 //!   `_meta.worktree_overlay = "skipped-no-daemon"` so degradation is visible.
 //!   Opt-out (`--no-overlay` / `=0`) and non-worktree runs emit no marker. The
 //!   active seed-overlay path is covered daemon-side in `handlers/search.rs`.
+//! - `overlay_graph_family_cli_direct_marks_skipped_no_daemon`: the pure-graph
+//!   commands `callers` / `callees` / `impact` / `dead` carry the same marker
+//!   CLI-direct (they serve the parent graph WHOLESALE). `review` is deliberately
+//!   EXCLUDED (`review_cli_direct_partial_overlay_emits_no_skip_marker`): it
+//!   partially applies the overlay (diff subject = worktree), so a whole-result
+//!   skip marker would lie.
 //!
 //! Gated behind `slow-tests`: each runs `cqs init`/`index`, which cold-loads
 //! the embedder. The pure mask/merge/meta logic is covered unconditionally by
@@ -316,26 +322,43 @@ fn overlay_seed_family_non_worktree_no_marker() {
     );
 }
 
-/// #1858 Part B — `callers` / `callees` accept `--overlay` and (like scout/
-/// gather/task) build the overlay daemon-side only. CLI-direct (daemon
-/// disabled) serves the PARENT call graph: the command succeeds, and emits NO
-/// `worktree_overlay` meta and NO `overlay_graph` marker (the marker rides only
-/// when the overlay was actually applied — `"full"` on the daemon path). The
-/// active full-overlay merge is covered daemon-side by the `callers_overlay` /
-/// `callees_overlay` core tests in `src/cli/batch/handlers/graph.rs`.
+/// Graph-family CLI-direct honest degradation. `callers` / `callees` / `impact`
+/// / `dead` build their call-graph overlay daemon-side only (phase 1); a
+/// CLI-direct run (daemon disabled) serves the PARENT call graph WHOLESALE. Like
+/// `search` and the seed family, they now mark
+/// `_meta.worktree_overlay = "skipped-no-daemon"` when the overlay was
+/// wanted-and-skipped, so an agent reading the JSON can tell degradation
+/// happened. No `overlay_graph` marker rides — that appears only when the overlay
+/// actually applied (`"full"` on the daemon path). The active full-overlay merge
+/// is covered daemon-side by the `callers_overlay` / `callees_overlay` /
+/// `impact_overlay` / `dead_overlay` core tests.
+///
+/// RED before the fix: the graph adapters never called `mark_cli_direct_overlay_skip`,
+/// so the marker was absent and this assertion failed.
 #[test]
-fn overlay_callers_callees_cli_direct_serves_parent() {
+fn overlay_graph_family_cli_direct_marks_skipped_no_daemon() {
     let (_holder, _parent, wt) = fixture_with_parent_index();
 
-    for cmd_name in ["callers", "callees"] {
+    // (command, positional). `alpha` is the fixture's committed symbol; `dead`
+    // takes no positional (it scans the whole index).
+    for (cmd_name, positional) in [
+        ("callers", Some("alpha")),
+        ("callees", Some("alpha")),
+        ("impact", Some("alpha")),
+        ("dead", None),
+    ] {
         let mut cmd = cqs(&wt);
         cmd.env("CQS_WORKTREE_OVERLAY", "1");
-        let v = run_json(cmd.args([cmd_name, "alpha", "--json", "--overlay"]));
-        assert!(
-            v.get("_meta")
-                .and_then(|m| m.get("worktree_overlay"))
-                .is_none(),
-            "CLI-direct {cmd_name} serves the parent index — no worktree_overlay meta; got {v}"
+        let mut args: Vec<&str> = vec![cmd_name];
+        if let Some(p) = positional {
+            args.push(p);
+        }
+        args.extend(["--json", "--overlay"]);
+        let v = run_json(cmd.args(&args));
+        assert_eq!(
+            v.get("_meta").and_then(|m| m.get("worktree_overlay")),
+            Some(&Value::String("skipped-no-daemon".into())),
+            "CLI-direct {cmd_name} must mark skipped-no-daemon (degradation visible); got {v}"
         );
         assert!(
             v.get("_meta")
@@ -344,6 +367,100 @@ fn overlay_callers_callees_cli_direct_serves_parent() {
             "CLI-direct {cmd_name} did not overlay — no overlay_graph marker; got {v}"
         );
     }
+}
+
+/// Opt-out beats default-on for the graph family too: `--no-overlay` and the
+/// `=0` env each suppress the marker — parent-truth by contract, no degradation
+/// signal. Representative over `callers` (all four share the marker helper).
+#[test]
+fn overlay_graph_family_opt_out_no_marker() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+
+    // --no-overlay flag.
+    let v_flag = run_json(cqs(&wt).args(["callers", "alpha", "--json", "--no-overlay"]));
+    assert!(
+        v_flag
+            .get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "--no-overlay callers must emit no worktree_overlay meta; got {v_flag}"
+    );
+
+    // CQS_WORKTREE_OVERLAY=0 env opt-out.
+    let mut cmd = cqs(&wt);
+    cmd.env("CQS_WORKTREE_OVERLAY", "0");
+    let v_env = run_json(cmd.args(["callers", "alpha", "--json"]));
+    assert!(
+        v_env
+            .get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "CQS_WORKTREE_OVERLAY=0 callers must emit no worktree_overlay meta; got {v_env}"
+    );
+}
+
+/// Non-worktree parity: from a regular repo (no parent index to overlay onto),
+/// the graph family emits no `worktree_overlay` marker even under an explicit
+/// env opt-in — the default-on flip never fires outside a worktree. Mirrors
+/// `overlay_seed_family_non_worktree_no_marker` for the graph surface.
+#[test]
+fn overlay_graph_family_non_worktree_no_marker() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn compute_widget_total() -> i32 { 7 }\npub fn caller_of_widget() -> i32 { compute_widget_total() }\n",
+    )
+    .unwrap();
+    init_and_index(dir.path());
+
+    // A regular `tempfile::TempDir` is not a git worktree, so `overlay_root`
+    // returns None and the marker never fires — even under an explicit env opt-in.
+    let mut cmd = cqs(dir.path());
+    cmd.env("CQS_WORKTREE_OVERLAY", "1");
+    let v = run_json(cmd.args(["callers", "compute_widget_total", "--json"]));
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "non-worktree callers must emit no worktree_overlay meta; got {v}"
+    );
+}
+
+/// Review is deliberately EXCLUDED from the `skipped-no-daemon` marker (not an
+/// incomplete sweep). Unlike the pure-graph commands, CLI-direct review PARTIALLY
+/// applies the overlay: the diff-subject half IS applied
+/// (`cli_diff_overlay_root` diffs the worktree, so `changed_functions` reflect
+/// this checkout's uncommitted edits) while only the caller-graph splice is
+/// skipped. A whole-result `skipped-no-daemon` ("results reflect the parent
+/// index") would deny that worktree diff subject — a lie — so review emits no
+/// marker. This test pins BOTH halves: the marker is absent AND the worktree's
+/// `alpha` edit is present in `changed_functions`.
+#[test]
+fn review_cli_direct_partial_overlay_emits_no_skip_marker() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+
+    // Worktree-only edit to `alpha` (parent stays clean).
+    std::fs::write(
+        wt.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 99 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("edit worktree lib.rs");
+
+    // Explicit overlay request from the eligible worktree, daemon disabled.
+    let v = run_json(cqs(&wt).args(["review", "--json", "--overlay"]));
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "review CLI-direct partially applies the overlay (diff subject = worktree) — \
+         a whole-result skipped-no-daemon marker would lie, so it must be ABSENT; got {v}"
+    );
+    // The diff-subject half IS applied: the worktree's `alpha` edit is reviewed.
+    assert!(
+        review_changed_fn_names(&v).iter().any(|n| n == "alpha"),
+        "review CLI-direct must diff the worktree (the `alpha` edit is present): {v}"
+    );
 }
 
 /// `changed_functions` names from a v1-envelope `cqs review --json` payload
