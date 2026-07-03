@@ -233,7 +233,7 @@ impl std::str::FromStr for GatherDirection {
 }
 
 /// A gathered code chunk with context
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct GatheredChunk {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]

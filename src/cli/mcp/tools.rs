@@ -193,14 +193,19 @@ fn schema_with_overlay<T: schemars::JsonSchema>() -> Value {
 // every tool's schema can make honestly.
 //
 // Two shapes, per [`command_output_map!`]:
-// - `typed(T)`: the dispatcher serializes a typed `T` (`serde_json::to_value`)
-//   verbatim into `data`, so the derived `schema_for!(T)` describes it — with
-//   `required` stripped (see [`strip_required`]).
-// - `object`: the dispatcher builds `data` from a bespoke `json!`, an untyped
-//   `serde_json::Value` core, or a typed output whose JsonSchema derive is
-//   blocked by a borrowed / library field type. The honest schema is a bare
-//   object (no field claims). The command-core-completion follow-up upgrades
-//   these to `typed` as their cores gain derivable typed outputs.
+// - `typed(T)`: `T` describes the `data` object's wire shape via a derived
+//   `schema_for!(T)` with `required` stripped (see [`strip_required`]). `T` is
+//   EITHER the type the dispatcher serializes verbatim, OR — for a command whose
+//   `data` is a bespoke `json!` / helper-injected value / mode-branched union —
+//   a SCHEMA-ONLY descriptor whose derive reproduces that real wire shape
+//   (impact's hand-rolled `ImpactCoreOutput`; scout / task / onboard / context's
+//   injection-composite + untagged descriptors). A descriptor is never
+//   serialized; the `*_output_schema_describes_real_response` pins hold it
+//   against a real response so it can't silently drift.
+// - `object`: the honest permissive bare object ([`object_output_schema`]). As
+//   of the schema-tail pass NO command rows `object` explicitly — every tool is
+//   `typed`; the mode survives only as the graceful fallback for an unrowed
+//   command (the totality guard pins that every real tool IS rowed).
 
 /// Recursively strip every `required` array from a JSON-Schema value — top
 /// level and inside `$defs` / `properties` / `items` / `anyOf` / `allOf` /
@@ -292,9 +297,13 @@ use crate::cli::commands::{
 
 // Output (result `data`) core types for the `command_output_map!` — the typed
 // value each daemon dispatcher serializes verbatim into the slim-envelope
-// `data` (== the MCP `structuredContent`). Only the `typed(T)` commands need a
-// named type here; the `object` commands describe a bare object.
+// `data` (== the MCP `structuredContent`). Each `typed(T)` command names its
+// type here; the injection-composite / untagged commands (scout / task /
+// onboard / context) name a SCHEMA-ONLY descriptor whose derived schema
+// describes the real (helper-injected or mode-branched) wire shape without
+// being the serialized type.
 use crate::cli::commands::blame::BlameOutput;
+use crate::cli::commands::context::ContextOutputSchema;
 use crate::cli::commands::diff::DiffOutput;
 use crate::cli::commands::drift::DriftOutput;
 use crate::cli::commands::explain::ExplainOutput;
@@ -306,9 +315,12 @@ use crate::cli::commands::review::dead::DeadOutput;
 use crate::cli::commands::review::diff_review::ReviewOutput;
 use crate::cli::commands::review::suggest::SuggestOutput;
 use crate::cli::commands::search::gather::GatherOutput;
+use crate::cli::commands::search::onboard::OnboardOutputSchema;
 use crate::cli::commands::search::related::RelatedOutput;
+use crate::cli::commands::search::scout::ScoutOutputSchema;
 use crate::cli::commands::search::similar::SimilarOutput;
 use crate::cli::commands::search::where_cmd::WhereOutput;
+use crate::cli::commands::task::TaskOutputSchema;
 use crate::cli::commands::{
     CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, ImpactCoreOutput, PlanCoreOutput,
     StaleOutput, StatsOutput, TestMapCoreOutput, TraceCoreOutput,
@@ -1008,19 +1020,19 @@ command_core_map! {
 /// `outputSchema`). Each row maps a bare daemon command to the shape of the
 /// slim-envelope `data` it returns (== the `structuredContent` the bridge hands
 /// back):
-/// - `(T)`: the dispatcher serializes a typed `T` verbatim (`to_value(&output)`),
-///   so the derived [`output_schema::<T>`] describes it (with `required`
-///   stripped, since serde skip-when-empty fields must not read as guaranteed).
-/// - `object`: `data` is a bespoke `json!`, an untyped `serde_json::Value` core,
-///   or a typed output whose JsonSchema derive is blocked by a borrowed /
-///   library field type — the honest schema is a bare object
-///   ([`object_output_schema`]).
+/// - `(T)`: `T`'s derived [`output_schema::<T>`] describes the `data` object
+///   (with `required` stripped, since serde skip-when-empty fields must not read
+///   as guaranteed). `T` is the serialized type directly, OR — for a bespoke
+///   `json!` / helper-injected / mode-branched `data` — a schema-only descriptor
+///   whose derive reproduces that wire shape (held to it by a shape-truth pin).
+/// - `object`: the honest permissive bare object ([`object_output_schema`]).
+///   Every command is now `(T)`; no row uses `object` — it survives only as the
+///   `_ =>` fallback for an unrowed command (which the totality guard forbids for
+///   a real tool).
 ///
 /// Emits [`command_output_schema`] (the advertised schema generator) and, in
 /// test, [`OUTPUT_MAP_COMMANDS`] (pinned command-for-command against
-/// `tool_table` by `every_tool_table_command_has_an_output_map_row`). The
-/// `object` rows are the command-core-completion follow-up's upgrade candidates:
-/// as a command's core gains a derivable typed output, its row flips to `(T)`.
+/// `tool_table` by `every_tool_table_command_has_an_output_map_row`).
 macro_rules! command_output_map {
     ( $( $cmd:literal => $mode:tt ; )+ ) => {
         /// Advertised `outputSchema` for a tool, keyed by its bare daemon
@@ -1053,16 +1065,18 @@ macro_rules! command_output_map {
 command_output_map! {
     "search" => (SearchOutput);
     "gather" => (GatherOutput);
-    // scout / task / onboard stay `object`: each serializes a typed result
-    // (`ScoutResult` / task composite / `OnboardResult`) but then the shared
-    // content-packing + injection-flag-scan helpers layer `content` /
+    // scout / task / onboard are injection-composites: each serializes a typed
+    // result (`ScoutResult` / `TaskResult`-or-`BudgetedTaskOutput` / the
+    // `OnboardResult` chain) and then the shared helpers layer `content` /
     // `injection_flags` (into nested chunk entries) and `token_count` /
     // `token_budget` (top level) ONTO the serialized value. A derived schema of
-    // the base type would omit those injected keys; reproducing them in a manual
-    // schema would duplicate the injection contract and drift. Honest object.
-    "scout" => object;
-    "task" => object;
-    "onboard" => object;
+    // the base type alone would omit those injected keys, so each names a
+    // SCHEMA-ONLY descriptor mirroring the injected shape (base fields reused by
+    // type / flatten, injected fields added) — never serialized, pinned against a
+    // real response by `*_output_schema_describes_real_response`.
+    "scout" => (ScoutOutputSchema);
+    "task" => (TaskOutputSchema);
+    "onboard" => (OnboardOutputSchema);
     "similar" => (SimilarOutput);
     "callers" => (CallersCoreOutput);
     "callees" => (CalleesCoreOutput);
@@ -1075,9 +1089,10 @@ command_output_map! {
     "test-map" => (TestMapCoreOutput);
     "trace" => (TraceCoreOutput);
     "explain" => (ExplainOutput);
-    // context stays `object`: three branch shapes (compact / summary / full)
-    // assembled from bespoke `json!` in `context_core`, not one typed value.
-    "context" => object;
+    // context's three branch shapes (compact / summary / full) are each a typed
+    // serialization; `ContextOutputSchema` is their untagged union (anyOf), the
+    // schema-only descriptor pinned by `context_output_schema_describes_real_response`.
+    "context" => (ContextOutputSchema);
     "blame" => (BlameOutput<'static>);
     "diff" => (DiffOutput);
     "drift" => (DriftOutput);
@@ -1098,6 +1113,63 @@ command_output_map! {
     "notes-update" => (NoteMutationDaemonOutput);
     "notes-remove" => (NoteMutationDaemonOutput);
     "index" => (IndexQueuedOutput);
+}
+
+/// Test-only shape-truth assertion shared by the per-command
+/// `*_output_schema_describes_real_response` pins. Asserts every object key in
+/// `response` (walked recursively, NOT descending into the `opaque_keys` — the
+/// honestly-untyped `Vec<serde_json::Value>` subtrees whose schema stays `true`)
+/// is declared somewhere in the published `command_output_schema(command)` — its
+/// top-level `properties`, a nested one, a `$defs` entry, or a
+/// `#[schemars(with)]` descriptor. A field a real response emits but the schema
+/// omits (a silent drift / docs-lie) fails here. The envelope-sibling `_meta`
+/// key (split out of `data` by `write_json_line_lifting_meta`, never part of the
+/// schema) is ignored.
+#[cfg(test)]
+pub(crate) fn assert_response_keys_declared(command: &str, response: &Value, opaque_keys: &[&str]) {
+    use std::collections::BTreeSet;
+
+    fn collect_declared(schema: &Value, out: &mut BTreeSet<String>) {
+        match schema {
+            Value::Object(m) => {
+                if let Some(Value::Object(props)) = m.get("properties") {
+                    out.extend(props.keys().cloned());
+                }
+                for v in m.values() {
+                    collect_declared(v, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|v| collect_declared(v, out)),
+            _ => {}
+        }
+    }
+    fn collect_emitted(resp: &Value, opaque: &[&str], out: &mut BTreeSet<String>) {
+        match resp {
+            Value::Object(m) => {
+                for (k, v) in m {
+                    out.insert(k.clone());
+                    if !opaque.contains(&k.as_str()) {
+                        collect_emitted(v, opaque, out);
+                    }
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|v| collect_emitted(v, opaque, out)),
+            _ => {}
+        }
+    }
+
+    let schema = command_output_schema(command);
+    let mut declared = BTreeSet::new();
+    collect_declared(&schema, &mut declared);
+    let mut emitted = BTreeSet::new();
+    collect_emitted(response, opaque_keys, &mut emitted);
+    emitted.remove("_meta");
+
+    let missing: Vec<&String> = emitted.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "`{command}` outputSchema omits emitted key(s) {missing:?}; declared: {declared:?}"
+    );
 }
 
 /// Relay the JSON-args frame to the daemon and map the response envelope into a

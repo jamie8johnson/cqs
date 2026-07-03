@@ -281,7 +281,12 @@ pub(crate) struct KindFallbackOutput {
     pub fallback_from: &'static str,
     /// The queried name.
     pub name: String,
-    /// Capped, content-truncated definition sites for the name.
+    /// Capped, content-truncated definition sites for the name. Stays
+    /// `Vec<serde_json::Value>` on the wire (the hand-built
+    /// [`chunk_to_definition_value`] objects); the MCP `outputSchema` describes
+    /// each entry via the schema-only [`DefinitionEntrySchema`] (serialization
+    /// untouched — `#[schemars(with)]` overrides only the schema).
+    #[schemars(with = "Vec<DefinitionEntrySchema>")]
     pub definitions: Vec<serde_json::Value>,
     /// Agent-facing redirect explaining why the command doesn't apply.
     pub note: &'static str,
@@ -361,6 +366,39 @@ pub(crate) const KIND_FALLBACK_MAX_DEFINITIONS: usize = 100;
 /// `"... (truncated)"` and the entry gains a `truncated: true` field
 /// so consumers can distinguish capped chunks from full ones.
 pub(crate) const KIND_FALLBACK_MAX_CONTENT_BYTES: usize = 2048;
+
+/// Schema-only descriptor for one `definitions[]` / `candidates[]` entry — the
+/// wire shape [`chunk_to_definition_value`] builds by hand from a bespoke
+/// `serde_json::Map`. It is NEVER serialized (the real entries stay
+/// `serde_json::Value`); it exists solely so the MCP `outputSchema` for the
+/// kind-fallback commands (`impact` fallback via `KindFallbackOutput`, `trace`
+/// candidates + fallback) can describe those otherwise-opaque `Vec<Value>`
+/// arrays via `#[schemars(with = "Vec<DefinitionEntrySchema>")]`. Optional
+/// fields are declared as plain types (not `Option`), so `strip_required`
+/// renders them present-or-absent without a spurious `null` in the type union.
+/// The per-command shape-truth pins hold this against a real serialized entry.
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct DefinitionEntrySchema {
+    /// Normalized definition-site path.
+    pub file: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    /// Language, lowercased (`c.language.to_string()`).
+    pub language: String,
+    /// Chunk type, lowercased (`c.chunk_type.to_string()`).
+    pub chunk_type: String,
+    pub signature: String,
+    /// Possibly content-truncated (see [`KIND_FALLBACK_MAX_CONTENT_BYTES`]).
+    pub content: String,
+    /// Present (`true`) only when `content` was truncated (skip-when-false).
+    pub truncated: bool,
+    /// `"vendored-code"` when the chunk is vendored (skip-when-default).
+    pub trust_level: String,
+    /// Injection heuristics that fired on the relayed signature+content
+    /// (skip-when-empty).
+    pub injection_flags: Vec<String>,
+}
 
 /// Shared chunk-to-definition transformation for every CLI-direct kind
 /// fallback (callers, callees, deps, impact, test-map, trace) and the

@@ -17,7 +17,7 @@ use crate::{AnalysisError, Store};
 /// when adding new conventions. Adding a new naming convention or error handling
 /// style is a single function change in `detect_naming_convention()` or
 /// `extract_patterns()`.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct LocalPatterns {
     /// Common imports/use statements
     pub imports: Vec<String>,
@@ -32,7 +32,7 @@ pub struct LocalPatterns {
 }
 
 /// Suggestion for where to place new code
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct FileSuggestion {
     /// File path
     #[serde(serialize_with = "crate::serialize_path_normalized")]
