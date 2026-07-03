@@ -271,6 +271,7 @@ pub(crate) fn cmd_impact(
     do_suggest_tests: bool,
     include_types: bool,
     cross_project: bool,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name, limit, cross_project).entered();
     let store = &ctx.store;
@@ -313,6 +314,18 @@ pub(crate) fn cmd_impact(
         }
         return Ok(());
     }
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). Impact
+    // overlays ONLY its direct-callers section, and that splice builds
+    // daemon-side only; a CLI-direct single-project run serves the parent index.
+    // Mark `_meta.worktree_overlay = skipped-no-daemon` when the overlay was
+    // wanted-and-skipped (the shared helper `search` / scout use). After the
+    // cross-project return, which never applies the overlay.
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(
+        root,
+        overlay.overlay,
+        overlay.no_overlay,
+    );
 
     let args = ImpactArgs {
         name: name.to_string(),

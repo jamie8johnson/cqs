@@ -1121,6 +1121,7 @@ pub(crate) fn cmd_callers(
     cross_project: bool,
     edge_kind: Option<CallEdgeKind>,
     json: bool,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name, limit, cross_project).entered();
     let store = &ctx.store;
@@ -1164,6 +1165,20 @@ pub(crate) fn cmd_callers(
         }
         return Ok(());
     }
+
+    // Worktree-overlay CLI-direct degradation (result-trust §3, plan §8). The
+    // call-graph overlay builds daemon-side only (phase 1); reaching this
+    // in-process single-project path means no daemon answered, so the whole
+    // caller set is the PARENT index. Mark `_meta.worktree_overlay =
+    // skipped-no-daemon` when the overlay was wanted-and-skipped — the shared
+    // helper `search` / scout use, so the surfaces cannot diverge. Placed after
+    // the cross-project return: cross-project never applies the overlay (the
+    // daemon likewise skips it there), so it must carry no skip marker.
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(
+        &ctx.root,
+        overlay.overlay,
+        overlay.no_overlay,
+    );
 
     // Standard single-project path — delegate to the shared core.
     match callers_core(
@@ -1339,6 +1354,7 @@ pub(crate) fn cmd_callees(
     cross_project: bool,
     edge_kind: Option<CallEdgeKind>,
     json: bool,
+    overlay: &crate::cli::args::OverlayArgs,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name, limit, cross_project).entered();
     let store = &ctx.store;
@@ -1378,6 +1394,16 @@ pub(crate) fn cmd_callees(
         }
         return Ok(());
     }
+
+    // Worktree-overlay CLI-direct degradation — see `cmd_callers`. The callee
+    // overlay also builds daemon-side only, so a CLI-direct single-project run
+    // serves the parent call graph; mark the wanted-and-skipped case. After the
+    // cross-project return (which never overlays).
+    let _ = crate::cli::commands::mark_cli_direct_overlay_skip(
+        &ctx.root,
+        overlay.overlay,
+        overlay.no_overlay,
+    );
 
     // Standard single-project path — delegate to the shared core.
     match callees_core(

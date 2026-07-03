@@ -558,6 +558,7 @@ pub fn cmd_callers_dispatch(
             args.cross_project,
             edge_kind,
             cli.json || output.json,
+            &args.overlay,
         )
     })
 }
@@ -578,6 +579,7 @@ pub fn cmd_callees_dispatch(
             args.cross_project,
             edge_kind,
             cli.json || output.json,
+            &args.overlay,
         )
     })
 }
@@ -685,6 +687,7 @@ pub fn cmd_impact_dispatch(
             args.suggest_tests,
             args.type_impact,
             args.cross_project,
+            &args.overlay,
         )
     })
 }
@@ -827,6 +830,7 @@ pub fn cmd_dead_dispatch(
             args.include_pub,
             args.min_confidence,
             verdict,
+            &args.overlay,
         )
     })
 }
