@@ -43,7 +43,7 @@
 --      umap-learn projection. /api/embed/2d skips chunks where coords are NULL.
 -- v21: parser_version column on chunks so incremental UPSERT can refresh rows
 --      whose content_hash hasn't changed but whose parser-emitted fields (e.g.
---      `doc` from extract_doc_fallback_for_short_chunk) would now differ. The
+--      `doc` from extract_leading_comment_doc) would now differ. The
 --      WHERE clause in batch_insert_chunks's ON CONFLICT path additionally
 --      checks `OR parser_version != excluded.parser_version`, and
 --      upsert_fts_conditional uses the same OR filter when comparing the
