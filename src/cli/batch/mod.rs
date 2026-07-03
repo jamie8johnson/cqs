@@ -81,7 +81,7 @@ use cqs::reference::ReferenceIndex;
 use cqs::store::{ReadOnly, Store};
 use cqs::Embedder;
 
-use super::open_project_store_readonly;
+use super::open_project_store_readonly_for_slot;
 
 /// A write-back cache cell value tagged with the `invalidation_epoch` it was
 /// published at. The shared mutable caches (`hnsw`, `base_hnsw`, `file_set`,
@@ -937,12 +937,14 @@ mod tests {
         write_active_slot(&project_cqs, "a").unwrap();
         let store_a = Store::<ReadOnly>::open_readonly_after_init(&a_index, |_| Ok(())).unwrap();
         let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&project_cqs));
+        // No explicit `--slot` pin — the context follows the active slot.
         let ctx = context::BatchContext::new(
             store_a,
             dir.path().to_path_buf(),
             project_cqs.clone(),
             ModelConfig::resolve(None, None).apply_env_overrides(),
             index_id,
+            None,
         );
 
         // Baseline query serves slot a (1 note). `store()` runs the staleness
@@ -976,6 +978,113 @@ mod tests {
             ctx.index_id.get(),
             DbFileIdentity::from_path(&b_index),
             "query side must re-resolve index identity to the promoted slot"
+        );
+    }
+
+    /// The inverse of the self-heal contract: an explicit `--slot X` pin makes
+    /// the query side IGNORE a `cqs slot promote`. The write side is already
+    /// pinned (`maybe_rebind_active_slot` declines on an explicit slot); this
+    /// test proves the query side holds the same pin so the daemon does not end
+    /// up serving the promoted slot Y while writing the pinned slot X.
+    ///
+    /// Same two-slot fixture as `same_model_slot_promote_self_heals_query_side`,
+    /// but the context is constructed with `explicit_slot = Some("a")`. After a
+    /// promote to b (active-slot pointer flipped, distinct note count), the pin
+    /// must keep the query side resolving slot a: served data stays 1 note, the
+    /// caches are NOT invalidated, and the resolved identity stays a's.
+    #[cfg(unix)]
+    #[test]
+    fn explicit_slot_pin_ignores_promote_on_query_side() {
+        use cqs::note::Note;
+        use cqs::slot::{slot_dir, write_active_slot};
+
+        fn note(text: &str) -> Note {
+            Note {
+                id: format!("note:{text}"),
+                text: text.to_string(),
+                sentiment: 0.0,
+                mentions: Vec::new(),
+                kind: None,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let project_cqs = dir.path().join(".cqs");
+        let slot_a = slot_dir(&project_cqs, "a");
+        let slot_b = slot_dir(&project_cqs, "b");
+        std::fs::create_dir_all(&slot_a).unwrap();
+        std::fs::create_dir_all(&slot_b).unwrap();
+        let a_index = slot_a.join(cqs::INDEX_DB_FILENAME);
+        let b_index = slot_b.join(cqs::INDEX_DB_FILENAME);
+        {
+            let store = Store::open(&a_index).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store
+                .upsert_notes_batch(&[note("a-1")], std::path::Path::new("docs/notes.toml"), 0)
+                .unwrap();
+        }
+        {
+            let store = Store::open(&b_index).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            store
+                .upsert_notes_batch(
+                    &[note("b-1"), note("b-2")],
+                    std::path::Path::new("docs/notes.toml"),
+                    0,
+                )
+                .unwrap();
+        }
+
+        // Active = a and the context is PINNED to a. The pin resolves the index
+        // directly from slot a, ignoring the active-slot file.
+        write_active_slot(&project_cqs, "a").unwrap();
+        let store_a = Store::<ReadOnly>::open_readonly_after_init(&a_index, |_| Ok(())).unwrap();
+        let index_id =
+            DbFileIdentity::from_path(&cqs::resolve_index_db_for_slot(&project_cqs, Some("a")));
+        let ctx = context::BatchContext::new(
+            store_a,
+            dir.path().to_path_buf(),
+            project_cqs.clone(),
+            ModelConfig::resolve(None, None).apply_env_overrides(),
+            index_id,
+            Some("a".to_string()),
+        );
+
+        // Baseline query serves slot a (1 note), establishing the identity
+        // baseline with no invalidation.
+        assert_eq!(
+            ctx.store().note_count().unwrap(),
+            1,
+            "baseline pinned query must serve the pinned slot (a)"
+        );
+        let sentinel = tagged(&ctx, std::sync::Arc::new(vec![]));
+        *ctx.notes_cache.lock().unwrap() = sentinel;
+
+        // Promote to b (active-slot pointer flips). A pinned daemon must NOT
+        // follow it — the write side already declines the rebind.
+        write_active_slot(&project_cqs, "b").unwrap();
+        ctx.last_staleness_check.set(None);
+
+        // Next query stays on the pinned slot a (1 note), NOT the promoted b.
+        let served = ctx.store();
+        assert_eq!(
+            served.note_count().unwrap(),
+            1,
+            "explicit --slot pin must keep serving slot a after a promote to b"
+        );
+        assert!(
+            ctx.notes_cache.lock().unwrap().is_some(),
+            "a pinned no-op promote must NOT invalidate the query-side caches"
+        );
+        assert_eq!(
+            ctx.index_id.get(),
+            DbFileIdentity::from_path(&a_index),
+            "pinned query side must keep resolving the pinned slot's identity (a)"
+        );
+        assert_ne!(
+            ctx.index_id.get(),
+            DbFileIdentity::from_path(&b_index),
+            "pinned query side must never resolve the promoted slot (b)"
         );
     }
 

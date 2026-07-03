@@ -406,6 +406,35 @@ pub fn resolve_index_db(project_cqs_dir: &Path) -> PathBuf {
     crate::slot::slot_dir(project_cqs_dir, crate::slot::DEFAULT_SLOT).join(INDEX_DB_FILENAME)
 }
 
+/// Resolve the active index.db path, honoring an optional explicit slot pin.
+///
+/// When `explicit_slot` is `Some(name)`, the index resolves directly from that
+/// slot — the `active_slot` file AND the `CQS_SLOT` env are both ignored (the
+/// pin beats the file), so a `cqs slot promote` cannot flip a pinned serving
+/// daemon off its bound slot. When `None`, behavior is byte-identical to
+/// [`resolve_index_db`] (the common systemd deployment with no `--slot`).
+///
+/// The pinned path is returned even when it does not yet exist — mirroring
+/// [`resolve_index_db`]'s forward-looking tail so the caller's "not found"
+/// error points at the pinned layout rather than a fallback slot's.
+pub fn resolve_index_db_for_slot(project_cqs_dir: &Path, explicit_slot: Option<&str>) -> PathBuf {
+    let Some(name) = explicit_slot else {
+        return resolve_index_db(project_cqs_dir);
+    };
+    // A malformed pin must never build a path join from unvalidated input; fall
+    // back to file-resolved behavior with a warn. The watch side already
+    // validated a real `--slot`, so this branch is defense-in-depth.
+    if let Err(e) = crate::slot::validate_slot_name(name) {
+        tracing::warn!(
+            slot = name,
+            error = %e,
+            "explicit slot pin invalid — falling back to active-slot resolution"
+        );
+        return resolve_index_db(project_cqs_dir);
+    }
+    crate::slot::slot_dir(project_cqs_dir, name).join(INDEX_DB_FILENAME)
+}
+
 /// Default embedding dimension, derived from `ModelConfig::default_model().dim`.
 /// The actual dimension is detected at runtime from the model output.
 /// Use `Embedder::embedding_dim()` for the runtime value.

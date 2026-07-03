@@ -9,9 +9,12 @@ use super::*;
 
 /// Create a shared batch context: open store, prepare lazy caches.
 ///
-/// Used by both `cmd_batch` and `cmd_chat`.
-pub(crate) fn create_context() -> Result<BatchContext> {
-    create_context_with_runtime(None)
+/// Used by both `cmd_batch` and `cmd_chat`. `explicit_slot` carries the
+/// `--slot X` flag (the same one the watch side reads) so a pinned batch /
+/// chat session resolves the index directly from that slot; `None` follows the
+/// active slot as before.
+pub(crate) fn create_context(explicit_slot: Option<String>) -> Result<BatchContext> {
+    create_context_with_runtime(None, explicit_slot)
 }
 
 /// Variant that reuses a caller-supplied tokio runtime so the daemon
@@ -23,10 +26,16 @@ pub(crate) fn create_context() -> Result<BatchContext> {
 /// read-only Store.
 pub(crate) fn create_context_with_runtime(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    explicit_slot: Option<String>,
 ) -> Result<BatchContext> {
     let root = crate::cli::config::find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs::resolve_index_db(&cqs_dir);
+    // `explicit_slot` pins the query side to the operator's `--slot X`: the
+    // index resolves straight from that slot, ignoring the `active_slot` file,
+    // so a concurrent `cqs slot promote` cannot flip the served slot out from
+    // under a pinned daemon. `None` follows the active slot (byte-identical to
+    // the prior behavior — the common no-`--slot` deployment).
+    let index_path = cqs::resolve_index_db_for_slot(&cqs_dir, explicit_slot.as_deref());
     if !index_path.exists() {
         anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
@@ -35,7 +44,10 @@ pub(crate) fn create_context_with_runtime(
             anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e)
         })?
     } else {
-        let (s, _root, _cqs_dir) = open_project_store_readonly()?;
+        // Open the store through the same slot pin so the initial snapshot and
+        // the staleness resolution agree on the bound slot. `None` resolves
+        // via the active slot exactly as `open_project_store_readonly` did.
+        let (s, _paths) = open_project_store_readonly_for_slot(explicit_slot.as_deref())?;
         s
     };
     // Capture initial index.db identity (inode/size/mtime on unix).
@@ -44,9 +56,12 @@ pub(crate) fn create_context_with_runtime(
     // `.cqs/slots/<active>/index.db`, where a literal `cqs_dir/index.db` join
     // points at a path that doesn't exist, `from_path` returns None, and the
     // daemon's mutable caches never invalidate when the operator runs
-    // `cqs index`. `resolve_index_db` honors slot resolution and falls back
-    // cleanly on legacy projects.
-    let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db(&cqs_dir));
+    // `cqs index`. `resolve_index_db_for_slot` honors slot resolution (and the
+    // explicit `--slot` pin) and falls back cleanly on legacy projects.
+    let index_id = DbFileIdentity::from_path(&cqs::resolve_index_db_for_slot(
+        &cqs_dir,
+        explicit_slot.as_deref(),
+    ));
     if index_id.is_none() {
         tracing::debug!("Could not stat index.db — staleness detection will be skipped until first successful stat");
     }
@@ -77,6 +92,7 @@ pub(crate) fn create_context_with_runtime(
         cqs_dir,
         model_config,
         index_id,
+        explicit_slot,
     ))
 }
 
@@ -109,14 +125,21 @@ pub(in crate::cli) fn create_test_context(cqs_dir: &std::path::Path) -> Result<B
         cqs_dir.to_path_buf(),
         ModelConfig::resolve(None, None).apply_env_overrides(),
         index_id,
+        // No slot pin in the test fixture — the test store is opened directly,
+        // not through slot resolution.
+        None,
     ))
 }
 
 /// Entry point for `cqs batch`.
-pub(crate) fn cmd_batch() -> Result<()> {
+///
+/// `explicit_slot` carries the `--slot X` flag so a pinned batch session
+/// resolves its index directly from that slot (mirrors the daemon pin); `None`
+/// follows the active slot.
+pub(crate) fn cmd_batch(explicit_slot: Option<String>) -> Result<()> {
     let _span = tracing::info_span!("cmd_batch").entered();
 
-    let ctx = create_context()?;
+    let ctx = create_context(explicit_slot)?;
     ctx.warm(); // Pre-warm embedder so first query doesn't pay ~500ms ONNX init
                 // Clone the error-count Arc out before wrapping ctx in
                 // `Arc<Mutex<...>>`. The pre-dispatch error paths (line-too-long,

@@ -639,6 +639,11 @@ pub(crate) struct BatchView {
     pub model_config: cqs::embedder::ModelConfig,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
+    /// Explicit `--slot X` pin cloned from the BatchContext at checkout, or
+    /// `None` for the no-`--slot` deployment. Snapshot-side mirror of
+    /// [`BatchContext::explicit_slot`] so the view's own slot resolution (the
+    /// `ping_snapshot` `last_indexed_at` read) stays on the pinned slot.
+    pub(super) explicit_slot: Option<String>,
     /// Counter handles. `Arc<AtomicU64>` so handlers and the daemon both
     /// see the same counter without re-locking the outer BatchContext.
     pub(crate) error_count: Arc<AtomicU64>,
@@ -1573,12 +1578,15 @@ impl BatchView {
         // Surface overflow as None (treated same as "missing mtime") instead
         // of silently wrapping past `i64::MAX`. Different shape from
         // `unix_secs_i64()` — reads file mtime, not wall-clock.
-        // Slot-aware index resolution.
-        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db(&self.cqs_dir))
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|d| i64::try_from(d.as_secs()).ok());
+        // Slot-aware index resolution (honors an explicit `--slot` pin).
+        let last_indexed_at = std::fs::metadata(cqs::resolve_index_db_for_slot(
+            &self.cqs_dir,
+            self.explicit_slot.as_deref(),
+        ))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_secs()).ok());
         let splade_loaded = self
             .splade_encoder_slot
             .get()

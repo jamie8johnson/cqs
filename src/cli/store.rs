@@ -117,18 +117,11 @@ pub(crate) fn open_project_store_for_slot(
     open_store_with(cqs::Store::open, slot_flag)
 }
 
-/// Open the project store with a single-threaded runtime for read-only commands.
-/// Same as [`open_project_store`] but uses `Store::open_readonly_pooled()` which creates a
-/// `current_thread` tokio runtime (1 OS thread) instead of `multi_thread` (4 OS threads).
-/// Keeps full 256MB mmap and 16MB cache for search performance.
-pub(crate) fn open_project_store_readonly(
-) -> Result<(cqs::Store<cqs::store::ReadOnly>, PathBuf, PathBuf)> {
-    let (store, paths) = open_store_with(cqs::Store::open_readonly_pooled, None)?;
-    Ok((store, paths.root, paths.slot_dir))
-}
-
 /// Slot-aware read-only open. Honors `--slot`/env/file resolution for query
-/// commands flowing through [`CommandContext`].
+/// commands flowing through [`CommandContext`]. Uses `Store::open_readonly_pooled()`,
+/// which creates a `current_thread` tokio runtime (1 OS thread) instead of
+/// `multi_thread` (4 OS threads), keeping full 256MB mmap and 16MB cache for
+/// search performance. Pass `slot_flag: None` for active-slot-default behavior.
 pub(crate) fn open_project_store_readonly_for_slot(
     slot_flag: Option<&str>,
 ) -> Result<(cqs::Store<cqs::store::ReadOnly>, SlotPaths)> {

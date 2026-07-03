@@ -1369,6 +1369,10 @@ pub fn cmd_watch(
                 daemon_pending_notes_signal,
                 daemon_fresh_notifier,
                 daemon_in_flight,
+                // Pin the query side to the same explicit `--slot` the write
+                // side honors, so a `cqs slot promote` cannot flip only the
+                // served slot out from under a pinned daemon.
+                cli.slot.clone(),
             );
             Some(thread)
         } else {
