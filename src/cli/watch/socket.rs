@@ -423,6 +423,25 @@ pub(super) fn write_daemon_error(
     write_response_frame(stream, &resp)
 }
 
+/// Write a RETRYABLE reject: the daemon refused this connection transiently
+/// (at its concurrency cap) before reading the request, so it booked no invoke
+/// and doesn't know the command. The extra `retryable: true` marker tells the
+/// CLI client to fall back to inline execution — and book its own single
+/// invoke — instead of surfacing a hard error. Distinguished from
+/// [`write_daemon_error`] (a deterministic protocol error the client must NOT
+/// retry over, lest it mask a daemon bug).
+pub(super) fn write_daemon_busy(
+    stream: &mut std::os::unix::net::UnixStream,
+    message: &str,
+) -> std::io::Result<()> {
+    let resp = serde_json::json!({
+        "status": "error",
+        "message": message,
+        "retryable": true,
+    });
+    write_response_frame(stream, &resp)
+}
+
 /// Trim a trailing `\n` (and optional `\r`) from `buf` and return the
 /// resulting slice. Mirrors `str::trim_end_matches` for newline cases
 /// without forcing a UTF-8 validation step on the way in.

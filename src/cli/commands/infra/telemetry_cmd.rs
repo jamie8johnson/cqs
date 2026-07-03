@@ -49,8 +49,12 @@ pub(crate) struct TelemetryOutput {
     /// its inline invocations and the daemon logs the commands it serves
     /// (daemon / MCP), each tagged with a `surface` field — so
     /// `kind_fallbacks[cmd]` (recorded wherever a fallback fires) is comparable
-    /// to it as a per-invocation rate. One residual caveat: telemetry written
-    /// before counting was unified undercounts daemon-served traffic, so on an
+    /// to it as a per-invocation rate. Each invocation books its invoke event
+    /// exactly once even under relay degradation: a daemon-booked invoke that
+    /// falls back to inline CLI is not re-booked, and a busy reject that never
+    /// reached the daemon books once CLI-side, so a live log never double-counts
+    /// or drops an invoke. One residual caveat: telemetry written before
+    /// counting was unified undercounts daemon-served traffic, so on an
     /// archived/pre-unification log `kind_fallbacks[cmd]` can still exceed
     /// `commands[cmd]`; the renderer shows raw counts rather than a misleading
     /// `>100%` in that case. This map stays a fallback tally, not a
@@ -711,13 +715,16 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     // Kind-mismatch fallbacks (Phase-2 routing signal). `kind_fallbacks` is
     // keyed by the top-level command, the same bucket as `commands`. Render the
     // rate only when the count fits inside the invocation total
-    // (`fb_count <= cmd_total`). Counting is now unified across surfaces (the
-    // daemon logs the commands it serves), so the rate is comparable for fresh
-    // logs; but telemetry written before unification undercounts daemon-served
-    // traffic, so on an archived log `fb_count` can still exceed `cmd_total` —
-    // show raw counts in that case rather than a misleading `>100%`. The
-    // `fallback_from` sub-op breakdown is printed indented beneath each command
-    // so the firing graph core stays visible without becoming a top-level bucket.
+    // (`fb_count <= cmd_total`). Counting is unified across surfaces (the daemon
+    // logs the commands it serves) AND exactly-once per invocation even under
+    // relay degradation (a daemon-booked invoke that falls back to inline CLI is
+    // not re-booked; a busy reject books once CLI-side), so a fresh log's rate
+    // is always `<= 100%`. Only telemetry written before unification undercounts
+    // daemon-served traffic, so only an archived log can push `fb_count` past
+    // `cmd_total` — show raw counts in that case rather than a misleading
+    // `>100%`. The `fallback_from` sub-op breakdown is printed indented beneath
+    // each command so the firing graph core stays visible without becoming a
+    // top-level bucket.
     if !output.kind_fallbacks.is_empty() {
         println!();
         println!("{}:", "Kind Fallbacks".cyan());
@@ -1191,6 +1198,58 @@ mod tests {
             fallbacks <= invocations,
             "single-core fallback count must not exceed its invocation total \
              (no >100% rate): {fallbacks} > {invocations}"
+        );
+    }
+
+    /// Dashboard coherence over a log written by the exactly-once relay path.
+    /// Each `impact` invocation contributes ONE invoke row regardless of how the
+    /// relay degraded: a normal daemon forward (surface daemon), a post-write
+    /// timeout fallback (only the daemon's pre-dispatch invoke survives — the
+    /// inline retry does NOT re-book), and a busy reject (booked once cli-side).
+    /// Three invocations → `commands[impact] == 3`; the two that also fell back
+    /// to a kind-mismatch keep `kind_fallbacks[impact] <= commands[impact]`, so
+    /// the rate stays within bounds — no `>100%` (equivalently, no negative
+    /// implied non-fallback count).
+    #[test]
+    fn telemetry_relay_fallback_sequences_stay_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                // 1) Normal daemon forward: one daemon invoke.
+                r#"{"cmd":"impact","query":"A","results":null,"surface":"daemon","ts":3001}"#,
+                r#"{"event":"complete","cmd":"impact","ok":true,"duration_ms":4,"ts":3001}"#,
+                // 2) Post-write timeout fallback: ONLY the daemon's pre-dispatch
+                //    invoke — the inline retry suppressed its own. Plus a kind
+                //    fallback fired on the retry.
+                r#"{"cmd":"impact","query":"B","results":null,"surface":"daemon","ts":3002}"#,
+                r#"{"event":"kind_fallback","cmd":"impact","fallback_from":"impact","kind":"type","name":"B","definitions":1,"ts":3002}"#,
+                r#"{"event":"complete","cmd":"impact","ok":false,"duration_ms":260,"ts":3002}"#,
+                // 3) Busy reject: booked once cli-side after fallback, with a
+                //    kind fallback on the inline run.
+                r#"{"cmd":"impact","query":"C","results":null,"surface":"cli","ts":3003}"#,
+                r#"{"event":"kind_fallback","cmd":"impact","fallback_from":"impact","kind":"const","name":"C","definitions":1,"ts":3003}"#,
+                r#"{"event":"complete","cmd":"impact","ok":false,"duration_ms":3,"ts":3003}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(
+            out.commands.get("impact").copied(),
+            Some(3),
+            "three invocations, each booked exactly one invoke — no double/zero-book"
+        );
+        let invocations = out.commands.get("impact").copied().unwrap_or(0);
+        let fallbacks = out.kind_fallbacks.get("impact").copied().unwrap_or(0);
+        assert_eq!(fallbacks, 2, "two of the three invocations fell back");
+        assert!(
+            fallbacks <= invocations,
+            "fallback rate must stay within bounds (no >100%): {fallbacks} > {invocations}"
+        );
+        // `complete` events are annotations, not counted invocations.
+        assert_eq!(
+            out.events, 3,
+            "complete/kind_fallback events must not inflate the invocation total"
         );
     }
 

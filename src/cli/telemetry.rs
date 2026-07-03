@@ -85,6 +85,61 @@ fn redact_query_opt(query: Option<&str>) -> Option<String> {
     query.map(redact_query_str)
 }
 
+/// Taxonomy codes that may prefix a daemon-path error string
+/// (`"daemon error: <code>: <message>…"`). Mirrors
+/// [`crate::cli::json_envelope::ErrorCode`]. Kept plaintext when the free-text
+/// message is redacted, so a `complete` row stays categorizable by failure
+/// class without echoing user input.
+const TELEMETRY_ERROR_CODES: &[&str] = &[
+    "not_found",
+    "invalid_input",
+    "parse_error",
+    "io_error",
+    "internal",
+    "timeout",
+];
+
+/// Extract a leading taxonomy code from a daemon-path error string.
+///
+/// Client-side daemon errors are formatted `"daemon error: <code>: <msg>…"`,
+/// where `<code>` is one of [`TELEMETRY_ERROR_CODES`]. Returns the recognized
+/// code — borrowed from the static set, so it never carries user text — or
+/// `None` for a protocol error with no code / a CLI-direct anyhow error. Only
+/// an EXACT match against the known set is accepted, so a free-text message
+/// that merely contains a colon is never mistaken for a code.
+fn taxonomy_code_of(error: &str) -> Option<&'static str> {
+    let rest = error.strip_prefix("daemon error: ")?;
+    let candidate = rest.split(':').next()?.trim();
+    TELEMETRY_ERROR_CODES
+        .iter()
+        .copied()
+        .find(|c| *c == candidate)
+}
+
+/// Redact a `complete`-event error string under the query-redaction posture.
+///
+/// The error field can echo user input verbatim: a `not_found` on a symbol the
+/// agent typed re-surfaces that symbol as `"daemon error: not_found: <symbol>…"`.
+/// The query that produced it is already hashed in the paired invoke row, so
+/// leaving the echoed value plaintext here is a redaction split-brain. When
+/// redaction is on the free-text message is replaced by the same 8-char blake3
+/// bucket queries get, keeping only the plaintext taxonomy code
+/// (`not_found` / `invalid_input` / …) for failure-class analysis; when off the
+/// plaintext is kept verbatim.
+///
+/// Pure: `redact` is passed in, so the on/off behaviour is unit-testable
+/// without the process-global env cache.
+fn redact_error_message(error: &str, redact: bool) -> String {
+    if !redact {
+        return error.to_string();
+    }
+    let digest = redact_query_digest(error);
+    match taxonomy_code_of(error) {
+        Some(code) => format!("{code}: {digest}"),
+        None => digest,
+    }
+}
+
 /// Append a telemetry entry to `.cqs/telemetry.jsonl`.
 ///
 /// Centralizes the activation check, advisory-flock, 10-MB auto-archive,
@@ -297,9 +352,15 @@ pub fn log_command(
 /// proximity (within ~seconds for any single invocation).
 ///
 /// Schema: `{event: "complete", cmd, ok, duration_ms, error?, ts}`. The
-/// `error` field is only set when `ok = false`; the message is truncated
-/// to 240 chars and never includes raw query text (anyhow `Display` already
-/// gives the `Result::Err`'s `Display` rather than the search args).
+/// `error` field is only set when `ok = false`. It is redacted under the SAME
+/// `CQS_TELEMETRY_REDACT_QUERY` posture as search queries, because the error
+/// text CAN echo user input — a `not_found` on a symbol the agent typed
+/// re-surfaces that symbol as `"daemon error: not_found: <symbol>…"`. With
+/// redaction on (default) the free-text message becomes an 8-char blake3
+/// bucket, keeping only the plaintext taxonomy code (`not_found` /
+/// `invalid_input` / …) for failure-class analysis; with redaction off the
+/// plaintext (truncated to 240 chars) is kept. The paired invoke row hashes
+/// the query under the same posture, so invoke and complete never disagree.
 ///
 /// Activation rules and write semantics mirror [`log_command`].
 pub fn log_command_complete(
@@ -312,13 +373,20 @@ pub fn log_command_complete(
     // See `log_command` above for the timestamp rationale.
     let timestamp = cqs::unix_secs_i64();
 
+    // Resolve the redaction posture with a fresh env read (not the query
+    // `OnceLock`): the env is process-constant in production so the two agree,
+    // and reading fresh keeps this decision deterministic under test. When on,
+    // the message is bucketed to a hash and only the taxonomy code stays
+    // plaintext; when off, the raw text is kept and truncated below.
+    let redact = redact_enabled_from(std::env::var("CQS_TELEMETRY_REDACT_QUERY").ok().as_deref());
     let error_field = error.map(|s| {
-        if s.len() > 240 {
-            let mut out = s.chars().take(240).collect::<String>();
+        let processed = redact_error_message(s, redact);
+        if processed.len() > 240 {
+            let mut out = processed.chars().take(240).collect::<String>();
             out.push('…');
             out
         } else {
-            s.to_string()
+            processed
         }
     });
 
@@ -595,6 +663,10 @@ pub fn describe_command(args: &[String]) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Every test that reads or writes `CQS_TELEMETRY` / `CQS_TELEMETRY_REDACT_QUERY`
+    // is `#[serial]`: they mutate process-global env, and `log_command_complete`
+    // now reads the redaction posture fresh, so concurrent env flips would flake.
+    use serial_test::serial;
 
     fn args(parts: &[&str]) -> Vec<String> {
         std::iter::once("cqs")
@@ -686,12 +758,16 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn log_command_complete_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let cqs_dir = tmp.path();
         // Activate telemetry by pre-creating the file.
         std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
         std::env::set_var("CQS_TELEMETRY", "1");
+        // Redaction OFF so the plaintext error is preserved for the structural
+        // assertion below; the redaction posture is exercised separately.
+        std::env::set_var("CQS_TELEMETRY_REDACT_QUERY", "0");
 
         log_command_complete(cqs_dir, "impact", 42, true, None);
         log_command_complete(
@@ -703,6 +779,7 @@ mod tests {
         );
 
         std::env::remove_var("CQS_TELEMETRY");
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
 
         let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
         let lines: Vec<&str> = body.lines().collect();
@@ -723,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn log_kind_fallback_writes_event_with_redacted_name() {
         let tmp = tempfile::tempdir().unwrap();
         let cqs_dir = tmp.path();
@@ -807,6 +885,7 @@ mod tests {
     /// outer, so a fallback fired inside the sub-dispatch booked `cmd == "deps"`;
     /// install-if-absent makes the outermost origin win so `cmd == "impact"`.
     #[test]
+    #[serial]
     fn nested_sub_dispatch_books_fallback_under_top_level_command() {
         let tmp = tempfile::tempdir().unwrap();
         let cqs_dir = tmp.path();
@@ -896,6 +975,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn telemetry_rotates_at_10mb_with_reused_handle() {
         // The size gate now uses `file.metadata()` (fstat on the open append
         // handle) instead of a separate path stat. Pin that rotation still
@@ -958,16 +1038,21 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn log_command_complete_truncates_long_error() {
         let tmp = tempfile::tempdir().unwrap();
         let cqs_dir = tmp.path();
         std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
         std::env::set_var("CQS_TELEMETRY", "1");
+        // Truncation only applies to the plaintext branch — a redacted message
+        // is already an 8-char bucket. Force redaction OFF to exercise the cap.
+        std::env::set_var("CQS_TELEMETRY_REDACT_QUERY", "0");
 
         let long_err: String = "x".repeat(500);
         log_command_complete(cqs_dir, "search", 1, false, Some(&long_err));
 
         std::env::remove_var("CQS_TELEMETRY");
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
 
         let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
         let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
@@ -978,6 +1063,172 @@ mod tests {
     }
 
     #[test]
+    fn taxonomy_code_of_recognizes_daemon_error_shape() {
+        // The client-side daemon error carries "daemon error: <code>: <msg>".
+        assert_eq!(
+            taxonomy_code_of("daemon error: not_found: symbol SECRET not found\nhint: x"),
+            Some("not_found")
+        );
+        assert_eq!(
+            taxonomy_code_of("daemon error: invalid_input: bad arg"),
+            Some("invalid_input")
+        );
+        // A protocol error with no code (busy reject, "missing 'command'"): the
+        // free-text after the prefix is not a known code → None.
+        assert_eq!(
+            taxonomy_code_of("daemon error: daemon busy (too many concurrent clients)\nhint: x"),
+            None
+        );
+        // A CLI-direct anyhow error has no "daemon error: " prefix.
+        assert_eq!(taxonomy_code_of("no index found at .cqs/"), None);
+        // A message whose free text merely contains a colon must not be
+        // mistaken for a code.
+        assert_eq!(
+            taxonomy_code_of("daemon error: could not read: /etc/passwd"),
+            None
+        );
+    }
+
+    #[test]
+    fn redact_error_message_keeps_code_drops_user_text_when_on() {
+        // Redaction ON: the taxonomy code survives (categorization) but the
+        // echoed symbol must NOT — it follows the query's hash treatment.
+        let err = "daemon error: not_found: symbol SECRET_SYMBOL not found\nhint: set CQS_NO_DAEMON=1 to bypass the daemon";
+        let out = redact_error_message(err, true);
+        assert!(out.starts_with("not_found: "), "taxonomy code kept: {out}");
+        assert!(
+            !out.contains("SECRET_SYMBOL"),
+            "user symbol must be redacted, got: {out}"
+        );
+        // The message segment is the 8-char blake3 bucket.
+        let digest = out.strip_prefix("not_found: ").unwrap();
+        assert_eq!(digest.len(), 8, "message segment is an 8-char hash prefix");
+    }
+
+    #[test]
+    fn redact_error_message_hashes_whole_when_no_code_and_on() {
+        // No recognizable taxonomy code → the whole thing becomes a bucket, so
+        // a CLI-direct error that embeds a path/symbol can't leak.
+        let err = "no index found at /home/secret/project/.cqs";
+        let out = redact_error_message(err, true);
+        assert!(!out.contains("secret"), "path must be redacted, got: {out}");
+        assert_eq!(out.len(), 8, "redacted form is an 8-char hash prefix");
+    }
+
+    #[test]
+    fn redact_error_message_plaintext_when_off() {
+        // Redaction OFF: the raw error is preserved for offline analysis.
+        let err = "daemon error: not_found: symbol SECRET_SYMBOL not found";
+        assert_eq!(redact_error_message(err, false), err);
+    }
+
+    #[test]
+    #[serial]
+    fn log_command_complete_redacts_taxonomy_error_when_on() {
+        // End-to-end guard for the redaction split-brain: a failing daemon-path
+        // command whose error echoes a typed symbol must NOT land that symbol in
+        // the complete row when redaction is on (the default). The taxonomy code
+        // stays for failure-class analysis. RED before the fix — the row carried
+        // the plaintext symbol.
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+        // Default-on redaction (explicitly clear any inherited opt-out).
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
+
+        log_command_complete(
+            cqs_dir,
+            "impact",
+            5,
+            false,
+            Some("daemon error: not_found: symbol SUPER_SECRET_TOKEN not found\nhint: set CQS_NO_DAEMON=1 to bypass the daemon"),
+        );
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        let err = r["error"].as_str().unwrap();
+        assert!(
+            !err.contains("SUPER_SECRET_TOKEN"),
+            "user symbol must not leak into the complete row, got: {err}"
+        );
+        assert!(
+            err.starts_with("not_found: "),
+            "taxonomy code must be preserved, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn log_command_complete_keeps_plaintext_when_off() {
+        // Redaction OFF: the raw error text is preserved verbatim.
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+        std::env::set_var("CQS_TELEMETRY_REDACT_QUERY", "0");
+
+        log_command_complete(
+            cqs_dir,
+            "impact",
+            5,
+            false,
+            Some("daemon error: not_found: symbol VISIBLE_SYMBOL not found"),
+        );
+
+        std::env::remove_var("CQS_TELEMETRY");
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        let err = r["error"].as_str().unwrap();
+        assert!(
+            err.contains("VISIBLE_SYMBOL"),
+            "plaintext must be kept when redaction is off, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn invoke_and_complete_agree_on_redaction_posture() {
+        // Cross-event posture parity: with redaction on, the invoke row hashes
+        // the query AND the complete row hashes the error's user text — neither
+        // surface leaks the typed value, so a reader can't reconstruct it by
+        // joining the two rows.
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
+
+        log_command(
+            cqs_dir,
+            "impact",
+            Some("SUPER_SECRET_TOKEN"),
+            None,
+            CommandSurface::Cli,
+        );
+        log_command_complete(
+            cqs_dir,
+            "impact",
+            5,
+            false,
+            Some("daemon error: not_found: symbol SUPER_SECRET_TOKEN not found"),
+        );
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        assert!(
+            !body.contains("SUPER_SECRET_TOKEN"),
+            "neither invoke nor complete row may carry the typed value, got: {body}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn log_command_writes_surface_and_redacts_query() {
         // The invoke event must carry the `surface` tag and redact the query
         // by default — the daemon/MCP path hands the raw query straight to
