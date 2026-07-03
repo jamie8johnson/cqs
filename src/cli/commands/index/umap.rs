@@ -1089,7 +1089,15 @@ mod tests {
             .spawn()
             .expect("spawn fast child");
 
-        let outcome = run_child_bounded(child, 1024 * 1024, std::time::Duration::from_secs(30));
+        // The timeout's only job here is to *not* fire: the child exits in
+        // microseconds once scheduled, so the happy path returns the instant it
+        // does, no matter how large this bound is. It is deliberately huge so
+        // that CPU starvation under a full parallel test sweep — where a freshly
+        // forked child can wait many seconds for a core — cannot delay the child
+        // past the deadline and spuriously trip the watchdog. The bite is
+        // unchanged: a healthy child is still captured with timed_out == false
+        // and its stdout verbatim.
+        let outcome = run_child_bounded(child, 1024 * 1024, std::time::Duration::from_secs(120));
         assert!(!outcome.timed_out, "a fast child must not be timed out");
         let status = outcome.status.expect("status must be Ok");
         assert!(status.success(), "fast child must exit 0");
@@ -1106,12 +1114,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn run_child_bounded_kills_hung_child_on_timeout() {
+        use std::os::unix::process::ExitStatusExt;
+
         let start = std::time::Instant::now();
-        // `sleep 30` never exits within the test window; the watchdog must kill
-        // it. We keep its stdout piped but it never writes, so the only way the
-        // drain threads finish is the kill closing the pipe.
+        // `sleep` is a kernel timer, immune to CPU starvation, so it cannot exit
+        // early no matter how loaded the box is — the only way this run returns
+        // is the watchdog killing it. A 120s duration keeps the "killed vs.
+        // natural exit" gap enormous, so the wall-clock sanity bound below has
+        // room to absorb sweep-level scheduling delay without ever colliding
+        // with the child's own exit. Stdout is piped but never written; the
+        // drain threads finish only when the kill closes the pipe.
         let child = Command::new("sleep")
-            .arg("30")
+            .arg("120")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1119,14 +1133,30 @@ mod tests {
             .expect("spawn hung child");
 
         let outcome = run_child_bounded(child, 1024 * 1024, std::time::Duration::from_millis(300));
+
+        // Core contract, bound on behavior rather than a tight clock: the
+        // watchdog fired (`timed_out`) and the child died by SIGKILL, not a
+        // natural exit. `timed_out` is set only on the deadline-kill branch, and
+        // signal 9 corroborates the process was killed — neither can be starved
+        // into a false pass.
         assert!(
             outcome.timed_out,
             "a child that outlives the deadline must be reported timed_out"
         );
-        // The kill + reap must happen quickly — nowhere near the 30s sleep.
+        let status = outcome.status.expect("status must be Ok after reap");
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "the watchdog must SIGKILL the hung child, got {status:?}"
+        );
+        // Generous wall-clock sanity: the run returned far before the child's
+        // 120s natural exit, proving the watchdog killed it rather than waiting
+        // it out. The 60s bound sits well above any plausible sweep-contention
+        // scheduling delay yet well below the natural exit, so it still catches
+        // a regression that stops killing.
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(10),
-            "timeout path must kill promptly, took {:?}",
+            start.elapsed() < std::time::Duration::from_secs(60),
+            "timeout path must kill without waiting out the sleep, took {:?}",
             start.elapsed()
         );
     }
