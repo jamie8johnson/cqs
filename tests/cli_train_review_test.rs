@@ -145,6 +145,86 @@ fn test_plan_json_returns_template_and_checklist() {
         !checklist.is_empty(),
         "checklist should be non-empty for any task description, got: {data}"
     );
+    // Un-budgeted JSON must NOT carry budgeted-shape keys — pin the historical
+    // (byte-identical) shape.
+    assert!(
+        data.get("token_count").is_none() && data.get("token_budget").is_none(),
+        "un-budgeted plan JSON must not carry token_count / token_budget, got: {data}"
+    );
+}
+
+/// Run `cqs plan ... --json` (optionally budgeted) and return the `data` value.
+fn run_plan_json(dir: &std::path::Path, extra: &[&str]) -> serde_json::Value {
+    let mut args = vec!["plan", "add a flag for verbose output", "--json"];
+    args.extend_from_slice(extra);
+    let output = cqs()
+        .args(&args)
+        .current_dir(dir)
+        .output()
+        .expect("Failed to run cqs plan");
+    assert!(
+        output.status.success(),
+        "plan should succeed (args={args:?}). stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope JSON parse");
+    parsed["data"].clone()
+}
+
+/// `cqs plan --tokens N --json` must truly BUDGET — pack the three renderable
+/// sections and disclose truncation — not just echo the number. Before the fix
+/// the JSON path emitted the full un-budgeted plan plus a bare `token_budget`,
+/// so `token_count` / `summary.total_checklist` were absent and the checklist
+/// was never truncated: each assertion below is RED on that path.
+#[test]
+#[serial]
+fn test_plan_tokens_budget_packs_and_discloses() {
+    let dir = setup_git_project();
+
+    // Full (un-budgeted) plan: count the template checklist steps.
+    let full = run_plan_json(dir.path(), &[]);
+    let full_checklist_len = full["checklist"].as_array().map(|a| a.len()).unwrap_or(0);
+
+    // Budgeted plan with a tiny budget.
+    let budgeted = run_plan_json(dir.path(), &["--tokens", "30"]);
+
+    // Budget echoed + a positive packed usage published.
+    assert_eq!(
+        budgeted["token_budget"],
+        serde_json::json!(30),
+        "data.token_budget must echo the requested budget, got: {budgeted}"
+    );
+    let used = budgeted["token_count"].as_u64().unwrap_or_else(|| {
+        panic!("data.token_count must be numeric (packed usage), got: {budgeted}")
+    });
+    assert!(used > 0, "packed total_used must be positive, got: {used}");
+
+    // Truncation disclosure: the pre-budget totals.
+    assert_eq!(
+        budgeted["summary"]["total_checklist"],
+        serde_json::json!(full_checklist_len),
+        "summary.total_checklist must disclose the pre-budget checklist size, got: {budgeted}"
+    );
+
+    // The packed checklist is the KEPT subset — never larger than the full one,
+    // and a 30-token budget must drop at least one step when several exist.
+    let budgeted_checklist_len = budgeted["checklist"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(
+        budgeted_checklist_len <= full_checklist_len,
+        "budgeted checklist ({budgeted_checklist_len}) cannot exceed the full one ({full_checklist_len})"
+    );
+    if full_checklist_len > 1 {
+        assert!(
+            budgeted_checklist_len < full_checklist_len,
+            "a 30-token budget must truncate the checklist below the full {full_checklist_len}"
+        );
+    }
 }
 
 // ============================================================================
