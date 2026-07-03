@@ -542,6 +542,17 @@ pub enum OverlayMeta {
     /// Overlay was requested + eligible but no daemon answered, so the CLI-direct
     /// path served the parent index. Wire shape: `"skipped-no-daemon"`.
     SkippedNoDaemon,
+    /// The GRAPH half of a diff command's overlay (`review` / `ci` /
+    /// `impact-diff` / `affected`) was wanted but no daemon was up to build it,
+    /// so ONLY the caller-graph splice was skipped — the diff SUBJECT
+    /// (`changed_functions`) still reflects the worktree (the CLI-direct diff ran
+    /// against this checkout). The honest sibling of [`Self::SkippedNoDaemon`],
+    /// scoped to the graph half: unlike the whole-result skip, it does NOT deny
+    /// the applied diff subject. Retrying with a daemon builds the real overlay
+    /// and upgrades the coverage marker to `"callers-only"`. Emitted paired with
+    /// `_meta.overlay_graph = "diff-subject-only"`, CLI-direct only. Wire shape:
+    /// `"graph-skipped-no-daemon"`.
+    GraphSkippedNoDaemon,
     /// Overlay was requested but the worktree delta exceeded
     /// [`overlay_max_files`]. Wire shape: `"skipped-delta-too-large"`.
     SkippedDeltaTooLarge,
@@ -556,6 +567,9 @@ impl OverlayMeta {
                 serde_json::json!({ "files": files, "chunks": chunks })
             }
             OverlayMeta::SkippedNoDaemon => serde_json::Value::String("skipped-no-daemon".into()),
+            OverlayMeta::GraphSkippedNoDaemon => {
+                serde_json::Value::String("graph-skipped-no-daemon".into())
+            }
             OverlayMeta::SkippedDeltaTooLarge => {
                 serde_json::Value::String("skipped-delta-too-large".into())
             }
@@ -563,10 +577,27 @@ impl OverlayMeta {
     }
 }
 
+/// The `_meta.overlay_graph` coverage value the CLI-direct diff commands
+/// (`review` / `ci` / `impact-diff` / `affected`) emit when no daemon was up to
+/// build the caller-graph overlay: strictly weaker than `"callers-only"` — the
+/// diff SUBJECT reflects the worktree, but the caller-graph, affected-tests, and
+/// risk sections are parent-truth. The daemon path (real overlay) keeps
+/// `"callers-only"`; this value is CLI-direct only.
+pub const OVERLAY_GRAPH_DIFF_SUBJECT_ONLY: &str = "diff-subject-only";
+
 thread_local! {
     /// Per-query overlay outcome for the current thread, read by the JSON
     /// envelope and overwritten/cleared by the search path each invocation.
     static OVERLAY_META: std::cell::RefCell<Option<OverlayMeta>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// Per-query `_meta.overlay_graph` coverage marker for the current thread,
+    /// read by the JSON envelope. Distinct cell from [`OVERLAY_META`] because the
+    /// two axes are separate `_meta` keys (`overlay_graph` = coverage,
+    /// `worktree_overlay` = degradation). Set CLI-direct only (the daemon writes
+    /// `overlay_graph` into the per-response payload directly); a static string,
+    /// since every marker value is a compile-time constant.
+    static OVERLAY_GRAPH_META: std::cell::RefCell<Option<&'static str>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -578,12 +609,23 @@ pub fn set_overlay_meta(meta: OverlayMeta) {
     OVERLAY_META.with(|cell| *cell.borrow_mut() = Some(meta));
 }
 
+/// Record the `_meta.overlay_graph` coverage marker for the current CLI-direct
+/// query (e.g. [`OVERLAY_GRAPH_DIFF_SUBJECT_ONLY`]). Read once by the envelope
+/// via [`take_overlay_graph_meta`]. Only the CLI-direct diff commands set this;
+/// the daemon splices `overlay_graph` into the per-response `_meta` itself.
+pub fn set_overlay_graph_meta(marker: &'static str) {
+    OVERLAY_GRAPH_META.with(|cell| *cell.borrow_mut() = Some(marker));
+}
+
 /// Clear any overlay outcome left over from a previous query on this thread.
 /// Called at the start of each search so a daemon worker thread never leaks one
 /// query's overlay state into the next (the default-OFF, no-overlay case must
-/// emit no `worktree_overlay` key).
+/// emit no `worktree_overlay` key). Clears BOTH per-query cells (the
+/// `worktree_overlay` outcome and the CLI-direct `overlay_graph` coverage
+/// marker) so neither leaks across a reused daemon worker.
 pub fn clear_overlay_meta() {
     OVERLAY_META.with(|cell| *cell.borrow_mut() = None);
+    OVERLAY_GRAPH_META.with(|cell| *cell.borrow_mut() = None);
 }
 
 /// Read (and clear) the overlay outcome recorded for the current search.
@@ -592,6 +634,14 @@ pub fn clear_overlay_meta() {
 /// next query starts from a clean slate even if it never sets the cell.
 pub fn take_overlay_meta() -> Option<OverlayMeta> {
     OVERLAY_META.with(|cell| cell.borrow_mut().take())
+}
+
+/// Read (and clear) the CLI-direct `_meta.overlay_graph` coverage marker for the
+/// current query. `None` when no CLI-direct coverage marker was recorded — the
+/// envelope then omits the key (skip-when-default). Clears on read, mirroring
+/// [`take_overlay_meta`].
+pub fn take_overlay_graph_meta() -> Option<&'static str> {
+    OVERLAY_GRAPH_META.with(|cell| cell.borrow_mut().take())
 }
 
 /// A raw file descriptor for the pinned worktree directory (the Linux

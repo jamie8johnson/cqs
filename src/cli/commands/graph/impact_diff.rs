@@ -38,11 +38,17 @@ pub(crate) fn cmd_impact_diff(
     // overlay tri-state: an active worktree overlay diffs the worktree, `--no-overlay`
     // reverts to parent-truth (see `cmd_review`). The daemon `dispatch_impact_diff`
     // has its own overlay plumbing and diffs the same subject on the JSON fast path.
-    // `--stdin` stays byte-identical.
+    // `--stdin` stays byte-identical. Hoisted out of the diff-text branch so its
+    // `Some`-ness also gates the CLI-direct partial-skip markers below; `--stdin`
+    // carries no overlay subject.
+    let overlay_root = if from_stdin {
+        None
+    } else {
+        crate::cli::commands::cli_diff_overlay_root(overlay, root)
+    };
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
         crate::cli::commands::run_git_diff_for_overlay(
             base,
             &crate::cli::commands::cli_parent_diff_root(root),
@@ -78,6 +84,12 @@ pub(crate) fn cmd_impact_diff(
 
     // 5. Display
     if json {
+        // CLI-direct two-axis partial-skip vocabulary (see `cmd_review`). Reached
+        // only past the empty-diff early-returns above, so the diff is non-empty —
+        // gate purely on the diff subject resolving to the worktree.
+        if overlay_root.is_some() {
+            crate::cli::commands::mark_cli_direct_diff_overlay_partial();
+        }
         let json_val = diff_impact_to_json(&result)?;
         crate::cli::json_envelope::emit_json(&json_val)?;
     } else {

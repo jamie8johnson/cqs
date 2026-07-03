@@ -16,11 +16,17 @@
 //!   Opt-out (`--no-overlay` / `=0`) and non-worktree runs emit no marker. The
 //!   active seed-overlay path is covered daemon-side in `handlers/search.rs`.
 //! - `overlay_graph_family_cli_direct_marks_skipped_no_daemon`: the pure-graph
-//!   commands `callers` / `callees` / `impact` / `dead` carry the same marker
-//!   CLI-direct (they serve the parent graph WHOLESALE). `review` is deliberately
-//!   EXCLUDED (`review_cli_direct_partial_overlay_emits_no_skip_marker`): it
-//!   partially applies the overlay (diff subject = worktree), so a whole-result
-//!   skip marker would lie.
+//!   commands `callers` / `callees` / `impact` / `dead` carry the whole-result
+//!   `skipped-no-daemon` marker CLI-direct (they serve the parent graph
+//!   WHOLESALE).
+//! - `diff_family_cli_direct_emits_two_axis_partial_skip`: the diff commands
+//!   `review` / `ci` / `impact-diff` / `affected` instead emit a TWO-AXIS
+//!   partial-skip pair CLI-direct — `_meta.overlay_graph = "diff-subject-only"`
+//!   (coverage: the diff subject reflects the worktree, the caller graph does
+//!   not) + `_meta.worktree_overlay = "graph-skipped-no-daemon"` (degradation:
+//!   the graph splice wanted a daemon). A whole-result skip would deny the
+//!   applied diff subject. Opt-out, non-worktree, and empty-diff runs emit
+//!   nothing on either axis.
 //!
 //! Gated behind `slow-tests`: each runs `cqs init`/`index`, which cold-loads
 //! the embedder. The pure mask/merge/meta logic is covered unconditionally by
@@ -30,7 +36,7 @@
 
 mod common;
 
-use common::worktree_fixture;
+use common::{git_in, worktree_fixture};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
@@ -427,17 +433,63 @@ fn overlay_graph_family_non_worktree_no_marker() {
     );
 }
 
-/// Review is deliberately EXCLUDED from the `skipped-no-daemon` marker (not an
-/// incomplete sweep). Unlike the pure-graph commands, CLI-direct review PARTIALLY
-/// applies the overlay: the diff-subject half IS applied
-/// (`cli_diff_overlay_root` diffs the worktree, so `changed_functions` reflect
-/// this checkout's uncommitted edits) while only the caller-graph splice is
-/// skipped. A whole-result `skipped-no-daemon` ("results reflect the parent
-/// index") would deny that worktree diff subject — a lie — so review emits no
-/// marker. This test pins BOTH halves: the marker is absent AND the worktree's
-/// `alpha` edit is present in `changed_functions`.
+/// The four diff commands + their CLI-direct `--json --overlay` arg lists. `ci`
+/// pins `--gate off` so the gate result never changes the process exit (the
+/// markers are gate-independent, and `run_json` asserts success).
+const DIFF_CMDS: &[(&str, &[&str])] = &[
+    ("review", &["review", "--json", "--overlay"]),
+    ("ci", &["ci", "--json", "--gate", "off", "--overlay"]),
+    ("impact-diff", &["impact-diff", "--json", "--overlay"]),
+    ("affected", &["affected", "--json", "--overlay"]),
+];
+
+/// Assert the CLI-direct two-axis partial-skip marker PAIR: the coverage axis
+/// `_meta.overlay_graph = "diff-subject-only"` AND the degradation axis
+/// `_meta.worktree_overlay = "graph-skipped-no-daemon"`, both in the same result.
+fn assert_partial_skip_pair(v: &Value, label: &str) {
+    assert_eq!(
+        v.get("_meta").and_then(|m| m.get("overlay_graph")),
+        Some(&Value::String("diff-subject-only".into())),
+        "{label}: coverage axis must be diff-subject-only; got {v}"
+    );
+    assert_eq!(
+        v.get("_meta").and_then(|m| m.get("worktree_overlay")),
+        Some(&Value::String("graph-skipped-no-daemon".into())),
+        "{label}: degradation axis must be graph-skipped-no-daemon; got {v}"
+    );
+}
+
+/// Assert NEITHER partial-skip axis is present (opt-out / non-worktree / empty
+/// diff — skip-when-default on both axes).
+fn assert_no_partial_skip_markers(v: &Value, label: &str) {
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("overlay_graph"))
+            .is_none(),
+        "{label}: overlay_graph must be absent; got {v}"
+    );
+    assert!(
+        v.get("_meta")
+            .and_then(|m| m.get("worktree_overlay"))
+            .is_none(),
+        "{label}: worktree_overlay must be absent; got {v}"
+    );
+}
+
+/// CLI-direct review emits the two-axis partial-skip vocabulary AND applies the
+/// diff subject. Unlike the pure-graph commands (whole-result `skipped-no-daemon`),
+/// review PARTIALLY applies the overlay: the diff subject IS the worktree
+/// (`cli_diff_overlay_root` diffs this checkout, so `changed_functions` reflect
+/// its uncommitted edits) while only the caller-graph splice is skipped. This
+/// pins BOTH halves of the honesty contract: the marker PAIR is present
+/// (coverage `"diff-subject-only"` + degradation `"graph-skipped-no-daemon"`)
+/// AND the worktree's `alpha` edit is present in `changed_functions` — the
+/// applied diff subject the coverage value describes.
+///
+/// RED before the fix: CLI-direct review emitted neither marker (deliberate
+/// silence), so the pair assertion failed against main.
 #[test]
-fn review_cli_direct_partial_overlay_emits_no_skip_marker() {
+fn review_cli_direct_emits_two_axis_partial_skip() {
     let (_holder, _parent, wt) = fixture_with_parent_index();
 
     // Worktree-only edit to `alpha` (parent stays clean).
@@ -449,18 +501,124 @@ fn review_cli_direct_partial_overlay_emits_no_skip_marker() {
 
     // Explicit overlay request from the eligible worktree, daemon disabled.
     let v = run_json(cqs(&wt).args(["review", "--json", "--overlay"]));
-    assert!(
-        v.get("_meta")
-            .and_then(|m| m.get("worktree_overlay"))
-            .is_none(),
-        "review CLI-direct partially applies the overlay (diff subject = worktree) — \
-         a whole-result skipped-no-daemon marker would lie, so it must be ABSENT; got {v}"
-    );
+    assert_partial_skip_pair(&v, "review");
     // The diff-subject half IS applied: the worktree's `alpha` edit is reviewed.
     assert!(
         review_changed_fn_names(&v).iter().any(|n| n == "alpha"),
         "review CLI-direct must diff the worktree (the `alpha` edit is present): {v}"
     );
+}
+
+/// Both axes together, across the WHOLE diff family. From an eligible worktree
+/// with the daemon disabled and a worktree-only edit, every diff command emits
+/// the marker PAIR. This is the both-axes assertion the design pins (coverage
+/// value AND degradation value in one result), swept over all four commands.
+/// RED against main: none of the four emitted either marker CLI-direct.
+#[test]
+fn diff_family_cli_direct_emits_two_axis_partial_skip() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+    // Worktree-only edit to `alpha` — the diff subject the overlay applies.
+    std::fs::write(
+        wt.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 99 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("edit worktree lib.rs");
+    for (label, args) in DIFF_CMDS {
+        let v = run_json(cqs(&wt).args(*args));
+        assert_partial_skip_pair(&v, label);
+    }
+}
+
+/// Opt-out suppresses BOTH axes for the whole family. To bite the opt-out gate
+/// independent of the empty-diff gate, the PARENT working tree also holds a
+/// (distinct) edit, so the `--no-overlay` diff subject (the served/main root) is
+/// NON-empty — yet no marker rides, because the overlay never engaged.
+#[test]
+fn diff_family_opt_out_no_markers() {
+    let (_holder, parent, wt) = fixture_with_parent_index();
+    // Worktree edit (would be the overlay subject) ...
+    std::fs::write(
+        wt.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 99 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("edit worktree lib.rs");
+    // ... and a DISTINCT parent edit, so the opted-out (parent-truth) diff is
+    // non-empty — isolating the opt-out gate from the emptiness gate.
+    std::fs::write(
+        parent.join("src/lib.rs"),
+        "pub fn alpha() -> i32 { 77 }\npub fn beta() -> i32 { 2 }\n",
+    )
+    .expect("edit parent lib.rs");
+    for (label, base_args) in DIFF_CMDS {
+        let mut args: Vec<&str> = base_args
+            .iter()
+            .filter(|a| **a != "--overlay")
+            .copied()
+            .collect();
+        args.push("--no-overlay");
+        let v = run_json(cqs(&wt).args(&args));
+        assert_no_partial_skip_markers(&v, &format!("{label} --no-overlay"));
+    }
+    // Sanity: the opted-out review really did diff the (non-empty) parent, so the
+    // absence above is the opt-out gate biting, not an empty diff.
+    let review = run_json(cqs(&wt).args(["review", "--json", "--no-overlay"]));
+    assert!(
+        review_changed_fn_names(&review)
+            .iter()
+            .any(|n| n == "alpha"),
+        "opt-out review must diff the (edited) parent — `alpha` present: {review}"
+    );
+}
+
+/// Non-worktree parity: from a standalone git repo (its own `.cqs/`, no parent to
+/// overlay onto), the diff family emits neither axis even under an explicit
+/// `--overlay` — `overlay_root` returns None, so the diff subject never resolves
+/// to a worktree. A real git repo (not a linked worktree) is required so the
+/// commands' `git diff` succeeds; the uncommitted edit makes the diff non-empty,
+/// isolating the non-worktree gate from the emptiness gate.
+#[test]
+fn diff_family_non_worktree_no_markers() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "pub fn compute_widget_total() -> i32 { 7 }\npub fn caller_of_widget() -> i32 { compute_widget_total() }\n",
+    )
+    .unwrap();
+    // Standalone git repo with a commit: `git diff` has a base, and the own
+    // `.cqs/` makes `overlay_root` return None (not a linked worktree).
+    git_in(root, &["init", "-q", "-b", "main"]);
+    git_in(root, &["config", "user.email", "t@e.com"]);
+    git_in(root, &["config", "user.name", "T"]);
+    git_in(root, &["add", "-A"]);
+    git_in(root, &["commit", "-q", "-m", "init"]);
+    init_and_index(root);
+    // Uncommitted edit so the diff is non-empty.
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "pub fn compute_widget_total() -> i32 { 99 }\npub fn caller_of_widget() -> i32 { compute_widget_total() }\n",
+    )
+    .unwrap();
+    for (label, args) in DIFF_CMDS {
+        let v = run_json(cqs(root).args(*args));
+        assert_no_partial_skip_markers(&v, &format!("{label} non-worktree"));
+    }
+}
+
+/// Empty diff suppresses BOTH axes for the whole family. From an eligible
+/// worktree with NO uncommitted edit, the diff subject resolves to the worktree
+/// (`overlay_root` IS Some), yet the diff is empty — nothing is overlaid, so
+/// neither marker rides. Isolates the empty-diff gate (only the emptiness check
+/// suppresses here, since the worktree probe succeeded).
+#[test]
+fn diff_family_empty_diff_no_markers() {
+    let (_holder, _parent, wt) = fixture_with_parent_index();
+    // No edit — the worktree is clean, so the overlay diff is empty.
+    for (label, args) in DIFF_CMDS {
+        let v = run_json(cqs(&wt).args(*args));
+        assert_no_partial_skip_markers(&v, &format!("{label} empty-diff"));
+    }
 }
 
 /// `changed_functions` names from a v1-envelope `cqs review --json` payload
