@@ -1885,3 +1885,11 @@ mentions = [
     "src/hnsw/persist.rs",
     "release",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "PARSER_VERSION 15 (doc-comment fallback) A/B: retrieval-neutral — fixtures disagreed in direction on every metric, the documented HNSW-nondeterminism signature. The fallback's win is structurally invisible on doc-syntax-rich Rust fixtures; a doc-poor corpus fixture would be needed to measure it."
+mentions = [
+    "src/parser/chunk.rs",
+    "eval",
+]
