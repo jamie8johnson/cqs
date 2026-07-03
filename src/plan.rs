@@ -20,7 +20,7 @@ pub struct TaskTemplate {
 }
 
 /// Result of a plan operation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PlanResult {
     pub template: String,
     pub template_description: String,

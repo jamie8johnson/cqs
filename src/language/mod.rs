@@ -113,7 +113,7 @@ macro_rules! define_languages {
         )+
     ) => {
         /// Supported programming languages
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
         #[serde(rename_all = "lowercase")]
         pub enum Language {
             $(
@@ -556,7 +556,7 @@ macro_rules! define_chunk_types {
         )+
     ) => {
         /// Type of code element extracted by the parser
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
         #[serde(rename_all = "lowercase")]
         pub enum ChunkType {
             $(

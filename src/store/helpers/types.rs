@@ -172,7 +172,7 @@ impl From<ChunkRow> for ChunkSummary {
 /// Provenance is recorded as a side channel that never participates in the
 /// score arithmetic — scores and order are bit-identical with recording on or
 /// off (pinned by `finalize_results` exact-equality tests).
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct RankSignal {
     /// Signal name from the scoring vocabulary (no new taxonomy).
     pub signal: &'static str,
@@ -672,7 +672,7 @@ pub struct NoteStats {
 }
 
 /// Note metadata returned from search results
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct NoteSummary {
     /// Unique identifier
     pub id: String,
@@ -798,7 +798,7 @@ impl UnifiedResult {
 ///
 /// Provides overview information about the indexed codebase.
 /// Retrieved via `Store::stats()`.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct IndexStats {
     /// Total number of code chunks indexed
     pub total_chunks: u64,

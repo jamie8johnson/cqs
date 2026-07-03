@@ -164,3 +164,95 @@ pub(crate) fn cmd_health(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod output_schema_tests {
+    /// MCP outputSchema shape-truth for the `cqs_health` tool — a representative
+    /// (b)-family upgrade (a typed lib `HealthReport` core, flipped from `object`
+    /// to `typed`). A REAL serialized `HealthReport` (every field populated,
+    /// including the nested `IndexStats` and a `Hotspot` entry) has every emitted
+    /// object key declared somewhere in the published `outputSchema`. Pins that
+    /// the derived `HealthReport` schema actually describes the daemon's `data`.
+    #[test]
+    fn health_output_schema_describes_real_response() {
+        fn declared_props(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    if let Some(serde_json::Value::Object(props)) = m.get("properties") {
+                        out.extend(props.keys().cloned());
+                    }
+                    for child in m.values() {
+                        declared_props(child, out);
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|c| declared_props(c, out)),
+                _ => {}
+            }
+        }
+        let top_keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+
+        let schema = crate::cli::mcp::command_output_schema("health");
+        let mut declared = std::collections::BTreeSet::new();
+        declared_props(&schema, &mut declared);
+
+        let mut chunks_by_language = std::collections::HashMap::new();
+        chunks_by_language.insert(cqs::parser::Language::Rust, 3u64);
+        let mut chunks_by_type = std::collections::HashMap::new();
+        chunks_by_type.insert(cqs::parser::ChunkType::Function, 3u64);
+        let report = cqs::health::HealthReport {
+            stats: cqs::store::IndexStats {
+                total_chunks: 3,
+                total_files: 1,
+                chunks_by_language,
+                chunks_by_type,
+                index_size_bytes: 4096,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-02T00:00:00Z".to_string(),
+                model_name: "test-model".to_string(),
+                schema_version: 31,
+            },
+            stale_count: 1,
+            missing_count: 0,
+            dead_confident: 2,
+            dead_possible: 1,
+            hotspots: vec![cqs::health::Hotspot {
+                name: "hot_fn".to_string(),
+                caller_count: 9,
+            }],
+            untested_hotspots: vec![cqs::health::Hotspot {
+                name: "risky_fn".to_string(),
+                caller_count: 7,
+            }],
+            note_count: 5,
+            note_warnings: 2,
+            hnsw_vectors: Some(3),
+            warnings: vec!["a degraded sub-query".to_string()],
+        };
+        let value = serde_json::to_value(&report).expect("serialize HealthReport");
+
+        for k in top_keys(&value) {
+            assert!(
+                declared.contains(&k),
+                "health outputSchema omits emitted key `{k}`; declared: {declared:?}"
+            );
+        }
+        // Nested IndexStats keys.
+        for k in top_keys(&value["stats"]) {
+            assert!(
+                declared.contains(&k),
+                "health outputSchema omits IndexStats key `{k}`; declared: {declared:?}"
+            );
+        }
+        // Nested Hotspot entry keys.
+        for k in top_keys(&value["hotspots"][0]) {
+            assert!(
+                declared.contains(&k),
+                "health outputSchema omits Hotspot key `{k}`; declared: {declared:?}"
+            );
+        }
+    }
+}

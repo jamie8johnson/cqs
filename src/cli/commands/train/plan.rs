@@ -36,7 +36,7 @@ pub(crate) struct PlanArgs {
 ///   budget, with truncation disclosed. Mirrors `cqs task`'s `BudgetedTaskOutput`
 ///   — before this the JSON path echoed `token_budget` but packed nothing, so a
 ///   consumer asking for a budget got the full plan plus a misleading number.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum PlanCoreOutput {
     Full(PlanResult),
@@ -50,7 +50,7 @@ pub(crate) enum PlanCoreOutput {
 /// `total_* − kept.len()`. `relevant_notes` are intentionally omitted (they are
 /// not one of the packer's three sections and would leak un-budgeted content —
 /// the text render drops them too).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedPlanOutput {
     pub template: String,
     pub template_description: String,
@@ -70,7 +70,7 @@ pub(crate) struct BudgetedPlanOutput {
 }
 
 /// Packed scout section of the budgeted plan output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedPlanScout {
     /// Kept file groups (original order). Reuses the lib [`cqs::FileGroup`]
     /// serialization so the shape matches `plan`'s full-output scout groups.
@@ -82,7 +82,7 @@ pub(crate) struct BudgetedPlanScout {
 /// Truncation disclosure for the budgeted plan: the pre-budget size of each
 /// packed section. Kept counts are the array lengths, so dropped =
 /// `total_* − kept.len()`.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedPlanSummary {
     pub total_checklist: usize,
     pub total_patterns: usize,

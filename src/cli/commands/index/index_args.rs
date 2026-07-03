@@ -46,3 +46,27 @@ pub(crate) struct IndexArgs {
     /// slot while reporting success. Omit it to reindex the served slot.
     pub slot: Option<String>,
 }
+
+/// Daemon-surface JSON for the fire-and-forget `cqs_index` queue response. THE
+/// `outputSchema` source for the tool — a typed struct so the queue-signal
+/// fields are declared rather than emitted from a bare `json!`. Serializes
+/// byte-identically to the prior literal (`status` / `queued` /
+/// `reindex_deferred` / `was_pending` / `served_slot`).
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct IndexQueuedOutput {
+    /// Always `"queued"` — the reconcile was enqueued, not performed inline.
+    pub status: &'static str,
+    /// Always `true` — the shared reconcile signal was flipped.
+    pub queued: bool,
+    /// Always `true` — the rebuild is deferred to the watch loop's next tick.
+    pub reindex_deferred: bool,
+    /// Whether an earlier reconcile request was still un-drained (the watch loop
+    /// coalesces repeated requests into one walk).
+    pub was_pending: bool,
+    /// The slot the queued reconcile targets. `null` only on the no-slot
+    /// ramp-up path (reindexes the active slot, which needs no confirmation);
+    /// a slot-qualified request confirms its target before reaching here.
+    // always-emit: `null` is load-bearing — it marks the no-slot ramp-up queue
+    // versus a confirmed slot echo, so the caller can verify no substitution.
+    pub served_slot: Option<String>,
+}

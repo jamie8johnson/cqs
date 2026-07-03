@@ -112,6 +112,72 @@ impl ImpactCoreOutput {
     }
 }
 
+/// Hand-written `JsonSchema` matching the REAL emitted shape of
+/// [`ImpactCoreOutput::to_value`], NOT a field projection of the enum. The
+/// function path's JSON is produced by the lib's `impact_to_json`
+/// (`ImpactResult`'s custom `Serialize`) with `kind` / `test_suggestions`
+/// injected on top — a derive over the enum's Rust fields would describe a
+/// different object (`function_name`, no `caller_count`, …). So the schema is
+/// built by hand from the wire truth: a `oneOf` of the function-result object
+/// and the shared kind-fallback object. Nested entry objects reuse the derived
+/// sub-schemas (`CallerDetail` / `TestInfo` / … land in `$defs`) so this schema
+/// tracks any field change to them; the `impact_output_schema_describes_real_response`
+/// pin guards the whole against the serialized `to_value` output.
+impl schemars::JsonSchema for ImpactCoreOutput {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ImpactCoreOutput")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        use serde_json::{json, Value};
+        // Schema -> Value for embedding in the composed object. `Schema`
+        // serialization is infallible in practice; degrade to the permissive
+        // `true` (any) schema rather than panicking on the unreachable path.
+        fn arr_of(schema: schemars::Schema) -> Value {
+            json!({
+                "type": "array",
+                "items": serde_json::to_value(schema).unwrap_or(Value::Bool(true)),
+            })
+        }
+
+        // Function path: `impact_to_json(result)` + injected `kind` +
+        // (optional) `test_suggestions`. Keys mirror `ImpactResult`'s custom
+        // `Serialize` exactly (`name`, `caller_count`, `type_impacted_total` /
+        // `_truncated`, `degraded`) — `required` is stripped downstream, so the
+        // skip-when-empty keys are declared without being claimed present.
+        let function_schema = json!({
+            "type": "object",
+            "description": "Function-path impact result: impact_to_json(result) with `kind` \
+                            and (when requested) `test_suggestions` injected.",
+            "properties": {
+                "name": { "type": "string" },
+                "callers": arr_of(generator.subschema_for::<cqs::CallerDetail>()),
+                "caller_count": { "type": "integer" },
+                "tests": arr_of(generator.subschema_for::<cqs::TestInfo>()),
+                "test_count": { "type": "integer" },
+                "transitive_callers": arr_of(generator.subschema_for::<cqs::TransitiveCaller>()),
+                "type_impacted": arr_of(generator.subschema_for::<cqs::TypeImpacted>()),
+                "type_impacted_count": { "type": "integer" },
+                "type_impacted_total": { "type": "integer" },
+                "type_impacted_truncated": { "type": "integer" },
+                "degraded": { "type": "boolean" },
+                "kind": { "type": "string" },
+                "test_suggestions": arr_of(generator.subschema_for::<cqs::TestSuggestion>()),
+            }
+        });
+        let fallback_schema = serde_json::to_value(generator.subschema_for::<KindFallbackOutput>())
+            .unwrap_or(Value::Bool(true));
+
+        let combined = json!({
+            "oneOf": [ function_schema, fallback_schema ],
+            "description": "cqs impact output: a function-path impact result, or a \
+                            kind-mismatch redirect (const/type/module/ambiguous).",
+        });
+        schemars::Schema::try_from(combined)
+            .unwrap_or_else(|_| schemars::json_schema!({ "type": "object" }))
+    }
+}
+
 // ─── Core ───────────────────────────────────────────────────────────────────
 
 /// Surface-agnostic core for `cqs impact <name>` (single-project).
@@ -657,6 +723,134 @@ mod tests {
             json.get("test_suggestions").is_none(),
             "no test_suggestions key when suggest_tests not requested"
         );
+    }
+
+    /// MCP outputSchema shape-truth for the HAND-ROLLED `ImpactCoreOutput`
+    /// JsonSchema. `impact`'s `data` is NOT a field projection of the enum — it is
+    /// `to_value()` (lib `impact_to_json` = `ImpactResult`'s custom `Serialize`,
+    /// plus injected `kind` / `test_suggestions`), so the derive can't describe it
+    /// and the schema is written by hand. This pins that hand-written schema
+    /// against a REAL serialized response with EVERY skip-when-empty field
+    /// populated (`transitive_callers`, `type_impacted_total` / `_truncated`,
+    /// `degraded`, `test_suggestions`) plus the fallback variant: every emitted
+    /// object key at every level is declared somewhere in the published
+    /// `outputSchema`. A field added to the wire that the hand-rolled schema omits
+    /// goes RED here. (The opaque `definitions: Vec<serde_json::Value>` of the
+    /// fallback is honestly an "any" array, so its inner keys are not walked.)
+    #[test]
+    fn impact_output_schema_describes_real_response() {
+        fn declared_props(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    if let Some(serde_json::Value::Object(props)) = m.get("properties") {
+                        out.extend(props.keys().cloned());
+                    }
+                    for child in m.values() {
+                        declared_props(child, out);
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|c| declared_props(c, out)),
+                _ => {}
+            }
+        }
+        let top_keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+
+        let schema = crate::cli::mcp::command_output_schema("impact");
+        let mut declared = std::collections::BTreeSet::new();
+        declared_props(&schema, &mut declared);
+
+        // Function path with EVERY skip-when-empty field populated so no emitted
+        // key can hide from the check. `type_impacted_truncated > 0` forces the
+        // `type_impacted_total` + `type_impacted_truncated` pair; `suggest_tests`
+        // forces `test_suggestions`.
+        let result = cqs::ImpactResult {
+            function_name: "target_fn".to_string(),
+            callers: vec![cqs::CallerDetail {
+                name: "caller_a".to_string(),
+                file: std::path::PathBuf::from("src/lib.rs"),
+                line: 10,
+                call_line: 15,
+                snippet: Some("target_fn()".to_string()),
+                edge_kind: cqs::parser::CallEdgeKind::MacroHeuristic,
+            }],
+            transitive_callers: vec![cqs::TransitiveCaller {
+                name: "indirect".to_string(),
+                file: std::path::PathBuf::from("src/app.rs"),
+                line: 5,
+                depth: 2,
+            }],
+            tests: vec![cqs::TestInfo {
+                name: "test_target".to_string(),
+                file: std::path::PathBuf::from("tests/t.rs"),
+                line: 1,
+                call_depth: 2,
+            }],
+            type_impacted: vec![cqs::TypeImpacted {
+                name: "uses_shared_type".to_string(),
+                file: std::path::PathBuf::from("src/z.rs"),
+                line: 8,
+                shared_types: vec!["Foo".to_string()],
+            }],
+            type_impacted_truncated: 3,
+            degraded: true,
+        };
+        let happy = ImpactCoreOutput::Function {
+            result,
+            suggestions: vec![cqs::TestSuggestion {
+                test_name: "test_caller_a".to_string(),
+                suggested_file: std::path::PathBuf::from("tests/t.rs"),
+                for_function: "caller_a".to_string(),
+                pattern_source: String::new(),
+                inline: false,
+            }],
+            suggest_tests: true,
+        };
+        let happy_v = happy.to_value().expect("serialize function-path impact");
+
+        // Every top-level key of the function-path result must be declared.
+        for k in top_keys(&happy_v) {
+            assert!(
+                declared.contains(&k),
+                "impact outputSchema omits emitted result key `{k}`; declared: {declared:?}"
+            );
+        }
+        // Nested entry objects (typed structs, no opaque Value) must be declared.
+        for (arr, label) in [
+            (&happy_v["callers"], "CallerDetail"),
+            (&happy_v["transitive_callers"], "TransitiveCaller"),
+            (&happy_v["tests"], "TestInfo"),
+            (&happy_v["type_impacted"], "TypeImpacted"),
+            (&happy_v["test_suggestions"], "TestSuggestion"),
+        ] {
+            for k in top_keys(&arr[0]) {
+                assert!(
+                    declared.contains(&k),
+                    "impact outputSchema omits {label} key `{k}`; declared: {declared:?}"
+                );
+            }
+        }
+
+        // Fallback variant: every top-level key must be declared too (the opaque
+        // `definitions` array's inner keys are intentionally not walked).
+        let fallback_v = ImpactCoreOutput::Fallback(KindFallbackOutput {
+            kind: "type",
+            fallback_from: "impact",
+            name: "Foo".to_string(),
+            definitions: vec![serde_json::json!({"file": "src/y.rs", "line_start": 1})],
+            note: "Foo is a type, not a function.",
+        })
+        .to_value()
+        .expect("serialize fallback impact");
+        for k in top_keys(&fallback_v) {
+            assert!(
+                declared.contains(&k),
+                "impact outputSchema omits fallback key `{k}`; declared: {declared:?}"
+            );
+        }
     }
 
     #[test]

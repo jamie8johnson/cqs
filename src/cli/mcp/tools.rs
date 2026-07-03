@@ -294,20 +294,28 @@ use crate::cli::commands::{
 // value each daemon dispatcher serializes verbatim into the slim-envelope
 // `data` (== the MCP `structuredContent`). Only the `typed(T)` commands need a
 // named type here; the `object` commands describe a bare object.
+use crate::cli::commands::blame::BlameOutput;
 use crate::cli::commands::diff::DiffOutput;
 use crate::cli::commands::drift::DriftOutput;
 use crate::cli::commands::explain::ExplainOutput;
-use crate::cli::commands::notes::NotesListOutput;
+use crate::cli::commands::index::IndexQueuedOutput;
+use crate::cli::commands::notes::{NoteMutationDaemonOutput, NotesListOutput};
+use crate::cli::commands::read::ReadCoreOutput;
+use crate::cli::commands::review::ci::CiOutput;
 use crate::cli::commands::review::dead::DeadOutput;
+use crate::cli::commands::review::diff_review::ReviewOutput;
 use crate::cli::commands::review::suggest::SuggestOutput;
 use crate::cli::commands::search::gather::GatherOutput;
 use crate::cli::commands::search::related::RelatedOutput;
 use crate::cli::commands::search::similar::SimilarOutput;
 use crate::cli::commands::search::where_cmd::WhereOutput;
 use crate::cli::commands::{
-    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, StaleOutput, StatsOutput,
-    TestMapCoreOutput, TraceCoreOutput,
+    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, ImpactCoreOutput, PlanCoreOutput,
+    StaleOutput, StatsOutput, TestMapCoreOutput, TraceCoreOutput,
 };
+use crate::cli::display::SearchOutput;
+use cqs::health::HealthReport;
+use cqs::DiffImpactResult;
 
 /// The composed tool table for `tools/list` — the Phase-1 read tools, plus the
 /// Phase-2a notes mutators when `CQS_MCP_ENABLE_MUTATIONS=1`
@@ -1043,8 +1051,15 @@ macro_rules! command_output_map {
 // bespoke / untyped / derive-blocked commands (see the module `outputSchema`
 // note for the per-command rationale).
 command_output_map! {
-    "search" => object;
+    "search" => (SearchOutput);
     "gather" => (GatherOutput);
+    // scout / task / onboard stay `object`: each serializes a typed result
+    // (`ScoutResult` / task composite / `OnboardResult`) but then the shared
+    // content-packing + injection-flag-scan helpers layer `content` /
+    // `injection_flags` (into nested chunk entries) and `token_count` /
+    // `token_budget` (top level) ONTO the serialized value. A derived schema of
+    // the base type would omit those injected keys; reproducing them in a manual
+    // schema would duplicate the injection contract and drift. Honest object.
     "scout" => object;
     "task" => object;
     "onboard" => object;
@@ -1052,31 +1067,37 @@ command_output_map! {
     "callers" => (CallersCoreOutput);
     "callees" => (CalleesCoreOutput);
     "deps" => (DepsCoreOutput);
-    "impact" => object;
+    // impact's `data` is `ImpactCoreOutput::to_value` (hand-rolled — lib
+    // `impact_to_json` + injected `kind`/`test_suggestions`, OR the fallback
+    // object), so `ImpactCoreOutput` carries a hand-written `JsonSchema` matching
+    // that wire shape; pinned by `impact_output_schema_describes_real_response`.
+    "impact" => (ImpactCoreOutput);
     "test-map" => (TestMapCoreOutput);
     "trace" => (TraceCoreOutput);
     "explain" => (ExplainOutput);
+    // context stays `object`: three branch shapes (compact / summary / full)
+    // assembled from bespoke `json!` in `context_core`, not one typed value.
     "context" => object;
-    "blame" => object;
+    "blame" => (BlameOutput<'static>);
     "diff" => (DiffOutput);
     "drift" => (DriftOutput);
     "dead" => (DeadOutput);
-    "ci" => object;
-    "review" => object;
-    "plan" => object;
-    "read" => object;
+    "ci" => (CiOutput);
+    "review" => (ReviewOutput);
+    "plan" => (PlanCoreOutput);
+    "read" => (ReadCoreOutput);
     "where" => (WhereOutput);
     "related" => (RelatedOutput);
     "stale" => (StaleOutput);
     "notes" => (NotesListOutput);
     "suggest" => (SuggestOutput);
-    "impact-diff" => object;
+    "impact-diff" => (DiffImpactResult);
     "stats" => (StatsOutput);
-    "health" => object;
-    "notes-add" => object;
-    "notes-update" => object;
-    "notes-remove" => object;
-    "index" => object;
+    "health" => (HealthReport);
+    "notes-add" => (NoteMutationDaemonOutput);
+    "notes-update" => (NoteMutationDaemonOutput);
+    "notes-remove" => (NoteMutationDaemonOutput);
+    "index" => (IndexQueuedOutput);
 }
 
 /// Relay the JSON-args frame to the daemon and map the response envelope into a

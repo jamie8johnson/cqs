@@ -25,7 +25,7 @@ where
 /// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
 /// only basic fields (name, file, line). This struct adds `call_line` and
 /// `snippet` for impact analysis display.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct CallerDetail {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -48,7 +48,7 @@ pub struct CallerDetail {
 }
 
 /// Affected test with call depth
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TestInfo {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -59,7 +59,7 @@ pub struct TestInfo {
 }
 
 /// Transitive caller at a given depth
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TransitiveCaller {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -70,7 +70,7 @@ pub struct TransitiveCaller {
 }
 
 /// A function impacted via shared type dependencies (one-hop type expansion).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TypeImpacted {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -156,7 +156,7 @@ pub struct FunctionHints {
 }
 
 /// A function identified as changed by a diff
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ChangedFunction {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -165,7 +165,7 @@ pub struct ChangedFunction {
 }
 
 /// A test affected by diff changes, tracking which changed function leads to it
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DiffTestInfo {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -177,7 +177,7 @@ pub struct DiffTestInfo {
 }
 
 /// Summary counts for diff impact
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DiffImpactSummary {
     pub changed_count: usize,
     pub caller_count: usize,
@@ -198,7 +198,7 @@ pub struct DiffImpactSummary {
 }
 
 /// Aggregated impact result from a diff
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct DiffImpactResult {
     pub changed_functions: Vec<ChangedFunction>,
     #[serde(rename = "callers")]
@@ -209,7 +209,7 @@ pub struct DiffImpactResult {
 }
 
 /// A suggested test for an untested caller
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TestSuggestion {
     /// Suggested test function name
     pub test_name: String,
@@ -225,7 +225,7 @@ pub struct TestSuggestion {
 }
 
 /// Risk level for a function based on caller count and test coverage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     High,
@@ -249,7 +249,7 @@ impl std::fmt::Display for RiskLevel {
 }
 
 /// Risk assessment for a single function.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct RiskScore {
     pub caller_count: usize,
     pub test_count: usize,

@@ -64,7 +64,7 @@ pub(crate) fn blame_core(
 // ─── Data structures ─────────────────────────────────────────────────────────
 
 /// A single git commit that touched the function's line range.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BlameEntry {
     pub hash: String,
     pub author: String,
@@ -250,7 +250,9 @@ pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
 // ─── JSON output ─────────────────────────────────────────────────────────────
 
 /// Typed JSON output for blame. Borrows from `BlameData` to avoid cloning.
-#[derive(Debug, serde::Serialize)]
+/// Also the MCP `cqs_blame` `outputSchema` source (referenced as
+/// `BlameOutput<'static>` — `JsonSchema` is lifetime-independent).
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BlameOutput<'a> {
     pub name: &'a str,
     pub file: String,
@@ -264,7 +266,7 @@ pub(crate) struct BlameOutput<'a> {
 }
 
 /// A caller entry in blame output with path already relativized.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BlameCallerEntry {
     pub name: String,
     pub file: String,
