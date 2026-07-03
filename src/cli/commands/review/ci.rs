@@ -23,7 +23,7 @@ pub(crate) struct CiArgs {
 /// Typed output for `cqs ci`. Flattens the lib [`cqs::ci::CiReport`] and adds
 /// the optional token-budget telemetry the adapters previously spliced inline.
 /// THE schema — both surfaces serialize this.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CiOutput {
     #[serde(flatten)]
     pub report: cqs::ci::CiReport,

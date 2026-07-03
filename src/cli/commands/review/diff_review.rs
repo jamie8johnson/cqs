@@ -22,7 +22,7 @@ pub(crate) struct ReviewArgs {
 /// Typed output for `cqs review`. Flattens the lib [`ReviewResult`] and adds
 /// the optional token-budget telemetry the adapters previously spliced inline.
 /// THE schema — both surfaces serialize this.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ReviewOutput {
     #[serde(flatten)]
     pub review: ReviewResult,

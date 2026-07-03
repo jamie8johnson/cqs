@@ -413,8 +413,8 @@ pub(crate) fn build_focused_output<Mode>(
 /// reports `"vendored-code"`, matching the per-chunk search shape and
 /// SECURITY.md's trust-signal contract. The path-vendored detection is shared
 /// between surfaces via `vendored_prefixes`.
-#[derive(Debug, serde::Serialize)]
-struct FullReadOutput {
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct FullReadOutput {
     path: String,
     content: String,
     /// Whether note context from `docs/notes.toml` was injected into the
@@ -441,7 +441,7 @@ fn is_user_code(level: &&'static str) -> bool {
 }
 
 /// Hints about caller/test coverage for a focused function.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 struct ReadHints {
     caller_count: usize,
     test_count: usize,
@@ -450,8 +450,8 @@ struct ReadHints {
 }
 
 /// JSON output for a focused read — the union schema both surfaces emit.
-#[derive(Debug, serde::Serialize)]
-struct FocusedReadJsonOutput {
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct FocusedReadJsonOutput {
     focus: String,
     content: String,
     /// `read --focus` reads from the project store only (no reference-store
@@ -475,6 +475,21 @@ struct FocusedReadJsonOutput {
     /// failed silently".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
+}
+
+/// Untagged union of the two `read` wire shapes — the full-file read
+/// ([`FullReadOutput`]) and the `--focus`ed function read
+/// ([`FocusedReadJsonOutput`]). Serializing an untagged variant is byte-identical
+/// to serializing its inner struct directly, so wrapping the two `read_core`
+/// return sites in this enum keeps the wire shape unchanged while giving the MCP
+/// `cqs_read` tool a typed `outputSchema` (`anyOf` of the two shapes). Both the
+/// enum and its variants are constructed on the return paths, so no dead-code
+/// arises from making the schema derivable.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum ReadCoreOutput {
+    Full(FullReadOutput),
+    Focused(FocusedReadJsonOutput),
 }
 
 // ─── Surface-agnostic core ────────────────────────────────────────────────────
@@ -519,7 +534,8 @@ pub(crate) fn read_core<Mode>(
             hints,
             warnings: result.warnings,
         };
-        return Ok(serde_json::to_value(&output)?);
+        // Untagged wrap: byte-identical to serializing `output` directly.
+        return Ok(serde_json::to_value(ReadCoreOutput::Focused(output))?);
     }
 
     // Full file read.
@@ -557,7 +573,8 @@ pub(crate) fn read_core<Mode>(
         trust_level,
         injection_flags,
     };
-    Ok(serde_json::to_value(&output)?)
+    // Untagged wrap: byte-identical to serializing `output` directly.
+    Ok(serde_json::to_value(ReadCoreOutput::Full(output))?)
 }
 
 // ─── CLI commands ───────────────────────────────────────────────────────────

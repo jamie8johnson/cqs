@@ -11,7 +11,7 @@ use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
 use crate::{normalize_slashes, AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChunkRole {
     /// High-relevance function likely needing modification (score >= 0.5)
@@ -34,7 +34,7 @@ impl ChunkRole {
 }
 
 /// A chunk in the scout result with hints
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ScoutChunk {
     /// Function/class/etc. name
     pub name: String,
@@ -60,7 +60,7 @@ pub struct ScoutChunk {
 }
 
 /// A file group in the scout result
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct FileGroup {
     /// File path
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -74,7 +74,7 @@ pub struct FileGroup {
 }
 
 /// Summary counts
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ScoutSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -83,7 +83,7 @@ pub struct ScoutSummary {
 }
 
 /// Complete scout result
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ScoutResult {
     pub file_groups: Vec<FileGroup>,
     pub relevant_notes: Vec<NoteSummary>,

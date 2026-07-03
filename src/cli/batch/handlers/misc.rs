@@ -383,13 +383,14 @@ pub(in crate::cli::batch) fn dispatch_index(
     // a slot-QUALIFIED request that reaches this point has already confirmed its
     // target against a published served slot, so a `queued` response from a
     // slot-qualified request always carries a non-null, confirmed `served_slot`.
-    Ok(serde_json::json!({
-        "status": "queued",
-        "queued": true,
-        "reindex_deferred": true,
-        "was_pending": was_pending,
-        "served_slot": served_slot,
-    }))
+    let output = crate::cli::commands::index::IndexQueuedOutput {
+        status: "queued",
+        queued: true,
+        reindex_deferred: true,
+        was_pending,
+        served_slot,
+    };
+    Ok(serde_json::to_value(&output)?)
 }
 
 /// Dispatches a task execution within a batch context, optionally with token budgeting.

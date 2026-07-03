@@ -87,7 +87,8 @@ pub(crate) use graph::{
 };
 // The graph `data`-shape result types, for the MCP `outputSchema` map.
 pub(crate) use graph::{
-    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, TestMapCoreOutput, TraceCoreOutput,
+    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, ImpactCoreOutput, TestMapCoreOutput,
+    TraceCoreOutput,
 };
 // The no-overlay callers/callees/impact cores. Production dispatch routes through
 // the `*_overlay` variants above (Part B); these plain entry points are consumed
@@ -171,7 +172,7 @@ pub(crate) use train::cmd_export_model;
 pub(crate) use train::cmd_task;
 pub(crate) use train::cmd_train_data;
 pub(crate) use train::cmd_train_pairs;
-pub(crate) use train::{cmd_plan, plan_core, PlanArgs};
+pub(crate) use train::{cmd_plan, plan_core, PlanArgs, PlanCoreOutput};
 
 // -- eval --
 pub(crate) use eval::{cmd_eval, EvalCmdArgs};

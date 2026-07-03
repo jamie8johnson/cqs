@@ -17,7 +17,7 @@ use crate::note::path_matches_mention;
 use crate::Store;
 
 /// Result of a comprehensive diff review.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ReviewResult {
     /// Functions changed by the diff
     pub changed_functions: Vec<ReviewedFunction>,
@@ -40,7 +40,7 @@ pub struct ReviewResult {
 }
 
 /// A changed function with its risk assessment.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ReviewedFunction {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -52,7 +52,7 @@ pub struct ReviewedFunction {
 /// A note relevant to the review.
 /// Named `ReviewNoteEntry` to avoid collision with `note::NoteEntry`
 /// (parsed note from TOML) which is a different type.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ReviewNoteEntry {
     pub text: String,
     pub sentiment: f32,
@@ -60,7 +60,7 @@ pub struct ReviewNoteEntry {
 }
 
 /// Aggregated risk counts.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct RiskSummary {
     pub high: usize,
     pub medium: usize,

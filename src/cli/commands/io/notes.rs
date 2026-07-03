@@ -34,6 +34,23 @@ struct NoteMutationOutput {
     index_error: Option<String>,
 }
 
+/// Daemon-surface JSON for a note mutation (MCP `cqs_notes_add` /
+/// `cqs_notes_update` / `cqs_notes_remove`): the shared [`NoteMutationOutput`]
+/// plus the `reindex_deferred` flag the daemon path injects. THE `outputSchema`
+/// source for the notes-mutator tools — a typed struct so the flag is declared
+/// rather than spliced onto an opaque object. Built by
+/// [`notes_mutation_daemon_json`]; serializes byte-identically to the prior
+/// `to_value` + insert (`#[serde(flatten)]` yields the same key set, then
+/// `reindex_deferred`).
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct NoteMutationDaemonOutput {
+    #[serde(flatten)]
+    result: NoteMutationOutput,
+    /// Always `true` on the daemon path: the note file was written and the
+    /// reindex is deferred to the watch loop (this response does not block on it).
+    reindex_deferred: bool,
+}
+
 /// A single note entry in the list output — the union schema both surfaces
 /// emit. `id` + `type` came from the CLI path; `sentiment_label` came from the
 /// daemon path; the union carries all of them so a consumer gets the same
@@ -346,29 +363,29 @@ pub(crate) fn notes_remove_core(
 /// `/mnt/c` deployment. The `reindex_deferred` flag is the honest signal that
 /// the index lags the file until the next watch tick.
 pub(crate) fn notes_mutation_daemon_json(core: &NoteMutationCore) -> serde_json::Value {
-    let result = NoteMutationOutput {
-        status: core.status.into(),
-        note_type: core.note_type.map(str::to_string),
-        sentiment: core.sentiment,
-        text_preview: core.text_preview.clone(),
-        file: "docs/notes.toml".into(),
-        indexed: false,
-        total_notes: 0,
-        index_error: None,
+    let output = NoteMutationDaemonOutput {
+        result: NoteMutationOutput {
+            status: core.status.into(),
+            note_type: core.note_type.map(str::to_string),
+            sentiment: core.sentiment,
+            text_preview: core.text_preview.clone(),
+            file: "docs/notes.toml".into(),
+            indexed: false,
+            total_notes: 0,
+            index_error: None,
+        },
+        reindex_deferred: true,
     };
-    let mut value = serde_json::to_value(&result).unwrap_or_else(|e| {
+    serde_json::to_value(&output).unwrap_or_else(|e| {
         // to_value on a #[derive(Serialize)] struct of owned primitives cannot
         // fail in practice; degrade rather than panic on the unreachable path.
         tracing::warn!(error = %e, "notes_mutation_daemon_json serialization failed");
-        serde_json::json!({ "status": core.status, "file": "docs/notes.toml" })
-    });
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "reindex_deferred".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
-    value
+        serde_json::json!({
+            "status": core.status,
+            "file": "docs/notes.toml",
+            "reindex_deferred": true,
+        })
+    })
 }
 
 /// Normalize a `--kind` value: trim, lowercase, empty → None. Shared by the

@@ -71,9 +71,12 @@ impl<'a> SearchResultOutput<'a> {
 /// names and optionality match the historical inline `serde_json::json!`
 /// builders exactly: `token_count` / `token_budget` are present only under
 /// `--tokens`, and `source` only on a `--ref`-scoped top-level response.
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct SearchOutput {
-    /// Per-result objects (see [`SearchResultOutput`]).
+    /// Per-result objects (see [`SearchResultOutput`]). The per-result shape is
+    /// built by [`SearchResultOutput::to_value`] (a bespoke projection over a
+    /// borrowed `UnifiedResult`), so it stays an opaque "any" array in the
+    /// schema — the envelope keys are typed, the per-result body is not.
     pub results: Vec<serde_json::Value>,
     /// The original query string.
     pub query: String,
@@ -703,6 +706,55 @@ pub fn display_tagged_results_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MCP outputSchema shape-truth for the `cqs_search` tool — the bespoke (c)
+    /// envelope (`{results, query, total}` + optional token/source), flipped from
+    /// `object` to `typed(SearchOutput)`. A REAL serialized `SearchOutput` with
+    /// every skip-when-empty field populated has each envelope key declared in the
+    /// published `outputSchema`. The per-result body stays an opaque "any" array
+    /// (built by `SearchResultOutput::to_value`), so its inner keys are not walked.
+    #[test]
+    fn search_output_schema_describes_real_response() {
+        fn declared_props(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    if let Some(serde_json::Value::Object(props)) = m.get("properties") {
+                        out.extend(props.keys().cloned());
+                    }
+                    for child in m.values() {
+                        declared_props(child, out);
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|c| declared_props(c, out)),
+                _ => {}
+            }
+        }
+
+        let schema = crate::cli::mcp::command_output_schema("search");
+        let mut declared = std::collections::BTreeSet::new();
+        declared_props(&schema, &mut declared);
+
+        // Every skip-when-empty field populated so no envelope key can hide.
+        let output = SearchOutput {
+            results: vec![serde_json::json!({"name": "foo"})],
+            query: "retry logic".to_string(),
+            total: 1,
+            token_count: Some(120),
+            token_budget: Some(500),
+            source: Some("openclaw".to_string()),
+        };
+        let value = serde_json::to_value(&output).expect("serialize SearchOutput");
+        let top_keys: Vec<String> = value
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        for k in top_keys {
+            assert!(
+                declared.contains(&k),
+                "search outputSchema omits emitted envelope key `{k}`; declared: {declared:?}"
+            );
+        }
+    }
 
     // ===== read_context_lines tests =====
 

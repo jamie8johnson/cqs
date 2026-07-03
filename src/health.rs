@@ -17,14 +17,14 @@ use crate::{compute_risk_batch, HnswIndex, RiskLevel, Store};
 // `CQS_HEALTH_HOTSPOT_COUNT`.
 
 /// A function hotspot: high caller count indicates central importance.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct Hotspot {
     pub name: String,
     pub caller_count: usize,
 }
 
 /// Codebase health report.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct HealthReport {
     pub stats: IndexStats,
     pub stale_count: u64,
