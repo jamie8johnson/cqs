@@ -76,7 +76,7 @@ pub(crate) struct TaskBriefSummary {
 }
 
 /// A single scout chunk in the budgeted output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedScoutChunk {
     pub name: String,
     pub chunk_type: String,
@@ -89,7 +89,7 @@ pub(crate) struct BudgetedScoutChunk {
 }
 
 /// A single file group in the budgeted scout output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedScoutGroup {
     pub file: String,
     pub relevance_score: f32,
@@ -98,7 +98,7 @@ pub(crate) struct BudgetedScoutGroup {
 }
 
 /// Summary for the budgeted scout section.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedScoutSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -107,7 +107,7 @@ pub(crate) struct BudgetedScoutSummary {
 }
 
 /// The scout section of the budgeted output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedScoutOutput {
     pub file_groups: Vec<BudgetedScoutGroup>,
     pub summary: BudgetedScoutSummary,
@@ -116,7 +116,7 @@ pub(crate) struct BudgetedScoutOutput {
 }
 
 /// A note entry in the budgeted output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedNoteEntry {
     pub text: String,
     pub sentiment: f32,
@@ -124,7 +124,7 @@ pub(crate) struct BudgetedNoteEntry {
 }
 
 /// Summary for the budgeted task output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedTaskSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -135,7 +135,13 @@ pub(crate) struct BudgetedTaskSummary {
 }
 
 /// Full budgeted task output combining all packed sections.
-#[derive(Debug, serde::Serialize)]
+///
+/// `code` / `risk` / `tests` / `placement` stay `Vec<serde_json::Value>` (packed
+/// subsets erased through `serde_json::to_value`), so their MCP `outputSchema`
+/// entries are honest opaque "any" arrays — the per-item shapes (`GatheredChunk`
+/// / `FunctionRisk` / `TestInfo` / `FileSuggestion`) are typed in the full-task
+/// variant, and typing these budgeted mirrors is out of scope for this pass.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct BudgetedTaskOutput {
     pub description: String,
     pub scout: BudgetedScoutOutput,
@@ -146,6 +152,24 @@ pub(crate) struct BudgetedTaskOutput {
     pub summary: BudgetedTaskSummary,
     pub token_count: usize,
     pub token_budget: usize,
+}
+
+/// Schema-only descriptor for the `task` command's two-shape `data`.
+/// [`task_json_core`] returns `serde_json::to_value(TaskResult)` when no budget
+/// is set, else the packed [`BudgetedTaskOutput`], so the MCP `outputSchema` is
+/// their untagged union (an `anyOf`, mirroring the `PlanCoreOutput` precedent —
+/// `plan` has the same full-vs-budgeted split). NEVER serialized; it only
+/// sources the schema via `command_output_map!`. The
+/// `task_output_schema_describes_real_response` pin holds both variants against
+/// real serialized responses.
+#[derive(schemars::JsonSchema)]
+#[schemars(untagged)]
+#[allow(dead_code)]
+pub(crate) enum TaskOutputSchema {
+    /// No `--tokens`: the full [`cqs::TaskResult`] serialization.
+    Full(cqs::TaskResult),
+    /// `--tokens`: the waterfall-packed [`BudgetedTaskOutput`].
+    Budgeted(BudgetedTaskOutput),
 }
 
 // ─── Typed builders ────────────────────────────────────────────────────────
@@ -1417,5 +1441,160 @@ mod tests {
         assert!(brief.risk.is_empty());
         assert!(brief.tests.is_empty());
         assert_eq!(brief.summary.files, 0);
+    }
+
+    /// MCP outputSchema shape-truth for the untagged `TaskOutputSchema`.
+    /// `task_json_core` returns the full `to_value(TaskResult)` without a budget
+    /// and the packed `BudgetedTaskOutput` with one, so the descriptor is their
+    /// `anyOf`. This drives a REAL response for BOTH shapes and asserts every
+    /// emitted key is declared in `command_output_schema("task")`. The FULL
+    /// variant is fully typed (populate one `GatheredChunk` / `FunctionRisk` /
+    /// `TestInfo` / `FileSuggestion` — every key must be declared); the BUDGETED
+    /// variant's `code` / `risk` / `tests` / `placement` are honestly-opaque
+    /// `Vec<Value>`, so the walker does not descend into them.
+    #[test]
+    fn task_output_schema_describes_real_response() {
+        use std::path::PathBuf;
+
+        let scout = cqs::ScoutResult {
+            file_groups: vec![cqs::FileGroup {
+                file: PathBuf::from("src/lib.rs"),
+                relevance_score: 0.9,
+                chunks: vec![cqs::ScoutChunk {
+                    name: "target".to_string(),
+                    chunk_type: cqs::language::ChunkType::Function,
+                    signature: "fn target()".to_string(),
+                    line_start: 1,
+                    role: cqs::ChunkRole::ModifyTarget,
+                    caller_count: 1,
+                    test_count: 1,
+                    search_score: 0.9,
+                    rank_signals: Vec::new(),
+                }],
+                is_stale: false,
+            }],
+            relevant_notes: Vec::new(),
+            summary: cqs::ScoutSummary {
+                total_files: 1,
+                total_functions: 1,
+                untested_count: 0,
+                stale_count: 0,
+            },
+        };
+
+        // FULL variant — every section typed and populated.
+        let full_result = cqs::TaskResult {
+            description: "add a flag".to_string(),
+            scout: scout.clone(),
+            code: vec![cqs::GatheredChunk {
+                name: "target".to_string(),
+                file: PathBuf::from("src/lib.rs"),
+                line_start: 1,
+                line_end: 5,
+                language: cqs::language::Language::Rust,
+                chunk_type: cqs::language::ChunkType::Function,
+                signature: "fn target()".to_string(),
+                content: "fn target() {}".to_string(),
+                score: 0.9,
+                depth: 0,
+                source: None,
+                rank_signals: Vec::new(),
+            }],
+            risk: vec![cqs::FunctionRisk {
+                name: "target".to_string(),
+                risk: cqs::RiskScore {
+                    caller_count: 1,
+                    test_count: 1,
+                    test_ratio: 1.0,
+                    risk_level: cqs::RiskLevel::Low,
+                    blast_radius: cqs::RiskLevel::Low,
+                    score: 0.1,
+                },
+            }],
+            tests: vec![cqs::TestInfo {
+                name: "test_target".to_string(),
+                file: PathBuf::from("tests/t.rs"),
+                line: 1,
+                call_depth: 1,
+            }],
+            placement: vec![cqs::FileSuggestion {
+                file: PathBuf::from("src/lib.rs"),
+                score: 0.8,
+                insertion_line: 10,
+                near_function: "target".to_string(),
+                reason: "cohesion".to_string(),
+                patterns: cqs::LocalPatterns {
+                    imports: vec!["use anyhow::Result;".to_string()],
+                    error_handling: "anyhow".to_string(),
+                    naming_convention: "snake_case".to_string(),
+                    visibility: "pub(crate)".to_string(),
+                    has_inline_tests: true,
+                },
+            }],
+            summary: cqs::TaskSummary {
+                total_files: 1,
+                total_functions: 1,
+                modify_targets: 1,
+                high_risk_count: 0,
+                test_count: 1,
+                stale_count: 0,
+            },
+        };
+        let full = serde_json::to_value(&full_result).expect("serialize full task");
+        crate::cli::mcp::assert_response_keys_declared("task", &full, &[]);
+
+        // BUDGETED variant — scout section + notes typed; the four packed
+        // sections stay opaque `Vec<Value>` (not descended into).
+        let budgeted = BudgetedTaskOutput {
+            description: "add a flag".to_string(),
+            scout: BudgetedScoutOutput {
+                file_groups: vec![BudgetedScoutGroup {
+                    file: "src/lib.rs".to_string(),
+                    relevance_score: 0.9,
+                    is_stale: false,
+                    chunks: vec![BudgetedScoutChunk {
+                        name: "target".to_string(),
+                        chunk_type: "function".to_string(),
+                        signature: "fn target()".to_string(),
+                        line_start: 1,
+                        role: "modify".to_string(),
+                        caller_count: 1,
+                        test_count: 1,
+                        search_score: 0.9,
+                    }],
+                }],
+                summary: BudgetedScoutSummary {
+                    total_files: 1,
+                    total_functions: 1,
+                    untested_count: 0,
+                    stale_count: 0,
+                },
+                relevant_notes: Some(vec![BudgetedNoteEntry {
+                    text: "watch this".to_string(),
+                    sentiment: -0.5,
+                    mentions: vec!["target".to_string()],
+                }]),
+            },
+            code: vec![serde_json::json!({"name": "target", "opaque": true})],
+            risk: vec![serde_json::json!({"name": "target"})],
+            tests: vec![serde_json::json!({"name": "test_target"})],
+            placement: vec![serde_json::json!({"file": "src/lib.rs"})],
+            summary: BudgetedTaskSummary {
+                total_files: 1,
+                total_functions: 1,
+                modify_targets: 1,
+                high_risk_count: 0,
+                test_count: 1,
+                stale_count: 0,
+            },
+            token_count: 42,
+            token_budget: 100,
+        };
+        let budgeted_v = serde_json::to_value(&budgeted).expect("serialize budgeted task");
+        crate::cli::mcp::assert_response_keys_declared(
+            "task",
+            &budgeted_v,
+            &["code", "risk", "tests", "placement"],
+        );
     }
 }

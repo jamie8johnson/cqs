@@ -40,6 +40,11 @@ pub use bridge::serve_stdio;
 // can assert a real serialized response is described by the published schema.
 #[cfg(test)]
 pub(crate) use tools::command_output_schema;
+// Shared shape-truth assertion the per-command
+// `*_output_schema_describes_real_response` pins call to hold a descriptor
+// against a real serialized response.
+#[cfg(test)]
+pub(crate) use tools::assert_response_keys_declared;
 
 /// The operator opt-in for the MCP gated-mutation channel (Phase 2a).
 ///

@@ -340,7 +340,7 @@ pub struct CandidateSite {
 /// Classification of how a type is referenced in code.
 /// Used for type-level dependency tracking.
 /// Stored as string in SQLite `type_edges.edge_kind` column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, schemars::JsonSchema)]
 pub enum TypeEdgeKind {
     /// Function/method parameter type: `fn foo(x: Config)`
     Param,

@@ -59,7 +59,7 @@ fn task_gather_depth() -> usize {
 }
 
 /// Per-function risk assessment from impact analysis.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct FunctionRisk {
     /// Function name.
     pub name: String,
@@ -68,7 +68,7 @@ pub struct FunctionRisk {
 }
 
 /// Complete task analysis result.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TaskResult {
     /// Original task description.
     pub description: String,
@@ -87,7 +87,7 @@ pub struct TaskResult {
 }
 
 /// Summary statistics for a task result.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct TaskSummary {
     pub total_files: usize,
     pub total_functions: usize,

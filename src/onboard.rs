@@ -68,7 +68,7 @@ fn max_key_types() -> usize {
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
 
 /// Result of an onboard analysis — ordered reading list for understanding a concept.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct OnboardResult {
     pub concept: String,
     pub entry_point: OnboardEntry,
@@ -80,7 +80,7 @@ pub struct OnboardResult {
 }
 
 /// A code entry in the reading list.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct OnboardEntry {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -95,14 +95,14 @@ pub struct OnboardEntry {
 }
 
 /// Type dependency of the entry point.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TypeInfo {
     pub type_name: String,
     pub edge_kind: TypeEdgeKind,
 }
 
 /// Test that exercises the entry point.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TestEntry {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -112,7 +112,7 @@ pub struct TestEntry {
 }
 
 /// Summary statistics for the onboard result.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct OnboardSummary {
     pub total_items: usize,
     pub files_covered: usize,

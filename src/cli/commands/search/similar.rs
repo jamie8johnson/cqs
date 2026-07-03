@@ -57,7 +57,11 @@ impl Default for SimilarArgs {
 pub(crate) struct SimilarOutput {
     /// Resolved name of the queried chunk.
     pub target: String,
-    /// Matched chunks, nearest first, self-match excluded.
+    /// Matched chunks, nearest first, self-match excluded. Stays
+    /// `Vec<serde_json::Value>` (the `SearchResult::to_json()` projection); the
+    /// MCP `outputSchema` describes each entry via the shared schema-only
+    /// [`crate::cli::display::SearchResultSchema`] (serialization untouched).
+    #[schemars(with = "Vec<crate::cli::display::SearchResultSchema>")]
     pub results: Vec<serde_json::Value>,
     /// Number of results returned.
     pub total: usize,

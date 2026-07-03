@@ -149,6 +149,12 @@ pub(crate) fn gather_core(
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct GatherOutput {
     pub query: String,
+    /// BFS-expanded chunks. Stays `Vec<serde_json::Value>` on the wire (each is
+    /// a serialized [`cqs::GatheredChunk`] with `trust_level` / `reference_name`
+    /// / `injection_flags` layered on by [`build_gather_output`]); the MCP
+    /// `outputSchema` describes each entry via the schema-only
+    /// [`GatherChunkSchema`] (serialization untouched).
+    #[schemars(with = "Vec<GatherChunkSchema>")]
     pub chunks: Vec<serde_json::Value>,
     pub expansion_capped: bool,
     pub search_degraded: bool,
@@ -156,6 +162,31 @@ pub(crate) struct GatherOutput {
     pub token_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
+}
+
+/// Schema-only descriptor for one `gather.chunks[]` entry — a serialized
+/// [`cqs::GatheredChunk`] (flattened, so its own derive is the single source for
+/// the base fields) plus the three fields [`build_gather_output`] layers on:
+/// `trust_level` (always), `reference_name` (reference chunks), and
+/// `injection_flags` (skip-when-empty). NEVER serialized; used ONLY to describe
+/// the otherwise-opaque `chunks` array in the MCP `outputSchema`. The gather
+/// shape-truth pin holds it against a real serialized chunk.
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct GatherChunkSchema {
+    /// Base gathered-chunk fields (name / file / line_start / line_end /
+    /// language / chunk_type / signature / content / score / depth / source? /
+    /// rank_signals?) — flattened from the canonical lib type so this descriptor
+    /// tracks any field change to it.
+    #[schemars(flatten)]
+    pub base: cqs::GatheredChunk,
+    /// `"user-code"` / `"reference-code"`, derived from `source` (always emitted).
+    pub trust_level: String,
+    /// Reference name for a reference chunk (project chunks omit it).
+    pub reference_name: String,
+    /// Injection heuristics that fired on the relayed signature+content
+    /// (skip-when-empty).
+    pub injection_flags: Vec<String>,
 }
 
 // ─── Shared JSON builder ───────────────────────────────────────────────────

@@ -143,7 +143,7 @@ fn is_user_code(level: &&'static str) -> bool {
 }
 
 /// Typed output for compact context mode.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CompactOutput<'a> {
     pub file: &'a str,
     pub chunk_count: usize,
@@ -151,7 +151,7 @@ pub(crate) struct CompactOutput<'a> {
 }
 
 /// A single chunk in compact context output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CompactChunkEntry {
     pub name: String,
     pub chunk_type: String,
@@ -333,7 +333,7 @@ pub(crate) fn build_full_data<Mode>(
 }
 
 /// Typed output for full context mode.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct FullOutput<'a> {
     pub file: &'a str,
     pub chunks: Vec<FullChunkEntry>,
@@ -351,7 +351,7 @@ pub(crate) struct FullOutput<'a> {
 }
 
 /// A chunk in full context output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct FullChunkEntry {
     pub name: String,
     pub chunk_type: String,
@@ -377,7 +377,7 @@ pub(crate) struct FullChunkEntry {
 }
 
 /// An external caller in full context output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExternalCallerEntry {
     pub name: String,
     pub file: String,
@@ -386,7 +386,7 @@ pub(crate) struct ExternalCallerEntry {
 }
 
 /// An external callee in full context output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExternalCalleeEntry {
     pub name: String,
     pub called_from: String,
@@ -623,7 +623,7 @@ fn build_token_pack<Mode>(
 }
 
 /// Typed output for summary context mode.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SummaryOutput<'a> {
     pub file: &'a str,
     pub chunk_count: usize,
@@ -638,7 +638,7 @@ pub(crate) struct SummaryOutput<'a> {
 }
 
 /// A chunk in summary context output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SummaryChunkEntry {
     pub name: String,
     pub chunk_type: String,
@@ -653,6 +653,30 @@ pub(crate) struct SummaryChunkEntry {
     /// so this is always empty (skip-when-empty), matching the search/read carry.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub injection_flags: Vec<String>,
+}
+
+// ─── MCP outputSchema descriptor ─────────────────────────────────────────────
+
+/// Schema-only descriptor for the `context` command's three-shape `data`.
+/// [`context_core`] dispatches on mode and returns one of three typed
+/// serializations — [`CompactOutput`] (`--compact`), [`SummaryOutput`]
+/// (`--summary`), or [`FullOutput`] (default) — so the MCP `outputSchema` is
+/// their untagged union (an `anyOf`, mirroring the `PlanCoreOutput` /
+/// `ReadCoreOutput` precedents). NEVER serialized — the real values are built
+/// by the three `*_to_json` serializers; this enum only sources the schema via
+/// `command_output_map!`. The `context_output_schema_describes_real_response`
+/// pin holds each variant against a real serialized response.
+#[derive(schemars::JsonSchema)]
+#[schemars(untagged)]
+#[allow(dead_code)]
+pub(crate) enum ContextOutputSchema {
+    /// `--compact`: signatures + per-chunk caller/callee counts.
+    Compact(CompactOutput<'static>),
+    /// `--summary`: chunk TOC + aggregated external caller/callee counts.
+    Summary(SummaryOutput<'static>),
+    /// Default full mode: chunks (+ optional token-budgeted content), external
+    /// call graph, dependent files.
+    Full(FullOutput<'static>),
 }
 
 pub(crate) fn summary_to_json(
@@ -1745,5 +1769,59 @@ mod tests {
                 "dependent_files must be bare path strings, got: {f}"
             );
         }
+    }
+
+    /// MCP outputSchema shape-truth for the untagged `ContextOutputSchema`.
+    /// `context_core` returns one of three typed serializations (compact /
+    /// summary / full), so the descriptor is their `anyOf`. This drives a REAL
+    /// response for EACH shape (full mode with token-budgeted content, external
+    /// callers/callees, dependent files, and a partial-data warning all
+    /// populated) and asserts every emitted key of every branch is declared in
+    /// `command_output_schema("context")`. A field added to any branch that the
+    /// descriptor's variant omits goes RED here.
+    #[test]
+    fn context_output_schema_describes_real_response() {
+        // ── compact ──
+        let compact_data = CompactData {
+            chunks: vec![make_chunk("foo", 1, 10)],
+            caller_counts: HashMap::from([("foo".to_string(), 3)]),
+            callee_counts: HashMap::from([("foo".to_string(), 1)]),
+        };
+        let compact = compact_to_json(&compact_data, "src/lib.rs").unwrap();
+        crate::cli::mcp::assert_response_keys_declared("context", &compact, &[]);
+
+        // ── full (every optional section populated) ──
+        let mut dependent_files = HashSet::new();
+        dependent_files.insert("src/main.rs".to_string());
+        let full_data = FullData {
+            chunks: vec![make_chunk("process", 5, 25)],
+            external_callers: vec![(
+                "main".to_string(),
+                "src/main.rs".to_string(),
+                "process".to_string(),
+                3,
+            )],
+            external_callees: vec![("validate".to_string(), "process".to_string())],
+            dependent_files,
+            warnings: vec!["get_callers_full_batch failed: boom".to_string()],
+        };
+        let mut content_set = HashSet::new();
+        content_set.insert("process".to_string());
+        let full = full_to_json(
+            &full_data,
+            "src/lib.rs",
+            Some(&content_set),
+            Some((150, 300)),
+        )
+        .unwrap();
+        // Preconditions: the optional keys are present in this full response.
+        assert!(full["chunks"][0].get("content").is_some());
+        assert_eq!(full["token_count"], 150);
+        assert!(full.get("warnings").is_some());
+        crate::cli::mcp::assert_response_keys_declared("context", &full, &[]);
+
+        // ── summary ──
+        let summary = summary_to_json(&full_data, "src/lib.rs").unwrap();
+        crate::cli::mcp::assert_response_keys_declared("context", &summary, &[]);
     }
 }
