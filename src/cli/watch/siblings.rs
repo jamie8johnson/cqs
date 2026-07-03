@@ -641,10 +641,13 @@ fn drain_slot(
             }
         }
     };
-    let embedder: &Embedder = match &foreign_embedder {
-        Some(e) => e,
+    // Same-model drains share the active embedder. `try_init_embedder` returns
+    // an owned `Arc` (the resident lives behind the SharedEmbedder RwLock), held
+    // in a local so the `&Embedder` binding below can borrow through it.
+    let active_embedder: Option<std::sync::Arc<Embedder>> = match &foreign_embedder {
+        Some(_) => None,
         None => match try_init_embedder(cfg.embedder, backoff, cfg.model_config) {
-            Some(e) => e,
+            Some(e) => Some(e),
             None => {
                 tracing::debug!(
                     slot = %slot.name,
@@ -655,6 +658,12 @@ fn drain_slot(
             }
         },
     };
+    // Exactly one of the two is `Some` by construction (Foreign → foreign_embedder,
+    // SameModel → active_embedder), so the `expect` never fires.
+    let embedder: &Embedder = foreign_embedder
+        .as_ref()
+        .or(active_embedder.as_deref())
+        .expect("sibling drain resolves either a foreign or the active embedder");
 
     // Mark the sibling's HNSW dirty BEFORE writing chunks — and leave it
     // set after: drains don't maintain sibling HNSW graphs, so the
@@ -1053,7 +1062,7 @@ mod tests {
         std::fs::create_dir_all(&cqs_dir).unwrap();
         let notes_path = tmp.path().join("docs/notes.toml");
         let supported: HashSet<&str> = HashSet::new();
-        let embedder_slot = std::sync::OnceLock::new();
+        let embedder_cell = cqs::embedder::SharedEmbedder::new();
         let model_cfg = ModelConfig::default_model();
         let parser = CqParser::new().unwrap();
         let gitignore = std::sync::RwLock::new(None);
@@ -1063,7 +1072,7 @@ mod tests {
             notes_path: &notes_path,
             supported_ext: &supported,
             parser: &parser,
-            embedder: &embedder_slot,
+            embedder: &embedder_cell,
             quiet: true,
             model_config: &model_cfg,
             gitignore: &gitignore,
@@ -1138,8 +1147,8 @@ mod tests {
         );
 
         // 2) SIBLING drain — must be a 100% cache hit.
-        let embedder_slot = std::sync::OnceLock::new();
-        let _ = embedder_slot.set(std::sync::Arc::new(embedder));
+        let embedder_cell = cqs::embedder::SharedEmbedder::new();
+        embedder_cell.swap(std::sync::Arc::new(embedder));
         let model_cfg2 = ModelConfig::resolve(None, None);
         let gitignore = std::sync::RwLock::new(None);
         let supported: HashSet<&str> = HashSet::new();
@@ -1150,7 +1159,7 @@ mod tests {
             notes_path: &notes_path,
             supported_ext: &supported,
             parser: &parser,
-            embedder: &embedder_slot,
+            embedder: &embedder_cell,
             quiet: true,
             model_config: &model_cfg2,
             gitignore: &gitignore,

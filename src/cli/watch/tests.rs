@@ -49,8 +49,8 @@ impl Drop for EnvVarGuard {
 // `test_watch_config_with_gitignore` helper still leaks its per-call matcher
 // (each caller passes a distinct `Gitignore`).
 static TEST_PARSER: LazyLock<CqParser> = LazyLock::new(|| CqParser::new().unwrap());
-static TEST_EMBEDDER: LazyLock<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
-    LazyLock::new(std::sync::OnceLock::new);
+static TEST_EMBEDDER: LazyLock<cqs::embedder::SharedEmbedder> =
+    LazyLock::new(cqs::embedder::SharedEmbedder::new);
 static TEST_MODEL_CONFIG: LazyLock<ModelConfig> = LazyLock::new(ModelConfig::default_model);
 static TEST_GITIGNORE_NONE: LazyLock<std::sync::RwLock<Option<ignore::gitignore::Gitignore>>> =
     LazyLock::new(|| std::sync::RwLock::new(None));
@@ -2137,7 +2137,7 @@ fn maybe_rebind_active_slot_swaps_to_promoted_same_model_slot() {
 
     let fix = build_rebind_fixture(1, 2, ModelInfo::default());
     let rt = build_shared_runtime().unwrap();
-    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let mut model_config = ModelConfig::resolve(None, None).apply_env_overrides();
 
     let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
     let mut state = test_watch_state();
@@ -2184,10 +2184,14 @@ fn maybe_rebind_active_slot_swaps_to_promoted_same_model_slot() {
     // Promote b (same model). No signal reaches the daemon.
     write_active_slot(&fix.project_cqs, "b").unwrap();
 
+    let shared_embedder = cqs::embedder::SharedEmbedder::new();
     let store = maybe_rebind_active_slot(
         &fix.project_cqs,
         None,
-        &model_config,
+        fix.project_cqs.parent().unwrap(),
+        None,
+        &mut model_config,
+        &shared_embedder,
         store,
         &mut state,
         &mut cqs_dir,
@@ -2273,7 +2277,7 @@ fn maybe_rebind_carries_promoted_slot_pending_deltas() {
 
     let fix = build_rebind_fixture(1, 2, ModelInfo::default());
     let rt = build_shared_runtime().unwrap();
-    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let mut model_config = ModelConfig::resolve(None, None).apply_env_overrides();
 
     let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
     let mut state = test_watch_state();
@@ -2300,10 +2304,14 @@ fn maybe_rebind_carries_promoted_slot_pending_deltas() {
 
     // Promote b, then re-bind.
     write_active_slot(&fix.project_cqs, "b").unwrap();
+    let shared_embedder = cqs::embedder::SharedEmbedder::new();
     let _store = maybe_rebind_active_slot(
         &fix.project_cqs,
         None,
-        &model_config,
+        fix.project_cqs.parent().unwrap(),
+        None,
+        &mut model_config,
+        &shared_embedder,
         store,
         &mut state,
         &mut cqs_dir,
@@ -2327,36 +2335,58 @@ fn maybe_rebind_carries_promoted_slot_pending_deltas() {
     );
 }
 
-/// A promote to a slot recording a DIFFERENT embedding model must be declined
-/// (stage 2 territory): the daemon stays bound to the current slot and emits a
-/// restart-required warn rather than half-binding a wrong-dim store.
+/// Stage 2: a promote to a slot recording a DIFFERENT embedding model now
+/// hot-SWAPS instead of declining. The write side re-binds to the new slot AND
+/// swaps the shared embedder + `model_config` to the promoted model, with the
+/// in-memory HNSW reset for the new dim. RED against stage-1's decline behavior
+/// (which kept `active_slot == "a"` and warned "restart required").
+///
+/// `Embedder::new` is lazy (no ONNX download at construction), so building the
+/// bge-large embedder in the swap path is cheap and this test needs no model.
 #[test]
 #[serial(sibling_env)]
-fn maybe_rebind_active_slot_declines_model_change() {
+fn maybe_rebind_active_slot_swaps_to_foreign_model_slot() {
     use cqs::slot::write_active_slot;
     use cqs::store::ModelInfo;
 
     let _g = EnvVarGuard::remove("CQS_WATCH_SIBLING_SLOTS");
 
-    // Slot b records a foreign preset (e5-base) — a real model, different name.
-    let fix = build_rebind_fixture(1, 2, ModelInfo::new("intfloat/e5-base-v2", 768));
+    // Slot b records a foreign preset (bge-large, dim 1024) — a real known
+    // preset with a different name AND dim than the default-model (768) slot a,
+    // so the dim-change hygiene path is genuinely exercised.
+    let fix = build_rebind_fixture(1, 2, ModelInfo::new("BAAI/bge-large-en-v1.5", 1024));
     let rt = build_shared_runtime().unwrap();
-    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let mut model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let bound_dim = model_config.dim;
 
+    // Seed HNSW state that the dim-change swap MUST discard/reset (built against
+    // slot a's model). Without this the reset assertions below are vacuous.
     let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
     let mut state = test_watch_state();
     state.active_slot = "a".to_string();
+    state.hnsw_index = Some(synthetic_owned_index(2, 4));
+    state.incremental_count = 9;
     let mut cqs_dir = fix.a_dir.clone();
     let mut index_path = fix.a_index.clone();
     let mut db_id = db_file_identity(&index_path);
     let mut siblings = SiblingSet::empty();
+
+    // The shared embedder cell starts holding the bound (default) model, as it
+    // would after startup warm; the swap must replace it with bge-large.
+    let shared_embedder = cqs::embedder::SharedEmbedder::new();
+    shared_embedder.swap(std::sync::Arc::new(
+        Embedder::new_cpu(model_config.clone()).unwrap(),
+    ));
 
     write_active_slot(&fix.project_cqs, "b").unwrap();
 
     let store = maybe_rebind_active_slot(
         &fix.project_cqs,
         None,
-        &model_config,
+        fix.project_cqs.parent().unwrap(),
+        None,
+        &mut model_config,
+        &shared_embedder,
         store,
         &mut state,
         &mut cqs_dir,
@@ -2368,15 +2398,42 @@ fn maybe_rebind_active_slot_declines_model_change() {
     );
 
     assert_eq!(
-        state.active_slot, "a",
-        "a model-changing promote must NOT re-bind — restart still required"
+        state.active_slot, "b",
+        "a foreign-model promote must now re-bind to the promoted slot (stage 2)"
     );
-    assert_eq!(index_path, fix.a_index, "index_path must stay on slot a");
-    assert_eq!(cqs_dir, fix.a_dir, "cqs_dir must stay on slot a");
+    assert_eq!(index_path, fix.b_index, "index_path must move to slot b");
     assert_eq!(
         store.note_count().unwrap(),
-        1,
-        "still-bound store must keep serving slot a"
+        2,
+        "re-bound store must serve slot b's data"
+    );
+    // model_config swapped to the promoted (bge-large) model — a different dim.
+    assert_eq!(
+        model_config.name, "bge-large",
+        "model_config must swap to the promoted slot's model"
+    );
+    assert_eq!(
+        model_config.dim, 1024,
+        "swapped model_config carries the new dim"
+    );
+    assert_ne!(
+        bound_dim, 1024,
+        "test precondition: the models differ in dim"
+    );
+    // The shared embedder cell now holds an embedder for the new model.
+    assert!(
+        shared_embedder.get_matching(&model_config).is_some(),
+        "the shared embedder must be swapped to the promoted model"
+    );
+    // Dim-change hygiene: the old-dim in-memory HNSW is discarded and the
+    // counter reset so the next reindex rebuilds at the new dim.
+    assert!(
+        state.hnsw_index.is_none(),
+        "the old-dim in-memory HNSW must be dropped on a foreign-model re-bind"
+    );
+    assert_eq!(
+        state.incremental_count, 0,
+        "the incremental counter must reset for the new-model slot"
     );
 }
 
@@ -2393,7 +2450,7 @@ fn maybe_rebind_active_slot_respects_explicit_slot_pin() {
 
     let fix = build_rebind_fixture(1, 2, ModelInfo::default());
     let rt = build_shared_runtime().unwrap();
-    let model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let mut model_config = ModelConfig::resolve(None, None).apply_env_overrides();
 
     let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
     let mut state = test_watch_state();
@@ -2405,10 +2462,14 @@ fn maybe_rebind_active_slot_respects_explicit_slot_pin() {
 
     write_active_slot(&fix.project_cqs, "b").unwrap();
 
+    let shared_embedder = cqs::embedder::SharedEmbedder::new();
     let store = maybe_rebind_active_slot(
         &fix.project_cqs,
         Some("a"), // explicit --slot a: pinned
-        &model_config,
+        fix.project_cqs.parent().unwrap(),
+        None,
+        &mut model_config,
+        &shared_embedder,
         store,
         &mut state,
         &mut cqs_dir,
@@ -2698,9 +2759,12 @@ fn dropped_this_cycle_resets_after_successful_drain() {
     let notes_path = cqs_dir.join("docs/notes.toml");
     let supported: HashSet<&str> = HashSet::new();
 
-    // Embedder slot pre-populated so try_init_embedder returns Some.
-    let embedder_slot = std::sync::OnceLock::new();
-    let _ = embedder_slot.set(std::sync::Arc::new(embedder));
+    // Embedder cell pre-populated so try_init_embedder returns Some. The
+    // resident's model must match `model_config` below (get_matching gates on
+    // model identity), so install the embedder built above and query with the
+    // same resolved default model.
+    let embedder_cell = cqs::embedder::SharedEmbedder::new();
+    embedder_cell.swap(std::sync::Arc::new(embedder));
     let model_cfg2 = ModelConfig::default_model();
     let parser = CqParser::new().unwrap();
     let gitignore = std::sync::RwLock::new(None);
@@ -2711,7 +2775,7 @@ fn dropped_this_cycle_resets_after_successful_drain() {
         notes_path: &notes_path,
         supported_ext: &supported,
         parser: &parser,
-        embedder: &embedder_slot,
+        embedder: &embedder_cell,
         quiet: true,
         model_config: &model_cfg2,
         gitignore: &gitignore,

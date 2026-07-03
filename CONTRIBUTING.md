@@ -354,6 +354,7 @@ src/
     pooling.rs  - Tensor padding (pad_2d_i64*), L2 normalize, mean/cls/last-token pooling, truncate_at_char_boundary (split #1691)
     models.rs   - ModelConfig struct, built-in presets (embeddinggemma-300m default, bge-large, bge-large-ft, e5-base, v9-200k, nomic-coderank, qwen3-embedding-4b, qwen3-embedding-8b), resolution logic, EmbeddingConfig
     provider.rs - ORT execution provider selection — per-backend cfg-blocks; CUDA/TensorRT always-on, CoreML/ROCm scaffolded via `ep-coreml`/`ep-rocm` features (#956 Phase A)
+    shared.rs   - SharedEmbedder: swappable `RwLock<Option<Arc<Embedder>>>` cell shared by the watch loop + daemon BatchContext; resolves per-model (get_matching / resolve_matching / swap) so a foreign-model slot promote can hot-swap the resident embedder (#2128 stage 2)
   reranker.rs   - Cross-encoder re-ranking (Reranker trait + OnnxReranker / NoopReranker / LlmReranker impls; default ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF

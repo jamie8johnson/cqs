@@ -142,7 +142,7 @@ pub enum PoolingStrategy {
 /// repository location, file paths, dimensions, text prefixes, and the
 /// architecture-specific I/O contract (input tensor names, output tensor name,
 /// pooling strategy).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelConfig {
     /// Short human-readable name (e.g. "e5-base", "bge-large")
     pub name: String,

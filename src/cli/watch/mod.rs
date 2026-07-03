@@ -130,18 +130,18 @@ mod notes_signal_interleaving_model;
 ///
 /// Does not include `Store` because it is re-opened each cycle.
 ///
-/// `embedder` points at a shared `Arc<OnceLock<Arc<Embedder>>>` that the
-/// daemon thread also holds. First side to populate it wins; the other
-/// side's lazy-init short-circuits to the same instance. This keeps the
-/// outer watch loop and the daemon thread from each owning a ~500 MB
-/// duplicate embedder.
+/// `embedder` points at a shared `SharedEmbedder` cell that the daemon thread
+/// seeds from at startup. First side to populate it wins the initial build; a
+/// foreign-model slot rebind swaps the resident for the new model. `try_init`
+/// resolves against the loop's current `model_config`, so a stale resident of a
+/// just-superseded model is rebuilt rather than reused.
 struct WatchConfig<'a> {
     root: &'a Path,
     cqs_dir: &'a Path,
     notes_path: &'a Path,
     supported_ext: &'a HashSet<&'a str>,
     parser: &'a CqParser,
-    embedder: &'a std::sync::OnceLock<std::sync::Arc<Embedder>>,
+    embedder: &'a cqs::embedder::SharedEmbedder,
     quiet: bool,
     model_config: &'a ModelConfig,
     /// gitignore matcher for the project. `None` if
@@ -432,7 +432,8 @@ fn reopen_store_after_replacement(
     Ok(store)
 }
 
-/// Idle-tick hot re-bind for a same-model `cqs slot promote`.
+/// Idle-tick hot re-bind for a `cqs slot promote` — same-model or (stage 2)
+/// foreign-model.
 ///
 /// `slot_promote` writes `.cqs/active_slot` under the slots lock and signals
 /// nothing; the daemon resolves the active slot only at startup. This poll —
@@ -442,29 +443,38 @@ fn reopen_store_after_replacement(
 /// index-lock root), `index_path`, `db_id`, `state.active_slot`, and the sibling
 /// set all move to the new slot before the next snapshot publish, and the
 /// promoted slot's not-yet-drained sibling deltas are carried into the active
-/// reindex queue so a quiet non-serve daemon does not leave them stale. The
-/// query side (the daemon's `BatchContext`) already self-heals via the per-check
-/// `resolve_index_db(project_cqs_dir)`, so after this the two sides converge on
-/// the promoted slot with no restart.
+/// reindex queue so a quiet non-serve daemon does not leave them stale. A
+/// **foreign-model** promote additionally swaps the shared embedder + the loop's
+/// `model_config` (the dim changed, so the in-memory HNSW is discarded and
+/// rebuilt from the new store on the next reindex — the same state reset a
+/// same-model re-bind already does). The query side (the daemon's
+/// `BatchContext`) self-heals its own store + embedder + model_config via the
+/// per-check `resolve_index_db(project_cqs_dir)`, so after this the two sides
+/// converge on the promoted slot with no restart.
 ///
 /// Declines (returns the store unchanged, staying bound to the current slot) on:
 /// - an explicit `--slot` binding — an operator-pinned daemon is not stolen by a
 ///   promote (the query side's independent active-slot following is a
 ///   pre-existing divergence tracked separately);
 /// - a promoted slot with no `index.db` yet (nothing to bind to);
-/// - a **model change** — a foreign-model or unclassifiable promote needs a
-///   different-dim embedder (and, for CAGRA, a rebuilt index), so it stays on the
-///   restart path with a loud `warn!`;
+/// - an **unclassifiable model** — the promoted slot's recorded model is not a
+///   known preset, so no embedder can be built for it; stay on the restart path;
+/// - a failed **embedder build** for a foreign model — decline rather than
+///   half-swap onto a model whose embedder is unavailable;
 /// - a failed open of the new slot's store — decline rather than half-bind.
 ///
-/// Never half-binds: the new store is opened *before* the old one is dropped, so
-/// every failure path leaves the daemon on a live store, and once the new store
-/// is open the remaining swap is infallible.
+/// Never half-binds: the new slot's store is opened AND (for a foreign model)
+/// its embedder is built *before* the old store is dropped, so every failure
+/// path leaves the daemon on a live store + embedder; once both are in hand the
+/// remaining swap is infallible.
 #[allow(clippy::too_many_arguments)]
 fn maybe_rebind_active_slot(
     project_cqs_dir: &Path,
     explicit_slot: Option<&str>,
-    model_config: &ModelConfig,
+    root: &Path,
+    cli_model: Option<&str>,
+    model_config: &mut ModelConfig,
+    shared_embedder: &cqs::embedder::SharedEmbedder,
     store: Store,
     state: &mut WatchState,
     cqs_dir: &mut PathBuf,
@@ -510,33 +520,65 @@ fn maybe_rebind_active_slot(
         return store;
     }
 
-    // Same-model gate: only a promote to a slot recording the same model as the
-    // currently-bound one is hot-reloadable. A different model needs a
-    // different-dim embedder (stage 2), so decline and keep the restart path.
-    match classify_slot_model(&new_index_path, model_config) {
-        Ok(SiblingKind::SameModel) => {}
-        Ok(SiblingKind::Foreign { model }) => {
-            warn!(
-                slot = %new_slot,
-                promoted_model = %model,
-                bound_model = %model_config.name,
-                "active slot promoted to a DIFFERENT embedding model — hot re-bind \
-                 declined (dim/model mismatch); staying bound to the current slot. \
-                 Restart the daemon to serve the new model: \
-                 systemctl --user restart cqs-watch"
-            );
-            return store;
-        }
-        Err(e) => {
-            warn!(
-                slot = %new_slot,
-                error = %e,
-                "active slot changed but the promoted slot's model could not be \
-                 classified — hot re-bind declined; staying bound to the current slot"
-            );
-            return store;
-        }
-    }
+    // Model gate. A same-model promote is a pure store re-bind. A foreign-model
+    // promote (stage 2) additionally hot-swaps the embedder + model_config: build
+    // the new model's embedder BEFORE committing so a build failure declines
+    // cleanly (never half-bind). An unclassifiable model — no known preset, so no
+    // embedder we can build — still declines onto the restart path.
+    let model_swap: Option<(ModelConfig, std::sync::Arc<Embedder>)> =
+        match classify_slot_model(&new_index_path, model_config) {
+            Ok(SiblingKind::SameModel) => None,
+            Ok(SiblingKind::Foreign { model }) => {
+                let new_model =
+                    match resolve_index_aware_model_for_watch(&new_index_path, root, cli_model) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!(
+                                slot = %new_slot,
+                                error = %e,
+                                "active slot promoted to a different model but its config \
+                                 could not be resolved — hot re-bind declined; staying \
+                                 bound to the current slot"
+                            );
+                            return store;
+                        }
+                    };
+                match Embedder::new(new_model.clone()) {
+                    Ok(e) => {
+                        info!(
+                            slot = %new_slot,
+                            promoted_model = %model,
+                            bound_model = %model_config.name,
+                            new_dim = new_model.dim,
+                            "active slot promoted to a DIFFERENT embedding model — \
+                             hot-swapping embedder + model_config"
+                        );
+                        Some((new_model, std::sync::Arc::new(e)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            slot = %new_slot,
+                            promoted_model = %model,
+                            error = %e,
+                            "active slot promoted to a different model but its embedder \
+                             failed to build — hot re-bind declined; staying bound to the \
+                             current slot. Restart to serve it: systemctl --user restart \
+                             cqs-watch"
+                        );
+                        return store;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    slot = %new_slot,
+                    error = %e,
+                    "active slot changed but the promoted slot's model could not be \
+                     classified — hot re-bind declined; staying bound to the current slot"
+                );
+                return store;
+            }
+        };
 
     // Open the new slot's store BEFORE dropping the old one so a failed open
     // leaves the daemon on a live store rather than none.
@@ -557,6 +599,15 @@ fn maybe_rebind_active_slot(
     // swap is infallible — never half-bind.
     drop(store);
     new_store.set_vendored_prefixes(vendored_prefixes.to_vec());
+
+    // Apply the foreign-model swap (if any): install the new embedder + model
+    // config so the reindex path below and the sibling re-discovery use the new
+    // model. The in-memory HNSW reset that follows discards the old-dim index —
+    // the next reindex rebuilds it against `new_store` at the new dim.
+    if let Some((new_model, new_embedder)) = model_swap {
+        shared_embedder.swap(new_embedder);
+        *model_config = new_model;
+    }
 
     // Discard any in-flight HNSW rebuild — it was built against the old slot's
     // store and is meaningless for the new one (mirrors
@@ -636,8 +687,9 @@ fn maybe_rebind_active_slot(
     info!(
         old_slot = %old_slot,
         new_slot = %new_slot,
+        bound_model = %model_config.name,
         index_path = %index_path.display(),
-        "daemon re-bound to promoted slot (same model) on idle tick"
+        "daemon re-bound to promoted slot on idle tick"
     );
 
     new_store
@@ -1238,13 +1290,14 @@ pub fn cmd_watch(
         tracing::warn!("--serve requested on non-unix platform; daemon disabled");
     }
 
-    // Allocate the shared embedder slot before spawning the daemon thread so
-    // the Arc can be cloned into the thread's closure and adopted by its
-    // BatchContext. The slot starts empty; whichever side initializes first
-    // (daemon via `ctx.warm()` or watch via `try_init_embedder`) wins and the
-    // other reuses the same Arc.
-    let shared_embedder: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Embedder>>> =
-        std::sync::Arc::new(std::sync::OnceLock::new());
+    // Allocate the shared embedder cell before spawning the daemon thread so
+    // the Arc can be cloned into the thread's closure and seed its BatchContext.
+    // The cell starts empty; whichever side initializes first (daemon via
+    // `ctx.warm()` or watch via `try_init_embedder`) builds the initial embedder.
+    // Unlike the old `OnceLock`, a foreign-model slot rebind can swap the
+    // resident for a new model (`maybe_rebind_active_slot`).
+    let shared_embedder: std::sync::Arc<cqs::embedder::SharedEmbedder> =
+        std::sync::Arc::new(cqs::embedder::SharedEmbedder::new());
 
     // Build ONE tokio runtime and share it across the outer Store
     // (read-write, for reindex writes) and the daemon thread's inner Store
@@ -1597,7 +1650,11 @@ pub fn cmd_watch(
         }
     };
     let project_config_for_watch = cqs::config::Config::load(&root);
-    let model_config_owned = ModelConfig::resolve_for_query(
+    // `mut` because a foreign-model slot promote swaps it in
+    // `maybe_rebind_active_slot` (below, each idle tick). It is re-borrowed
+    // `&model_config_owned` into every per-iteration `WatchConfig` and lent
+    // `&mut` only to the rebind, so the borrows never overlap.
+    let mut model_config_owned = ModelConfig::resolve_for_query(
         stored_model_for_watch.as_deref(),
         cli.model.as_deref(),
         project_config_for_watch.embedding.as_ref(),
@@ -1609,7 +1666,6 @@ pub fn cmd_watch(
         dim = model_config_owned.dim,
         "Watch loop resolved index-aware model config"
     );
-    let model_config = &model_config_owned;
 
     // Discover sibling slots for slot-parallel delta propagation. The
     // set is fixed for the daemon's lifetime (slots created later need a
@@ -1621,7 +1677,7 @@ pub fn cmd_watch(
         SiblingSet::discover(
             &project_cqs_dir,
             &active_slot.name,
-            model_config,
+            &model_config_owned,
             SiblingPolicy::from_env(),
         )
     } else {
@@ -1835,7 +1891,10 @@ pub fn cmd_watch(
             store = maybe_rebind_active_slot(
                 &project_cqs_dir,
                 cli.slot.as_deref(),
-                model_config,
+                &root,
+                cli.model.as_deref(),
+                &mut model_config_owned,
+                shared_embedder.as_ref(),
                 store,
                 &mut state,
                 &mut cqs_dir,
@@ -1848,7 +1907,9 @@ pub fn cmd_watch(
         }
 
         // (Re)build the per-iteration WatchConfig from the current slot binding
-        // — see the note where the hoisted build used to sit.
+        // — see the note where the hoisted build used to sit. `model_config`
+        // re-borrows `model_config_owned` fresh each tick so a foreign-model
+        // rebind above is reflected here.
         let watch_cfg = WatchConfig {
             root: &root,
             cqs_dir: &cqs_dir,
@@ -1857,7 +1918,7 @@ pub fn cmd_watch(
             parser: &parser,
             embedder: shared_embedder.as_ref(),
             quiet: cli.quiet,
-            model_config,
+            model_config: &model_config_owned,
             gitignore: &gitignore,
             splade_encoder: splade_encoder_ref,
             global_cache: global_cache_ref,

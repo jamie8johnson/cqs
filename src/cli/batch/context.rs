@@ -114,18 +114,21 @@ pub(crate) struct BatchContext {
     /// otherwise they would rebuild a fresh current-thread runtime on every
     /// index swap and drift apart from the daemon's shared pool.
     pub(super) runtime: Arc<tokio::runtime::Runtime>,
-    // Stable caches — OnceLock (not index-derived)
+    // Stable caches — mostly OnceLock (not index-derived)
     //
-    // `OnceLock<Arc<Embedder>>` so the watch outer scope can hand the same
-    // Embedder instance down into the daemon thread — without sharing, the
-    // BatchContext and the watch loop would each hold a ~500 MB ONNX session.
-    // `BatchContext::adopt_embedder` installs a pre-built Arc after
-    // `BatchContext::new`; the CLI path creates a fresh one lazily via `warm`.
+    // `SharedEmbedder` (a swappable `RwLock<Option<Arc<Embedder>>>`) rather than
+    // a bare `OnceLock`: a foreign-model slot promote reopens the store onto a
+    // different-model index, and the resident embedder must be *replaced*, not
+    // merely lazily set once. `BatchContext::adopt_embedder` seeds a pre-built
+    // Arc from the watch scope after `BatchContext::new`; the CLI path builds one
+    // lazily via `warm`; a store reopen whose model differs swaps it.
     //
-    // Wrapped in `Arc<...>` so `BatchView` can carry a clone of the same
-    // `OnceLock`; init through the view propagates to BatchContext and any
-    // other view sharing the Arc.
-    pub(super) embedder: Arc<OnceLock<Arc<Embedder>>>,
+    // Wrapped in `Arc<...>` so `BatchView` can carry a clone of the same cell for
+    // the lazy fallback build; a build through the view propagates to the
+    // BatchContext and any other view sharing the Arc. The checkout-time triple
+    // (store, embedder, model_config) is snapshotted coherently in `build_view`,
+    // so a swap after checkout never tears an in-flight view.
+    pub(super) embedder: Arc<cqs::embedder::SharedEmbedder>,
     /// `RefCell<Option<CachedReload<Config>>>` so a `.cqs/config.toml` edit
     /// shows up after `config_reload_interval` (default 5 min) without a daemon
     /// restart. The reload is a sub-ms file read; cost is negligible per query.
@@ -253,7 +256,13 @@ pub(crate) struct BatchContext {
     /// longer self-heals off the pin. `None` preserves byte-identical
     /// active-slot-following behavior.
     pub(super) explicit_slot: Option<String>,
-    pub model_config: cqs::embedder::ModelConfig,
+    /// `RefCell` so a store reopen onto a different-model slot (a foreign-model
+    /// promote the query side follows via the active-slot pointer) can swap the
+    /// resolved model in lock-step with the store + embedder swap, under the
+    /// outer `Arc<Mutex<BatchContext>>` that serializes every `&self` access. A
+    /// `BatchView` clones it out at checkout so an in-flight query keeps its own
+    /// coherent (store, embedder, model_config) triple across a concurrent swap.
+    pub(super) model_config: RefCell<cqs::embedder::ModelConfig>,
     /// Last-seen identity (inode + size + mtime on unix; size + mtime
     /// elsewhere) of index.db, used to detect concurrent index updates.
     ///
@@ -362,7 +371,7 @@ impl BatchContext {
             // cheaply.
             store: Mutex::new(Arc::new(store)),
             runtime,
-            embedder: Arc::new(OnceLock::new()),
+            embedder: Arc::new(cqs::embedder::SharedEmbedder::new()),
             config: RefCell::new(None),
             reranker: Arc::new(OnceLock::new()),
             audit_state: RefCell::new(None),
@@ -382,7 +391,7 @@ impl BatchContext {
             root,
             cqs_dir,
             explicit_slot,
-            model_config,
+            model_config: RefCell::new(model_config),
             index_id: Cell::new(index_id),
             data_version_probe: RefCell::new(None),
             // None means the first staleness check runs unconditionally; the
@@ -593,16 +602,13 @@ impl BatchContext {
             // transient current_thread runtime on every index swap.
             match Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime)) {
                 Ok(new_store) => {
-                    // Check if index dimension changed — OnceLock model_config
-                    // can't be cleared, so warn the user to restart the batch session.
-                    let new_dim = new_store.dim();
-                    if new_dim != self.model_config.dim {
-                        tracing::warn!(
-                            old_dim = self.model_config.dim,
-                            new_dim = new_dim,
-                            "Index dimension changed — queries may return wrong results until batch restart"
-                        );
-                    }
+                    // A model change (a foreign-model slot promote the query side
+                    // follows via the active-slot pointer) swaps the embedder +
+                    // model_config in lock-step with the store. The dim-sensitive
+                    // in-memory caches (hnsw / base_hnsw / splade_index) were
+                    // already cleared by `invalidate_mutable_caches` above, so the
+                    // reopen path only needs the embedder + config swap here.
+                    self.reconcile_model_for_reopen(&new_store);
                     // Swap the Arc inside the Mutex. Existing readers
                     // (BatchView snapshots already handed out) keep their
                     // old Arc and remain valid; the next `checkout_view`
@@ -625,6 +631,65 @@ impl BatchContext {
             self.clear_cache_slots(pending);
         }
         self.index_id.set(Some(current_id));
+    }
+
+    /// Reconcile the resident embedder + `model_config` with a freshly reopened
+    /// store. A no-op when the store's recorded model is unchanged (the common
+    /// same-model reindex); on a change — a foreign-model slot promote the query
+    /// side follows via the active-slot pointer — it swaps both so queries embed
+    /// in the reopened index's space instead of returning garbage against a
+    /// mismatched-dim index.
+    ///
+    /// The store is the single source of truth for "which model": the new
+    /// `ModelConfig` is resolved from `new_store.stored_model_name()` (via
+    /// `resolve_for_query`, honoring the same env/config chain the constructor
+    /// used). `model_config` is swapped unconditionally on a detected change so
+    /// `ping` reports the right model and `Store::check_query_dim` gives an
+    /// actionable error even if the embedder build fails; the embedder is swapped
+    /// only when its build succeeds, otherwise the lazy `resolve_matching` path
+    /// retries on the next query. Runs under the outer `Arc<Mutex<BatchContext>>`
+    /// (every `&self` accessor does), so the swap is atomic w.r.t. `build_view`'s
+    /// triple snapshot.
+    fn reconcile_model_for_reopen(&self, new_store: &Store<ReadOnly>) {
+        let new_model = cqs::embedder::ModelConfig::resolve_for_query(
+            new_store.stored_model_name().as_deref(),
+            None,
+            self.config().embedding.as_ref(),
+        )
+        .apply_env_overrides();
+        if new_model == *self.model_config.borrow() {
+            return;
+        }
+        let _span = tracing::info_span!("batch_model_swap_on_reopen").entered();
+        let old = self.model_config.borrow().clone();
+        tracing::info!(
+            old_model = %old.name,
+            old_dim = old.dim,
+            new_model = %new_model.name,
+            new_dim = new_model.dim,
+            "index model changed on reopen — swapping embedder + model_config"
+        );
+        match Embedder::new(new_model.clone()) {
+            Ok(e) => self.embedder.swap(std::sync::Arc::new(e)),
+            Err(e) => {
+                // Evict the old-model resident rather than leaving it in place:
+                // model_config is about to become `new_model`, so a lingering
+                // old-model resident would strand `resolve_matching(new_model)`
+                // on its non-clobber branch (rebuilding a private embedder every
+                // query, never installing). An empty cell lets the next query's
+                // resolve_matching install the new model on its first successful
+                // build — the cell converges instead of looping.
+                self.embedder.clear();
+                tracing::warn!(
+                    error = %e,
+                    model = %new_model.name,
+                    "failed to build embedder for reopened model — model_config swapped and \
+                     the stale resident evicted; the next query rebuilds it lazily (or \
+                     surfaces a dim-check error)"
+                );
+            }
+        }
+        *self.model_config.borrow_mut() = new_model;
     }
 
     /// Open a fresh probe connection against `index_path` and read its
@@ -824,6 +889,10 @@ impl BatchContext {
         let new_store =
             Store::open_readonly_pooled_with_runtime(&index_path, Arc::clone(&self.runtime))
                 .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
+        // A manual `refresh` after a foreign-model promote reopens onto a
+        // different-model index; swap the embedder + model_config in lock-step
+        // (same reconcile the automatic staleness reopen runs).
+        self.reconcile_model_for_reopen(&new_store);
         // Swap the Arc; existing BatchView snapshots keep the old.
         *self.store.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_store);
 
@@ -1038,12 +1107,13 @@ impl BatchContext {
             .get()
             .map(|opt| opt.is_some())
             .unwrap_or(false);
+        let model_config = self.model_config.borrow();
         cqs::daemon_translate::PingResponse {
-            model: self.model_config.name.clone(),
+            model: model_config.name.clone(),
             // Cast usize→u32. Real models are 384 / 768 / 1024 dim; clamp
             // to u32::MAX rather than wrap if a future custom config goes
             // pathological. The cast is information-preserving in practice.
-            dim: u32::try_from(self.model_config.dim).unwrap_or(u32::MAX),
+            dim: u32::try_from(model_config.dim).unwrap_or(u32::MAX),
             uptime_secs: self.started_at.elapsed().as_secs(),
             last_indexed_at,
             error_count: self.error_count.load(Ordering::Relaxed),
@@ -1070,14 +1140,17 @@ impl BatchContext {
     /// Called once at session start. Errors are logged but non-fatal.
     ///
     /// If the watch outer scope installed a shared Embedder via
-    /// `adopt_embedder`, the OnceLock is already populated and this is a no-op
+    /// `adopt_embedder`, the cell is already populated and this is a no-op
     /// for model loading (cache eviction still runs).
     pub fn warm(&self) {
         if self.embedder.get().is_none() {
             let _span = tracing::info_span!("batch_warm").entered();
-            match Embedder::new(self.model_config.clone()) {
+            let model_config = self.model_config.borrow().clone();
+            match Embedder::new(model_config) {
                 Ok(e) => {
-                    let _ = self.embedder.set(std::sync::Arc::new(e));
+                    // `set_if_empty` (not `swap`) so a shared embedder the watch
+                    // scope adopted meanwhile isn't clobbered by this warm build.
+                    let _ = self.embedder.set_if_empty(std::sync::Arc::new(e));
                     tracing::info!("Embedder pre-warmed");
                 }
                 Err(e) => {
@@ -1109,12 +1182,33 @@ impl BatchContext {
 
     /// Install a shared Embedder from the outer watch scope.
     ///
-    /// Returns `true` if the Arc was installed, `false` if the OnceLock was
-    /// already populated (lazy init already happened, or another caller won
-    /// the race). The caller can use this result to decide whether to fall
-    /// back to its own lazily-initialized embedder.
+    /// Returns `true` if the Arc was installed, `false` if it was declined (the
+    /// cell was already populated, or the shared embedder is for a DIFFERENT
+    /// model than this context resolved). The caller uses the result to decide
+    /// whether to fall back to building its own.
+    ///
+    /// **Model gate.** The shared watch cell can hold a different model than this
+    /// context's `model_config` — a foreign-model promote may land in the boot
+    /// window (the watch rebind swaps the cell to model B before this daemon
+    /// thread seeds a ctx bound to model A). Adopting that mismatched resident
+    /// would strand the ctx cell on the wrong model forever: `reconcile` only
+    /// fires on a detected change at reopen, `resolve_matching` never clobbers a
+    /// mismatch, and `warm` gates on presence not model — so every query would
+    /// build a private embedder, silently. Declining a mismatch leaves the cell
+    /// empty so `warm` builds the RIGHT model. `set_if_empty` (not `swap`) so a
+    /// matching adopt still never clobbers an embedder a concurrent warm / query
+    /// already built.
     pub fn adopt_embedder(&self, shared: std::sync::Arc<Embedder>) -> bool {
-        self.embedder.set(shared).is_ok()
+        if shared.model_config() != &*self.model_config.borrow() {
+            tracing::warn!(
+                shared_model = %shared.model_config().name,
+                ctx_model = %self.model_config.borrow().name,
+                "declining to adopt a shared embedder for a different model — \
+                 building this context's own instead (foreign-model promote in the boot window)"
+            );
+            return false;
+        }
+        self.embedder.set_if_empty(shared)
     }
 
     /// Install a shared `Arc<RwLock<WatchSnapshot>>` from the outer
@@ -1156,20 +1250,15 @@ impl BatchContext {
         self.fresh_notifier = shared;
     }
 
-    /// Get or create the embedder (~500ms first call).
-    pub fn embedder(&self) -> Result<&Embedder> {
-        if let Some(e) = self.embedder.get() {
-            return Ok(e.as_ref());
-        }
+    /// Get or create the embedder for the current `model_config` (~500ms first
+    /// call). Returns an owned `Arc` (not a borrow) because the resident lives
+    /// behind the `SharedEmbedder`'s `RwLock` — a reference would outlive the
+    /// guard. `resolve_matching` guarantees the returned embedder matches the
+    /// current `model_config` even if a concurrent swap moved the cell.
+    pub fn embedder(&self) -> Result<std::sync::Arc<Embedder>> {
         let _span = tracing::info_span!("batch_embedder_init").entered();
-        let e = Embedder::new(self.model_config.clone())?;
-        // Race is fine — OnceLock ensures only one value is stored
-        let _ = self.embedder.set(std::sync::Arc::new(e));
-        Ok(self
-            .embedder
-            .get()
-            .map(|arc| arc.as_ref())
-            .expect("embedder OnceLock populated by set() above"))
+        let model_config = self.model_config.borrow().clone();
+        Ok(self.embedder.resolve_matching(&model_config)?)
     }
 
     /// Get or lazily load the SPLADE encoder. Returns None if model unavailable.
@@ -1531,6 +1620,17 @@ impl BatchContext {
         let splade_index_snapshot = snapshot_cell(&self.splade_index, checkout_epoch);
         let config = self.config();
         let audit_state = self.audit_state();
+        // Checkout-time (store, embedder, model_config) triple. `model_config` is
+        // read here — after the staleness check above may have swapped it on a
+        // foreign-model reopen — and the embedder is snapshotted ONLY when it
+        // already matches that model_config. All three reads happen under the
+        // outer `Arc<Mutex<BatchContext>>` (build_view runs under it), so a
+        // concurrent swap can't move the store/model/embedder between them: the
+        // view carries a coherent triple, and a mismatched or absent resident
+        // just leaves `cached_embedder` = None for the lazy `resolve_matching`
+        // fallback (which rebuilds against this view's own model_config).
+        let model_config = self.model_config.borrow().clone();
+        let cached_embedder = self.embedder.get_matching(&model_config);
         BatchView {
             store,
             cached_vector_index: vector_index,
@@ -1548,7 +1648,9 @@ impl BatchContext {
             cross_project_cell: Arc::clone(&self.cross_project),
             invalidation_epoch: Arc::clone(&self.invalidation_epoch),
             checkout_epoch,
-            embedder_slot: Arc::clone(&self.embedder),
+            cached_embedder,
+            embedder_cell: Arc::clone(&self.embedder),
+            embedder_resolved: OnceLock::new(),
             reranker_slot: Arc::clone(&self.reranker),
             splade_encoder_slot: Arc::clone(&self.splade_encoder),
             refs: Arc::clone(&self.refs),
@@ -1558,7 +1660,7 @@ impl BatchContext {
             overlay_pin: RefCell::new(None),
             config,
             audit_state,
-            model_config: self.model_config.clone(),
+            model_config,
             root: self.root.clone(),
             cqs_dir: self.cqs_dir.clone(),
             explicit_slot: self.explicit_slot.clone(),
