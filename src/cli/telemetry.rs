@@ -352,34 +352,64 @@ thread_local! {
     static FALLBACK_ORIGIN: RefCell<Option<FallbackOrigin>> = const { RefCell::new(None) };
 }
 
-/// RAII guard that installs a [`FallbackOrigin`] for the duration of a
-/// dispatch and restores the previous value on drop. Restore-on-drop (rather
-/// than clear-on-drop) keeps nesting correct — a command that internally
-/// dispatches a sub-command pops back to the outer origin instead of losing
-/// it. Set this at the single dispatch chokepoint on each surface.
+/// RAII guard for the thread's [`FallbackOrigin`]. Install-if-absent
+/// (outermost-wins): the FIRST guard on the thread installs the origin; a
+/// nested `enter_fallback_origin` while one is already live returns a no-op
+/// guard that leaves the thread-local untouched. Only the installing guard
+/// clears the origin on drop; a no-op guard's drop does nothing, so the
+/// outer origin survives the whole call.
+///
+/// Rationale: a kind-fallback must book against the top-level command the
+/// agent invoked, not an internal sub-op. If a composite command's internal
+/// dispatch re-enters this chokepoint with the sub-op name, the outer origin
+/// must win at the recording site — that is the documented "`kind_fallbacks[cmd]`
+/// comparable to `commands[cmd]`" contract. The prior restore-on-drop design
+/// let the inner install SHADOW the outer for the span of the sub-dispatch, so
+/// a fallback fired inside booked under the sub-op. Install-if-absent removes
+/// that window: the outermost origin is the only one ever installed.
+///
+/// The installing guard always transitions the thread-local `None → Some →
+/// None`, so clear-on-drop (not restore-on-drop) is correct — there is never a
+/// prior origin to restore, because if one existed this guard would be a no-op.
+/// That also keeps pooled daemon worker threads leak-free: after the outermost
+/// guard drops, the origin is `None` again for the next request.
 pub(crate) struct FallbackOriginGuard {
-    prev: Option<FallbackOrigin>,
+    /// Whether THIS guard installed the origin (the thread-local was absent).
+    /// Only the installing guard clears on drop; a nested no-op guard leaves
+    /// the outer origin in place.
+    installed: bool,
 }
 
 impl Drop for FallbackOriginGuard {
     fn drop(&mut self) {
-        let prev = self.prev.take();
-        FALLBACK_ORIGIN.with(|cell| {
-            *cell.borrow_mut() = prev;
-        });
+        if self.installed {
+            FALLBACK_ORIGIN.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
     }
 }
 
 /// Install the top-level command + served-project dir for the current
-/// dispatch. Hold the returned guard across the command's execution; the
-/// graph cores read it when they fire a fallback.
+/// dispatch, unless a guard is already live on this thread (install-if-absent
+/// — the outermost origin wins). Hold the returned guard across the command's
+/// execution; the graph cores read it when they fire a fallback.
 pub(crate) fn enter_fallback_origin(command: &str, cqs_dir: &Path) -> FallbackOriginGuard {
-    let origin = FallbackOrigin {
-        command: command.to_string(),
-        cqs_dir: cqs_dir.to_path_buf(),
-    };
-    let prev = FALLBACK_ORIGIN.with(|cell| cell.borrow_mut().replace(origin));
-    FallbackOriginGuard { prev }
+    FALLBACK_ORIGIN.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_some() {
+            // A guard is already installed on this thread. Outermost wins:
+            // record nothing and return a no-op guard whose drop leaves the
+            // outer origin untouched.
+            FallbackOriginGuard { installed: false }
+        } else {
+            *slot = Some(FallbackOrigin {
+                command: command.to_string(),
+                cqs_dir: cqs_dir.to_path_buf(),
+            });
+            FallbackOriginGuard { installed: true }
+        }
+    })
 }
 
 /// Run `f` with the current thread's fallback origin (if any) borrowed.
@@ -683,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_origin_guard_sets_and_restores() {
+    fn fallback_origin_guard_installs_and_clears() {
         // Outside any guard, no origin is installed.
         with_fallback_origin(|o| assert!(o.is_none()));
 
@@ -695,24 +725,80 @@ mod tests {
                 assert_eq!(o.cqs_dir, Path::new("/tmp/proj/.cqs"));
             });
 
-            // Nesting: a sub-command's guard shadows, then restores the outer.
+            // Install-if-absent (outermost-wins): a nested guard is a NO-OP —
+            // the outer `scout` origin must NOT be shadowed by the inner
+            // sub-op, even for the span of the inner scope. This is the
+            // recording-site contract: a fallback fired inside the inner
+            // dispatch books under the top-level command, not the sub-op.
             {
                 let _g2 = enter_fallback_origin("callers", Path::new("/tmp/other/.cqs"));
                 with_fallback_origin(|o| {
-                    assert_eq!(o.expect("inner origin").command, "callers");
+                    assert_eq!(
+                        o.expect("origin still installed").command,
+                        "scout",
+                        "the inner install must be a no-op — the outermost origin wins"
+                    );
                 });
             }
+            // After the inner (no-op) guard drops, the outer origin is intact:
+            // a no-op guard's drop must not clear the thread-local.
             with_fallback_origin(|o| {
                 assert_eq!(
-                    o.expect("outer origin restored").command,
+                    o.expect("outer origin intact").command,
                     "scout",
-                    "inner guard drop must restore the outer origin, not clear it"
+                    "the inner no-op guard's drop must not clear the outer origin"
                 );
             });
         }
 
-        // After the outer guard drops, the origin is cleared again.
+        // After the outermost (installing) guard drops, the origin is cleared.
         with_fallback_origin(|o| assert!(o.is_none()));
+    }
+
+    /// The recording-site attribution contract, exercised end-to-end through
+    /// [`log_kind_fallback`]: a top-level command (`impact`) whose internal
+    /// sub-dispatch re-enters `enter_fallback_origin` with a sub-op name
+    /// (`deps`) must STILL book the fallback under `impact`, with the sub-op
+    /// preserved as `fallback_from`. This is the RED case the suite never had:
+    /// under the pre-fix restore-on-drop guard the inner install shadowed the
+    /// outer, so a fallback fired inside the sub-dispatch booked `cmd == "deps"`;
+    /// install-if-absent makes the outermost origin win so `cmd == "impact"`.
+    #[test]
+    fn nested_sub_dispatch_books_fallback_under_top_level_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+
+        {
+            // Outer dispatch boundary: the agent invoked `impact`.
+            let _outer = enter_fallback_origin("impact", cqs_dir);
+            // Inner sub-dispatch re-enters the chokepoint with the sub-op name.
+            // Install-if-absent makes this a no-op guard.
+            let _inner = enter_fallback_origin("deps", cqs_dir);
+            // A graph core fires its fallback tagged with its own sub-op. It
+            // reads `command` from the origin (impact) and passes `fallback_from`
+            // (deps) at the fire site — the two are independent.
+            with_fallback_origin(|origin| {
+                let command = origin.map(|o| o.command.as_str()).unwrap_or("deps");
+                let dir = origin.map(|o| o.cqs_dir.as_path()).unwrap_or(cqs_dir);
+                log_kind_fallback(dir, command, "deps", "function", "helper", 1);
+            });
+        }
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(r["event"], "kind_fallback");
+        assert_eq!(
+            r["cmd"], "impact",
+            "nested sub-dispatch must book under the top-level command the agent invoked"
+        );
+        assert_eq!(
+            r["fallback_from"], "deps",
+            "the firing sub-op rides alongside as fallback_from"
+        );
     }
 
     /// Cross-request restore on a POOLED thread — the invariant the daemon
