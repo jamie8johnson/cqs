@@ -18,20 +18,20 @@ use cqs::{HnswIndex, Parser};
 // Output structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct CallGraphStats {
     pub total_calls: usize,
     pub unique_callers: usize,
     pub unique_callees: usize,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TypeGraphStats {
     pub total_edges: usize,
     pub unique_types: usize,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct StatsOutput {
     pub total_chunks: usize,
     pub total_files: usize,

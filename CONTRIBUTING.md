@@ -275,7 +275,7 @@ src/
     mcp/        - `cqs mcp` stdio↔daemon-socket MCP bridge: a GPU-free process that speaks MCP JSON-RPC (protocol 2025-11-25) over stdio and relays each tools/call to the warm daemon. Bridge-only (requires a running `cqs watch --serve` daemon; no in-process fallback).
       bridge.rs   - stdin→parse→route→stdout NDJSON loop, method dispatch, per-call daemon round-trip
       lifecycle.rs - JSON-RPC envelope types, error codes, initialize/initialized handshake (protocol version negotiation)
-      tools.rs    - tool registry: 30 read-only `cqs_`-prefixed tools + schemars inputSchema generation; mutation-flag gating (`CQS_MCP_ENABLE_MUTATIONS`) adds 4 mutating tools; tools/call envelope→CallToolResult mapping
+      tools.rs    - tool registry: 30 read-only `cqs_`-prefixed tools + schemars inputSchema generation (`command_core_map!`) AND outputSchema generation (`command_output_map!` — derived `schema_for!(T)` with `required` stripped for the typed-`data` commands, a permissive object schema for the bespoke/untyped ones); mutation-flag gating (`CQS_MCP_ENABLE_MUTATIONS`) adds 4 mutating tools; tools/call envelope→CallToolResult mapping
     pipeline/   - Multi-threaded indexing pipeline
       mod.rs, embedding.rs, parsing.rs, types.rs, upsert.rs, windowing.rs
       chunkloss_interleaving_model.rs - interleaving model for full-corpus-build chunk loss (#1892, #[cfg(test)])

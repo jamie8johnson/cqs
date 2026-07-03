@@ -355,7 +355,7 @@ fn classify_verdict(
 // Output structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DeadFunctionEntry {
     pub name: String,
     pub file: String,
@@ -373,7 +373,7 @@ pub(crate) struct DeadFunctionEntry {
     pub verdict_reason: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DeadOutput {
     pub dead: Vec<DeadFunctionEntry>,
     pub possibly_dead_pub: Vec<DeadFunctionEntry>,

@@ -16,14 +16,14 @@ use cqs::Parser;
 // Output structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct StaleEntry {
     pub file: String,
     pub stored_mtime: i64,
     pub current_mtime: i64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct StaleOutput {
     pub stale: Vec<StaleEntry>,
     pub missing: Vec<String>,

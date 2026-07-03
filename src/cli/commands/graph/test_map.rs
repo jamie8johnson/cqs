@@ -76,7 +76,7 @@ pub(crate) struct TestMatch {
 
 // ─── Output types ───────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TestMapEntry {
     pub name: String,
     pub file: String,
@@ -85,7 +85,7 @@ pub(crate) struct TestMapEntry {
     pub call_chain: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TestMapOutput {
     pub name: String,
     pub tests: Vec<TestMapEntry>,
@@ -94,7 +94,7 @@ pub(crate) struct TestMapOutput {
 
 /// Single JSON-schema source for `cqs test-map <name>`. Happy path is the
 /// `{name, tests, count}` object; a kind mismatch is the shared fallback.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum TestMapCoreOutput {
     /// Function path: `{name, tests, count}`.

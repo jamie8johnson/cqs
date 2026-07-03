@@ -57,7 +57,7 @@ impl Default for DriftArgs {
 // ---------------------------------------------------------------------------
 
 /// A single entry in the drift output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DriftEntryOutput {
     name: String,
     file: String,
@@ -68,7 +68,7 @@ pub(crate) struct DriftEntryOutput {
 
 /// Top-level JSON output for the drift command — the single JSON-schema source
 /// shared by the CLI and daemon adapters.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DriftOutput {
     reference: String,
     threshold: f32,

@@ -43,7 +43,7 @@ impl Default for WhereArgs {
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// Patterns detected in a suggested file.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct WherePatternsEntry {
     pub imports: Vec<String>,
     pub error_handling: String,
@@ -53,7 +53,7 @@ pub(crate) struct WherePatternsEntry {
 }
 
 /// A single placement suggestion entry.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct WhereSuggestionEntry {
     pub file: String,
     pub score: f32,
@@ -64,7 +64,7 @@ pub(crate) struct WhereSuggestionEntry {
 }
 
 /// Typed JSON output for the where command.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct WhereOutput {
     pub description: String,
     pub suggestions: Vec<WhereSuggestionEntry>,

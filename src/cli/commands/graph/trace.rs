@@ -65,7 +65,7 @@ impl Default for TraceArgs {
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TraceHop {
     pub name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -82,7 +82,7 @@ pub(crate) struct TraceHop {
     pub injection_flags: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TraceOutput {
     pub source: String,
     pub target: String,
@@ -109,7 +109,7 @@ pub(crate) struct TraceOutput {
 /// shared `KindFallbackOutput`. Serializes to
 /// `{kind, fallback_from: "trace", source, target, definitions, note}`,
 /// the exact shape both surfaces have always emitted.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TraceKindFallbackOutput {
     pub kind: &'static str,
     pub fallback_from: &'static str,
@@ -122,7 +122,7 @@ pub(crate) struct TraceKindFallbackOutput {
 /// Single JSON-schema source for `cqs trace <source> <target>`. Happy path
 /// is the `TraceOutput` object; a source kind-mismatch is the
 /// trace-specific fallback object.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum TraceCoreOutput {
     /// Function path: `{source, target, path?, depth?, found}`.

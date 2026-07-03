@@ -41,7 +41,7 @@ impl Default for RelatedArgs {
 // ─── Output types ──────────────────────────────────────────────────────────
 
 /// A single related-function entry in the JSON output.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct RelatedEntry {
     pub name: String,
     pub file: String,
@@ -50,7 +50,7 @@ pub(crate) struct RelatedEntry {
 }
 
 /// Typed JSON output for the related command.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct RelatedOutput {
     pub target: String,
     pub shared_callers: Vec<RelatedEntry>,

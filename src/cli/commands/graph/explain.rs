@@ -217,7 +217,7 @@ pub(crate) fn build_explain_data<Mode>(
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SimilarEntry {
     pub name: String,
     pub file: String,
@@ -233,7 +233,7 @@ pub(crate) struct SimilarEntry {
     pub injection_flags: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct HintsOutput {
     pub caller_count: usize,
     pub test_count: usize,
@@ -241,7 +241,7 @@ pub(crate) struct HintsOutput {
     pub no_tests: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExplainOutput {
     pub name: String,
     pub file: String,
