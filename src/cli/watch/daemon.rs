@@ -78,11 +78,12 @@ pub(super) fn spawn_daemon_thread(
     daemon_pending_notes_signal: cqs::watch_status::SharedNotesSignal,
     daemon_fresh_notifier: cqs::watch_status::SharedFreshNotifier,
     in_flight: Arc<AtomicUsize>,
-    // Explicit `--slot X` pin (the daemon's `cli.slot`), or `None` for the
-    // common no-`--slot` deployment. Threaded into the query-side BatchContext
-    // so its staleness check resolves the index directly from the pinned slot,
-    // matching the watch (write) side's pin: a concurrent `cqs slot promote`
-    // then flips neither side off the bound slot.
+    // Effective slot pin — a `--slot X` flag OR the equivalent `CQS_SLOT` env
+    // var, snapshotted at daemon startup — or `None` for the common unpinned
+    // deployment. Threaded into the query-side BatchContext so its staleness
+    // check resolves the index directly from the pinned slot, matching the watch
+    // (write) side's identical pin: a concurrent `cqs slot promote` then flips
+    // neither side off the bound slot.
     daemon_explicit_slot: Option<String>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {

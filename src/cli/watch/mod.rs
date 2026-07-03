@@ -432,6 +432,27 @@ fn reopen_store_after_replacement(
     Ok(store)
 }
 
+/// The daemon's effective slot pin for its whole lifetime: `Some(name)` when a
+/// `--slot` flag OR the documented-equivalent `CQS_SLOT` env var named the slot
+/// at startup, `None` when the name came from the `.cqs/active_slot` pointer file
+/// or the `"default"` fallback (the self-heal-following deployment).
+///
+/// `dispatch.rs` treats the flag and the env var as equivalent slot selectors
+/// (`cqs_slot_env_pins_slot`); honoring that equivalence here is what keeps the
+/// daemon's write side (rebind decline) and query side (BatchContext) from
+/// diverging under an env-only pin — an env-pinned daemon plus `cqs slot promote`
+/// otherwise rebinds the write side while the query side stays put.
+///
+/// Snapshotted ONCE from the startup-resolved slot: both sides take this same
+/// value, so a `cqs slot promote` flips neither off the bound slot. A `CQS_SLOT`
+/// mutation mid-daemon-life is NOT a supported signal; the pin is fixed at boot.
+fn effective_slot_pin(resolved: &cqs::slot::ResolvedSlot) -> Option<String> {
+    match resolved.source {
+        cqs::slot::SlotSource::Flag | cqs::slot::SlotSource::Env => Some(resolved.name.clone()),
+        cqs::slot::SlotSource::File | cqs::slot::SlotSource::Fallback => None,
+    }
+}
+
 /// Idle-tick hot re-bind for a `cqs slot promote` — same-model or (stage 2)
 /// foreign-model.
 ///
@@ -453,9 +474,9 @@ fn reopen_store_after_replacement(
 /// converge on the promoted slot with no restart.
 ///
 /// Declines (returns the store unchanged, staying bound to the current slot) on:
-/// - an explicit `--slot` binding — an operator-pinned daemon is not stolen by a
-///   promote (the query side's independent active-slot following is a
-///   pre-existing divergence tracked separately);
+/// - an effective slot pin — a `--slot` flag OR the equivalent `CQS_SLOT` env var
+///   (`effective_slot_pin`). An operator-pinned daemon is not stolen by a promote;
+///   the query-side BatchContext holds the same pin, so both sides stay put;
 /// - a promoted slot with no `index.db` yet (nothing to bind to);
 /// - an **unclassifiable model** — the promoted slot's recorded model is not a
 ///   known preset, so no embedder can be built for it; stay on the restart path;
@@ -484,8 +505,9 @@ fn maybe_rebind_active_slot(
     shared_rt: &Arc<tokio::runtime::Runtime>,
     vendored_prefixes: &[String],
 ) -> Store {
-    // Explicit `--slot X` pins the write side to X for the daemon's lifetime;
-    // an active-slot promote must not steal a pinned daemon. Fast, per-tick.
+    // An effective slot pin (flag or `CQS_SLOT` env, resolved at daemon startup)
+    // pins the write side for the daemon's lifetime; an active-slot promote must
+    // not steal a pinned daemon. Fast, per-tick.
     if explicit_slot.is_some() {
         return store;
     }
@@ -1094,6 +1116,13 @@ pub fn cmd_watch(
         "daemon bound to slot"
     );
 
+    // Effective slot pin, snapshotted ONCE at startup. `Some` iff the slot came
+    // from the `--slot` flag or the equivalent `CQS_SLOT` env var; `None` when it
+    // followed the active-slot file / default. Both the write-side rebind decline
+    // and the query-side BatchContext take this same value, so a `cqs slot
+    // promote` cannot flip only one side. See `effective_slot_pin`.
+    let effective_pin = effective_slot_pin(&active_slot);
+
     let cqs_dir = if cqs::slot::slots_root(&project_cqs_dir).exists() {
         cqs::resolve_slot_dir(&project_cqs_dir, &active_slot.name)
     } else {
@@ -1422,10 +1451,10 @@ pub fn cmd_watch(
                 daemon_pending_notes_signal,
                 daemon_fresh_notifier,
                 daemon_in_flight,
-                // Pin the query side to the same explicit `--slot` the write
-                // side honors, so a `cqs slot promote` cannot flip only the
-                // served slot out from under a pinned daemon.
-                cli.slot.clone(),
+                // Pin the query side to the same effective pin (flag OR `CQS_SLOT`
+                // env) the write side honors, so a `cqs slot promote` cannot flip
+                // only the served slot out from under a pinned daemon.
+                effective_pin.clone(),
             );
             Some(thread)
         } else {
@@ -1890,7 +1919,7 @@ pub fn cmd_watch(
         if state.pending_files.is_empty() && !state.pending_notes {
             store = maybe_rebind_active_slot(
                 &project_cqs_dir,
-                cli.slot.as_deref(),
+                effective_pin.as_deref(),
                 &root,
                 cli.model.as_deref(),
                 &mut model_config_owned,

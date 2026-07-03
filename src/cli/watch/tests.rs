@@ -2492,6 +2492,158 @@ fn maybe_rebind_active_slot_respects_explicit_slot_pin() {
     );
 }
 
+// ── effective_slot_pin: flag/env equivalence for the daemon's lifetime pin ───
+
+/// The mapping at the heart of the fix: a slot resolved from the `--slot` flag
+/// OR the equivalent `CQS_SLOT` env var is an effective pin; a slot resolved
+/// from the active-slot file or the default fallback is NOT — those follow a
+/// promote (self-heal). Pure over `SlotSource`, so no env mutation.
+#[test]
+fn effective_slot_pin_pins_flag_and_env_follows_file_and_fallback() {
+    use cqs::slot::{ResolvedSlot, SlotSource};
+    let pin = |source| {
+        effective_slot_pin(&ResolvedSlot {
+            name: "x".to_string(),
+            source,
+        })
+    };
+    assert_eq!(
+        pin(SlotSource::Flag),
+        Some("x".to_string()),
+        "the --slot flag is a pin"
+    );
+    assert_eq!(
+        pin(SlotSource::Env),
+        Some("x".to_string()),
+        "CQS_SLOT env is a pin, matching the flag (flag/env equivalence)"
+    );
+    assert_eq!(
+        pin(SlotSource::File),
+        None,
+        "the active-slot file follows promotes (self-heal), not a pin"
+    );
+    assert_eq!(
+        pin(SlotSource::Fallback),
+        None,
+        "the default fallback follows, not a pin"
+    );
+}
+
+/// End-to-end write-side guard for the env pin: `CQS_SLOT=a cqs watch --serve`
+/// then `cqs slot promote b` must NOT rebind the write side — the same decline a
+/// `--slot a` flag produces. Mirrors cmd_watch's chain (resolve the slot from the
+/// env, compute the effective pin) and feeds that pin to the rebind. Without the
+/// fix the env-only daemon passed `None` here and rebound to b, diverging from
+/// the still-env-pinned query side.
+#[test]
+#[serial(cqs_slot_env)]
+fn env_slot_pin_declines_write_side_rebind() {
+    use cqs::slot::write_active_slot;
+    use cqs::store::ModelInfo;
+
+    let fix = build_rebind_fixture(1, 2, ModelInfo::default());
+
+    // Derive the effective pin from a real CQS_SLOT env in a tight window
+    // (exactly cmd_watch's `resolve_slot_name` → `effective_slot_pin`), then
+    // release the env before the heavy fixture work below.
+    let pin: Option<String> = {
+        let _env = EnvVarGuard::set("CQS_SLOT", "a");
+        let resolved = cqs::slot::resolve_slot_name(None, &fix.project_cqs).unwrap();
+        assert_eq!(
+            resolved.source,
+            cqs::slot::SlotSource::Env,
+            "CQS_SLOT must resolve via the env source (no --slot flag present)"
+        );
+        effective_slot_pin(&resolved)
+    };
+    assert_eq!(
+        pin.as_deref(),
+        Some("a"),
+        "an env pin must be an effective pin, exactly like the --slot flag"
+    );
+
+    // Promote b: the active-slot pointer now names b, but the env pin holds a.
+    write_active_slot(&fix.project_cqs, "b").unwrap();
+
+    let rt = build_shared_runtime().unwrap();
+    let mut model_config = ModelConfig::resolve(None, None).apply_env_overrides();
+    let store = Store::open_with_runtime(&fix.a_index, std::sync::Arc::clone(&rt)).unwrap();
+    let mut state = test_watch_state();
+    state.active_slot = "a".to_string();
+    let mut cqs_dir = fix.a_dir.clone();
+    let mut index_path = fix.a_index.clone();
+    let mut db_id = db_file_identity(&index_path);
+    let mut siblings = SiblingSet::empty();
+    let shared_embedder = cqs::embedder::SharedEmbedder::new();
+
+    let store = maybe_rebind_active_slot(
+        &fix.project_cqs,
+        pin.as_deref(), // effective pin derived from CQS_SLOT=a — must decline
+        fix.project_cqs.parent().unwrap(),
+        None,
+        &mut model_config,
+        &shared_embedder,
+        store,
+        &mut state,
+        &mut cqs_dir,
+        &mut index_path,
+        &mut db_id,
+        &mut siblings,
+        &rt,
+        &[],
+    );
+
+    assert_eq!(
+        state.active_slot, "a",
+        "env-pinned write side must not rebind on a promote of another slot"
+    );
+    assert_eq!(index_path, fix.a_index);
+    assert_eq!(
+        store.note_count().unwrap(),
+        1,
+        "env-pinned daemon keeps writing its bound slot a"
+    );
+}
+
+/// Flag beats env: with BOTH set, the flag wins the resolution and the flag
+/// value is the effective pin (env ignored).
+#[test]
+#[serial(cqs_slot_env)]
+fn effective_slot_pin_flag_beats_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_cqs = dir.path().join(".cqs");
+    std::fs::create_dir_all(&project_cqs).unwrap();
+
+    let _env = EnvVarGuard::set("CQS_SLOT", "envslot");
+    let resolved = cqs::slot::resolve_slot_name(Some("flagslot"), &project_cqs).unwrap();
+    assert_eq!(resolved.source, cqs::slot::SlotSource::Flag);
+    assert_eq!(
+        effective_slot_pin(&resolved).as_deref(),
+        Some("flagslot"),
+        "flag beats env; the flag value is the pin"
+    );
+}
+
+/// Neither flag nor env: an active-slot file names the slot (File source), so
+/// there is no pin and the rebind self-heal path stays enabled.
+#[test]
+#[serial(cqs_slot_env)]
+fn effective_slot_pin_none_when_following_active_file() {
+    let _env = EnvVarGuard::remove("CQS_SLOT");
+    let dir = tempfile::tempdir().unwrap();
+    let project_cqs = dir.path().join(".cqs");
+    std::fs::create_dir_all(&project_cqs).unwrap();
+    cqs::slot::write_active_slot(&project_cqs, "follow").unwrap();
+
+    let resolved = cqs::slot::resolve_slot_name(None, &project_cqs).unwrap();
+    assert_eq!(resolved.source, cqs::slot::SlotSource::File);
+    assert_eq!(
+        effective_slot_pin(&resolved),
+        None,
+        "no flag/env → not pinned → the rebind self-heal path stays enabled"
+    );
+}
+
 // ── reindex_files consults the global EmbeddingCache ─────────────
 
 /// `reindex_files` must read from `global_cache` before calling the
