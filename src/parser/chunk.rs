@@ -728,26 +728,38 @@ fn line_looks_comment_like(line: &str, lang: Language) -> bool {
 }
 
 /// Returns true if a comment's first line is a shebang (`#!...`) or an
-/// editor/encoding modeline (`# -*- coding: utf-8 -*-`, `# vim: ...`, etc.).
-/// These lead a file but never document a definition, so both the sibling walk
-/// and the leading-comment fallback drop them: they are neither captured as
-/// `doc` nor allowed to sit in a captured block. Without this, a Python file
-/// opening with `#!/usr/bin/env python` + `# -*- coding: utf-8 -*-` would
-/// attach those lines to its first function as `doc`.
+/// editor/encoding modeline (`# -*- coding: utf-8 -*-`, `# vim: ...`,
+/// `# encoding: utf-8`, etc.). These lead a file but never document a
+/// definition, so both the sibling walk and the leading-comment fallback drop
+/// them: they are neither captured as `doc` nor allowed to sit in a captured
+/// block. Without this, a Python file opening with `#!/usr/bin/env python` +
+/// `# -*- coding: utf-8 -*-` would attach those lines to its first function.
 ///
-/// Only the first physical line is inspected, and a modeline must both start
-/// with a comment marker and carry a modeline signature — so an ordinary block
-/// comment that merely contains `-*-` in its prose is not misclassified.
+/// Only the first physical line is inspected. A modeline is matched by
+/// stripping the line-comment marker (`#` or `//`) and requiring the modeline
+/// signature at the HEAD of the payload (marker, optional whitespace, then the
+/// signature). Head-anchoring — NOT substring containment — is load-bearing: an
+/// ordinary comment such as `// Fix encoding: normalize to NFC`, or a doc line
+/// that merely mentions `-*-` in its prose, must survive as `doc`. `--`-comment
+/// languages (SQL) never enter the modeline branch at all.
 fn is_shebang_or_modeline(text: &str) -> bool {
     let first = text.lines().next().unwrap_or("").trim_start();
+    // Shebang: `#!` at the head of the comment.
     if first.starts_with("#!") {
         return true;
     }
-    (first.starts_with('#') || first.starts_with("//"))
-        && (first.contains("-*-")
-            || first.contains("coding:")
-            || first.contains("coding=")
-            || first.contains("vim:"))
+    // Strip the line-comment marker; a modeline signature must sit at the head
+    // of what remains (after optional whitespace).
+    let payload = match first.strip_prefix("//").or_else(|| first.strip_prefix('#')) {
+        Some(rest) => rest.trim_start(),
+        None => return false,
+    };
+    payload.starts_with("-*-")
+        || payload.starts_with("vim:")
+        || payload.starts_with("coding:")
+        || payload.starts_with("coding=")
+        || payload.starts_with("encoding:")
+        || payload.starts_with("encoding=")
 }
 
 /// Fallback `doc` enrichment for a chunk whose tree-sitter sibling walk
@@ -3087,6 +3099,50 @@ def documented():
                 doc_of(shebang_encoding).is_none(),
                 "shebang + encoding modeline must not be doc, got: {:?}",
                 doc_of(shebang_encoding)
+            );
+        }
+
+        /// Negative space for the shebang/modeline filter: an ordinary line
+        /// comment that merely MENTIONS a modeline word (`encoding:`, `vim:`,
+        /// `-*-`) in its prose — not head-anchored as a real modeline —
+        /// SURVIVES as `doc`. RED against a substring-containment matcher
+        /// (every line comment starts with a marker, so containment drops these
+        /// as false modelines, and would even drop a doc line that happens to
+        /// contain `-*-`).
+        #[test]
+        fn line_comment_with_modeline_words_in_prose_survives() {
+            let doc_of = |content: &str, ext: &str, name: &str| -> Option<String> {
+                let file = write_temp_file(content, ext);
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                chunks
+                    .iter()
+                    .find(|c| c.name == name)
+                    .and_then(|c| c.doc.clone())
+            };
+
+            // Rust `//` glued above a def: prose mentioning `encoding:`.
+            let rust = "// Fix encoding: normalize input to NFC before hashing.\nfn normalize() -> u32 {\n    0\n}\n";
+            let d = doc_of(rust, "rs", "normalize").unwrap_or_default();
+            assert!(
+                d.contains("normalize input to NFC"),
+                "prose mentioning `encoding:` must not be dropped as a modeline, got: {d:?}"
+            );
+
+            // Python `#` glued above a def: prose mentioning `vim:`.
+            let py = "# Configure the vim: plugin loader for editor integration.\ndef setup():\n    return 1\n";
+            let d = doc_of(py, "py", "setup").unwrap_or_default();
+            assert!(
+                d.contains("plugin loader"),
+                "prose mentioning `vim:` must not be dropped as a modeline, got: {d:?}"
+            );
+
+            // Rust `//` prose containing `-*-` as a drawn separator.
+            let sep = "// Draws a separator -*-*-*- across the report header.\nfn banner() -> u32 {\n    0\n}\n";
+            let d = doc_of(sep, "rs", "banner").unwrap_or_default();
+            assert!(
+                d.contains("Draws a separator"),
+                "prose containing `-*-` must not be dropped as a modeline, got: {d:?}"
             );
         }
 
