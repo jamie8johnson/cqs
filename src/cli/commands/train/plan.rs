@@ -18,40 +18,150 @@ pub(crate) struct PlanArgs {
     /// Max candidate results to surface per plan section.
     #[serde(default)]
     pub limit: usize,
-    /// Token budget. In JSON output it is echoed as `token_budget`; in text
-    /// output it packs the rendered sections to fit within the budget.
+    /// Token budget. When set, packs the three renderable sections (checklist,
+    /// patterns, scout) to fit the budget in BOTH JSON and text output — the
+    /// JSON path emits the packed content with truncation disclosed, mirroring
+    /// `cqs task`'s budgeted JSON. Absent ⇒ the full plan.
     #[serde(default)]
     pub tokens: Option<usize>,
 }
 
-/// Typed output for `cqs plan`. Flattens the lib [`PlanResult`] and adds the
-/// optional `token_budget` echo the adapters previously spliced inline.
-/// THE schema — both surfaces serialize this.
+/// Surface-agnostic JSON output for `cqs plan`. Untagged so each variant
+/// serializes to its bare payload — the CLI (`cmd_plan`) and daemon
+/// (`dispatch_plan`) both serialize THIS one type, so their JSON cannot drift.
+///
+/// - `Full` (no `--tokens`): the complete plan, byte-identical to the lib
+///   [`PlanResult`] serialization (the historical, un-budgeted shape).
+/// - `Budgeted` (`--tokens N`): the three renderable sections packed to fit the
+///   budget, with truncation disclosed. Mirrors `cqs task`'s `BudgetedTaskOutput`
+///   — before this the JSON path echoed `token_budget` but packed nothing, so a
+///   consumer asking for a budget got the full plan plus a misleading number.
 #[derive(Debug, serde::Serialize)]
-pub(crate) struct PlanOutput {
-    #[serde(flatten)]
-    pub plan: PlanResult,
-    /// Echoed token budget (present only when `--tokens` set).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<usize>,
+#[serde(untagged)]
+pub(crate) enum PlanCoreOutput {
+    Full(PlanResult),
+    Budgeted(BudgetedPlanOutput),
 }
 
-/// Surface-agnostic core for `cqs plan`. Runs the planning pipeline (a pure
-/// read query over the store + embedder) and returns the typed [`PlanOutput`].
-/// Both the CLI (`cmd_plan`) and daemon (`dispatch_plan`) drive this.
+/// Budgeted JSON output: the three renderable sections packed to fit the token
+/// budget, plus the truncation disclosure. The `checklist` / `patterns` arrays
+/// and `scout.file_groups` hold the KEPT subset (original order); `summary`
+/// carries the pre-budget section sizes so a consumer computes what dropped as
+/// `total_* − kept.len()`. `relevant_notes` are intentionally omitted (they are
+/// not one of the packer's three sections and would leak un-budgeted content —
+/// the text render drops them too).
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedPlanOutput {
+    pub template: String,
+    pub template_description: String,
+    /// Packed checklist steps (kept subset, original order).
+    pub checklist: Vec<String>,
+    /// Packed implementation patterns (kept subset, original order).
+    pub patterns: Vec<String>,
+    /// Packed scout section (kept file groups + pre-budget scout summary).
+    pub scout: BudgetedPlanScout,
+    /// Pre-budget section sizes — the truncation disclosure.
+    pub summary: BudgetedPlanSummary,
+    /// Summed token cost of the kept items (within `token_budget`, bar the
+    /// always-include-one overshoot inherited from `index_pack`).
+    pub token_count: usize,
+    /// The requested budget, echoed.
+    pub token_budget: usize,
+}
+
+/// Packed scout section of the budgeted plan output.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedPlanScout {
+    /// Kept file groups (original order). Reuses the lib [`cqs::FileGroup`]
+    /// serialization so the shape matches `plan`'s full-output scout groups.
+    pub file_groups: Vec<cqs::FileGroup>,
+    /// Pre-budget scout summary (original totals — disclosure).
+    pub summary: cqs::ScoutSummary,
+}
+
+/// Truncation disclosure for the budgeted plan: the pre-budget size of each
+/// packed section. Kept counts are the array lengths, so dropped =
+/// `total_* − kept.len()`.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct BudgetedPlanSummary {
+    pub total_checklist: usize,
+    pub total_patterns: usize,
+    pub total_scout_files: usize,
+}
+
+/// Surface-agnostic core for `cqs plan`. Runs the planning pipeline and projects
+/// it to the wire: full serialization when `tokens` is `None`, else the
+/// packed-and-disclosed [`BudgetedPlanOutput`]. Both the CLI (`cmd_plan` JSON
+/// path) and daemon (`dispatch_plan`) drive this, so the budgeted shape is
+/// identical across surfaces by construction.
 pub(crate) fn plan_core(
     store: &cqs::Store<cqs::store::ReadOnly>,
     embedder: &Embedder,
     root: &std::path::Path,
     args: &PlanArgs,
-) -> Result<PlanOutput> {
+) -> Result<PlanCoreOutput> {
     let _span = tracing::info_span!("plan_core", description = %args.description).entered();
-    let result = plan(store, embedder, &args.description, root, args.limit)
-        .context("Plan generation failed")?;
-    Ok(PlanOutput {
-        plan: result,
-        token_budget: args.tokens,
+    let result = run_plan(store, embedder, root, args)?;
+    Ok(match args.tokens {
+        Some(budget) => {
+            let packed = plan_pack(&result, embedder, budget);
+            PlanCoreOutput::Budgeted(build_budgeted_plan(&result, &packed))
+        }
+        None => PlanCoreOutput::Full(result),
     })
+}
+
+/// Runs the planning pipeline (a pure read query over the store + embedder) and
+/// returns the raw [`PlanResult`]. Shared by [`plan_core`] (JSON, both surfaces)
+/// and the CLI text path so they classify against the same result.
+fn run_plan(
+    store: &cqs::Store<cqs::store::ReadOnly>,
+    embedder: &Embedder,
+    root: &std::path::Path,
+    args: &PlanArgs,
+) -> Result<PlanResult> {
+    plan(store, embedder, &args.description, root, args.limit).context("Plan generation failed")
+}
+
+/// Projects a [`PlanResult`] and its [`PlanPacked`] indices into the budgeted
+/// JSON output. Pure (no embedder / no I/O) so it is unit-testable without a
+/// model load — the token counting already happened in `plan_pack`.
+fn build_budgeted_plan(result: &PlanResult, packed: &PlanPacked) -> BudgetedPlanOutput {
+    let _span = tracing::info_span!("build_budgeted_plan").entered();
+
+    let checklist: Vec<String> = packed
+        .checklist
+        .iter()
+        .map(|&i| result.checklist[i].clone())
+        .collect();
+    let patterns: Vec<String> = packed
+        .patterns
+        .iter()
+        .map(|&i| result.patterns[i].clone())
+        .collect();
+    let file_groups: Vec<cqs::FileGroup> = packed
+        .scout
+        .iter()
+        .map(|&i| result.scout.file_groups[i].clone())
+        .collect();
+
+    BudgetedPlanOutput {
+        template: result.template.clone(),
+        template_description: result.template_description.clone(),
+        checklist,
+        patterns,
+        scout: BudgetedPlanScout {
+            file_groups,
+            summary: result.scout.summary.clone(),
+        },
+        summary: BudgetedPlanSummary {
+            total_checklist: result.checklist.len(),
+            total_patterns: result.patterns.len(),
+            total_scout_files: result.scout.file_groups.len(),
+        },
+        token_count: packed.total_used,
+        token_budget: packed.budget,
+    }
 }
 
 pub(crate) fn cmd_plan(
@@ -76,8 +186,8 @@ pub(crate) fn cmd_plan(
         let output = plan_core(&ctx.store, embedder, root, &args)?;
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
-        let output = plan_core(&ctx.store, embedder, root, &args)?;
-        display_plan_text(&output.plan, root, embedder, tokens);
+        let result = run_plan(&ctx.store, embedder, root, &args)?;
+        display_plan_text(&result, root, embedder, tokens);
     }
 
     Ok(())
@@ -395,5 +505,112 @@ mod tests {
         assert!(packed.patterns.is_empty());
         assert!(packed.scout.is_empty());
         assert_eq!(packed.total_used, 0);
+    }
+
+    // ── Budgeted JSON output (`build_budgeted_plan` / `PlanCoreOutput`) ──────
+
+    /// A `PlanResult` with 3 checklist steps, 2 patterns, 2 scout groups (one
+    /// carrying a note) — the fixture the budgeted-output tests project.
+    fn sample_plan_result() -> PlanResult {
+        let group = |name: &str, score: f32| cqs::FileGroup {
+            file: std::path::PathBuf::from(name),
+            relevance_score: score,
+            chunks: vec![],
+            is_stale: false,
+        };
+        PlanResult {
+            template: "Add/Replace a CLI Flag".into(),
+            template_description: "Adding a new flag".into(),
+            checklist: vec!["step one".into(), "step two".into(), "step three".into()],
+            patterns: vec!["pattern a".into(), "pattern b".into()],
+            scout: cqs::ScoutResult {
+                file_groups: vec![group("src/a.rs", 0.9), group("src/b.rs", 0.4)],
+                relevant_notes: vec![],
+                summary: cqs::ScoutSummary {
+                    total_files: 2,
+                    total_functions: 4,
+                    untested_count: 1,
+                    stale_count: 0,
+                },
+            },
+        }
+    }
+
+    /// `build_budgeted_plan` emits the KEPT subset of each section and discloses
+    /// the pre-budget totals in `summary` so a consumer computes the drop.
+    #[test]
+    fn build_budgeted_plan_packs_and_discloses() {
+        let result = sample_plan_result();
+        // Keep checklist [0,1], patterns [0], drop the scout section entirely.
+        let packed = PlanPacked {
+            checklist: vec![0, 1],
+            patterns: vec![0],
+            scout: vec![],
+            total_used: 42,
+            budget: 50,
+        };
+        let output = build_budgeted_plan(&result, &packed);
+        let json = serde_json::to_value(&output).unwrap();
+
+        assert_eq!(json["template"], "Add/Replace a CLI Flag");
+        // Kept subset — not the full sections.
+        assert_eq!(json["checklist"].as_array().unwrap().len(), 2);
+        assert_eq!(json["checklist"][0], "step one");
+        assert_eq!(json["patterns"].as_array().unwrap().len(), 1);
+        assert!(json["scout"]["file_groups"].as_array().unwrap().is_empty());
+        // Disclosure: pre-budget totals so dropped = total − kept.
+        assert_eq!(json["summary"]["total_checklist"], 3);
+        assert_eq!(json["summary"]["total_patterns"], 2);
+        assert_eq!(json["summary"]["total_scout_files"], 2);
+        // Budget echo + usage.
+        assert_eq!(json["token_count"], 42);
+        assert_eq!(json["token_budget"], 50);
+        // The scout section carries the pre-budget scout summary.
+        assert_eq!(json["scout"]["summary"]["total_files"], 2);
+        // Notes are not one of the three packed sections and must not leak.
+        assert!(
+            json["relevant_notes"].is_null() && json["scout"]["relevant_notes"].is_null(),
+            "budgeted output must not carry un-budgeted relevant_notes: {json}"
+        );
+    }
+
+    /// A generous packing keeps every item; the budgeted output then mirrors the
+    /// full section sizes (kept == total) — no spurious truncation.
+    #[test]
+    fn build_budgeted_plan_generous_keeps_all() {
+        let result = sample_plan_result();
+        let packed = PlanPacked {
+            checklist: vec![0, 1, 2],
+            patterns: vec![0, 1],
+            scout: vec![0, 1],
+            total_used: 100,
+            budget: 100_000,
+        };
+        let output = build_budgeted_plan(&result, &packed);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["checklist"].as_array().unwrap().len(), 3);
+        assert_eq!(json["patterns"].as_array().unwrap().len(), 2);
+        assert_eq!(json["scout"]["file_groups"].as_array().unwrap().len(), 2);
+        assert_eq!(json["summary"]["total_checklist"], 3);
+        assert_eq!(json["summary"]["total_scout_files"], 2);
+    }
+
+    /// The `None`-budget path (`PlanCoreOutput::Full`) is byte-identical to the
+    /// bare lib [`PlanResult`] serialization — pins that the fix leaves the
+    /// un-budgeted JSON shape untouched (no `token_budget`, no wrapper keys).
+    #[test]
+    fn plan_core_full_variant_is_byte_identical_to_plan_result() {
+        let result = sample_plan_result();
+        let full = PlanCoreOutput::Full(result.clone());
+        let full_json = serde_json::to_value(&full).unwrap();
+        let bare_json = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            full_json, bare_json,
+            "Full variant must serialize identically to the raw PlanResult"
+        );
+        assert!(
+            full_json.get("token_budget").is_none(),
+            "un-budgeted plan must not carry a token_budget echo: {full_json}"
+        );
     }
 }
