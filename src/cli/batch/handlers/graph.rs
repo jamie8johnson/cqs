@@ -2616,6 +2616,71 @@ mod tests {
         );
     }
 
+    /// callers(X) active with a CAPPED window: X has more parent callers than
+    /// `--limit`, and the worktree adds one. The fresh overlay caller must
+    /// survive the cap. A naive append-then-`truncate(limit)` drops it off the
+    /// tail even though `total` counts it — silently hiding the lane's own edit
+    /// while the answer is still stamped `overlay_graph = "full"`. Mirrors the
+    /// reverse-vs-forward asymmetry: `callees` of the new fn shows the edge, but a
+    /// capped `callers` of the hot callee truncates it.
+    #[test]
+    fn callers_overlay_added_caller_survives_cap() {
+        // Six parent callers of `target`, each in its own UNtouched file (none
+        // masked) — enough to fill a limit-5 window on their own. Distinct files
+        // because `parent_store_in` upserts function_calls per-file (wholesale),
+        // so two callers sharing a file would clobber.
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/c1.rs", "p1"),
+                ("src/c2.rs", "p2"),
+                ("src/c3.rs", "p3"),
+                ("src/c4.rs", "p4"),
+                ("src/c5.rs", "p5"),
+                ("src/c6.rs", "p6"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("p1", "src/c1.rs", 1, "target"),
+                ("p2", "src/c2.rs", 1, "target"),
+                ("p3", "src/c3.rs", 1, "target"),
+                ("p4", "src/c4.rs", 1, "target"),
+                ("p5", "src/c5.rs", 1, "target"),
+                ("p6", "src/c6.rs", 1, "target"),
+            ],
+        );
+        // Worktree adds `fresh_caller` (in a delta file) calling `target`.
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "target".into(),
+            limit: 5,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(participated, "an overlay-added caller must participate");
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert_eq!(
+            got.len(),
+            5,
+            "the window stays capped at limit; got {got:?}"
+        );
+        assert_eq!(
+            out["total"].as_u64(),
+            Some(7),
+            "total must count every merged caller (6 parent + 1 overlay)"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "the lane's fresh caller must survive the cap, not be truncated off the \
+             tail behind the parent callers; got {got:?}"
+        );
+    }
+
     /// callees(X) active — X edited (its def file is in the delta): callees come
     /// from the overlay (parent callee set dropped wholesale).
     #[test]
@@ -2994,6 +3059,63 @@ mod tests {
         assert!(
             got.contains(&"stable_self".to_string()),
             "untouched-file self-caller survives; got {got:?}"
+        );
+    }
+
+    /// callers(Type::method) active with a CAPPED window: the qualified path
+    /// shares the append-then-truncate defect. `Store::search` has more
+    /// parent self-callers than `--limit`, and the worktree adds one; the fresh
+    /// overlay self-caller must survive the cap rather than being truncated off
+    /// the tail.
+    #[test]
+    fn callers_qualified_overlay_added_caller_survives_cap() {
+        // `Store::search` + six self-callers in an UNtouched file (none masked).
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("stable.rs", "search", 10, Some("Store")),
+                ("stable.rs", "s1", 20, Some("Store")),
+                ("stable.rs", "s2", 21, Some("Store")),
+                ("stable.rs", "s3", 22, Some("Store")),
+                ("stable.rs", "s4", 23, Some("Store")),
+                ("stable.rs", "s5", 24, Some("Store")),
+                ("stable.rs", "s6", 25, Some("Store")),
+            ],
+            &[
+                ("s1", "stable.rs", 20, "search"),
+                ("s2", "stable.rs", 21, "search"),
+                ("s3", "stable.rs", 22, "search"),
+                ("s4", "stable.rs", 23, "search"),
+                ("s5", "stable.rs", 24, "search"),
+                ("s6", "stable.rs", 25, "search"),
+            ],
+        );
+        // Worktree adds `fresh_self` (a Store method in a delta file) calling search.
+        let overlay = overlay_typed(
+            &[("edited.rs", "fresh_self", 30, Some("Store"))],
+            &[("fresh_self", "edited.rs", 30, "search")],
+            &["edited.rs"],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 5,
+            edge_kind: None,
+        };
+        let (out, participated) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay");
+        assert!(
+            participated,
+            "a qualified overlay-added caller must participate"
+        );
+        let out = serde_json::to_value(out).unwrap();
+        let got = caller_names_json(&out);
+        assert_eq!(
+            got.len(),
+            5,
+            "the qualified window stays capped at limit; got {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_self".to_string()),
+            "the lane's fresh qualified self-caller must survive the cap; got {got:?}"
         );
     }
 
@@ -4009,6 +4131,62 @@ mod tests {
         assert!(
             got.contains(&"stable_caller".to_string()),
             "untouched caller must survive in impact: {got:?}"
+        );
+    }
+
+    /// impact(X) with a CAPPED window: X has more parent callers than the
+    /// per-section limit, and the worktree adds one. The fresh overlay caller must
+    /// survive the cap in the direct-callers section — a naive append-then-truncate
+    /// drops it off the tail while the marker still claims `"callers-only"`
+    /// completeness for that section.
+    #[test]
+    fn impact_overlay_added_caller_survives_cap() {
+        // Distinct files per parent caller (see the callers-cap test) so the
+        // per-file wholesale upsert in `parent_store_in` doesn't clobber them.
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/c1.rs", "p1"),
+                ("src/c2.rs", "p2"),
+                ("src/c3.rs", "p3"),
+                ("src/c4.rs", "p4"),
+                ("src/c5.rs", "p5"),
+                ("src/c6.rs", "p6"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("p1", "src/c1.rs", 1, "target"),
+                ("p2", "src/c2.rs", 1, "target"),
+                ("p3", "src/c3.rs", 1, "target"),
+                ("p4", "src/c4.rs", 1, "target"),
+                ("p5", "src/c5.rs", 1, "target"),
+                ("p6", "src/c6.rs", 1, "target"),
+            ],
+        );
+        let overlay = overlay_with_edges(
+            &[("src/edited.rs", "fresh_caller")],
+            &[("fresh_caller", "src/edited.rs", 1, "target")],
+            &["src/edited.rs"],
+        );
+        let args = ImpactCoreArgs {
+            name: "target".into(),
+            depth: 1,
+            limit: 5,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (out, participated) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact_overlay");
+        assert!(participated, "an overlay-added caller must participate");
+        let value = out.to_value().unwrap();
+        let got = impact_caller_names(&value);
+        assert_eq!(
+            got.len(),
+            5,
+            "the impact caller section stays capped at limit; got {got:?}"
+        );
+        assert!(
+            got.contains(&"fresh_caller".to_string()),
+            "the lane's fresh caller must survive the impact cap; got {got:?}"
         );
     }
 

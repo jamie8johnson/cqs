@@ -261,6 +261,12 @@ pub fn analyze_diff_impact_with_graph_overlay<Mode>(
     // mask+union `cqs callers` / `cqs impact` apply, generalized to the diff's
     // multi-target deduped set. `participated` records whether the delta changed
     // this section: a parent caller masked OR ≥1 overlay caller unioned.
+    // Index of the first overlay-unioned row in `deduped_callers`, set when the
+    // overlay contributes ≥1 fresh caller. Every row at or after it is an overlay
+    // row (they are pushed last, after the kept parent rows), which lets the
+    // reorder below run without threading a provenance flag through the whole
+    // batched dedup.
+    let mut overlay_boundary: Option<usize> = None;
     let participated = if let Some(ov) = overlay {
         // Mask: drop parent callers whose call-site origin is in the delta. That
         // caller's out-edge to a changed function may have changed or vanished in
@@ -282,6 +288,9 @@ pub fn analyze_diff_impact_with_graph_overlay<Mode>(
                 degraded = true;
                 HashMap::new()
             });
+        // Retain preserves order, so the kept parent rows occupy `[0, boundary)`
+        // and every overlay push lands at `>= boundary`.
+        let boundary = deduped_callers.len();
         let mut unioned_any = false;
         for func in &changed {
             if let Some(callers_ctx) = overlay_by_callee.get(&func.name) {
@@ -293,10 +302,29 @@ pub fn analyze_diff_impact_with_graph_overlay<Mode>(
                 }
             }
         }
+        if unioned_any {
+            overlay_boundary = Some(boundary);
+        }
         masked_any || unioned_any
     } else {
         false
     };
+
+    // Reorder the parent∪overlay union so the token-budget `truncate` in
+    // `diff_review` keeps the lane's fresh callers rather than dropping the
+    // just-appended overlay rows off the tail. Ordered by (trust, overlay-first,
+    // origin, line); a run with no overlay contribution keeps the parent order.
+    if let Some(boundary) = overlay_boundary {
+        let mut tagged: Vec<(bool, CallerWithContext)> = std::mem::take(&mut deduped_callers)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| (i >= boundary, c))
+            .collect();
+        crate::store::order_overlay_merged_callers(&mut tagged, |c| {
+            (c.edge_kind.trust_rank(), c.file.clone(), c.line)
+        });
+        deduped_callers = tagged.into_iter().map(|(_, c)| c).collect();
+    }
 
     // Batch-fetch chunk data for all caller names (single query). Snippets are
     // drawn from the parent store; overlay-added callers (worktree-new files) may
@@ -473,6 +501,94 @@ mod tests {
     /// A new `CallGraph` instance with empty forward and reverse adjacency maps, ready to have nodes and edges added to it.
     fn make_empty_graph() -> CallGraph {
         CallGraph::from_string_maps(HashMap::new(), HashMap::new())
+    }
+
+    /// Seed all `function_calls` edges for one `file` in a single upsert.
+    /// `upsert_function_calls` is wholesale-per-file (DELETE WHERE file = ? then
+    /// INSERT), so every caller sharing a file must be written together — one call
+    /// per caller would leave only the last.
+    fn seed_file_edges(store: &crate::Store, file: &str, edges: &[(&str, u32, &str)]) {
+        let fcs: Vec<crate::parser::FunctionCalls> = edges
+            .iter()
+            .map(|(caller, line, callee)| crate::parser::FunctionCalls {
+                name: caller.to_string(),
+                line_start: *line,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: callee.to_string(),
+                    line_number: line + 1,
+                    kind: crate::parser::CallEdgeKind::Call,
+                }],
+            })
+            .collect();
+        store
+            .upsert_function_calls(std::path::Path::new(file), &fcs)
+            .expect("seed call edges");
+    }
+
+    /// Review/diff path: a changed function with more parent callers than a tight
+    /// token budget, plus a worktree-added caller. The overlay caller must sort to
+    /// the HEAD of `all_callers` so the downstream token `truncate` in
+    /// `diff_review` (which keeps the leading entries) keeps the lane's own edit.
+    /// A naive append leaves the fresh caller last, so a tight-budget review drops
+    /// exactly it — the reverse-vs-forward asymmetry the overlay must not exhibit.
+    #[test]
+    fn diff_overlay_added_caller_orders_ahead_of_parent() {
+        use crate::worktree_overlay::{OverlayStats, WorktreeOverlay};
+
+        // Parent: six callers of `target`, all in an untouched file.
+        let (store, _dir) = make_test_store();
+        seed_file_edges(
+            &store,
+            "src/stable.rs",
+            &[
+                ("p1", 1, "target"),
+                ("p2", 2, "target"),
+                ("p3", 3, "target"),
+                ("p4", 4, "target"),
+                ("p5", 5, "target"),
+                ("p6", 6, "target"),
+            ],
+        );
+
+        // Overlay: a fresh caller in a delta file.
+        let ov_store = crate::Store::open_memory().expect("open_memory");
+        ov_store
+            .init(&crate::store::ModelInfo::default())
+            .expect("init overlay");
+        seed_file_edges(&ov_store, "src/edited.rs", &[("fresh_caller", 1, "target")]);
+        let overlay = WorktreeOverlay {
+            store: ov_store,
+            masked_origins: [PathBuf::from("src/edited.rs")].into_iter().collect(),
+            fingerprint: [0u8; 32],
+            worktree_root: PathBuf::from("/wt"),
+            stats: OverlayStats {
+                files_in_delta: 1,
+                chunks_indexed: 0,
+                build_ms: 0,
+            },
+        };
+
+        let changed = vec![make_changed("target", "src/lib.rs", 100)];
+        let graph = make_empty_graph();
+        let test_chunks: Vec<ChunkSummary> = Vec::new();
+        let (result, participated) = analyze_diff_impact_with_graph_overlay(
+            &store,
+            changed,
+            &graph,
+            &test_chunks,
+            std::path::Path::new(""),
+            Some(&overlay),
+        )
+        .expect("diff impact overlay");
+
+        assert!(participated, "an overlay-added caller must participate");
+        let names: Vec<&str> = result.all_callers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names.len(), 7, "6 parent + 1 overlay caller; got {names:?}");
+        assert_eq!(
+            names.first(),
+            Some(&"fresh_caller"),
+            "the overlay caller must sort to the head so a tight token cap keeps it; got {names:?}"
+        );
     }
 
     /// Depth-0 exclusion: if a test chunk has the same name as a changed function,

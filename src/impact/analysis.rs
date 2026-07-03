@@ -336,11 +336,25 @@ fn build_caller_info_overlay<Mode>(
 
     // Project each half against its own store so snippets match the body that
     // produced the edge.
-    let (mut callers, mut degraded) = project_callers_with_snippets(store, &kept_parent, root);
+    let (parent_callers, parent_degraded) =
+        project_callers_with_snippets(store, &kept_parent, root);
     let (overlay_callers, overlay_degraded) =
         project_callers_with_snippets(&ov.store, &overlay_ctx, root);
-    callers.extend(overlay_callers);
-    degraded = degraded || overlay_degraded;
+    let degraded = parent_degraded || overlay_degraded;
+
+    // Reorder the union (parent tagged `false`, overlay `true`) so the
+    // per-section `truncate(limit)` in `impact_overlay` keeps the lane's fresh
+    // callers rather than dropping the just-appended overlay rows off the tail:
+    // ordered by (trust, overlay-first, origin, line).
+    let mut merged: Vec<(bool, CallerDetail)> = parent_callers
+        .into_iter()
+        .map(|c| (false, c))
+        .chain(overlay_callers.into_iter().map(|c| (true, c)))
+        .collect();
+    crate::store::order_overlay_merged_callers(&mut merged, |c| {
+        (c.edge_kind.trust_rank(), c.file.clone(), c.line)
+    });
+    let callers = merged.into_iter().map(|(_, c)| c).collect();
 
     Ok((callers, degraded, participated))
 }

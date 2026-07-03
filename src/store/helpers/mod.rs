@@ -42,9 +42,10 @@ pub use rows::clamp_line_number;
 
 // Domain types
 pub use types::{
-    AttributedCaller, CallEdgeMeta, CallGraph, CalleeInfo, CallerAttribution, CallerInfo,
-    CallerWithContext, ChunkIdentity, ChunkSummary, IndexStats, NoteSearchResult, NoteStats,
-    NoteSummary, ParentContext, RankSignal, SearchResult, StaleFile, StaleReport, UnifiedResult,
+    order_overlay_merged_callers, AttributedCaller, CallEdgeMeta, CallGraph, CalleeInfo,
+    CallerAttribution, CallerInfo, CallerWithContext, ChunkIdentity, ChunkSummary, IndexStats,
+    NoteSearchResult, NoteStats, NoteSummary, ParentContext, RankSignal, SearchResult, StaleFile,
+    StaleReport, UnifiedResult,
 };
 
 // Search filter

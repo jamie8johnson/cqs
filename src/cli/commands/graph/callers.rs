@@ -589,7 +589,24 @@ fn callers_qualified(
             || excluded_origins.len() != excl_before
             || !ov_attr.is_empty()
             || !ov_excluded.is_empty();
-        attributed.extend(ov_attr);
+        // Merge the overlay's attributed rows and reorder the union so the
+        // `truncate(limit)` below keeps the lane's fresh callers rather than
+        // dropping the just-appended overlay rows off the tail: parent-kept rows
+        // tagged `false`, overlay rows `true`, then ordered by (trust,
+        // overlay-first, origin, line).
+        let mut merged: Vec<(bool, cqs::store::AttributedCaller)> = std::mem::take(&mut attributed)
+            .into_iter()
+            .map(|a| (false, a))
+            .chain(ov_attr.into_iter().map(|a| (true, a)))
+            .collect();
+        cqs::store::order_overlay_merged_callers(&mut merged, |a| {
+            (
+                a.caller.edge_kind.trust_rank(),
+                a.caller.file.clone(),
+                a.caller.line,
+            )
+        });
+        attributed = merged.into_iter().map(|(_, a)| a).collect();
         excluded_origins.extend(ov_excluded);
     }
 

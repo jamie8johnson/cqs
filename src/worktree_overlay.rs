@@ -303,12 +303,22 @@ impl WorktreeOverlay {
             overlay = overlay.len()
         )
         .entered();
-        let mut merged: Vec<crate::store::CallerInfo> = parent
+        // Tag provenance (parent = `false`, overlay = `true`) so the shared
+        // ordering can keep the lane's fresh rows inside a downstream cap: the
+        // parent rows come first, the overlay's masked-origin rows second, then
+        // the union is reordered so a `truncate(limit)` in the core keeps the
+        // strongest-trust AND freshest callers rather than dropping the
+        // just-appended overlay rows off the tail.
+        let mut merged: Vec<(bool, crate::store::CallerInfo)> = parent
             .into_iter()
             .filter(|c| !self.masked_origins.contains(&c.file))
+            .map(|c| (false, c))
+            .chain(overlay.into_iter().map(|c| (true, c)))
             .collect();
-        merged.extend(overlay);
-        merged
+        crate::store::order_overlay_merged_callers(&mut merged, |c| {
+            (c.edge_kind.trust_rank(), c.file.clone(), c.line)
+        });
+        merged.into_iter().map(|(_, c)| c).collect()
     }
 
     /// Merge the overlay's call-graph callees into a parent `callees(X)` result.
