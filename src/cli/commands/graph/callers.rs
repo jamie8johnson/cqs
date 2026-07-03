@@ -589,24 +589,30 @@ fn callers_qualified(
             || excluded_origins.len() != excl_before
             || !ov_attr.is_empty()
             || !ov_excluded.is_empty();
-        // Merge the overlay's attributed rows and reorder the union so the
-        // `truncate(limit)` below keeps the lane's fresh callers rather than
-        // dropping the just-appended overlay rows off the tail: parent-kept rows
-        // tagged `false`, overlay rows `true`, then ordered by (trust,
-        // overlay-first, origin, line).
-        let mut merged: Vec<(bool, cqs::store::AttributedCaller)> = std::mem::take(&mut attributed)
-            .into_iter()
-            .map(|a| (false, a))
-            .chain(ov_attr.into_iter().map(|a| (true, a)))
-            .collect();
-        cqs::store::order_overlay_merged_callers(&mut merged, |a| {
-            (
-                a.caller.edge_kind.trust_rank(),
-                a.caller.file.clone(),
-                a.caller.line,
-            )
-        });
-        attributed = merged.into_iter().map(|(_, a)| a).collect();
+        // Merge + reorder ONLY when the overlay unioned attributed rows for this
+        // node. When it contributes none, the retain above already preserved the
+        // parent rows' (trust, pick_rank, origin, line) SQL order, so leave them —
+        // an inert overlay must not permute a `participated == false` window. When
+        // it does contribute, the reorder intentionally COARSENS the SQL pick_rank
+        // sub-order (exact-qualified / `SelfType`-before-`Ambiguous` within a
+        // tier) to (trust, overlay-first, origin, line); acceptable because it runs
+        // only when the overlay participates and the window then reflects the delta.
+        if !ov_attr.is_empty() {
+            let mut merged: Vec<(bool, cqs::store::AttributedCaller)> =
+                std::mem::take(&mut attributed)
+                    .into_iter()
+                    .map(|a| (false, a))
+                    .chain(ov_attr.into_iter().map(|a| (true, a)))
+                    .collect();
+            cqs::store::order_overlay_merged_callers(&mut merged, |a| {
+                (
+                    a.caller.edge_kind.trust_rank(),
+                    a.caller.file.clone(),
+                    a.caller.line,
+                )
+            });
+            attributed = merged.into_iter().map(|(_, a)| a).collect();
+        }
         excluded_origins.extend(ov_excluded);
     }
 

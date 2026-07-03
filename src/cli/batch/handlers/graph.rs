@@ -2681,6 +2681,57 @@ mod tests {
         );
     }
 
+    /// Inert-overlay parity: an overlay whose delta touches only an UNRELATED file
+    /// (zero callers of the queried node, no masking of its caller origins) must
+    /// leave the answer byte-identical to the overlay-None result — a
+    /// `participated == false` window must never be re-sorted. The fixture places
+    /// callers in `src/foo.rs` and `src/foo/bar.rs`, whose SQLite BINARY file
+    /// order (`.` = 0x2E < `/` = 0x2F, so `foo.rs` first) INVERTS under `PathBuf`
+    /// component ordering (`foo/bar.rs` first), so an ungated re-sort of the
+    /// inert union would permute the window (RED); the contribution gate skips the
+    /// sort and the parent SQL order passes through.
+    #[test]
+    fn callers_overlay_inert_overlay_parity() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/foo.rs", "a"),
+                ("src/foo/bar.rs", "b"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("a", "src/foo.rs", 1, "target"),
+                ("b", "src/foo/bar.rs", 1, "target"),
+            ],
+        );
+        let args = CallersCoreArgs {
+            name: "target".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (none_out, none_part) =
+            callers_overlay(&ctx.store(), &args, None).expect("callers_overlay none");
+        assert!(!none_part, "the overlay-None path never participates");
+        // Inert overlay: a dirty UNRELATED file — no callers of `target`, no mask
+        // of its caller origins.
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        let (some_out, some_part) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay some");
+        assert!(
+            !some_part,
+            "an inert overlay (nothing for this node) must NOT participate"
+        );
+        assert_eq!(
+            serde_json::to_value(some_out).unwrap(),
+            serde_json::to_value(none_out).unwrap(),
+            "an inert overlay must leave the callers answer byte-identical to overlay-None \
+             (no re-sort of a participated==false window)"
+        );
+    }
+
     /// callees(X) active — X edited (its def file is in the delta): callees come
     /// from the overlay (parent callee set dropped wholesale).
     #[test]
@@ -3116,6 +3167,54 @@ mod tests {
         assert!(
             got.contains(&"fresh_self".to_string()),
             "the lane's fresh qualified self-caller must survive the cap; got {got:?}"
+        );
+    }
+
+    /// Inert-overlay parity for the qualified path: an overlay with no attributed
+    /// rows for `Store::search` (and no masking of its caller origins) must leave
+    /// the answer byte-identical to overlay-None. Same `foo.rs` / `foo/bar.rs`
+    /// BINARY-vs-`PathBuf` inversion, so an ungated re-sort would permute the
+    /// window (RED); the `ov_attr` contribution gate keeps the SQL order (incl.
+    /// its `pick_rank` sub-order, which the coarsened key would otherwise drop).
+    #[test]
+    fn callers_qualified_inert_overlay_parity() {
+        let (_dir, ctx) = parent_typed_with(
+            &[
+                ("foo.rs", "search", 10, Some("Store")),
+                ("foo.rs", "a", 20, Some("Store")),
+                ("foo/bar.rs", "b", 20, Some("Store")),
+            ],
+            &[
+                ("a", "foo.rs", 20, "search"),
+                ("b", "foo/bar.rs", 20, "search"),
+            ],
+        );
+        let args = CallersCoreArgs {
+            name: "Store::search".into(),
+            limit: 50,
+            edge_kind: None,
+        };
+        let (none_out, none_part) =
+            callers_overlay(&ctx.store(), &args, None).expect("callers_overlay none");
+        assert!(!none_part, "the overlay-None path never participates");
+        // Inert overlay: an unrelated typed chunk in a dirty file, no `search`
+        // callers, no mask of the caller origins.
+        let overlay = overlay_typed(
+            &[("unrelated.rs", "noise", 5, Some("Other"))],
+            &[("noise", "unrelated.rs", 5, "other")],
+            &["unrelated.rs"],
+        );
+        let (some_out, some_part) =
+            callers_overlay(&ctx.store(), &args, Some(&overlay)).expect("callers_overlay some");
+        assert!(
+            !some_part,
+            "an inert overlay must NOT make the qualified path participate"
+        );
+        assert_eq!(
+            serde_json::to_value(some_out).unwrap(),
+            serde_json::to_value(none_out).unwrap(),
+            "an inert overlay must leave the qualified callers answer byte-identical to \
+             overlay-None (no re-sort of a participated==false window)"
         );
     }
 
@@ -4220,6 +4319,53 @@ mod tests {
         assert!(
             impact_caller_names(&value).contains(&"the_caller".to_string()),
             "the parent caller must survive untouched: {value}"
+        );
+    }
+
+    /// Inert-overlay parity for impact's direct-callers section: an unrelated
+    /// dirty file must leave the whole impact answer byte-identical to
+    /// overlay-None. Same `foo.rs` / `foo/bar.rs` BINARY-vs-`PathBuf` inversion as
+    /// the callers pin, so an ungated re-sort would permute the caller section
+    /// (RED); the contribution gate keeps the parent SQL order.
+    #[test]
+    fn impact_overlay_inert_overlay_parity() {
+        let (_dir, ctx) = parent_store_with(
+            &[
+                ("src/foo.rs", "a"),
+                ("src/foo/bar.rs", "b"),
+                ("src/lib.rs", "target"),
+            ],
+            &[
+                ("a", "src/foo.rs", 1, "target"),
+                ("b", "src/foo/bar.rs", 1, "target"),
+            ],
+        );
+        let args = ImpactCoreArgs {
+            name: "target".into(),
+            depth: 1,
+            limit: 50,
+            suggest_tests: false,
+            include_types: false,
+        };
+        let (none_out, none_part) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, None).expect("impact none");
+        assert!(!none_part, "the overlay-None path never participates");
+        let overlay = overlay_with_edges(
+            &[("src/unrelated.rs", "noise")],
+            &[("noise", "src/unrelated.rs", 1, "other")],
+            &["src/unrelated.rs"],
+        );
+        let (some_out, some_part) =
+            impact_overlay(&ctx.store(), &ctx.root, &args, Some(&overlay)).expect("impact some");
+        assert!(
+            !some_part,
+            "an inert overlay must NOT make impact's callers participate"
+        );
+        assert_eq!(
+            some_out.to_value().unwrap(),
+            none_out.to_value().unwrap(),
+            "an inert overlay must leave impact's answer byte-identical to overlay-None \
+             (no re-sort of a participated==false caller section)"
         );
     }
 

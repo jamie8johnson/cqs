@@ -303,12 +303,22 @@ impl WorktreeOverlay {
             overlay = overlay.len()
         )
         .entered();
-        // Tag provenance (parent = `false`, overlay = `true`) so the shared
-        // ordering can keep the lane's fresh rows inside a downstream cap: the
-        // parent rows come first, the overlay's masked-origin rows second, then
-        // the union is reordered so a `truncate(limit)` in the core keeps the
-        // strongest-trust AND freshest callers rather than dropping the
-        // just-appended overlay rows off the tail.
+        // Reorder ONLY when the overlay actually unioned rows for this node.
+        // Masking alone drops parent rows via `retain`, which preserves their SQL
+        // order, so an inert overlay (dirty worktree, nothing relevant to this
+        // node) must leave the parent order untouched — otherwise a
+        // `participated == false` answer would carry a permuted window, the exact
+        // marker-over-claim this reorder is meant to prevent. When the overlay
+        // does contribute, tag provenance (parent = `false`, overlay = `true`)
+        // and reorder so a `truncate(limit)` in the core keeps the strongest-trust
+        // AND freshest callers rather than dropping the appended overlay rows off
+        // the tail.
+        if overlay.is_empty() {
+            return parent
+                .into_iter()
+                .filter(|c| !self.masked_origins.contains(&c.file))
+                .collect();
+        }
         let mut merged: Vec<(bool, crate::store::CallerInfo)> = parent
             .into_iter()
             .filter(|c| !self.masked_origins.contains(&c.file))

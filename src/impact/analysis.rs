@@ -342,10 +342,17 @@ fn build_caller_info_overlay<Mode>(
         project_callers_with_snippets(&ov.store, &overlay_ctx, root);
     let degraded = parent_degraded || overlay_degraded;
 
-    // Reorder the union (parent tagged `false`, overlay `true`) so the
-    // per-section `truncate(limit)` in `impact_overlay` keeps the lane's fresh
-    // callers rather than dropping the just-appended overlay rows off the tail:
-    // ordered by (trust, overlay-first, origin, line).
+    // Reorder ONLY when the overlay unioned rows for this target. With none, the
+    // kept parent rows retain the SQL order `get_callers_with_context` returned,
+    // so an inert overlay leaves the direct-callers section parent-identical — a
+    // `participated == false` section must not carry a permuted window. When the
+    // overlay contributes, tag provenance (parent = `false`, overlay = `true`) and
+    // reorder so `impact_overlay`'s per-section `truncate(limit)` keeps the fresh
+    // callers rather than dropping the appended overlay rows off the tail:
+    // (trust, overlay-first, origin, line).
+    if overlay_callers.is_empty() {
+        return Ok((parent_callers, degraded, participated));
+    }
     let mut merged: Vec<(bool, CallerDetail)> = parent_callers
         .into_iter()
         .map(|c| (false, c))

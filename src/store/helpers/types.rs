@@ -430,15 +430,20 @@ pub struct AttributedCaller {
 /// the union so the truncation window is trust-fair and overlay-aware:
 ///
 /// 1. trust rank ASC — `call` (strongest) before `doc_reference` (weakest),
-///    mirroring the SQL `ORDER BY trust_rank`;
+///    trust-leading like the SQL `ORDER BY trust_rank`;
 /// 2. overlay rows before parent rows WITHIN a trust tier — a fresh edge the lane
 ///    just wrote survives the cap over an equal-trust pre-existing parent edge;
 /// 3. `(origin, line)` for a deterministic window.
 ///
-/// Each element is `(is_overlay, item)` (`false` for a parent row); `key`
-/// projects the item to `(trust_rank, origin, line)`. With no overlay every row
-/// carries `is_overlay == false`, so the key collapses to `(rank, origin, line)`
-/// — the exact SQL order — leaving a parent-only list byte-identical.
+/// This key is a COARSENING, not a reproduction, of the SQL order — it drops the
+/// per-query sub-orders (the attributed path's `pick_rank`; `call_line` vs the
+/// def `line`) and `PathBuf` component ordering is not SQLite's `BINARY`
+/// collation. So callers MUST invoke it only when the overlay actually
+/// contributes rows for the queried node (`participated == true`): masking alone
+/// preserves the parent order via `retain`, and an inert overlay that re-sorted
+/// would permute a parent-truth window — the very over-claim this exists to
+/// prevent. Each element is `(is_overlay, item)` (`false` for a parent row);
+/// `key` projects the item to `(trust_rank, origin, line)`.
 pub fn order_overlay_merged_callers<T>(
     rows: &mut [(bool, T)],
     key: impl Fn(&T) -> (u8, PathBuf, u32),
