@@ -172,7 +172,8 @@ struct ModelListEntry {
 #[derive(Debug, Serialize)]
 struct ModelListOutput {
     models: Vec<ModelListEntry>,
-    // always-emit: canonical active-model pointer; null = no index yet.
+    /// Canonical active-model pointer. `None` when no index exists yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
     current: Option<String>,
 }
 
@@ -225,7 +226,8 @@ struct ModelSwapOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     count_error: Option<String>,
     elapsed_secs: f64,
-    // always-emit: reports whether a backup was made; null = none created.
+    /// Path of the backup made before the swap. `None` when none was created.
+    #[serde(skip_serializing_if = "Option::is_none")]
     backup_path: Option<String>,
 }
 
@@ -1101,7 +1103,13 @@ mod tests {
         );
         let json = serde_json::to_value(&out).unwrap();
         assert!(json.get("models").unwrap().is_array());
-        assert!(json.as_object().unwrap().contains_key("current"));
+        // Top-level `current` is skip-when-none: absent when no index exists
+        // (CI), a string when one does (dev machines). Pin the pairing, not
+        // presence — a bare contains_key assert is environment-dependent.
+        match json.get("current") {
+            None => assert!(out.current.is_none(), "absent key must mean None"),
+            Some(v) => assert!(v.is_string(), "present current must be a string"),
+        }
         // Each row carries name/repo/dim/current.
         let first = &json["models"][0];
         assert!(first.get("name").is_some());

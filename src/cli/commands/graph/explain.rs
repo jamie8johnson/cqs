@@ -250,8 +250,8 @@ pub(crate) struct ExplainOutput {
     pub chunk_type: String,
     pub language: String,
     pub signature: String,
-    // always-emit: core result field — null = the symbol has no doc-comment;
-    // `content` below skips because it is opt-in (populated only with --content).
+    /// Doc-comment for the symbol. Skip-when-none: absent = no doc-comment.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,

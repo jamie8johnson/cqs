@@ -37,6 +37,16 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-models-embeddinggemma-300m-v1
+      - name: Cache ort prebuilt binaries
+        # The ort-sys build script downloads ONNX Runtime prebuilts from
+        # cdn.pyke.io, which intermittently rejects the GH-runner IP range
+        # (403s / connection resets) and takes every build job with it. The
+        # rust-cache key churns with Cargo.lock, so this dedicated cache is
+        # keyed on the ort-sys version alone — bump the key when ort bumps.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ort.pyke.io
+          key: ort-prebuilt-2.0.0-rc.12-linux-x64
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -50,6 +60,12 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Cache ort prebuilt binaries
+        # Shields the ort-sys CDN download; see the test job's twin step.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ort.pyke.io
+          key: ort-prebuilt-2.0.0-rc.12-linux-x64
       - name: Clippy
         # `slow-tests` is a pure cfg gate (no optional deps), so adding it here
         # costs one extra cfg compile of the test crates and closes the
@@ -87,6 +103,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
+      - name: Cache ort prebuilt binaries
+        # Shields the ort-sys CDN download; see the test job's twin step.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ort.pyke.io
+          key: ort-prebuilt-2.0.0-rc.12-linux-x64
       - name: Check MSRV
         run: cargo check --verbose
 

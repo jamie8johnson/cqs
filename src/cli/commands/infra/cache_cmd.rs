@@ -73,9 +73,11 @@ pub(crate) struct CacheStatsOutput {
     pub total_entries: u64,
     pub total_size_bytes: u64,
     pub unique_models: u64,
-    // always-emit: stable stats field set; null = empty cache (no entries).
+    /// Oldest cache-entry timestamp. `None` for an empty cache (no entries).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_timestamp: Option<i64>,
-    // always-emit: stable stats field set; null = empty cache (no entries).
+    /// Newest cache-entry timestamp. `None` for an empty cache (no entries).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub newest_timestamp: Option<i64>,
     /// Always present; 0 when the persistent QueryCache file doesn't exist yet.
     pub query_cache_size_bytes: u64,
@@ -89,7 +91,8 @@ pub(crate) struct CacheStatsOutput {
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct CacheClearOutput {
     pub deleted: usize,
-    // always-emit: echoes the scope of the clear; null = all-models clear.
+    /// Echoes the scope of the clear. `None` for an all-models clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 

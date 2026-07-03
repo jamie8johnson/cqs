@@ -29,11 +29,10 @@ pub struct ReviewResult {
     pub relevant_notes: Vec<ReviewNoteEntry>,
     /// Aggregated risk summary
     pub risk_summary: RiskSummary,
-    /// Files that are stale in the index (if any)
-    // always-emit: uniform review-envelope key; null = "checked, found no stale
-    // files" (distinct from "not checked"), and the CLI==daemon review shape
-    // pins its presence. Skip-when-none is a wire-shape change deferred to
-    // #2156's consumer survey.
+    /// Files that are stale in the index (if any). Skip-when-none: absent =
+    /// "checked, found no stale files" (the review path always runs the check,
+    /// so absence never means "not checked"; CLI and daemon skip identically).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_warning: Option<Vec<String>>,
     /// Non-fatal warnings encountered during review
     #[serde(skip_serializing_if = "Vec::is_empty")]
