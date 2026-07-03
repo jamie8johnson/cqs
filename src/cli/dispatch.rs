@@ -603,24 +603,6 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         }
     };
 
-    // Single timeout knob across client and daemon: both sides resolve through
-    // the shared `cqs::daemon_translate::resolve_daemon_timeout_ms` helper.
-    let timeout = cqs::daemon_translate::resolve_daemon_timeout_ms();
-    // Explicit warn on timeout failures rather than silent `.ok()` — without a
-    // timeout the CLI could hang forever on a wedged daemon read.
-    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
-        tracing::warn!(
-            error = %e,
-            "Failed to set read timeout on daemon client stream — CLI may hang on wedged daemon"
-        );
-    }
-    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
-        tracing::warn!(
-            error = %e,
-            "Failed to set write timeout on daemon client stream — CLI may hang on wedged daemon"
-        );
-    }
-
     // Arg-stripping and `-n`→`--limit` remap live in
     // `cqs::daemon_translate::translate_cli_args_to_batch`, a pure helper in
     // the library crate. Integration tests pin its behaviour separately
@@ -641,6 +623,28 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
         cli.command.is_some(),
         &cli_arg_spec(),
     );
+
+    // Single timeout knob across client and daemon: both sides resolve through
+    // the shared `cqs::daemon_translate` resolver. Set AFTER translation so the
+    // heavy set (task/gather/ci/…) gets the multiplied budget keyed on the wire
+    // `command` — a slow-but-live daemon on a slow filesystem then isn't cut off
+    // at the base 30 s and forced back onto the multi-second cold-start path.
+    // The base knob stays `CQS_DAEMON_TIMEOUT_MS`.
+    let timeout = cqs::daemon_translate::resolve_daemon_timeout_for_command(&command);
+    // Explicit warn on timeout failures rather than silent `.ok()` — without a
+    // timeout the CLI could hang forever on a wedged daemon read.
+    if let Err(e) = stream.set_read_timeout(Some(timeout)) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set read timeout on daemon client stream — CLI may hang on wedged daemon"
+        );
+    }
+    if let Err(e) = stream.set_write_timeout(Some(timeout)) {
+        tracing::warn!(
+            error = %e,
+            "Failed to set write timeout on daemon client stream — CLI may hang on wedged daemon"
+        );
+    }
 
     // Worktree-overlay daemon forward (result-trust §3, plan §8). Part A
     // extended it from `search`-only to the seed-overlaid graph-adjacent
@@ -754,7 +758,24 @@ fn try_daemon_query(cqs_dir: &std::path::Path, cli: &Cli) -> Result<Option<Strin
     let bytes_read = match reader.read_line(&mut response_line) {
         Ok(n) => n,
         Err(e) => {
-            tracing::warn!(error = %e, stage = "read", "{FALLBACK_HINT}");
+            // A read-deadline expiry surfaces as EAGAIN (`WouldBlock`); log the
+            // honest reason (naming CQS_DAEMON_TIMEOUT_MS and the elapsed
+            // budget) rather than the generic "unresponsive" hint, so the
+            // journal reads as a budget on a slow-but-live daemon, not a wedged
+            // one. Either way the CLI falls back and computes the result inline.
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    stage = "read",
+                    "cqs daemon {} — falling back to CLI (set CQS_NO_DAEMON=1 to silence)",
+                    cqs::daemon_translate::daemon_timeout_message(&command, timeout)
+                );
+            } else {
+                tracing::warn!(error = %e, stage = "read", "{FALLBACK_HINT}");
+            }
             return Ok(None);
         }
     };
