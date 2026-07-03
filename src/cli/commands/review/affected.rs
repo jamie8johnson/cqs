@@ -46,6 +46,16 @@ impl serde::Serialize for AffectedOutput {
     }
 }
 
+impl AffectedOutput {
+    /// `true` for the shared empty shape (no indexed functions affected), keyed on
+    /// the `overall_risk: "none"` sentinel [`empty_affected_json`] sets — a value
+    /// [`overall_risk`] never emits (Low/Medium/High only). Gates the CLI-direct
+    /// partial-skip markers: an empty result has nothing overlaid to describe.
+    fn is_empty(&self) -> bool {
+        self.0.get("overall_risk").and_then(|v| v.as_str()) == Some("none")
+    }
+}
+
 /// Surface-agnostic core for `cqs affected`. Parses the diff, maps hunks to
 /// functions, runs the impact analysis, and returns the typed
 /// [`AffectedOutput`]. Empty diffs / no-indexed-functions both yield the
@@ -92,11 +102,17 @@ pub(crate) fn cmd_affected(
     // Adapter owns I/O. `affected` is CLI-only (no daemon dispatcher), so the
     // non-stdin branch resolves the diff subject through the overlay tri-state:
     // worktree when active, parent-truth on `--no-overlay` — same subject fix the
-    // review/ci/impact-diff siblings apply.
+    // review/ci/impact-diff siblings apply. Hoisted out of the diff-text branch so
+    // its `Some`-ness also gates the CLI-direct partial-skip markers below;
+    // `--stdin` carries no overlay subject.
+    let overlay_root = if from_stdin {
+        None
+    } else {
+        crate::cli::commands::cli_diff_overlay_root(overlay, root)
+    };
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
         crate::cli::commands::run_git_diff_for_overlay(
             base,
             &crate::cli::commands::cli_parent_diff_root(root),
@@ -106,6 +122,12 @@ pub(crate) fn cmd_affected(
 
     if json {
         let output = affected_core(store, root, &diff_text, &AffectedArgs::default())?;
+        // CLI-direct two-axis partial-skip vocabulary (see `cmd_review`). Gated on
+        // the diff subject resolving to the worktree AND a non-empty result — the
+        // shared empty shape (no indexed functions affected) has nothing overlaid.
+        if overlay_root.is_some() && !output.is_empty() {
+            crate::cli::commands::mark_cli_direct_diff_overlay_partial();
+        }
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         // Text path re-derives the analysis to drive the dashboard rendering

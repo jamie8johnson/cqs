@@ -160,10 +160,17 @@ pub(crate) fn cmd_review(
     // the worktree, while `--no-overlay` / `CQS_WORKTREE_OVERLAY=0` reverts to
     // parent-truth (`cli_parent_diff_root` = main's root even for a redirected
     // out-of-tree worktree), matching the daemon. See `run_git_diff_for_overlay`.
+    // Hoisted out of the diff-text branch so its `Some`-ness (overlay active AND a
+    // worktree probed) also gates the CLI-direct partial-skip markers below;
+    // `--stdin` diffs the piped text, not the worktree, so it carries no subject.
+    let overlay_root = if from_stdin {
+        None
+    } else {
+        crate::cli::commands::cli_diff_overlay_root(overlay, root)
+    };
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
         crate::cli::commands::run_git_diff_for_overlay(
             base,
             &crate::cli::commands::cli_parent_diff_root(root),
@@ -171,20 +178,21 @@ pub(crate) fn cmd_review(
         )?
     };
 
-    // No `skipped-no-daemon` degradation marker here (deliberate — NOT an
-    // incomplete sweep vs the graph-only commands). `search` / scout / callers /
-    // callees / impact / dead serve the parent index WHOLESALE on the CLI-direct
-    // no-daemon path, so `_meta.worktree_overlay = skipped-no-daemon` ("results
-    // reflect the parent index") is honest. Review is PARTIAL: the diff-subject
-    // half of the overlay IS applied CLI-direct (`cli_diff_overlay_root` above
-    // diffs the worktree, so `changed_functions` reflect this checkout's
-    // uncommitted edits) — only the caller-graph splice is skipped. A whole-result
-    // skip marker would deny the worktree diff subject, lying in the overstate
-    // direction, so review emits none. (ci / impact-diff / affected share this
-    // diff-subject shape.)
     if json {
         // JSON path goes through the shared core (same as the daemon).
         let output = review_core(store, root, &diff_text, &ReviewArgs { tokens: max_tokens })?;
+        // CLI-direct two-axis partial-skip vocabulary. The diff subject IS applied
+        // (`overlay_root` diffed the worktree, so `changed_functions` reflect this
+        // checkout's uncommitted edits), but the caller-graph splice builds
+        // daemon-side only, so it was skipped. Emit `overlay_graph =
+        // "diff-subject-only"` + `worktree_overlay = "graph-skipped-no-daemon"` —
+        // the honest partial, NOT a whole-result skip (which would deny the
+        // applied diff subject). Gated on the diff subject resolving to the
+        // worktree AND a non-empty review: the empty-review shape has nothing
+        // overlaid to describe, so it carries no marker.
+        if overlay_root.is_some() && !output.review.changed_functions.is_empty() {
+            crate::cli::commands::mark_cli_direct_diff_overlay_partial();
+        }
         crate::cli::json_envelope::emit_json(&output)?;
     } else {
         // Text path budgets with json=false accounting (different per-item

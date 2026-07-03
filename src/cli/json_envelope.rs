@@ -76,6 +76,16 @@ pub struct EnvelopeMeta {
     /// than per-process (the daemon serves many searches per process).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_overlay: Option<serde_json::Value>,
+    /// Per-query `_meta.overlay_graph` coverage marker for the CLI-direct diff
+    /// commands (`review` / `ci` / `impact-diff` / `affected`). Skip-when-default:
+    /// present only when a CLI-direct diff run recorded a coverage marker
+    /// (`"diff-subject-only"` — the diff subject reflects the worktree, the
+    /// caller graph does not). The daemon path splices `overlay_graph` into the
+    /// per-response payload directly, so this envelope field stays `None` there
+    /// (the thread-local is CLI-direct-only). Read once from the thread-local set
+    /// by the diff adapter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_graph: Option<&'static str>,
 }
 
 impl EnvelopeMeta {
@@ -92,6 +102,11 @@ impl EnvelopeMeta {
             // before emission, and a single `current()` per envelope consumes
             // it. Absent ⇒ no overlay requested ⇒ key omitted.
             worktree_overlay: cqs::worktree_overlay::take_overlay_meta().map(|m| m.to_json()),
+            // Per-query, take-on-read: the CLI-direct diff adapters set this
+            // thread-local before emission. Absent ⇒ no CLI-direct coverage
+            // marker ⇒ key omitted. (The daemon writes `overlay_graph` into the
+            // per-response payload, not this cell.)
+            overlay_graph: cqs::worktree_overlay::take_overlay_graph_meta(),
         }
     }
 
@@ -99,7 +114,10 @@ impl EnvelopeMeta {
     /// no worktree name, no overlay outcome). Drives "skip `_meta` when empty"
     /// emission in the slim envelope shape.
     pub fn is_empty(&self) -> bool {
-        !self.worktree_stale && self.worktree_name.is_none() && self.worktree_overlay.is_none()
+        !self.worktree_stale
+            && self.worktree_name.is_none()
+            && self.worktree_overlay.is_none()
+            && self.overlay_graph.is_none()
     }
 }
 
@@ -323,6 +341,12 @@ fn meta_value_for_envelope(meta: &EnvelopeMeta) -> serde_json::Value {
         }
         if let Some(overlay) = &meta.worktree_overlay {
             m.insert("worktree_overlay".to_string(), overlay.clone());
+        }
+        if let Some(graph) = meta.overlay_graph {
+            m.insert(
+                "overlay_graph".to_string(),
+                serde_json::Value::String(graph.to_string()),
+            );
         }
         serde_json::Value::Object(m)
     })

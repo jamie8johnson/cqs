@@ -130,11 +130,17 @@ pub(crate) fn cmd_ci(
     // Get diff text — adapter owns I/O (CLI supports stdin; daemon git only). The
     // `--stdin` branch stays byte-identical; the non-stdin branch resolves the diff
     // subject through the overlay tri-state (worktree when active, parent-truth on
-    // `--no-overlay`), matching the daemon — see `cmd_review`.
+    // `--no-overlay`), matching the daemon — see `cmd_review`. Hoisted out of the
+    // diff-text branch so its `Some`-ness also gates the CLI-direct partial-skip
+    // markers below; `--stdin` carries no overlay subject.
+    let overlay_root = if from_stdin {
+        None
+    } else {
+        crate::cli::commands::cli_diff_overlay_root(overlay, root)
+    };
     let diff_text = if from_stdin {
         crate::cli::commands::read_stdin()?
     } else {
-        let overlay_root = crate::cli::commands::cli_diff_overlay_root(overlay, root);
         crate::cli::commands::run_git_diff_for_overlay(
             base,
             &crate::cli::commands::cli_parent_diff_root(root),
@@ -154,6 +160,16 @@ pub(crate) fn cmd_ci(
             *gate,
             &CiArgs { tokens: max_tokens },
         )?;
+        // CLI-direct two-axis partial-skip vocabulary (see `cmd_review`). `cqs ci`
+        // bundles a review + dead scan; both graph splices build daemon-side only,
+        // so CLI-direct only the diff subject is applied. The composite carries the
+        // marker pair ONCE at the top level (matching the daemon's single
+        // `"callers-only"` composite): `overlay_graph = "diff-subject-only"` +
+        // `worktree_overlay = "graph-skipped-no-daemon"`. Gated on the diff subject
+        // resolving to the worktree AND a non-empty review.
+        if overlay_root.is_some() && !output.report.review.changed_functions.is_empty() {
+            crate::cli::commands::mark_cli_direct_diff_overlay_partial();
+        }
         let gate_passed = output.report.gate.passed;
         crate::cli::json_envelope::emit_json(&output)?;
         gate_passed

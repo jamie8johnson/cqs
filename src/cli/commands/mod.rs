@@ -877,6 +877,32 @@ pub(crate) fn cli_parent_diff_root(root: &std::path::Path) -> std::path::PathBuf
     root.to_path_buf()
 }
 
+/// Record the two-axis CLI-direct partial-skip markers for a diff command
+/// (`review` / `ci` / `impact-diff` / `affected`) whose diff subject resolved to
+/// the worktree but whose caller-graph overlay could not be built (no daemon —
+/// phase 1 builds overlays daemon-side only). Both markers are emitted together:
+///
+/// - `_meta.overlay_graph = "diff-subject-only"` (coverage): the diff subject
+///   reflects the worktree; the caller-graph / affected-tests / risk sections are
+///   parent-truth. Strictly weaker than the daemon's `"callers-only"`.
+/// - `_meta.worktree_overlay = "graph-skipped-no-daemon"` (degradation): the
+///   caller-graph splice was wanted but no daemon was up to build it; retrying
+///   with a daemon upgrades coverage to `"callers-only"`.
+///
+/// Callers gate this on the diff subject actually resolving to the worktree
+/// ([`cli_diff_overlay_root`] returned `Some`) AND a non-empty diff — opt-out,
+/// non-worktree, stdin, and the empty-diff early-return emit nothing on either
+/// axis (skip-when-default). The daemon path never calls this: it builds the
+/// real overlay and splices `"callers-only"` into the payload itself.
+pub(crate) fn mark_cli_direct_diff_overlay_partial() {
+    cqs::worktree_overlay::set_overlay_graph_meta(
+        cqs::worktree_overlay::OVERLAY_GRAPH_DIFF_SUBJECT_ONLY,
+    );
+    cqs::worktree_overlay::set_overlay_meta(
+        cqs::worktree_overlay::OverlayMeta::GraphSkippedNoDaemon,
+    );
+}
+
 #[cfg(test)]
 mod cli_diff_overlay_root_tests {
     use super::{cli_diff_overlay_root, cli_diff_overlay_root_resolve, cli_parent_diff_root};
