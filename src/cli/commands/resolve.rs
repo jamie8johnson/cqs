@@ -29,9 +29,29 @@ fn find_reference_config<'a>(config: &'a Config, name: &str) -> Result<&'a Refer
 ///
 /// Wraps the library's `resolve_target` with anyhow error conversion.
 /// Generic over the store's typestate — resolution is a pure query.
+///
+/// A `StoreError::NotFound` (the name matched no chunk) is user input — a
+/// bad/unknown target, not an internal fault — so it is tagged
+/// [`ClientFacingError`](crate::cli::json_envelope::ClientFacingError) with the
+/// `not_found` code. The daemon redaction boundary then surfaces the actionable
+/// message with that code instead of collapsing every non-client-facing error to
+/// an opaque internal chain-id. The message carries only the user-supplied
+/// target (plus project-relative index paths on the file-filter miss), which is
+/// safe to disclose. Every other `StoreError` variant stays a plain anyhow error
+/// (redacted to `internal`) — the redaction boundary exists for those.
 pub fn resolve_target<Mode>(store: &Store<Mode>, target: &str) -> Result<ResolvedTarget> {
     let _span = tracing::info_span!("resolve_target", target).entered();
-    Ok(cqs::resolve_target(store, target)?)
+    match cqs::resolve_target(store, target) {
+        Ok(resolved) => Ok(resolved),
+        Err(cqs::store::StoreError::NotFound(message)) => {
+            Err(crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::NotFound,
+                message,
+            )
+            .into())
+        }
+        Err(other) => Err(other.into()),
+    }
 }
 
 /// Find a reference index by name from the project config.

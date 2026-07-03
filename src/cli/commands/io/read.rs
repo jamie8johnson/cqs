@@ -10,7 +10,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use cqs::audit::load_audit_state;
 use cqs::note::{parse_notes, path_matches_mention, Note};
@@ -74,10 +74,28 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
     // Both `Failed to canonicalize` and `Path traversal not allowed`
     // collapse into the same opaque "Invalid path" so the rejection
     // paths are indistinguishable to the client.
-    let canonical = dunce::canonicalize(&file_path).map_err(|_| anyhow::anyhow!("Invalid path"))?;
+    // Both the missing-file and traversal rejections carry the SAME opaque
+    // `not_found` code + `"Invalid path"` message so a daemon client cannot use
+    // the taxonomy code OR the text as a path-existence oracle (a missing file
+    // inside the root, a missing file outside it, and a traversal attempt are
+    // all indistinguishable). The message names no path — only user-supplied
+    // input could reach here, and even that is withheld — so it is safe to
+    // surface verbatim past the redaction boundary.
+    let canonical = dunce::canonicalize(&file_path).map_err(|_| {
+        crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            "Invalid path",
+        )
+    })?;
+    // `Invalid project root` canonicalizes OUR served root, not user input — a
+    // failure is an internal/operator fault, so it stays a redacted `internal`.
     let project_canonical = dunce::canonicalize(root).context("Invalid project root")?;
     if !canonical.starts_with(&project_canonical) {
-        bail!("Invalid path");
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            "Invalid path",
+        )
+        .into());
     }
 
     // `dunce::canonicalize` above already proved existence, so the size cap
@@ -89,11 +107,19 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
     let max_file_size = crate::cli::limits::read_max_file_size();
     let metadata = std::fs::metadata(&canonical).context("Failed to read file metadata")?;
     if metadata.len() > max_file_size {
-        bail!(
-            "File too large: {} bytes (max {} bytes; CQS_READ_MAX_FILE_SIZE)",
-            metadata.len(),
-            max_file_size
-        );
+        // User input (the requested file, already proven in-root, is too large):
+        // an `invalid_input` the caller can act on, not an internal fault. The
+        // message names only sizes (no path), so it is safe past the redaction
+        // boundary.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            format!(
+                "File too large: {} bytes (max {} bytes; CQS_READ_MAX_FILE_SIZE)",
+                metadata.len(),
+                max_file_size
+            ),
+        )
+        .into());
     }
 
     let content = std::fs::read_to_string(&canonical).context("Failed to read file")?;
@@ -178,7 +204,9 @@ pub(crate) fn build_focused_output<Mode>(
     audit_state: &cqs::audit::AuditMode,
     notes: &[Note],
 ) -> Result<FocusedReadResult> {
-    let resolved = cqs::resolve_target(store, focus)?;
+    // CLI wrapper: a not-found focus target is tagged ClientFacingError so the
+    // daemon surfaces `not_found` instead of an opaque internal chain-id.
+    let resolved = crate::cli::commands::resolve::resolve_target(store, focus)?;
     let chunk = &resolved.chunk;
     let rel_file = cqs::rel_display(&chunk.file, root);
 

@@ -39,9 +39,16 @@ pub(in crate::cli::batch) fn dispatch_dead(
     // the CLI and daemon surfaces.
     let verdict = match args.verdict.as_deref() {
         None => None,
-        Some(s) => {
-            Some(crate::cli::commands::DeadVerdict::parse(s).map_err(|e| anyhow::anyhow!(e))?)
-        }
+        // A bad `--verdict` is user input → invalid_input client-facing so the
+        // daemon surfaces the "invalid verdict" message (naming only the
+        // caller-supplied value + the valid set) with that code, not an opaque
+        // internal chain-id.
+        Some(s) => Some(crate::cli::commands::DeadVerdict::parse(s).map_err(|e| {
+            crate::cli::json_envelope::ClientFacingError::new(
+                crate::cli::json_envelope::ErrorCode::InvalidInput,
+                e,
+            )
+        })?),
     };
     let core_args = crate::cli::commands::DeadArgs {
         include_pub: args.include_pub,

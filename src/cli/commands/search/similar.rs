@@ -130,7 +130,9 @@ pub(crate) fn similar_core(
     // search_filtered_with_index.
     let limit = args.limit.clamp(1, crate::cli::SIMILAR_LIMIT_MAX);
 
-    let resolved = cqs::resolve_target(store, &args.name)?;
+    // CLI wrapper: a not-found target is tagged ClientFacingError so the daemon
+    // surfaces `not_found` instead of an opaque internal chain-id.
+    let resolved = crate::cli::commands::resolve::resolve_target(store, &args.name)?;
     let chunk_id = resolved.chunk.id.clone();
     let chunk_name = resolved.chunk.name.clone();
 
@@ -233,7 +235,7 @@ pub(crate) fn cmd_similar(
         // The first result's source file isn't the target's — re-resolve for
         // the header (cheap indexed lookup). Text mode only; the JSON path
         // returns above without it.
-        let resolved = cqs::resolve_target(store, &matches.target)?;
+        let resolved = crate::cli::commands::resolve::resolve_target(store, &matches.target)?;
         println!(
             "Similar to '{}' ({}):",
             matches.target,

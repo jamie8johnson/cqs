@@ -31,14 +31,14 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
     let languages = match &args.lang {
         Some(l) => Some(vec![l
             .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid language '{}'", l))?]),
+            .map_err(|_| invalid_filter_arg(format!("Invalid language '{l}'")))?]),
         None => None,
     };
     let include_types = match &args.include_type {
         Some(types) => {
             let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
                 types.iter().map(|t| t.parse()).collect();
-            Some(parsed.map_err(|e| anyhow::anyhow!("Invalid --include-type: {e}"))?)
+            Some(parsed.map_err(|e| invalid_filter_arg(format!("Invalid --include-type: {e}")))?)
         }
         None => Some(cqs::parser::ChunkType::code_types()),
     };
@@ -46,11 +46,25 @@ fn validate_filter_args(args: &SearchArgs) -> Result<ParsedFilters> {
         Some(types) => {
             let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
                 types.iter().map(|t| t.parse()).collect();
-            Some(parsed.map_err(|e| anyhow::anyhow!("Invalid --exclude-type: {e}"))?)
+            Some(parsed.map_err(|e| invalid_filter_arg(format!("Invalid --exclude-type: {e}")))?)
         }
         None => None,
     };
     Ok((languages, include_types, exclude_types))
+}
+
+/// Tag a filter-flag parse failure as `invalid_input` client-facing so the
+/// daemon surfaces the actionable message with that taxonomy code rather than
+/// collapsing it to an opaque `internal` chain-id — the caller passed a bad
+/// `--lang` / `--include-type` / `--exclude-type` value, and the message echoes
+/// only that caller-supplied value (safe to disclose past the redaction
+/// boundary). Shared by `validate_filter_args` and `validate_legs_filter_args`.
+fn invalid_filter_arg(message: String) -> anyhow::Error {
+    crate::cli::json_envelope::ClientFacingError::new(
+        crate::cli::json_envelope::ErrorCode::InvalidInput,
+        message,
+    )
+    .into()
 }
 
 /// Reset per-thread overlay state and (when requested) validate + stamp the
@@ -314,17 +328,17 @@ fn legs_query_args(args: &SearchLegsArgs) -> QueryArgs {
 fn validate_legs_filter_args(args: &SearchLegsArgs) -> Result<()> {
     if let Some(l) = &args.lang {
         l.parse::<cqs::parser::Language>()
-            .map_err(|_| anyhow::anyhow!("Invalid language '{}'", l))?;
+            .map_err(|_| invalid_filter_arg(format!("Invalid language '{l}'")))?;
     }
     if let Some(types) = &args.include_type {
         let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
             types.iter().map(|t| t.parse()).collect();
-        parsed.map_err(|e| anyhow::anyhow!("Invalid --include-type: {e}"))?;
+        parsed.map_err(|e| invalid_filter_arg(format!("Invalid --include-type: {e}")))?;
     }
     if let Some(types) = &args.exclude_type {
         let parsed: Result<Vec<cqs::parser::ChunkType>, _> =
             types.iter().map(|t| t.parse()).collect();
-        parsed.map_err(|e| anyhow::anyhow!("Invalid --exclude-type: {e}"))?;
+        parsed.map_err(|e| invalid_filter_arg(format!("Invalid --exclude-type: {e}")))?;
     }
     Ok(())
 }
@@ -1453,8 +1467,27 @@ mod tests {
             .expect_err("foreign overlay-root must be rejected");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("not a worktree of the served project"),
+            msg.contains("not a worktree of the project this daemon serves"),
             "expected a foreign-root rejection; got: {msg}"
+        );
+        // A bad `--overlay-root` is USER INPUT — it must
+        // reach a daemon/MCP client as `invalid_input`, not a redacted
+        // `internal`. And the served project's absolute path must NOT leak into
+        // the client-facing message (only the caller-supplied path may echo).
+        let (code, redacted) = crate::cli::json_envelope::redact_error(&err);
+        assert_eq!(
+            code,
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            "a bad overlay-root must surface invalid_input, not internal; got {code:?} ({redacted})"
+        );
+        assert!(
+            !redacted.contains("err-"),
+            "an invalid_input must NOT redact to an internal chain-id, got: {redacted}"
+        );
+        let served_root = format!("{}", view.root.display());
+        assert!(
+            !redacted.contains(&served_root),
+            "the served project path must not leak to the client, got: {redacted}"
         );
         // The request must NOT have been stamped.
         assert!(
@@ -1558,7 +1591,7 @@ mod tests {
             .expect_err("forged unregistered worktree must be rejected");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("not a registered worktree of the served project"),
+            msg.contains("not a registered worktree of the project this daemon serves"),
             "expected an unregistered-worktree rejection; got: {msg}"
         );
         // The request must NOT have been stamped.
@@ -1646,7 +1679,8 @@ mod tests {
             .set_validated_overlay_request(&attacker)
             .expect_err("forged gitdir pointing at a real registered worktree must be rejected");
         assert!(
-            format!("{err:#}").contains("not a registered worktree of the served project"),
+            format!("{err:#}")
+                .contains("not a registered worktree of the project this daemon serves"),
             "expected a registration rejection; got: {err:#}"
         );
         // The attacker tree must NOT have been stamped as the overlay root.
@@ -1739,7 +1773,8 @@ mod tests {
                 Err(e) => e,
             };
             assert!(
-                format!("{err:#}").contains("not a registered worktree of the served project"),
+                format!("{err:#}")
+                    .contains("not a registered worktree of the project this daemon serves"),
                 "{label}: expected a registration rejection; got: {err:#}"
             );
             assert!(
@@ -1901,7 +1936,7 @@ mod tests {
             .set_validated_overlay_request(&bare)
             .expect_err("a bare non-git dir must be rejected");
         assert!(
-            format!("{err:#}").contains("not a worktree of the served project"),
+            format!("{err:#}").contains("not a worktree of the project this daemon serves"),
             "bare dir must hit the not-a-worktree rejection"
         );
         assert!(view.overlay_request.borrow().is_none());
@@ -1944,7 +1979,7 @@ mod tests {
             .set_validated_overlay_request(&foreign_wt)
             .expect_err("a foreign project's worktree must be rejected");
         assert!(
-            format!("{err:#}").contains("not a worktree of the served project"),
+            format!("{err:#}").contains("not a worktree of the project this daemon serves"),
             "foreign project's worktree must hit the not-a-worktree rejection"
         );
         assert!(view.overlay_request.borrow().is_none());
@@ -1989,7 +2024,7 @@ mod tests {
         let err = prepare_overlay_request(&view, &args)
             .expect_err("foreign overlay-root must bubble up as a wire error");
         assert!(
-            format!("{err:#}").contains("not a worktree of the served project"),
+            format!("{err:#}").contains("not a worktree of the project this daemon serves"),
             "expected foreign-root rejection from the dispatch path"
         );
     }

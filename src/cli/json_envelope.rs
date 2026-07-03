@@ -1310,6 +1310,44 @@ mod tests {
         );
     }
 
+    // A non-`NotFound` StoreError carries index/DB internals (schema, model,
+    // dim, runtime invariants) and is NOT user input — it must stay a redacted
+    // `internal`, never a taxonomy code. Guards against a blanket "StoreError →
+    // not_found" arm: `StoreError::NotFound` is overloaded (a user target miss
+    // in `resolve_target`, but ALSO an internal missing-metadata-key lookup), so
+    // the not_found conversion is done at the resolution seam, not here.
+    #[test]
+    fn redact_error_non_notfound_store_error_stays_internal() {
+        let err: anyhow::Error =
+            cqs::store::StoreError::Runtime("embedding dim invariant violated".into()).into();
+        let (code, msg) = redact_error(&err);
+        assert_eq!(code, ErrorCode::Internal);
+        assert!(msg.contains("err-"), "expected chain-id, got: {msg}");
+        assert!(
+            !msg.contains("embedding dim invariant"),
+            "internal StoreError text leaked to client: {msg}"
+        );
+    }
+
+    // The overloaded variant itself: an INTERNAL `StoreError::NotFound` (the
+    // missing-metadata-key lookup — not a user target miss) must also redact.
+    // This is the case the seam-tagging design exists for: a blanket
+    // "StoreError::NotFound → not_found" arm here would pass the test above
+    // (it constructs `Runtime`) while leaking metadata-key internals verbatim.
+    // This sibling makes that refactor fail loudly.
+    #[test]
+    fn redact_error_internal_notfound_store_error_stays_internal() {
+        let err: anyhow::Error =
+            cqs::store::StoreError::NotFound("metadata key 'schema_version'".into()).into();
+        let (code, msg) = redact_error(&err);
+        assert_eq!(code, ErrorCode::Internal);
+        assert!(msg.contains("err-"), "expected chain-id, got: {msg}");
+        assert!(
+            !msg.contains("metadata key"),
+            "internal NotFound text leaked to client: {msg}"
+        );
+    }
+
     // redact_error returns a stable code+chain-id pair for unknown error
     // roots so the daemon socket never echoes raw anyhow chains.
     #[test]

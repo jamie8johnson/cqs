@@ -1185,6 +1185,36 @@ mod tests {
         assert!(text.contains("not found"));
     }
 
+    /// A user-input error's taxonomy code — produced by the real
+    /// `redact_error` from a ClientFacingError, exactly as the daemon builds its
+    /// slim error envelope — rides the MCP bridge to `_meta.error.code`, so the
+    /// model sees `invalid_input` AS invalid_input rather than a masked
+    /// `internal`. Closes the loop end-to-end through the redaction boundary.
+    #[test]
+    fn invalid_input_taxonomy_code_reaches_mcp_meta() {
+        let err: anyhow::Error = crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            "overlay-root /etc is not a worktree of the project this daemon serves",
+        )
+        .into();
+        let (code, message) = crate::cli::json_envelope::redact_error(&err);
+        // Mirror the daemon's slim error envelope: {error:{code, message}}.
+        let output = serde_json::json!({
+            "error": { "code": code.as_str(), "message": message }
+        });
+        let result = classify_output(&output);
+        assert_eq!(result.get("isError").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            result
+                .get("_meta")
+                .and_then(|m| m.get("error"))
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_str()),
+            Some("invalid_input"),
+            "invalid_input must ride the bridge to _meta.error.code: {result}"
+        );
+    }
+
     /// A success envelope maps to isError:false with structuredContent == data.
     #[test]
     fn data_maps_to_structured_content() {

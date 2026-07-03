@@ -115,10 +115,15 @@ pub(crate) fn build_compact_data<Mode>(store: &Store<Mode>, path: &str) -> Resul
         .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
-        bail!(
-            "No indexed chunks found for '{}'. Is the file indexed?",
-            path
-        );
+        // A file the caller asked about that carries no indexed chunks is user
+        // input → not_found client-facing so the daemon surfaces the actionable
+        // "is the file indexed?" message (echoing only the caller-supplied path)
+        // with that code, not an opaque internal chain-id.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            format!("No indexed chunks found for '{path}'. Is the file indexed?"),
+        )
+        .into());
     }
     let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
     let caller_counts = store.get_caller_counts_batch(&names)?;
@@ -238,10 +243,15 @@ pub(crate) fn build_full_data<Mode>(
         .get_chunks_by_origin(&normalized)
         .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
-        bail!(
-            "No indexed chunks found for '{}'. Is the file indexed?",
-            path
-        );
+        // A file the caller asked about that carries no indexed chunks is user
+        // input → not_found client-facing so the daemon surfaces the actionable
+        // "is the file indexed?" message (echoing only the caller-supplied path)
+        // with that code, not an opaque internal chain-id.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            format!("No indexed chunks found for '{path}'. Is the file indexed?"),
+        )
+        .into());
     }
 
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();

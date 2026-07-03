@@ -337,6 +337,66 @@ mod tests {
         (dir, ctx)
     }
 
+    /// A `cqs_read` for a file that does not exist must
+    /// reach a daemon/MCP client as `not_found` — the actionable "I passed a bad
+    /// path" signal — NOT a redacted `internal` that reads as "the daemon is
+    /// broken." The missing-file and traversal rejections share the SAME opaque
+    /// `not_found` code + "Invalid path" text so neither becomes a path-existence
+    /// oracle. RED before the fix (the plain-anyhow bail redacted to internal).
+    #[test]
+    fn dispatch_read_missing_file_redacts_to_not_found() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        let err = dispatch_read(
+            &view,
+            &ReadArgs {
+                path: "definitely_missing_xyz.rs".to_string(),
+                focus: None,
+            },
+        )
+        .expect_err("a missing file must error");
+        let (code, msg) = crate::cli::json_envelope::redact_error(&err);
+        assert_eq!(
+            code,
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            "missing-file read must surface not_found, not internal; got {code:?} ({msg})"
+        );
+        assert_eq!(
+            msg, "Invalid path",
+            "opaque rejection text expected, got: {msg}"
+        );
+    }
+
+    /// A `cqs_context` for a file with no indexed chunks must reach a
+    /// daemon/MCP client as `not_found` (the actionable "index the file" signal),
+    /// not a redacted `internal`. Same user-input-vs-daemon-fault distinction as
+    /// the read/trace repros.
+    #[test]
+    fn dispatch_context_unindexed_file_redacts_to_not_found() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        let err = dispatch_context(
+            &view,
+            &ContextArgs {
+                path: "src/never_indexed_xyz.rs".to_string(),
+                summary: false,
+                compact: false,
+                tokens: None,
+            },
+        )
+        .expect_err("an unindexed file must error");
+        let (code, msg) = crate::cli::json_envelope::redact_error(&err);
+        assert_eq!(
+            code,
+            crate::cli::json_envelope::ErrorCode::NotFound,
+            "unindexed-file context must surface not_found, not internal; got {code:?} ({msg})"
+        );
+        assert!(
+            !msg.contains("err-"),
+            "a not_found must NOT redact to an internal chain-id, got: {msg}"
+        );
+    }
+
     #[test]
     fn dispatch_stats_returns_expected_envelope_shape() {
         let (_dir, ctx) = seed_minimal_ctx();

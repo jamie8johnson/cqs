@@ -85,8 +85,9 @@ pub(crate) fn build_explain_data<Mode>(
     model_config: &cqs::embedder::ModelConfig,
 ) -> Result<ExplainData> {
     let _span = tracing::info_span!("build_explain_data", target).entered();
-    // Resolve target
-    let resolved = cqs::resolve_target(store, target)?;
+    // Resolve target (CLI wrapper: tags a not-found target ClientFacingError so
+    // the daemon surfaces `not_found`, not an opaque internal chain-id).
+    let resolved = crate::cli::commands::resolve::resolve_target(store, target)?;
     let chunk = resolved.chunk;
 
     // Get callers
