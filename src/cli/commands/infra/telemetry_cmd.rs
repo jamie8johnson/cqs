@@ -36,25 +36,50 @@ pub(crate) struct TelemetryOutput {
     pub sessions: Option<usize>,
     pub commands: HashMap<String, usize>,
     pub categories: HashMap<String, usize>,
-    /// Per-command kind-mismatch fallback counts. Keyed by the top-level
-    /// command the agent invoked (`callers`, `scout`, `impact`, `gather`, …)
-    /// — the same bucket `commands` uses — so the count is directly
-    /// comparable to that command's invocation total. The value is how many
-    /// times an invocation of that command (directly, or via the graph cores
-    /// it fans out to internally) redirected to a kind-labeled fallback. The
-    /// Phase-2 routing signal: a high `kind_fallbacks` rate relative to a
-    /// command's invocations means agents are still bouncing between commands
-    /// (asking `callers` about a const, `impact` about a type) rather than
-    /// routing the first time.
+    /// Per-command kind-mismatch fallback counts, attribution-era rows only
+    /// (those carrying `fallback_from`). Keyed by the top-level command the
+    /// agent invoked (`callers`, `scout`, `impact`, `gather`, …) — the same
+    /// bucket `commands` uses. The value is how many times an invocation of
+    /// that command redirected to a kind-labeled fallback. The Phase-2 routing
+    /// signal: a high `kind_fallbacks` rate relative to a command's invocations
+    /// means agents are still bouncing between commands (asking `callers` about
+    /// a const, `impact` about a type) rather than routing the first time.
     ///
-    /// The firing sub-operation (which internal graph core fired the
-    /// fallback) is recorded per-event as `fallback_from`, not folded into
-    /// this key — so an aggregating command's fan-out no longer inflates the
-    /// sub-op buckets the user never invoked directly. Skip-when-empty so the
-    /// historical wire shape is unchanged for telemetry logs with no fallback
-    /// events.
+    /// Comparability caveat: `commands[cmd]` is written CLI-side at dispatch
+    /// entry, while a fallback is recorded wherever it fires (CLI, daemon, MCP,
+    /// pipeline stage). For a command invoked mostly through the daemon/MCP
+    /// (which do not write the CLI invoke event), `kind_fallbacks[cmd]` can
+    /// exceed `commands[cmd]` — the renderer shows a bare count rather than a
+    /// misleading `>100%` there. Unifying the invoke count across surfaces is
+    /// tracked separately; this map is honest about being a fallback tally, not
+    /// a guaranteed-within-invocations rate.
+    ///
+    /// The firing sub-operation (which internal graph core fired the fallback)
+    /// is recorded per-event as `fallback_from`, surfaced as the
+    /// `kind_fallbacks_by_subop` drill-down rather than folded into this key —
+    /// so an aggregating command's fan-out never inflates the sub-op buckets
+    /// the user never invoked directly. Legacy pre-attribution rows (no
+    /// `fallback_from`) are segregated into `kind_fallbacks_legacy`, never
+    /// pooled here. Skip-when-empty so the historical wire shape is unchanged
+    /// for telemetry logs with no attributed fallback events.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub kind_fallbacks: HashMap<String, usize>,
+    /// Per-command sub-operation breakdown of the attributed fallbacks — the
+    /// `fallback_from` drill-down. `kind_fallbacks[cmd]` = sum over its
+    /// sub-ops here. Keeps the firing graph core visible (which internal
+    /// sub-op an aggregating command bounced off) without letting the sub-op
+    /// name become a top-level bucket. Skip-when-empty.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub kind_fallbacks_by_subop: HashMap<String, HashMap<String, usize>>,
+    /// Legacy (pre-attribution) kind-fallback counts — rows with no
+    /// `fallback_from`, where the recorded `cmd` was the firing sub-op, not the
+    /// top-level command the agent invoked. These can NEVER be re-attributed,
+    /// so they are segregated here instead of pooled into `kind_fallbacks`
+    /// (where they would corrupt the per-command rate — a `deps` sub-op count
+    /// masquerading as `commands[deps]` invocations). Keyed by the recorded
+    /// (sub-op) `cmd`. Skip-when-empty.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub kind_fallbacks_legacy: HashMap<String, usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub top_queries: Vec<TopQuery>,
 }
@@ -133,15 +158,18 @@ enum Entry {
     },
     /// A command redirected to a kind-mismatch fallback. `cmd` is the
     /// top-level command the agent invoked (the bucket key, comparable to
-    /// `Command`); `_fallback_from` is the internal graph core that fired it.
-    /// Counted separately from `Command` (the invoke event for the same
-    /// command already lands via `log_command` at dispatch entry), so a
-    /// fallback neither double-counts the command nor inflates the event
-    /// total.
+    /// `Command`); `fallback_from` is the internal graph core that fired it,
+    /// `Some` on attribution-era rows and `None` on legacy rows
+    /// (pre-attribution, where `cmd` held the sub-op and no top-level
+    /// attribution was recorded — those can never be re-attributed, so the
+    /// aggregator segregates them). Counted separately from `Command` (the
+    /// invoke event for the same command already lands via `log_command` at
+    /// dispatch entry), so a fallback neither double-counts the command nor
+    /// inflates the event total.
     KindFallback {
         cmd: String,
         _kind: Option<String>,
-        _fallback_from: Option<String>,
+        fallback_from: Option<String>,
         ts: u64,
     },
 }
@@ -165,16 +193,26 @@ fn parse_entries(path: &Path) -> Result<Vec<Entry>> {
                         entries.push(Entry::KindFallback {
                             cmd,
                             _kind: raw.kind,
-                            _fallback_from: raw.fallback_from,
+                            fallback_from: raw.fallback_from,
                             ts: raw.ts,
                         });
                     }
                 }
-                Some(_) => {
+                // Only a genuine `reset` event opens a new session. The
+                // `complete` event (the paired outcome of every command
+                // invoke) is NOT a session boundary — routing it through the
+                // Reset arm makes `sessions` climb by one per command, so the
+                // dashboard reads ~1 event/session. Drop `complete` (and any
+                // other future event flavor) from the aggregation: its invoke
+                // sibling already counts the command.
+                Some("reset") => {
                     entries.push(Entry::Reset {
                         ts: raw.ts,
                         _reason: raw.reason,
                     });
+                }
+                Some(_) => {
+                    // `complete` and unrecognized event types: not counted.
                 }
                 None => {
                     if let Some(cmd) = raw.cmd {
@@ -301,8 +339,15 @@ struct TelemetryAggregator {
     cmd_counts: HashMap<String, usize>,
     cat_counts: HashMap<String, usize>,
     query_counts: HashMap<String, usize>,
-    // Per-command kind-mismatch fallback counts (Phase-2 routing signal).
+    // Per-command kind-mismatch fallback counts (Phase-2 routing signal),
+    // attribution-era rows only (those carrying `fallback_from`).
     kind_fallback_counts: HashMap<String, usize>,
+    // Per-command `fallback_from` drill-down: cmd → {sub-op → count}.
+    kind_fallback_by_subop: HashMap<String, HashMap<String, usize>>,
+    // Legacy (pre-attribution) fallback rows — no `fallback_from`; keyed by
+    // the recorded (sub-op) cmd. Segregated so they never corrupt the
+    // per-command rate.
+    kind_fallback_legacy: HashMap<String, usize>,
     // Session tracking (inlined from count_sessions)
     sessions: usize,
     last_ts: Option<u64>,
@@ -320,6 +365,8 @@ impl TelemetryAggregator {
             cat_counts: HashMap::with_capacity(8),
             query_counts: HashMap::with_capacity(64),
             kind_fallback_counts: HashMap::with_capacity(8),
+            kind_fallback_by_subop: HashMap::with_capacity(8),
+            kind_fallback_legacy: HashMap::with_capacity(8),
             sessions: 0,
             last_ts: None,
         }
@@ -382,15 +429,37 @@ impl TelemetryAggregator {
                 }
                 self.last_ts = Some(*ts);
             }
-            Entry::KindFallback { cmd, ts, .. } => {
+            Entry::KindFallback {
+                cmd,
+                fallback_from,
+                ts,
+                ..
+            } => {
                 // Not an `event_count` increment: the command's own invoke
                 // event (logged at dispatch entry) already counted this
                 // invocation. The fallback is a per-command annotation on
                 // that same invocation, so we only bump the fallback tally.
-                if let Some(c) = self.kind_fallback_counts.get_mut(cmd.as_str()) {
-                    *c += 1;
-                } else {
-                    self.kind_fallback_counts.insert(cmd.clone(), 1);
+                match fallback_from {
+                    // Attribution-era row: `cmd` is the top-level command,
+                    // `fallback_from` the firing sub-op. Bump the per-command
+                    // tally and the sub-op drill-down.
+                    Some(sub_op) => {
+                        *self.kind_fallback_counts.entry(cmd.clone()).or_insert(0) += 1;
+                        *self
+                            .kind_fallback_by_subop
+                            .entry(cmd.clone())
+                            .or_default()
+                            .entry(sub_op.clone())
+                            .or_insert(0) += 1;
+                    }
+                    // Legacy (pre-attribution) row: no `fallback_from`, so
+                    // `cmd` held the sub-op and there is no top-level
+                    // attribution to recover. Segregate it — pooling it into
+                    // `kind_fallback_counts` would corrupt the per-command
+                    // rate (a sub-op count posing as command invocations).
+                    None => {
+                        *self.kind_fallback_legacy.entry(cmd.clone()).or_insert(0) += 1;
+                    }
                 }
                 // Fold the timestamp into the date range so a log that is
                 // all fallbacks (unlikely, but possible in a test) still
@@ -426,6 +495,8 @@ impl TelemetryAggregator {
                 commands: HashMap::new(),
                 categories: HashMap::new(),
                 kind_fallbacks: self.kind_fallback_counts,
+                kind_fallbacks_by_subop: self.kind_fallback_by_subop,
+                kind_fallbacks_legacy: self.kind_fallback_legacy,
                 top_queries: Vec::new(),
             };
         }
@@ -444,6 +515,8 @@ impl TelemetryAggregator {
             commands: self.cmd_counts,
             categories: self.cat_counts,
             kind_fallbacks: self.kind_fallback_counts,
+            kind_fallbacks_by_subop: self.kind_fallback_by_subop,
+            kind_fallbacks_legacy: self.kind_fallback_legacy,
             top_queries: query_sorted
                 .into_iter()
                 .take(10)
@@ -633,14 +706,14 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     println!();
 
     // Kind-mismatch fallbacks (Phase-2 routing signal). `kind_fallbacks` is
-    // keyed by the top-level command, the same bucket as `commands`, so the
-    // rate is per user-invocation and comparable. Render the rate only when
-    // the count fits inside the invocation total (`fb_count <= cmd_total`);
-    // a single invocation that fans out to several graph cores can fire more
-    // than one fallback, so a per-invocation `% of invocations` would still
-    // read >100% there — show a bare count in that case rather than a
-    // misleading percentage. Pre-fix logs (where the key was the sub-op, not
-    // the top-level command) land in the same bare-count branch.
+    // keyed by the top-level command, the same bucket as `commands`. Render the
+    // rate only when the count fits inside the invocation total
+    // (`fb_count <= cmd_total`); a fallback can be recorded on a surface
+    // (daemon / MCP / pipeline stage) that does not write the CLI invoke event,
+    // so the count can exceed `commands[cmd]` — show a bare count in that case
+    // rather than a misleading `>100%`. The `fallback_from` sub-op breakdown is
+    // printed indented beneath each command so the firing graph core stays
+    // visible without becoming a top-level bucket.
     if !output.kind_fallbacks.is_empty() {
         println!();
         println!("{}:", "Kind Fallbacks".cyan());
@@ -655,16 +728,39 @@ fn print_telemetry_text(output: &TelemetryOutput) {
                     cmd, fb_count, cmd_total, pct,
                 );
             } else if cmd_total > 0 {
-                // More fallbacks than invocations of this command (multi-core
-                // fan-out within single invocations) — a percentage would
-                // mislead, so report both raw counts.
+                // More fallbacks than CLI invocations of this command — the
+                // fallbacks were recorded on daemon/MCP/pipeline surfaces the
+                // CLI invoke count does not cover, so a percentage would
+                // mislead. Report both raw counts.
                 println!(
-                    "  {:<14} {:>4} / {:<4}  (fallbacks / invocations)",
+                    "  {:<14} {:>4} / {:<4}  (fallbacks / CLI invocations)",
                     cmd, fb_count, cmd_total,
                 );
             } else {
                 println!("  {:<14} {:>4}", cmd, fb_count);
             }
+            // `fallback_from` drill-down: which internal graph core fired.
+            if let Some(subops) = output.kind_fallbacks_by_subop.get(*cmd) {
+                let mut sub_sorted: Vec<_> = subops.iter().collect();
+                sub_sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                for (sub_op, &sub_count) in &sub_sorted {
+                    println!("      └ from {:<10} {:>4}", sub_op, sub_count);
+                }
+            }
+        }
+    }
+
+    // Legacy (pre-attribution) fallbacks — rows with no `fallback_from`, where
+    // the recorded key was the firing sub-op, not the top-level command. These
+    // can never be re-attributed, so they render as their own clearly-marked
+    // section rather than pooling into the per-command rates above.
+    if !output.kind_fallbacks_legacy.is_empty() {
+        println!();
+        println!("{}:", "Kind Fallbacks (legacy, pre-attribution)".yellow());
+        let mut leg_sorted: Vec<_> = output.kind_fallbacks_legacy.iter().collect();
+        leg_sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (key, &count) in &leg_sorted {
+            println!("  {:<14} {:>4}", key, count);
         }
     }
 
@@ -991,10 +1087,10 @@ mod tests {
                 // Two `callers` invocations; the second misrouted to a const.
                 r#"{"cmd":"callers","query":"foo","ts":1001}"#,
                 r#"{"cmd":"callers","query":"MAX","ts":1002}"#,
-                r#"{"event":"kind_fallback","cmd":"callers","kind":"const","name":"MAX","definitions":1,"ts":1002}"#,
+                r#"{"event":"kind_fallback","cmd":"callers","fallback_from":"callers","kind":"const","name":"MAX","definitions":1,"ts":1002}"#,
                 // One `impact` invocation that hit a type fallback.
                 r#"{"cmd":"impact","query":"Config","ts":1003}"#,
-                r#"{"event":"kind_fallback","cmd":"impact","kind":"type","name":"Config","definitions":2,"ts":1003}"#,
+                r#"{"event":"kind_fallback","cmd":"impact","fallback_from":"impact","kind":"type","name":"Config","definitions":2,"ts":1003}"#,
             ],
         );
 
@@ -1094,6 +1190,111 @@ mod tests {
         );
     }
 
+    /// `complete` events must NOT be counted as session boundaries. Routing
+    /// every non-kind_fallback event (including the `complete` sibling of each
+    /// invoke) through the Reset arm makes `sessions` climb by one per command,
+    /// so the dashboard reads ~1 event/session. This fixture — three
+    /// back-to-back commands, each with its paired `complete` event, all within
+    /// a single 4-hour window — must aggregate to ONE session, not four.
+    #[test]
+    fn telemetry_complete_events_do_not_open_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"impact","query":"a","ts":1000}"#,
+                r#"{"event":"complete","cmd":"impact","ok":true,"duration_ms":5,"ts":1001}"#,
+                r#"{"cmd":"callers","query":"b","ts":1002}"#,
+                r#"{"event":"complete","cmd":"callers","ok":true,"duration_ms":5,"ts":1003}"#,
+                r#"{"cmd":"deps","query":"c","ts":1004}"#,
+                r#"{"event":"complete","cmd":"deps","ok":true,"duration_ms":5,"ts":1005}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(
+            out.events, 3,
+            "three command invocations (complete is not an event)"
+        );
+        assert_eq!(
+            out.sessions,
+            Some(1),
+            "three commands in one 4h window are ONE session — `complete` events \
+             must not each open a new session"
+        );
+    }
+
+    /// Legacy (pre-attribution) fallback rows — those with
+    /// no `fallback_from` — must NOT pool into the per-command `kind_fallbacks`
+    /// rates. They land in the segregated `kind_fallbacks_legacy` map instead,
+    /// keyed by the recorded (sub-op) `cmd`. A mixed-era fixture must keep the
+    /// two eras apart: the attributed `impact` fallback in `kind_fallbacks`,
+    /// the legacy `deps` fallbacks in `kind_fallbacks_legacy`.
+    #[test]
+    fn telemetry_legacy_fallbacks_segregated_from_attributed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"impact","query":"Config","ts":1000}"#,
+                // Attribution-era row: top-level `impact`, sub-op `impact`.
+                r#"{"event":"kind_fallback","cmd":"impact","fallback_from":"impact","kind":"type","name":"Config","definitions":1,"ts":1000}"#,
+                // Legacy rows: no `fallback_from`; `cmd` held the sub-op name.
+                r#"{"event":"kind_fallback","cmd":"deps","kind":"function","name":"X","definitions":1,"ts":1001}"#,
+                r#"{"event":"kind_fallback","cmd":"deps","kind":"function","name":"Y","definitions":1,"ts":1002}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        // Attributed: `impact` in the comparable bucket.
+        assert_eq!(out.kind_fallbacks.get("impact").copied(), Some(1));
+        // Legacy `deps` must NOT appear in the attributed rates.
+        assert_eq!(
+            out.kind_fallbacks.get("deps").copied(),
+            None,
+            "legacy sub-op-keyed rows must not pool into the per-command rates"
+        );
+        // …they land in the segregated legacy bucket instead.
+        assert_eq!(out.kind_fallbacks_legacy.get("deps").copied(), Some(2));
+        assert!(
+            !out.kind_fallbacks_legacy.contains_key("impact"),
+            "the attributed row must not leak into the legacy bucket"
+        );
+    }
+
+    /// The `fallback_from` drill-down: attributed events populate
+    /// `kind_fallbacks_by_subop` (cmd → {sub-op → count}) so the firing graph
+    /// core stays visible per command, and the sub-op counts sum to the
+    /// top-level `kind_fallbacks[cmd]` total.
+    #[test]
+    fn telemetry_fallback_subop_drilldown_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                r#"{"cmd":"scout","query":"a","ts":1000}"#,
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"callers","kind":"const","name":"X","definitions":1,"ts":1000}"#,
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"callers","kind":"const","name":"Y","definitions":1,"ts":1000}"#,
+                r#"{"event":"kind_fallback","cmd":"scout","fallback_from":"impact","kind":"type","name":"Z","definitions":1,"ts":1000}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(out.kind_fallbacks.get("scout").copied(), Some(3));
+        let subops = out
+            .kind_fallbacks_by_subop
+            .get("scout")
+            .expect("scout has a sub-op drill-down");
+        assert_eq!(subops.get("callers").copied(), Some(2));
+        assert_eq!(subops.get("impact").copied(), Some(1));
+        let sub_total: usize = subops.values().sum();
+        assert_eq!(
+            sub_total,
+            out.kind_fallbacks.get("scout").copied().unwrap(),
+            "sub-op counts must sum to the top-level fallback total"
+        );
+    }
+
     /// A `kind_fallback` event serializes into the `kind_fallbacks` map and
     /// is omitted entirely when no fallback fired (skip-when-empty preserves
     /// the historical wire shape).
@@ -1106,6 +1307,8 @@ mod tests {
             commands: HashMap::new(),
             categories: HashMap::new(),
             kind_fallbacks: HashMap::new(),
+            kind_fallbacks_by_subop: HashMap::new(),
+            kind_fallbacks_legacy: HashMap::new(),
             top_queries: Vec::new(),
         };
         let json = serde_json::to_value(&no_fb).unwrap();
@@ -1123,6 +1326,8 @@ mod tests {
             commands: HashMap::new(),
             categories: HashMap::new(),
             kind_fallbacks: kf,
+            kind_fallbacks_by_subop: HashMap::new(),
+            kind_fallbacks_legacy: HashMap::new(),
             top_queries: Vec::new(),
         };
         let json = serde_json::to_value(&with_fb).unwrap();
@@ -1287,6 +1492,8 @@ mod tests {
             commands,
             categories,
             kind_fallbacks: HashMap::new(),
+            kind_fallbacks_by_subop: HashMap::new(),
+            kind_fallbacks_legacy: HashMap::new(),
             top_queries: vec![
                 TopQuery {
                     query: "foo bar".to_string(),
@@ -1319,6 +1526,8 @@ mod tests {
             commands: HashMap::new(),
             categories: HashMap::new(),
             kind_fallbacks: HashMap::new(),
+            kind_fallbacks_by_subop: HashMap::new(),
+            kind_fallbacks_legacy: HashMap::new(),
             top_queries: Vec::new(),
         };
 
@@ -1465,6 +1674,8 @@ mod tests {
                 m
             },
             kind_fallbacks: HashMap::new(),
+            kind_fallbacks_by_subop: HashMap::new(),
+            kind_fallbacks_legacy: HashMap::new(),
             top_queries: vec![TopQuery {
                 query: emoji_query,
                 count: 1,
