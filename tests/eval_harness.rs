@@ -153,7 +153,7 @@ fn eval_single_query<Mode>(
     let rerank_start = Instant::now();
     if let Some(rr) = reranker {
         let rerank_limit = results.len().min(20);
-        if let Err(e) = rr.rerank(&query.query, &mut results, rerank_limit) {
+        if let Err(e) = rr.rerank_with_preamble(&query.query, &mut results, rerank_limit) {
             eprintln!("  Rerank failed for {}: {}", query.id, e);
         }
     }

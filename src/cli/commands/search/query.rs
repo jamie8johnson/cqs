@@ -1360,7 +1360,7 @@ pub(crate) fn retrieve_ref_scoped(
     if let Some(reranker) = prepared.reranker.as_deref() {
         if results.len() > 1 {
             reranker
-                .rerank(args.query.as_str(), &mut results, args.limit)
+                .rerank_with_preamble(args.query.as_str(), &mut results, args.limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
     }
@@ -1697,7 +1697,7 @@ fn rerank_unified(
 
     if code_results.len() > 1 {
         reranker
-            .rerank(query, &mut code_results, limit)
+            .rerank_with_preamble(query, &mut code_results, limit)
             .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
     }
 
@@ -1743,7 +1743,7 @@ fn rerank_tagged(
 
     if code_results.len() > 1 {
         reranker
-            .rerank(query, &mut code_results, limit)
+            .rerank_with_preamble(query, &mut code_results, limit)
             .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
     }
 

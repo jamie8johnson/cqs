@@ -221,6 +221,36 @@ pub trait Reranker: Send + Sync {
         limit: usize,
     ) -> Result<(), RerankerError>;
 
+    /// Re-rank scoring `(query, signature + doc + content)` — the same preamble
+    /// the dense embedding leg embeds — instead of `(query, content)` alone.
+    ///
+    /// The dense leg ranks each chunk from its enriched NL (doc comment +
+    /// signature + more); the cross-encoder historically saw content alone, so
+    /// the two passes scored different text. This method feeds the reranker the
+    /// [`rerank_passage`] preamble so both passes share the doc/signature
+    /// signal.
+    ///
+    /// Default impl builds one owned passage per result and delegates to
+    /// [`rerank_with_passages`](Reranker::rerank_with_passages). When the
+    /// preamble is disabled (`CQS_RERANKER_PREAMBLE=0`) it delegates to
+    /// [`rerank`](Reranker::rerank) instead, so the content-alone path stays
+    /// byte-identical to the pre-parity behavior.
+    fn rerank_with_preamble(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        limit: usize,
+    ) -> Result<(), RerankerError> {
+        if !rerank_preamble_enabled() {
+            return self.rerank(query, results, limit);
+        }
+        // Owned passages so they don't borrow from `results`, leaving the
+        // `&mut results` write-back inside `rerank_with_passages` unencumbered.
+        let passages: Vec<String> = results.iter().map(|r| rerank_passage(&r.chunk)).collect();
+        let refs: Vec<&str> = passages.iter().map(String::as_str).collect();
+        self.rerank_with_passages(query, results, &refs, limit)
+    }
+
     /// Drop any cached state (model session, tokenizer, network handles)
     /// so memory returns to the OS. Called from idle-eviction loops in
     /// the watch/serve daemons. Default: no-op (trait impls without
@@ -1097,6 +1127,73 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
+/// Whether the cross-encoder is fed the signature+doc preamble (parity with the
+/// dense leg) or content alone. Default-on: preamble parity was the intent since
+/// the reranker shipped. `CQS_RERANKER_PREAMBLE=0` (also `false`/`no`/`off`)
+/// restores content-alone scoring, making [`Reranker::rerank_with_preamble`]
+/// byte-identical to [`Reranker::rerank`].
+///
+/// Read fresh (no process-wide cache) so a single process can flip it — the
+/// eval harness A/B toggles the two conditions against one loaded index.
+fn rerank_preamble_enabled() -> bool {
+    match std::env::var("CQS_RERANKER_PREAMBLE") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Build the cross-encoder passage for a chunk: `signature + doc + content`,
+/// mirroring the preamble the dense embedding leg sees.
+///
+/// The dense leg embeds an enriched NL description (doc comment + signature +
+/// name/param fragments) — never raw content alone. The doc comment in
+/// particular is extracted *out* of `content` into `chunk.doc` at parse time,
+/// so a cross-encoder scoring `content` alone never sees the one natural-
+/// language statement of intent the embedder ranked on. This restores that
+/// signal.
+///
+/// Assembly is doc-gated:
+///   * **doc present** → `signature`, then the trimmed doc, then `content`,
+///     newline-separated. The signature also survives when `content` is a
+///     later window (`window_idx > 0`) whose slice omits the declaration line.
+///   * **doc absent** → `content` alone, unchanged. The signature is already
+///     `content`'s first line for a whole-function chunk, so there's nothing new
+///     to add, and the embedder's remaining NL fragments (tokenized params,
+///     "Uses:" keywords) are bi-encoder artifacts, not passage text a
+///     cross-encoder was trained on.
+///
+/// Truncation policy — **preamble-first, content-tail-dropped**: the tokenizer
+/// encodes the `(query, passage)` pair front-to-back and the tensor build keeps
+/// the first `max_length` tokens (`pad_2d_i64_from_encodings` `.take(max_len)`),
+/// so on a chunk longer than the model budget the query and the signature+doc
+/// preamble are preserved and only the content tail is dropped — the same tail
+/// truncation long content already took, now behind the added preamble.
+fn rerank_passage(chunk: &crate::store::ChunkSummary) -> String {
+    match chunk
+        .doc
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
+        Some(doc) => {
+            let mut passage =
+                String::with_capacity(chunk.signature.len() + doc.len() + chunk.content.len() + 2);
+            if !chunk.signature.is_empty() {
+                passage.push_str(&chunk.signature);
+                passage.push('\n');
+            }
+            passage.push_str(doc);
+            passage.push('\n');
+            passage.push_str(&chunk.content);
+            passage
+        }
+        None => chunk.content.clone(),
+    }
+}
+
 /// Apply freshly computed cross-encoder scores, then sort and truncate.
 ///
 /// When `scores` is empty, leaves `results` unchanged (used for the degenerate
@@ -1595,6 +1692,216 @@ mod tests {
             results[0].chunk.id, "empty",
             "empty row's preserved cosine score must keep it ahead of the lower rerank scores; got order {:?}",
             results.iter().map(|r| r.chunk.id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    // ===== rerank_passage preamble assembly (issue: reranker preamble parity) =====
+
+    /// Process-wide lock for the `CQS_RERANKER_PREAMBLE` env tests so parallel
+    /// cargo runs don't observe each other's writes.
+    static PREAMBLE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Build a stub result with an explicit doc + signature so the preamble
+    /// assembly can be exercised. `stub_result` always sets `doc: None`.
+    fn stub_result_doc(
+        id: &str,
+        signature: &str,
+        doc: Option<&str>,
+        content: &str,
+    ) -> SearchResult {
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = ChunkSummary {
+            id: id.to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: signature.to_string(),
+            content: content.to_string(),
+            doc: doc.map(str::to_string),
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+            parser_version: 0,
+            vendored: false,
+        };
+        SearchResult::new(chunk, 0.0)
+    }
+
+    /// A doc'd chunk's reranker passage carries signature + doc + content, and
+    /// the preamble precedes content — which is what makes the tokenizer's
+    /// front-preserving truncation drop the content tail, not the doc/signature.
+    #[test]
+    fn rerank_passage_docd_chunk_contains_signature_doc_content() {
+        let r = stub_result_doc(
+            "add",
+            "fn add(a: i32, b: i32) -> i32",
+            Some("/// Adds two integers together."),
+            "fn add(a: i32, b: i32) -> i32 { a + b }",
+        );
+        let passage = super::rerank_passage(&r.chunk);
+        assert!(
+            passage.contains("fn add(a: i32, b: i32) -> i32"),
+            "passage must contain the signature, got: {passage:?}"
+        );
+        assert!(
+            passage.contains("Adds two integers together."),
+            "passage must contain the doc comment, got: {passage:?}"
+        );
+        assert!(
+            passage.contains("{ a + b }"),
+            "passage must contain the content body, got: {passage:?}"
+        );
+        // Truncation policy pin: preamble (signature, then doc) comes first, the
+        // content body last, so a chunk over the model budget loses its content
+        // tail while keeping the doc/signature the fix exists to add.
+        let sig_at = passage.find("fn add").expect("signature present");
+        let doc_at = passage.find("Adds two").expect("doc present");
+        let body_at = passage.find("{ a + b }").expect("body present");
+        assert!(
+            sig_at < doc_at && doc_at < body_at,
+            "preamble-first ordering (signature < doc < content body) must hold; got sig={sig_at} doc={doc_at} body={body_at} in {passage:?}"
+        );
+    }
+
+    /// A docless chunk's reranker passage is content alone — byte-identical to
+    /// the pre-parity behavior. We only diverge from content-alone when there is
+    /// a doc comment to add.
+    #[test]
+    fn rerank_passage_docless_chunk_is_content_alone() {
+        let content = "fn noop() {}";
+        let r = stub_result_doc("noop", "fn noop()", None, content);
+        assert_eq!(
+            super::rerank_passage(&r.chunk),
+            content,
+            "docless chunk must score content alone (no signature preamble)"
+        );
+    }
+
+    /// An empty / whitespace-only doc is treated as no doc: content alone. Guards
+    /// against emitting a passage that begins `signature\n\ncontent` for a chunk
+    /// whose doc field is present but blank.
+    #[test]
+    fn rerank_passage_blank_doc_treated_as_docless() {
+        let content = "fn blank() {}";
+        let r = stub_result_doc("blank", "fn blank()", Some("   \n  "), content);
+        assert_eq!(
+            super::rerank_passage(&r.chunk),
+            content,
+            "blank doc must fall back to content alone"
+        );
+    }
+
+    /// Records the exact text each result was scored against so the dispatch in
+    /// `rerank_with_preamble` can be pinned without a model load.
+    struct RecordingReranker {
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl Reranker for RecordingReranker {
+        fn rerank(
+            &self,
+            _query: &str,
+            results: &mut Vec<SearchResult>,
+            _limit: usize,
+        ) -> Result<(), RerankerError> {
+            let mut seen = self.seen.lock().unwrap();
+            for r in results.iter() {
+                seen.push(r.chunk.content.clone());
+            }
+            Ok(())
+        }
+
+        fn rerank_with_passages(
+            &self,
+            _query: &str,
+            results: &mut Vec<SearchResult>,
+            passages: &[&str],
+            _limit: usize,
+        ) -> Result<(), RerankerError> {
+            if results.len() != passages.len() {
+                return Err(RerankerError::InvalidArguments(format!(
+                    "passages length ({}) must match results length ({})",
+                    passages.len(),
+                    results.len()
+                )));
+            }
+            let mut seen = self.seen.lock().unwrap();
+            for p in passages {
+                seen.push((*p).to_string());
+            }
+            Ok(())
+        }
+    }
+
+    /// Flag-off byte-identity pin: with `CQS_RERANKER_PREAMBLE=0`,
+    /// `rerank_with_preamble` scores content alone — exactly what the legacy
+    /// `rerank` path fed — even for a doc'd chunk.
+    #[test]
+    fn rerank_with_preamble_flag_off_is_content_alone() {
+        let _g = PREAMBLE_ENV_LOCK.lock().unwrap();
+        std::env::set_var("CQS_RERANKER_PREAMBLE", "0");
+
+        let rr = RecordingReranker {
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut results = vec![
+            stub_result_doc(
+                "add",
+                "fn add()",
+                Some("/// Adds numbers."),
+                "fn add() { a + b }",
+            ),
+            stub_result_doc("noop", "fn noop()", None, "fn noop() {}"),
+        ];
+        rr.rerank_with_preamble("q", &mut results, 10)
+            .expect("rerank_with_preamble");
+
+        std::env::remove_var("CQS_RERANKER_PREAMBLE");
+
+        let seen = rr.seen.lock().unwrap();
+        assert_eq!(
+            *seen,
+            vec!["fn add() { a + b }".to_string(), "fn noop() {}".to_string()],
+            "flag off must feed content alone, byte-identical to legacy rerank"
+        );
+    }
+
+    /// Flag-on (default) pin: `rerank_with_preamble` feeds the doc/signature
+    /// preamble for a doc'd chunk and content alone for a docless one.
+    #[test]
+    fn rerank_with_preamble_flag_on_feeds_preamble() {
+        let _g = PREAMBLE_ENV_LOCK.lock().unwrap();
+        // Default is on; assert against the default by removing the override.
+        std::env::remove_var("CQS_RERANKER_PREAMBLE");
+
+        let rr = RecordingReranker {
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut results = vec![
+            stub_result_doc(
+                "add",
+                "fn add()",
+                Some("/// Adds numbers."),
+                "fn add() { a + b }",
+            ),
+            stub_result_doc("noop", "fn noop()", None, "fn noop() {}"),
+        ];
+        rr.rerank_with_preamble("q", &mut results, 10)
+            .expect("rerank_with_preamble");
+
+        let seen = rr.seen.lock().unwrap();
+        assert!(
+            seen[0].contains("fn add()") && seen[0].contains("Adds numbers."),
+            "doc'd chunk must be scored with signature+doc preamble, got {:?}",
+            seen[0]
+        );
+        assert_eq!(
+            seen[1], "fn noop() {}",
+            "docless chunk must still be scored content alone"
         );
     }
 
