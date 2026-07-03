@@ -45,14 +45,16 @@ pub(crate) struct TelemetryOutput {
     /// means agents are still bouncing between commands (asking `callers` about
     /// a const, `impact` about a type) rather than routing the first time.
     ///
-    /// Comparability caveat: `commands[cmd]` is written CLI-side at dispatch
-    /// entry, while a fallback is recorded wherever it fires (CLI, daemon, MCP,
-    /// pipeline stage). For a command invoked mostly through the daemon/MCP
-    /// (which do not write the CLI invoke event), `kind_fallbacks[cmd]` can
-    /// exceed `commands[cmd]` — the renderer shows a bare count rather than a
-    /// misleading `>100%` there. Unifying the invoke count across surfaces is
-    /// tracked separately; this map is honest about being a fallback tally, not
-    /// a guaranteed-within-invocations rate.
+    /// Comparability: `commands[cmd]` now counts every surface — the CLI logs
+    /// its inline invocations and the daemon logs the commands it serves
+    /// (daemon / MCP), each tagged with a `surface` field — so
+    /// `kind_fallbacks[cmd]` (recorded wherever a fallback fires) is comparable
+    /// to it as a per-invocation rate. One residual caveat: telemetry written
+    /// before counting was unified undercounts daemon-served traffic, so on an
+    /// archived/pre-unification log `kind_fallbacks[cmd]` can still exceed
+    /// `commands[cmd]`; the renderer shows raw counts rather than a misleading
+    /// `>100%` in that case. This map stays a fallback tally, not a
+    /// guaranteed-within-invocations rate.
     ///
     /// The firing sub-operation (which internal graph core fired the fallback)
     /// is recorded per-event as `fallback_from`, surfaced as the
@@ -709,12 +711,13 @@ fn print_telemetry_text(output: &TelemetryOutput) {
     // Kind-mismatch fallbacks (Phase-2 routing signal). `kind_fallbacks` is
     // keyed by the top-level command, the same bucket as `commands`. Render the
     // rate only when the count fits inside the invocation total
-    // (`fb_count <= cmd_total`); a fallback can be recorded on a surface
-    // (daemon / MCP / pipeline stage) that does not write the CLI invoke event,
-    // so the count can exceed `commands[cmd]` — show a bare count in that case
-    // rather than a misleading `>100%`. The `fallback_from` sub-op breakdown is
-    // printed indented beneath each command so the firing graph core stays
-    // visible without becoming a top-level bucket.
+    // (`fb_count <= cmd_total`). Counting is now unified across surfaces (the
+    // daemon logs the commands it serves), so the rate is comparable for fresh
+    // logs; but telemetry written before unification undercounts daemon-served
+    // traffic, so on an archived log `fb_count` can still exceed `cmd_total` —
+    // show raw counts in that case rather than a misleading `>100%`. The
+    // `fallback_from` sub-op breakdown is printed indented beneath each command
+    // so the firing graph core stays visible without becoming a top-level bucket.
     if !output.kind_fallbacks.is_empty() {
         println!();
         println!("{}:", "Kind Fallbacks".cyan());
@@ -729,12 +732,12 @@ fn print_telemetry_text(output: &TelemetryOutput) {
                     cmd, fb_count, cmd_total, pct,
                 );
             } else if cmd_total > 0 {
-                // More fallbacks than CLI invocations of this command — the
-                // fallbacks were recorded on daemon/MCP/pipeline surfaces the
-                // CLI invoke count does not cover, so a percentage would
-                // mislead. Report both raw counts.
+                // More fallbacks than counted invocations of this command —
+                // only reachable on a pre-unification log, where daemon-served
+                // invocations were not counted while their fallbacks were. A
+                // percentage would mislead, so report both raw counts.
                 println!(
-                    "  {:<14} {:>4} / {:<4}  (fallbacks / CLI invocations)",
+                    "  {:<14} {:>4} / {:<4}  (fallbacks / invocations)",
                     cmd, fb_count, cmd_total,
                 );
             } else {
@@ -1293,6 +1296,46 @@ mod tests {
             sub_total,
             out.kind_fallbacks.get("scout").copied().unwrap(),
             "sub-op counts must sum to the top-level fallback total"
+        );
+    }
+
+    /// Counting unification: command events carrying a `surface` tag
+    /// (`cli` / `daemon` / `mcp`) all count into `commands[cmd]` regardless of
+    /// surface — the aggregator keys on `cmd`, and the extra `surface` field is
+    /// inert to it (serde ignores unknown fields). A pre-unification row (no
+    /// `surface`) counts identically, so mixed-era logs aggregate cleanly. This
+    /// is what makes daemon/MCP-served traffic visible in the dashboard.
+    #[test]
+    fn telemetry_core_counts_command_events_across_surfaces() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_telemetry(
+            dir.path(),
+            &[
+                // One CLI-surface, two daemon-surface, one MCP-surface, plus a
+                // legacy (pre-unification, no `surface`) row — all `impact`.
+                r#"{"cmd":"impact","query":"a","ts":1001,"surface":"cli"}"#,
+                r#"{"cmd":"impact","query":"b","ts":1002,"surface":"daemon"}"#,
+                r#"{"cmd":"impact","query":"c","ts":1003,"surface":"daemon"}"#,
+                r#"{"cmd":"impact","query":"d","ts":1004,"surface":"mcp"}"#,
+                r#"{"cmd":"impact","query":"e","ts":1005}"#,
+                // A daemon-surface search too, to prove the category rollup
+                // still works with the tag present.
+                r#"{"cmd":"search","query":"f","ts":1006,"surface":"daemon"}"#,
+            ],
+        );
+
+        let out = telemetry_core(dir.path(), &TelemetryArgs::default()).unwrap();
+        assert_eq!(out.events, 6, "every surface's invoke event counts");
+        assert_eq!(
+            out.commands.get("impact").copied(),
+            Some(5),
+            "cli + daemon + mcp + legacy impact rows all bucket under `impact`"
+        );
+        assert_eq!(out.commands.get("search").copied(), Some(1));
+        assert_eq!(
+            out.categories.get("Structural").copied(),
+            Some(5),
+            "surface tag does not disturb the category rollup"
         );
     }
 

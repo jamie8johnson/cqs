@@ -18,11 +18,16 @@ use super::telemetry;
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(cli: Cli) -> Result<()> {
-    // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
+    // Telemetry (opt-in via CQS_TELEMETRY=1). The invoke event is NOT logged
+    // here: a command that forwards to the daemon is counted daemon-side (at
+    // the daemon dispatch chokepoint), so logging it here too would
+    // double-count it. Instead the CLI-surface invoke lands inside
+    // `run_with_dispatch` at the inline-dispatch chokepoint, which the
+    // daemon-forward branch returns before reaching — so a forwarded command
+    // counts exactly once (daemon), a non-forwarded one exactly once (cli).
     let project_cqs_dir = cqs::resolve_index_dir(&find_project_root());
     let telem_args: Vec<String> = std::env::args().collect();
     let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
-    telemetry::log_command(&project_cqs_dir, &telem_cmd, telem_query.as_deref(), None);
     let started = std::time::Instant::now();
 
     // Inner function carries the multiple early-return paths (daemon
@@ -30,7 +35,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
     // funnels them into a single Result we can attach the completion-event
     // telemetry to. Without this, half the invocations would never get a
     // duration/ok event recorded.
-    let result = run_with_dispatch(cli, &project_cqs_dir, &telem_cmd);
+    let result = run_with_dispatch(cli, &project_cqs_dir, &telem_cmd, telem_query.as_deref());
 
     telemetry::log_command_complete(
         &project_cqs_dir,
@@ -50,6 +55,7 @@ fn run_with_dispatch(
     mut cli: Cli,
     project_cqs_dir: &std::path::Path,
     telem_cmd: &str,
+    telem_query: Option<&str>,
 ) -> Result<()> {
     // Root span so all per-command logs have a parent.
     let _root = tracing::info_span!("cqs", cmd = %telem_cmd).entered();
@@ -270,6 +276,20 @@ fn run_with_dispatch(
     // daemon-forward branch returned before reaching here, so it never
     // double-installs (the daemon sets its own origin at `commands::dispatch`).
     let _fallback_origin = telemetry::enter_fallback_origin(telem_cmd, project_cqs_dir);
+
+    // CLI-surface invoke event. Logged here, at the inline-dispatch chokepoint,
+    // rather than at the top of `run_with`: the daemon-forward branch above
+    // returns before reaching this point, so a forwarded command is counted
+    // once daemon-side and an inline command once here. This is the
+    // counting-unification fix — the invoke event now lands on exactly the
+    // surface that runs the command.
+    telemetry::log_command(
+        project_cqs_dir,
+        telem_cmd,
+        telem_query,
+        None,
+        telemetry::CommandSurface::Cli,
+    );
 
     if let std::ops::ControlFlow::Break(result) = dispatch_group_a(&cli, project_cqs_dir) {
         return result;

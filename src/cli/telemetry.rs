@@ -217,15 +217,55 @@ fn append_telemetry(cqs_dir: &Path, entry: &serde_json::Value, timestamp: Option
     }
 }
 
+/// The surface that dispatched a command, tagged onto every invoke event so
+/// the dashboard can attribute (and later split) `commands[cmd]` by origin.
+///
+/// - `Cli`: ran inline in the CLI process (no daemon — `CQS_NO_DAEMON=1`, a
+///   non-forwardable command, or a daemon-down fallback).
+/// - `Daemon`: served by the `cqs watch --serve` daemon over its unix socket
+///   via the argv-forward path (the CLI auto-connect an agent hits by default).
+/// - `Mcp`: arrived over the daemon socket in the MCP JSON-args wire shape
+///   (relayed by the `cqs mcp` stdio bridge).
+///
+/// Before this split only the CLI path wrote the invoke event, so daemon/MCP-
+/// served traffic — everything an agent runs through auto-connect — was
+/// invisible in `commands[cmd]` while fully visible in `kind_fallbacks[cmd]`.
+/// The recorder writes from whichever process handles the command (the CLI for
+/// `Cli`, the daemon for `Daemon`/`Mcp`), so the count now covers every surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandSurface {
+    Cli,
+    Daemon,
+    Mcp,
+}
+
+impl CommandSurface {
+    /// Lowercase wire token written to the telemetry `surface` field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CommandSurface::Cli => "cli",
+            CommandSurface::Daemon => "daemon",
+            CommandSurface::Mcp => "mcp",
+        }
+    }
+}
+
 /// Log a command invocation to the telemetry file.
 ///
 /// Does nothing if `CQS_TELEMETRY` env var is not set to "1".
 /// Silently ignores write failures — telemetry should never break the tool.
+///
+/// `surface` records which dispatch path handled the command (see
+/// [`CommandSurface`]); it lands as the `surface` field so per-surface splits
+/// are possible without a later schema change. The daemon/MCP surfaces call
+/// this from the served project's process, so their events land in that
+/// project's `.cqs/telemetry.jsonl` — the same file the CLI writes.
 pub fn log_command(
     cqs_dir: &Path,
     command: &str,
     query: Option<&str>,
     result_count: Option<usize>,
+    surface: CommandSurface,
 ) {
     // Use `cqs::unix_secs_i64()` so a pre-epoch clock surfaces as `ts: null`
     // (serializing `Option<i64>::None`) and emits a one-shot tracing::warn
@@ -233,13 +273,16 @@ pub fn log_command(
     let timestamp = cqs::unix_secs_i64();
 
     // Redact `query` by default to keep search strings out of the telemetry
-    // log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text.
+    // log. `CQS_TELEMETRY_REDACT_QUERY=0` opts back in to raw text. Every
+    // surface passes the raw query here so redaction is applied identically
+    // regardless of dispatch path.
     let query_field = redact_query_opt(query);
     let entry = serde_json::json!({
         "ts": timestamp,
         "cmd": command,
         "query": query_field,
         "results": result_count,
+        "surface": surface.as_str(),
     });
 
     append_telemetry(cqs_dir, &entry, timestamp);
@@ -868,7 +911,13 @@ mod tests {
         std::fs::write(&path, &oversized).unwrap();
         std::env::set_var("CQS_TELEMETRY", "1");
 
-        log_command(cqs_dir, "impact", Some("my_fn"), Some(3));
+        log_command(
+            cqs_dir,
+            "impact",
+            Some("my_fn"),
+            Some(3),
+            CommandSurface::Cli,
+        );
 
         std::env::remove_var("CQS_TELEMETRY");
 
@@ -926,6 +975,47 @@ mod tests {
         assert!(err_field.ends_with('…'));
         // 240 'x's plus the ellipsis.
         assert_eq!(err_field.chars().count(), 241);
+    }
+
+    #[test]
+    fn log_command_writes_surface_and_redacts_query() {
+        // The invoke event must carry the `surface` tag and redact the query
+        // by default — the daemon/MCP path hands the raw query straight to
+        // `log_command`, so this is the redaction-parity guard for every
+        // surface.
+        let tmp = tempfile::tempdir().unwrap();
+        let cqs_dir = tmp.path();
+        std::fs::write(cqs_dir.join("telemetry.jsonl"), "").unwrap();
+        std::env::set_var("CQS_TELEMETRY", "1");
+        std::env::remove_var("CQS_TELEMETRY_REDACT_QUERY");
+
+        log_command(
+            cqs_dir,
+            "search",
+            Some("secret query"),
+            Some(2),
+            CommandSurface::Daemon,
+        );
+
+        std::env::remove_var("CQS_TELEMETRY");
+
+        let body = std::fs::read_to_string(cqs_dir.join("telemetry.jsonl")).unwrap();
+        let r: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(r["cmd"], "search");
+        assert_eq!(r["surface"], "daemon", "surface tag must be recorded");
+        // No `event` field: it's an invoke event, which the dashboard counts.
+        assert!(r["event"].is_null());
+        // Query redacted to an 8-char blake3 prefix, never the plaintext.
+        let q = r["query"].as_str().unwrap();
+        assert_ne!(q, "secret query", "query must be redacted by default");
+        assert_eq!(q.len(), 8, "redacted query is an 8-char hash prefix");
+    }
+
+    #[test]
+    fn command_surface_wire_tokens_are_stable() {
+        assert_eq!(CommandSurface::Cli.as_str(), "cli");
+        assert_eq!(CommandSurface::Daemon.as_str(), "daemon");
+        assert_eq!(CommandSurface::Mcp.as_str(), "mcp");
     }
 
     #[test]

@@ -7,10 +7,10 @@
 //! - `fb_count <= cmd_total` → a per-invocation percentage
 //!   (`N / M  (P% of invocations)`), and
 //! - `fb_count >  cmd_total` → a bare-count fallback line
-//!   (`N / M  (fallbacks / CLI invocations)`), because a fallback can be
-//!   recorded on a surface (daemon / MCP / pipeline) the CLI invoke count does
-//!   not cover, so a percentage there would read >100% — the misleading output
-//!   the branch exists to avoid.
+//!   (`N / M  (fallbacks / invocations)`), only reachable on a
+//!   pre-unification / archived log that undercounts daemon-served invocations
+//!   while their fallbacks were recorded, so a percentage there would read
+//!   >100% — the misleading output the branch exists to avoid.
 //!
 //! That branch is `println!`-only (the function returns `()`), so the
 //! sibling data-layer unit tests — which assert `fallbacks <= invocations`
@@ -105,7 +105,7 @@ fn fallback_over_invocations_renders_bare_count_not_over_100_percent() {
         "expected a `callers  3 / 2` fallback line, got section:\n{section}\nfull:\n{stdout}"
     );
     assert!(
-        section.contains("fallbacks / CLI invocations"),
+        section.contains("fallbacks / invocations"),
         "fb-count exceeding invocations must render the bare-count label, \
          got section:\n{section}"
     );

@@ -686,6 +686,39 @@ macro_rules! gen_log_query_dispatch {
 
 for_each_logged_batch_cmd!(gen_log_query_dispatch);
 
+/// Emit `BatchCmd::query()` from the same logged-command table.
+///
+/// Returns the user-supplied query/description for the query-bearing variants
+/// (`search` / `gather` / `onboard` / `scout` / `where` / `task`) and `None`
+/// for every other command (which take a function name or path, not a query).
+/// Used at the daemon dispatch chokepoint to populate the invoke event's
+/// `query` field — redaction is applied by `telemetry::log_command`, so this
+/// hands back the raw string exactly as the argv path does.
+///
+/// Driven by the SAME `for_each_logged_batch_cmd!` table as `log_query_for`, so
+/// the query-bearing set can never drift between the two.
+macro_rules! gen_query_accessor {
+    ( $( ($var:ident, $log_name:literal, $field:ident) )* ) => {
+        impl BatchCmd {
+            /// The user-supplied query text for query-bearing commands, else
+            /// `None`. See the module-level `gen_query_accessor` docs.
+            pub(crate) fn query(&self) -> Option<&str> {
+                match self {
+                    $(
+                        BatchCmd::$var { args, .. } => {
+                            let _ = $log_name;
+                            Some(args.$field.as_str())
+                        }
+                    )*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+for_each_logged_batch_cmd!(gen_query_accessor);
+
 /// Append a query to the query log for eval workflow capture.
 /// Best-effort: failures are silently ignored (never blocks batch mode).
 fn log_query(command: &str, query: &str) {
@@ -739,6 +772,30 @@ mod tests {
             }
             _ => panic!("Expected Search command"),
         }
+    }
+
+    /// `BatchCmd::query()` returns the user query for query-bearing commands
+    /// (via the field the logged-command table names) and `None` for commands
+    /// that take a function name / path instead. This is the accessor the
+    /// daemon dispatch chokepoint uses to populate the invoke event's `query`.
+    #[test]
+    fn test_batch_cmd_query_accessor() {
+        // Query-bearing: the `query` field.
+        let search = BatchInput::try_parse_from(["search", "find auth"]).unwrap();
+        assert_eq!(search.cmd.query(), Some("find auth"));
+        let scout = BatchInput::try_parse_from(["scout", "add reranker"]).unwrap();
+        assert_eq!(scout.cmd.query(), Some("add reranker"));
+        // Query-bearing via a differently-named field: `where`/`task` use
+        // `description`, which the table maps — the accessor must still find it.
+        let where_cmd = BatchInput::try_parse_from(["where", "put the parser"]).unwrap();
+        assert_eq!(where_cmd.cmd.query(), Some("put the parser"));
+
+        // Non-query commands take a function name, not a query → None, so they
+        // never contribute a symbol name to `top_queries`.
+        let callers = BatchInput::try_parse_from(["callers", "my_fn"]).unwrap();
+        assert_eq!(callers.cmd.query(), None);
+        let impact = BatchInput::try_parse_from(["impact", "my_fn"]).unwrap();
+        assert_eq!(impact.cmd.query(), None);
     }
 
     #[test]
