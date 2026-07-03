@@ -16,5 +16,5 @@ pub(crate) use gc::cmd_gc;
 // from the clap-side `crate::cli::args::IndexArgs` — this is the non-destructive
 // wire slice the bridge advertises and the daemon deserializes.
 pub(crate) use index_args::IndexArgs;
-pub(crate) use stale::{cmd_stale, stale_core, StaleArgs};
-pub(crate) use stats::{cmd_stats, stats_core, StatsArgs};
+pub(crate) use stale::{cmd_stale, stale_core, StaleArgs, StaleOutput};
+pub(crate) use stats::{cmd_stats, stats_core, StatsArgs, StatsOutput};

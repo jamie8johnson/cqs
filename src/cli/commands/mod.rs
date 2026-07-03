@@ -75,15 +75,19 @@ pub(crate) use graph::cmd_test_map;
 pub(crate) use graph::cmd_trace;
 pub(crate) use graph::parse_edge_kind;
 // graph cores + arg types (daemon dispatch handlers call these). The
-// `*CoreOutput` types are returned by the cores and serialized via
-// `serde_json::to_value` / `to_value()` without being named at the call
-// site, so they stay internal to the graph module.
+// `*CoreOutput` types are serialized via `serde_json::to_value` / `to_value()`
+// as each dispatcher's `data` payload; they are also re-exported (below) so the
+// MCP `outputSchema` map can name them for `schema_for!`.
 pub(crate) use graph::{
     callees_cross_core, callees_overlay, callers_cross_core, callers_overlay, deps_core,
     deps_cross_core, impact_cross_core, impact_overlay, test_map_core, test_map_cross_core,
     test_map_max_nodes, trace_core, trace_cross_core, trace_max_nodes, CalleesArgs,
     CallersCoreArgs, DepsCoreArgs, ImpactCoreArgs, ImpactDiffCoreArgs, TestMapCoreArgs,
     TraceCoreArgs,
+};
+// The graph `data`-shape result types, for the MCP `outputSchema` map.
+pub(crate) use graph::{
+    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, TestMapCoreOutput, TraceCoreOutput,
 };
 // The no-overlay callers/callees/impact cores. Production dispatch routes through
 // the `*_overlay` variants above (Part B); these plain entry points are consumed
@@ -124,6 +128,8 @@ pub(crate) use index::stale_core;
 pub(crate) use index::stats_core;
 pub(crate) use index::StaleArgs;
 pub(crate) use index::StatsArgs;
+// `data`-shape result types, re-exported for the MCP `outputSchema` map.
+pub(crate) use index::{StaleOutput, StatsOutput};
 
 // -- io --
 pub(crate) use io::cmd_blame;

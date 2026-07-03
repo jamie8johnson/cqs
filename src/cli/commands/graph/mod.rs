@@ -36,6 +36,13 @@ pub(crate) use test_map::{
 pub(crate) use trace::{
     cmd_trace, trace_core, trace_cross_core, trace_max_nodes, TraceArgs as TraceCoreArgs,
 };
+// The `*CoreOutput` result types, re-exported so the MCP `outputSchema` map
+// (`cli::mcp::tools`) can name them for `schema_for!`. They remain the
+// serialized `data` shape of each graph dispatcher.
+pub(crate) use callers::{CalleesCoreOutput, CallersCoreOutput};
+pub(crate) use deps::DepsCoreOutput;
+pub(crate) use test_map::TestMapCoreOutput;
+pub(crate) use trace::TraceCoreOutput;
 
 use cqs::kind::{detect_kind_for_store, KindResolution};
 use cqs::store::{ChunkSummary, ReadOnly, Store};
@@ -266,7 +273,7 @@ pub(crate) fn fallback_kind(resolution: KindResolution) -> Option<FallbackKind> 
 /// content-truncated values from [`chunks_to_definitions`]) so the wire
 /// shape, including the skip-when-false `truncated` per-entry field, is
 /// byte-identical to the pre-unification literal-built objects.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct KindFallbackOutput {
     /// Routing-level kind label: `const` / `type` / `module` / `ambiguous`.
     pub kind: &'static str,

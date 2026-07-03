@@ -44,7 +44,7 @@ impl Default for DepsArgs {
 
 // ─── Output types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct TypeUsageEntry {
     pub type_name: String,
     pub edge_kind: String,
@@ -54,14 +54,14 @@ pub(crate) struct TypeUsageEntry {
     pub project: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DepsReverseOutput {
     pub name: String,
     pub types: Vec<TypeUsageEntry>,
     pub count: usize,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct DepsUserEntry {
     pub name: String,
     pub file: String,
@@ -77,7 +77,7 @@ pub(crate) struct DepsUserEntry {
 /// shapes plus the shared fallback. `#[serde(untagged)]` preserves the
 /// historical wire shapes: reverse ⇒ `{name, types, count}`, forward ⇒
 /// `[DepsUserEntry, …]`, kind mismatch ⇒ the fallback object.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum DepsCoreOutput {
     /// `--reverse`: types used by a function — `{name, types, count}`.
