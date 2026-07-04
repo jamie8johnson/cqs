@@ -253,13 +253,32 @@ pub fn serve_http(cqs_dir: &Path, bind: &str, port: u16, token_file: Option<&Pat
     Ok(())
 }
 
-/// Build the listener's router. Layer order (outermost → innermost): body-limit
-/// → Host allowlist → Origin → bearer auth → handler. Auth is the innermost
-/// security layer so it runs before any handler for EVERY method — an
-/// unauthenticated GET/DELETE never reaches the (inert) GET-405 or the DELETE
-/// teardown. Host/Origin sit outside auth (cheaper header rejects first), which
-/// leaks no more than serve's own posture.
+/// Build the listener's router. Layer order (outermost → innermost):
+/// concurrency-cap → body-limit → Host allowlist → Origin → bearer auth →
+/// handler. Auth is the innermost security layer so it runs before any handler
+/// for EVERY method — an unauthenticated GET/DELETE never reaches the (inert)
+/// GET-405 or the DELETE teardown. Host/Origin sit outside auth (cheaper header
+/// rejects first), which leaks no more than serve's own posture. The
+/// concurrency cap sits OUTSIDE everything so a saturated listener 503s before
+/// any body buffer is allocated or any token compare runs.
 fn build_router(state: HttpState, allowed_hosts: AllowedHosts) -> Router {
+    // Reuse serve's request cap: both are axum front-ends relaying to the SAME
+    // daemon socket, so they share one backpressure budget (no new env var, no
+    // new dead code).
+    let conn_sem = Arc::new(tokio::sync::Semaphore::new(
+        cqs::limits::serve_max_concurrent_requests(),
+    ));
+    build_router_with_sem(state, allowed_hosts, conn_sem)
+}
+
+/// Assemble the router with an explicit in-flight semaphore. Split out so a test
+/// can inject a size-1 (or pre-drained) semaphore and drive cap saturation
+/// deterministically through the FULL layer stack.
+fn build_router_with_sem(
+    state: HttpState,
+    allowed_hosts: AllowedHosts,
+    conn_sem: Arc<tokio::sync::Semaphore>,
+) -> Router {
     Router::new()
         .route(
             "/mcp",
@@ -272,6 +291,14 @@ fn build_router(state: HttpState, allowed_hosts: AllowedHosts) -> Router {
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             MAX_BODY_BYTES,
         ))
+        // Outermost layer: cap concurrent in-flight requests so one
+        // authenticated-but-steered client cannot fan out N connections — each
+        // holding a pre-auth body buffer plus a blocking daemon round-trip —
+        // and exhaust the shared daemon's connection / blocking-pool budget,
+        // degrading serve / CLI / other consumers. Sits outside body-limit,
+        // Host, Origin, and auth so an over-cap request 503s before any of
+        // those run.
+        .layer(from_fn_with_state(conn_sem, enforce_concurrency_cap))
 }
 
 /// Graceful-shutdown future: resolves on Ctrl-C or SIGTERM (systemd stop).
@@ -359,6 +386,33 @@ fn is_localhost_origin(origin: &str) -> bool {
         }
     }
     false
+}
+
+/// Cap concurrent in-flight requests. The OUTERMOST layer, so a saturated
+/// listener returns `503 Service Unavailable` before any downstream layer runs:
+/// no body buffer is allocated and no timing-safe token compare executes until a
+/// request holds a permit. `try_acquire` returns immediately — saturation is a
+/// 503, never a queued allocation — and the permit is dropped when the response
+/// completes, so a finished request frees its slot for the next one.
+async fn enforce_concurrency_cap(
+    State(sem): State<Arc<tokio::sync::Semaphore>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let permit = match sem.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!("mcp-http: concurrent-request cap saturated — returning 503");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Server at concurrency cap; retry shortly",
+            )
+                .into_response();
+        }
+    };
+    let response = next.run(req).await;
+    drop(permit);
+    response
 }
 
 // ─── method handlers ─────────────────────────────────────────────────────────
@@ -1470,6 +1524,56 @@ mod tests {
         assert!(
             msg.contains("daemon"),
             "error must mention the daemon: {msg}"
+        );
+    }
+
+    // ── concurrency cap ───────────────────────────────────────────────
+
+    fn test_router_with_sem(sem: Arc<tokio::sync::Semaphore>) -> Router {
+        build_router_with_sem(test_state(true), allowed_host_set(&test_addr()), sem)
+    }
+
+    /// Saturation: with every permit held, a further request 503s — and does so
+    /// BEFORE auth (the request is unauthenticated, yet gets 503, not 401),
+    /// which proves the cap is the outermost layer. This is the availability
+    /// guarantee: one steered-but-authenticated client cannot fan out past the
+    /// cap and exhaust the shared daemon for serve / CLI / other consumers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrency_cap_saturated_503s_before_auth() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        // Hold the sole permit so the middleware sees a saturated semaphore on
+        // `try_acquire`.
+        let _held = Arc::clone(&sem)
+            .try_acquire_owned()
+            .expect("initial permit");
+        let router = test_router_with_sem(sem);
+
+        // Unauthenticated on purpose: were the cap inside auth, this would 401.
+        let resp = send(&router, Req::post(INIT_BODY).bearer(None)).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a saturated cap must 503 before auth (an unauth request must NOT 401)"
+        );
+    }
+
+    /// A permit is released once the response completes, so the cap is never
+    /// permanently consumed: a second request under a size-1 cap still succeeds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrency_cap_permit_released_after_response() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let router = test_router_with_sem(sem);
+
+        // First request acquires and (on completion) releases the sole permit.
+        let resp1 = send(&router, Req::post(INIT_BODY)).await;
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Second request: the permit was freed, so the cap does not block it.
+        let resp2 = send(&router, Req::post(INIT_BODY)).await;
+        assert_eq!(
+            resp2.status(),
+            StatusCode::OK,
+            "permit must be released after the first response completes"
         );
     }
 
