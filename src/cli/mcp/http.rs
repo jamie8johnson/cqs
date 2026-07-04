@@ -609,9 +609,10 @@ fn load_token(token_file: Option<&Path>) -> Result<AuthToken> {
 
 /// Read a token file after an ownership + mode check (mirrors the
 /// `CQS_PDF_SCRIPT` precedent): the file must be owned by the effective user and
-/// not group/world-accessible. On a WSL drvfs mount (`/mnt/c/...`) unix modes
-/// are synthetic `0777`, so the mode check is skipped there with a loud warning
-/// (matching `config.rs`); the ownership check still applies.
+/// not group/world-accessible. Only on a genuine WSL drvfs mount (`/mnt/c/...`),
+/// where unix modes are synthetic `0777` and cannot be tightened, is the mode
+/// check skipped (with a loud warning) — a path-scoped skip, not a host-global
+/// one; the ownership check still applies.
 fn read_token_file_checked(path: &Path) -> Result<String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -641,10 +642,16 @@ fn read_token_file_checked(path: &Path) -> Result<String> {
         );
     }
 
-    // Mode: not group- or world-accessible. Skipped on WSL drvfs mounts (mode is
-    // synthetic 0777 there and cannot be tightened) — the ownership check above
-    // still stands.
-    let on_wsl_mount = cqs::config::is_wsl() || cqs::config::is_wsl_drvfs_path(path);
+    // Mode: not group- or world-accessible. Skipped ONLY on genuine WSL drvfs
+    // mounts (mode is synthetic 0777 there and cannot be tightened) — the
+    // ownership check above still stands. The skip is deliberately PATH-scoped
+    // (`is_wsl_drvfs_path`), never the host-global `is_wsl()`: a bearer token on
+    // a native unix fs (tmpfs / ext4) reports real modes even on a WSL host, and
+    // skipping the refusal there would disclose it to every local UID — the exact
+    // boundary a TCP listener widens. (config.rs ORs in `is_wsl()` for its config
+    // permission NAG, a soft warning; this is a hard security refusal, so it must
+    // not inherit that host-global lenience.)
+    let on_wsl_mount = cqs::config::is_wsl_drvfs_path(path);
     if on_wsl_mount {
         tracing::warn!(
             path = %path.display(),
@@ -1037,9 +1044,12 @@ mod tests {
         write!(f, "{TEST_TOKEN}").expect("write");
         drop(f);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
-        // Skip on a WSL drvfs tempdir where modes are synthetic (the mode check
-        // is intentionally skipped there, so this negative case can't fire).
-        if cqs::config::is_wsl() || cqs::config::is_wsl_drvfs_path(&path) {
+        // Skip ONLY on a genuine drvfs tempdir where modes are synthetic (the
+        // mode check is intentionally skipped there, so this negative case can't
+        // fire). Path-scoped, NOT host-global `is_wsl()`: on a native tempdir a
+        // WSL host still reports real modes, and the refusal must apply — else
+        // this guard is vacuous on the project's own dev box.
+        if cqs::config::is_wsl_drvfs_path(&path) {
             return;
         }
         let err = load_token(Some(&path)).expect_err("group-readable token must be refused");
@@ -1081,25 +1091,16 @@ mod tests {
     /// REFUSED (3a-D2: the mode check is the protection that keeps the bearer
     /// token from every local UID, the boundary a TCP listener widens).
     ///
-    /// The sibling `token_file_group_readable_refused` early-returns on ANY WSL
-    /// host, so on the project's own WSL dev box it asserts nothing. Worse,
-    /// `read_token_file_checked` skips the mode check for EVERY path on a WSL
-    /// host (`is_wsl() || is_wsl_drvfs_path(path)`), not just real
-    /// `/mnt/<x>` drvfs mounts — so a 0644 token in `$XDG_RUNTIME_DIR` (the
-    /// exact location the skip-warning recommends as safe, tmpfs/native) is
-    /// ACCEPTED, disclosing the token to every local UID. Verified with a live
-    /// listener: `cqs mcp --http --token-file <0644 file on /tmp or
-    /// $XDG_RUNTIME_DIR>` starts and serves instead of refusing.
-    ///
-    /// `#[ignore]`d because it is RED on a WSL host under the current
-    /// production code (it would break the dev box's `cargo test`; CI is
-    /// non-WSL, where the check already applies). The fix is to scope the skip
-    /// to `is_wsl_drvfs_path(path)` ALONE, dropping the host-global `is_wsl()`
-    /// disjunct in `read_token_file_checked`. Un-ignore this guard (and drop
-    /// the WSL early-return in the sibling test) once that lands — post-fix it
-    /// is green on WSL (native fs → check applies) and on non-WSL CI alike.
+    /// This guards against a reintroduction of the host-global skip disjunct:
+    /// `read_token_file_checked` once ORed `is_wsl()` (host-global) with
+    /// `is_wsl_drvfs_path(path)` (path-scoped), so on ANY WSL host the mode
+    /// check was skipped for EVERY path — a 0644 token on tmpfs/ext4 (e.g.
+    /// `$XDG_RUNTIME_DIR`) was ACCEPTED, disclosing it to every local UID. The
+    /// skip is now path-scoped (`is_wsl_drvfs_path` alone), so a native-fs
+    /// tempdir must trip the refusal on a WSL dev box and non-WSL CI alike. The
+    /// `assert!` below pins the precondition (tempdir is native, not drvfs) so a
+    /// green pass can only mean the refusal actually fired.
     #[test]
-    #[ignore = "RED on WSL until read_token_file_checked drops the host-global is_wsl() skip disjunct (RT token-file breach)"]
     fn token_file_group_readable_refused_on_native_fs() {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt;
