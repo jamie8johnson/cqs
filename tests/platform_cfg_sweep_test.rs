@@ -38,16 +38,21 @@
 //! before the tag rather than after it. The `release.yml` cross-build remains
 //! the full-matrix belt-and-suspenders gate before tagging.
 //!
-//! The **warning-only** member (dead-code on a sibling) is deliberately NOT
-//! enforced yet. The `windows-check` job runs WITHOUT `-D warnings` because
-//! Windows carries a large dead_code backlog (~100 items: daemon-client +
-//! MCP-bridge code, live only via the unix socket path). That code becomes live
-//! on Windows once the named-pipe daemon transport lands — so annotating it now
-//! would mean ~100 `#[cfg_attr(not(unix), allow)]` items that then invert. The
-//! dead-code-warning shape has never caused a realized cost (only hard errors
-//! skip releases), so enforcing it is deferred to the transport work. Until
-//! then this source scan stays the cheap PR-time tripwire for its one E0277
-//! shape, and the windows-check job covers the hard-error family.
+//! The **warning-only** member (dead-code on a sibling) is now guarded too, by
+//! a LEDGER rather than `-D warnings`. Windows carries a large dead_code backlog
+//! (~100 items: daemon-client + MCP-bridge code, live only via the unix socket
+//! path) that becomes live on Windows once the named-pipe daemon transport
+//! lands, so a blanket `-D warnings` would force ~100 `#[cfg_attr(not(unix),
+//! allow)]` items that then invert. Instead the `windows-check` job runs
+//! `scripts/check_windows_deadcode.py` over its `cargo check --message-format=
+//! json`: today's backlog is frozen into `tests/windows_deadcode_ledger.txt`,
+//! and the job fails only on a NEW dead_code item (a fresh straggler — the
+//! cfg(unix)-gated helper whose Windows twin rotted) or a STALE ledger entry
+//! (the backlog shrank). Its RED/GREEN logic is pinned on Linux by
+//! `tests/windows_deadcode_guard_test.rs` with synthetic diagnostics. So this
+//! source scan stays the cheap PR-time tripwire for its one E0277 shape, and
+//! the windows-check job covers BOTH the hard-error family and the dead-code
+//! straggler class.
 //!
 //! ## The exemplar (the bug this family is named for)
 //!
