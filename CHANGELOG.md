@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file-top license/copyright banner glued above a file's FIRST definition no longer leaks into that def's `doc` and embedding text (#2205).** Both `doc` extraction paths captured it: the primary sibling walk (`extract_doc_comment`) collects the banner's comment nodes directly — for Rust and C a `//`/`/* */` license header IS a doc-node — and its `MAX_TOLERATED_BLANK_SIBLINGS` tolerance even carried a banner separated from the first def by up to four blank lines; the `extract_leading_comment_doc` fallback's strict adjacency caught the glued case too. Only the common blank-separated-then-`use`/`import` shape was already safe (the intervening code stopped the walk). A new head-anchored classifier (`comment_is_license_banner`) makes a banner a hard boundary in BOTH paths: the walk/scan stops at the first content line matching a license signature (SPDX tags, `Copyright …`, `Licensed under …`, the MIT/BSD/GPL/MPL body openers, `All rights reserved`), keeping any real doc-comment lines already collected between the banner and the def and dropping the banner itself. The match is head-anchored on the first non-decorative content line only (comment openers and `-`/`=`/`*` separator rules are skipped) — never substring containment — so a legitimate definition doc that merely MENTIONS "license"/"copyright" mid-prose, or on a second sentence, survives intact, and the sibling walk's blank-tolerance for real (non-banner) headers (the #2126 SQL shape) is untouched. Measured on a real licensed corpus (cargo registry): the leak hit 3.2% of Rust first-defs-with-doc and 6.5% of C, all classic license headers; after the fix, 0 across a 22k-file re-scan (pure banners → `doc` becomes `None`; banner-above-a-real-doc → banner stripped, real doc kept). **PARSER_VERSION 15 -> 16:** a byte-identical file whose first def carried a leaked banner loses it from `doc` (and thus its embedding text), so a reindex/refresh is required even for unchanged bytes.
+
 ## [1.54.0] - 2026-07-03
 
 ### Added
