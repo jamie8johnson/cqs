@@ -3,10 +3,113 @@
 # (from a windows-latest `cargo check --message-format=json` capture).
 # One entry per line: <relative src path>\t<full rustc message>.
 # See scripts/check_windows_deadcode.py for the rationale.
-#
-# UNSEEDED: this ledger has zero entries. The dead_code set is cfg-driven and
-# only materializes when cqs is compiled for the Windows target (MSVC toolchain
-# required — a cross `cargo check` from Linux cannot produce it). The first
-# `windows-check` CI run reports the full backlog as NEW and fails with a
-# copy-paste ledger block between the ===WINDOWS-DEADCODE-LEDGER-BEGIN/END===
-# markers; commit that block here to seed the ledger and turn the job green.
+src/cli/batch/commands.rs	method `query` is never used
+src/cli/batch/commands.rs	variants `NotesAdd`, `NotesUpdate`, `NotesRemove`, and `Index` are never constructed
+src/cli/batch/json_args.rs	constant `NO_CORE_REJECTION` is never used
+src/cli/batch/json_args.rs	function `blame_args_from_core` is never used
+src/cli/batch/json_args.rs	function `build_batch_cmd` is never used
+src/cli/batch/json_args.rs	function `callers_args_from_core` is never used
+src/cli/batch/json_args.rs	function `ci_args_from_core` is never used
+src/cli/batch/json_args.rs	function `context_args_from_core` is never used
+src/cli/batch/json_args.rs	function `dead_args_from_core` is never used
+src/cli/batch/json_args.rs	function `deps_args_from_core` is never used
+src/cli/batch/json_args.rs	function `diff_args_from_core` is never used
+src/cli/batch/json_args.rs	function `drift_args_from_core` is never used
+src/cli/batch/json_args.rs	function `explain_args_from_core` is never used
+src/cli/batch/json_args.rs	function `gather_args_from_core` is never used
+src/cli/batch/json_args.rs	function `impact_args_from_core` is never used
+src/cli/batch/json_args.rs	function `impact_diff_args_from_core` is never used
+src/cli/batch/json_args.rs	function `invalid_max_depth` is never used
+src/cli/batch/json_args.rs	function `onboard_args_from_core` is never used
+src/cli/batch/json_args.rs	function `output_text` is never used
+src/cli/batch/json_args.rs	function `overlay_from_args` is never used
+src/cli/batch/json_args.rs	function `parse_core` is never used
+src/cli/batch/json_args.rs	function `plan_args_from_core` is never used
+src/cli/batch/json_args.rs	function `related_args_from_core` is never used
+src/cli/batch/json_args.rs	function `require_mutations_enabled` is never used
+src/cli/batch/json_args.rs	function `review_args_from_core` is never used
+src/cli/batch/json_args.rs	function `scout_args_from_core` is never used
+src/cli/batch/json_args.rs	function `search_args_from_core` is never used
+src/cli/batch/json_args.rs	function `similar_args_from_core` is never used
+src/cli/batch/json_args.rs	function `task_args_from_core` is never used
+src/cli/batch/json_args.rs	function `test_map_args_from_core` is never used
+src/cli/batch/json_args.rs	function `text_json` is never used
+src/cli/batch/json_args.rs	function `trace_args_from_core` is never used
+src/cli/batch/json_args.rs	function `where_args_from_core` is never used
+src/cli/batch/view.rs	function `dispatch_via_view_json` is never used
+src/cli/batch/view.rs	function `dispatch_via_view` is never used
+src/cli/batch/view.rs	function `json_value_contains_nul` is never used
+src/cli/commands/graph/explain.rs	function `default_explain_limit` is never used
+src/cli/commands/graph/explain.rs	struct `ExplainArgs` is never constructed
+src/cli/commands/graph/impact_diff.rs	struct `ImpactDiffArgs` is never constructed
+src/cli/commands/index/build.rs	function `project_umap_on_delegation` is never used
+src/cli/commands/infra/model.rs	enum `DaemonHint` is never used
+src/cli/commands/infra/model.rs	function `daemon_control_hint` is never used
+src/cli/commands/infra/ping.rs	function `format_last_indexed` is never used
+src/cli/commands/infra/ping.rs	function `format_thousands` is never used
+src/cli/commands/infra/ping.rs	function `format_unix_utc` is never used
+src/cli/commands/infra/ping.rs	function `format_uptime` is never used
+src/cli/commands/infra/ping.rs	function `print_text` is never used
+src/cli/commands/io/notes.rs	method `effective_output_format` is never used
+src/cli/commands/search/related.rs	struct `RelatedArgs` is never constructed
+src/cli/commands/search/where_cmd.rs	struct `WhereArgs` is never constructed
+src/cli/commands/train/task.rs	struct `TaskArgs` is never constructed
+src/cli/definitions.rs	methods `effective_output_format`, `reads_diff_from_stdin`, and `overlay_tristate` are never used
+src/cli/json_envelope.rs	function `daemon_payload_to_cli_text_with` is never used
+src/cli/json_envelope.rs	function `daemon_payload_to_cli_text` is never used
+src/cli/json_envelope.rs	function `emit_json_error_with_data` is never used
+src/cli/json_envelope.rs	function `error_with_data_envelope` is never used
+src/cli/limits.rs	function `max_daemon_response_bytes` is never used
+src/cli/mcp/bridge.rs	constant `MAX_LINE_LENGTH` is never used
+src/cli/mcp/bridge.rs	function `route` is never used
+src/cli/mcp/bridge.rs	function `write_response` is never used
+src/cli/mcp/lifecycle.rs	constant `INTERNAL_ERROR` is never used
+src/cli/mcp/lifecycle.rs	constant `INVALID_PARAMS` is never used
+src/cli/mcp/lifecycle.rs	constant `MCP_PROTOCOL_VERSION` is never used
+src/cli/mcp/lifecycle.rs	constant `METHOD_NOT_FOUND` is never used
+src/cli/mcp/lifecycle.rs	constant `MIN_ACCEPTED_PROTOCOL_VERSION` is never used
+src/cli/mcp/lifecycle.rs	constant `PARSE_ERROR` is never used
+src/cli/mcp/lifecycle.rs	function `error` is never used
+src/cli/mcp/lifecycle.rs	function `handle_initialize` is never used
+src/cli/mcp/lifecycle.rs	function `notification_handled` is never used
+src/cli/mcp/lifecycle.rs	function `success` is never used
+src/cli/mcp/lifecycle.rs	struct `JsonRpcError` is never constructed
+src/cli/mcp/lifecycle.rs	struct `JsonRpcRequest` is never constructed
+src/cli/mcp/lifecycle.rs	struct `JsonRpcResponse` is never constructed
+src/cli/mcp/mod.rs	constant `MUTATIONS_ENV` is never used
+src/cli/mcp/mod.rs	function `mutations_enabled` is never used
+src/cli/mcp/tools.rs	associated items `READ` and `to_json` are never used
+src/cli/mcp/tools.rs	constant `MAX_TEXT_MIRROR_BYTES` is never used
+src/cli/mcp/tools.rs	constant `OVERLAY_KEYS` is never used
+src/cli/mcp/tools.rs	enum `CallOutcome` is never used
+src/cli/mcp/tools.rs	function `call` is never used
+src/cli/mcp/tools.rs	function `classify_output` is never used
+src/cli/mcp/tools.rs	function `command_input_schema` is never used
+src/cli/mcp/tools.rs	function `command_output_schema` is never used
+src/cli/mcp/tools.rs	function `find_tool` is never used
+src/cli/mcp/tools.rs	function `is_empty_with_candidates` is never used
+src/cli/mcp/tools.rs	function `list` is never used
+src/cli/mcp/tools.rs	function `mutation_tools` is never used
+src/cli/mcp/tools.rs	function `object_output_schema` is never used
+src/cli/mcp/tools.rs	function `output_schema` is never used
+src/cli/mcp/tools.rs	function `overlay_property_schema` is never used
+src/cli/mcp/tools.rs	function `read_tools` is never used
+src/cli/mcp/tools.rs	function `relay_and_classify` is never used
+src/cli/mcp/tools.rs	function `render_tools` is never used
+src/cli/mcp/tools.rs	function `schema_with_overlay` is never used
+src/cli/mcp/tools.rs	function `schema` is never used
+src/cli/mcp/tools.rs	function `strip_required` is never used
+src/cli/mcp/tools.rs	function `success_result` is never used
+src/cli/mcp/tools.rs	function `text_mirror` is never used
+src/cli/mcp/tools.rs	function `tool_table` is never used
+src/cli/mcp/tools.rs	function `validate_arguments` is never used
+src/cli/mcp/tools.rs	function `validate_max_depth` is never used
+src/cli/mcp/tools.rs	static `READ_PLUS_MUTATION_TOOLS_JSON` is never used
+src/cli/mcp/tools.rs	static `READ_TOOLS_JSON` is never used
+src/cli/mcp/tools.rs	struct `ToolAnnotations` is never constructed
+src/cli/mcp/tools.rs	struct `ToolDef` is never constructed
+src/cli/staleness.rs	function `print_stale_warning_from_meta` is never used
+src/cli/staleness.rs	function `stale_origins_from_meta` is never used
+src/cli/telemetry.rs	variants `Daemon` and `Mcp` are never constructed
+src/serve/handlers.rs	field `splade_alpha` is never read
+src/serve/handlers.rs	function `build_search_legs_daemon_args` is never used
