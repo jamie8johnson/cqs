@@ -1075,6 +1075,56 @@ mod tests {
         }
     }
 
+    /// REGRESSION GUARD — RT token-file breach.
+    ///
+    /// A group/world-readable token file on a NATIVE unix filesystem must be
+    /// REFUSED (3a-D2: the mode check is the protection that keeps the bearer
+    /// token from every local UID, the boundary a TCP listener widens).
+    ///
+    /// The sibling `token_file_group_readable_refused` early-returns on ANY WSL
+    /// host, so on the project's own WSL dev box it asserts nothing. Worse,
+    /// `read_token_file_checked` skips the mode check for EVERY path on a WSL
+    /// host (`is_wsl() || is_wsl_drvfs_path(path)`), not just real
+    /// `/mnt/<x>` drvfs mounts — so a 0644 token in `$XDG_RUNTIME_DIR` (the
+    /// exact location the skip-warning recommends as safe, tmpfs/native) is
+    /// ACCEPTED, disclosing the token to every local UID. Verified with a live
+    /// listener: `cqs mcp --http --token-file <0644 file on /tmp or
+    /// $XDG_RUNTIME_DIR>` starts and serves instead of refusing.
+    ///
+    /// `#[ignore]`d because it is RED on a WSL host under the current
+    /// production code (it would break the dev box's `cargo test`; CI is
+    /// non-WSL, where the check already applies). The fix is to scope the skip
+    /// to `is_wsl_drvfs_path(path)` ALONE, dropping the host-global `is_wsl()`
+    /// disjunct in `read_token_file_checked`. Un-ignore this guard (and drop
+    /// the WSL early-return in the sibling test) once that lands — post-fix it
+    /// is green on WSL (native fs → check applies) and on non-WSL CI alike.
+    #[test]
+    #[ignore = "RED on WSL until read_token_file_checked drops the host-global is_wsl() skip disjunct (RT token-file breach)"]
+    fn token_file_group_readable_refused_on_native_fs() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("token");
+        let mut f = std::fs::File::create(&path).expect("create");
+        write!(f, "{TEST_TOKEN}").expect("write");
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        // The precondition the finding rests on: a tempdir is a NATIVE fs, NOT
+        // a `/mnt/<x>` drvfs mount, so the mode check MUST apply here — the skip
+        // must be path-scoped, never host-global.
+        assert!(
+            !cqs::config::is_wsl_drvfs_path(&path),
+            "test dir must be native fs (not a drvfs mount): {}",
+            path.display()
+        );
+        let err = load_token(Some(&path))
+            .expect_err("a group/world-readable token file on a NATIVE unix fs must be refused");
+        assert!(
+            err.to_string().contains("group/world-accessible"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ── origin / host ─────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1350,6 +1400,37 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// REGRESSION GUARD — a POST body over [`MAX_BODY_BYTES`] (1 MiB) that
+    /// DECLARES its size via `Content-Length` is refused by the outermost
+    /// body-limit layer with 413 BEFORE the handler (or auth) allocates it,
+    /// bounding a hostile client's per-request buffer. The layer sits OUTSIDE
+    /// auth, so the cap applies even to an unauthed request (no OOM-then-401).
+    /// Verified against the live listener (a real 2 MiB POST, which curl sends
+    /// with `Content-Length`, → `413 length limit exceeded`); the header is set
+    /// explicitly here because the in-process `oneshot` path does not synthesize
+    /// one, and without a declared length the limit layer defers to lazy body
+    /// reads (auth then 401s before the body is ever buffered — also safe, but a
+    /// different code path). Pinned so a future loosening of the cap — or a
+    /// reorder that moves the limit inside auth — trips.
+    #[tokio::test]
+    async fn oversized_body_rejected_by_body_limit() {
+        let router = test_router(true);
+        let pad = "x".repeat(MAX_BODY_BYTES + 1);
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"ping","pad":"{pad}"}}"#);
+        let declared_len = body.len();
+        // Unauthenticated on purpose: the body cap must bite before auth. The
+        // declared Content-Length mirrors what a real HTTP client sends.
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", format!("127.0.0.1:{TEST_PORT}"))
+            .header(header::CONTENT_LENGTH, declared_len)
+            .body(Body::from(body))
+            .expect("req");
+        let resp = router.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
