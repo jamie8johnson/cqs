@@ -312,6 +312,16 @@ tree-sitter-elm = ["dep:tree-sitter-elm"]
 # need the CLI.
 serve = ["dep:axum", "dep:tower", "dep:tower-http", "dep:subtle", "dep:base64"]
 
+# `cqs mcp --http` — the Streamable HTTP MCP transport listener (Phase 3a).
+# A network security surface, opt-in and NON-default: operators build it in
+# explicitly. Depends on `serve` because it reuses serve's hardened auth
+# primitives (`AuthToken`, the constant-time `ct_eq`) and DNS-rebinding
+# `enforce_host_allowlist` middleware, which live behind the `serve` cfg gate —
+# so pulling `serve` is what makes those primitives compile. The listener
+# itself relays to the unix daemon socket, so its module is additionally
+# `#[cfg(unix)]`-gated (a non-unix build gets a clean "not supported" stub).
+mcp-http = ["serve"]
+
 # Slow integration tests excluded from PR-time CI. Two reasons a binary
 # lands here:
 #   (a) Subprocess-spawning CLI tests that cold-load the embedder per

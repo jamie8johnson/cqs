@@ -334,9 +334,21 @@ use cqs::DiffImpactResult;
 /// ([`crate::cli::mcp::mutations_enabled`]). When the flag is unset the result
 /// is byte-identical to Phase 1 (zero delta). The registry-parity guard in
 /// `mod.rs` pins this set against `build_batch_cmd`'s arms.
+#[cfg(test)]
 pub fn tool_table() -> Vec<&'static ToolDef> {
+    tool_table_with(crate::cli::mcp::mutations_enabled())
+}
+
+/// The composed tool table, with the gated mutators included iff
+/// `include_mutations`. The single source of truth threaded through both
+/// `list_with` (visibility) and `call_with`→`find_tool_with` (reachability), so
+/// a tool that is not listed is also not callable and vice versa — the two
+/// cannot diverge. The stdio path passes `mutations_enabled()`; the HTTP path
+/// passes `mutations_enabled() && bind_is_loopback` (3a-D2's loopback-only
+/// mutation gate, enforced listener-side).
+pub fn tool_table_with(include_mutations: bool) -> Vec<&'static ToolDef> {
     let mut tools: Vec<&'static ToolDef> = read_tools().iter().collect();
-    if crate::cli::mcp::mutations_enabled() {
+    if include_mutations {
         tools.extend(mutation_tools().iter());
     }
     tools
@@ -707,10 +719,21 @@ pub fn mcp_name_to_command(mcp_name: &str) -> String {
         .replace('_', "-")
 }
 
-/// Look up a tool by its MCP name. Respects the mutation flag — a notes-mutation
-/// tool is not findable (and so not callable) when the flag is off.
+/// Look up a tool by its MCP name, honoring `include_mutations` — a
+/// notes-mutation tool (or `cqs_index`) is not findable (and so not callable)
+/// when mutations are not permitted for this surface. Shares the
+/// [`tool_table_with`] source with `list_with`, so visibility and reachability
+/// stay in lockstep.
+fn find_tool_with(name: &str, include_mutations: bool) -> Option<&'static ToolDef> {
+    tool_table_with(include_mutations)
+        .into_iter()
+        .find(|t| t.name == name)
+}
+
+/// Test-only convenience: look up a tool with the process mutation flag.
+#[cfg(test)]
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
-    tool_table().into_iter().find(|t| t.name == name)
+    find_tool_with(name, crate::cli::mcp::mutations_enabled())
 }
 
 /// Build the `tools/list` result: `{tools: [{name, description, inputSchema,
@@ -724,8 +747,18 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
 /// [`command_input_schema`], which already produces the overlay-augmented schema
 /// for an overlay-capable command). The flag chooses the snapshot but never
 /// re-renders.
+#[cfg(test)]
 pub fn list() -> Value {
-    let tools = if crate::cli::mcp::mutations_enabled() {
+    list_with(crate::cli::mcp::mutations_enabled())
+}
+
+/// Build the `tools/list` result with the mutator rows included iff
+/// `include_mutations`. Selects the pre-rendered memoized snapshot; never
+/// re-renders. The stdio path passes `mutations_enabled()`; the HTTP path
+/// passes `mutations_enabled() && bind_is_loopback`, so a non-loopback bind
+/// advertises exactly the read-only surface even with the flag on.
+pub fn list_with(include_mutations: bool) -> Value {
+    let tools = if include_mutations {
         &*READ_PLUS_MUTATION_TOOLS_JSON
     } else {
         &*READ_TOOLS_JSON
@@ -776,9 +809,20 @@ pub enum CallOutcome {
     ProtocolError(i32, String),
 }
 
-/// Handle a `tools/call` request. `cqs_dir` is the resolved `.cqs` directory
-/// whose daemon socket the bridge relays to.
+/// Test-only convenience: dispatch a `tools/call` with the process mutation
+/// flag as the mutation gate.
+#[cfg(test)]
 pub fn call(cqs_dir: &Path, params: Option<Value>) -> CallOutcome {
+    call_with(cqs_dir, params, crate::cli::mcp::mutations_enabled())
+}
+
+/// Handle a `tools/call` request. `cqs_dir` is the resolved `.cqs` directory
+/// whose daemon socket the bridge relays to. `include_mutations` gates whether a
+/// mutation tool resolves: when `false` a `tools/call` naming `cqs_notes_add` /
+/// `cqs_index` / etc. resolves to no tool → method-not-found, BEFORE any daemon
+/// relay (the listener-side half of 3a-D2's loopback-only mutation gate; the
+/// daemon's own `require_mutations_enabled` is transport-blind).
+pub fn call_with(cqs_dir: &Path, params: Option<Value>, include_mutations: bool) -> CallOutcome {
     // The tool name is recorded onto the span once resolved (declared Empty up
     // front so the field exists from span creation), and every exit path emits a
     // completion event so a call's outcome is observable from the trace alone.
@@ -806,7 +850,7 @@ pub fn call(cqs_dir: &Path, params: Option<Value>) -> CallOutcome {
         }
     };
     span.record("tool", name);
-    let tool = match find_tool(name) {
+    let tool = match find_tool_with(name, include_mutations) {
         Some(t) => t,
         None => {
             tracing::warn!(tool = name, "MCP tools/call: unknown tool");

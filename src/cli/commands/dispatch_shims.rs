@@ -236,10 +236,20 @@ pub fn cmd_mcp_dispatch(
     project_cqs_dir: &Path,
     cmd: &Commands,
 ) -> Result<()> {
-    // The MCP bridge relays to the daemon serving `project_cqs_dir` — the same
-    // `.cqs` dir the CLI's own daemon-forward path uses, derived from the cwd.
-    must_be!(cmd, Commands::Mcp => {
-        crate::cli::mcp::serve_stdio(project_cqs_dir)
+    // Both the stdio bridge and the HTTP listener relay to the daemon serving
+    // `project_cqs_dir` — the same `.cqs` dir the CLI's own daemon-forward path
+    // uses, derived from the cwd. `--http` selects the listener; otherwise the
+    // process is the stdio bridge.
+    must_be!(cmd, Commands::Mcp { http, bind, token_file } => {
+        match http {
+            None => crate::cli::mcp::serve_stdio(project_cqs_dir),
+            Some(port) => crate::cli::mcp::serve_http(
+                project_cqs_dir,
+                bind,
+                *port,
+                token_file.as_deref(),
+            ),
+        }
     })
 }
 

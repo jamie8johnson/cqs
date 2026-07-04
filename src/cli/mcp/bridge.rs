@@ -154,15 +154,38 @@ fn drain_to_newline<R: BufRead>(reader: &mut R) {
         .read_until(b'\n', &mut sink);
 }
 
-/// Route one parsed request by method.
+/// Route one parsed request by method (stdio surface).
+///
+/// The stdio transport is inherently local, so its notes-mutation gating
+/// follows the process flag alone; the HTTP transport calls [`route_with`]
+/// directly with a loopback-narrowed value.
 fn route(cqs_dir: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
+    route_with(cqs_dir, request, crate::cli::mcp::mutations_enabled())
+}
+
+/// Route one parsed request by method, with the mutation surface gated by
+/// `mutations_permitted`.
+///
+/// The bool is threaded through `tools::list_with` / `tools::call_with` so tool
+/// VISIBILITY (`tools/list`) and tool REACHABILITY (`tools/call`) share ONE gate
+/// and cannot diverge: when it is `false`, the notes mutators and `cqs_index`
+/// are neither listed nor callable (a `tools/call` naming one resolves to no
+/// tool → method-not-found, before any daemon relay). The HTTP listener passes
+/// `mutations_enabled() && bind_is_loopback` (3a-D2's triple gate — the daemon's
+/// own `require_mutations_enabled` is transport-blind, so a non-loopback bind is
+/// withheld here, listener-side); stdio passes `mutations_enabled()`.
+pub(crate) fn route_with(
+    cqs_dir: &Path,
+    request: JsonRpcRequest,
+    mutations_permitted: bool,
+) -> JsonRpcResponse {
     let id = request.id.clone();
     match request.method.as_str() {
         "initialize" => lifecycle::success(id, lifecycle::handle_initialize(request.params)),
         // The `initialized` notification (both spellings) — no reply.
         "notifications/initialized" | "initialized" => lifecycle::notification_handled(id),
-        "tools/list" => lifecycle::success(id, tools::list()),
-        "tools/call" => match tools::call(cqs_dir, request.params) {
+        "tools/list" => lifecycle::success(id, tools::list_with(mutations_permitted)),
+        "tools/call" => match tools::call_with(cqs_dir, request.params, mutations_permitted) {
             CallOutcome::Result(result) => lifecycle::success(id, result),
             CallOutcome::ProtocolError(code, message) => lifecycle::error(id, code, message),
         },

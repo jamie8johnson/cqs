@@ -61,6 +61,7 @@ src/cli/json_envelope.rs	function `emit_json_error_with_data` is never used
 src/cli/json_envelope.rs	function `error_with_data_envelope` is never used
 src/cli/limits.rs	function `max_daemon_response_bytes` is never used
 src/cli/mcp/bridge.rs	constant `MAX_LINE_LENGTH` is never used
+src/cli/mcp/bridge.rs	function `route_with` is never used
 src/cli/mcp/bridge.rs	function `route` is never used
 src/cli/mcp/bridge.rs	function `write_response` is never used
 src/cli/mcp/lifecycle.rs	constant `INTERNAL_ERROR` is never used
@@ -82,13 +83,13 @@ src/cli/mcp/tools.rs	associated items `READ` and `to_json` are never used
 src/cli/mcp/tools.rs	constant `MAX_TEXT_MIRROR_BYTES` is never used
 src/cli/mcp/tools.rs	constant `OVERLAY_KEYS` is never used
 src/cli/mcp/tools.rs	enum `CallOutcome` is never used
-src/cli/mcp/tools.rs	function `call` is never used
+src/cli/mcp/tools.rs	function `call_with` is never used
 src/cli/mcp/tools.rs	function `classify_output` is never used
 src/cli/mcp/tools.rs	function `command_input_schema` is never used
 src/cli/mcp/tools.rs	function `command_output_schema` is never used
-src/cli/mcp/tools.rs	function `find_tool` is never used
+src/cli/mcp/tools.rs	function `find_tool_with` is never used
 src/cli/mcp/tools.rs	function `is_empty_with_candidates` is never used
-src/cli/mcp/tools.rs	function `list` is never used
+src/cli/mcp/tools.rs	function `list_with` is never used
 src/cli/mcp/tools.rs	function `mutation_tools` is never used
 src/cli/mcp/tools.rs	function `object_output_schema` is never used
 src/cli/mcp/tools.rs	function `output_schema` is never used
@@ -101,7 +102,7 @@ src/cli/mcp/tools.rs	function `schema` is never used
 src/cli/mcp/tools.rs	function `strip_required` is never used
 src/cli/mcp/tools.rs	function `success_result` is never used
 src/cli/mcp/tools.rs	function `text_mirror` is never used
-src/cli/mcp/tools.rs	function `tool_table` is never used
+src/cli/mcp/tools.rs	function `tool_table_with` is never used
 src/cli/mcp/tools.rs	function `validate_arguments` is never used
 src/cli/mcp/tools.rs	function `validate_max_depth` is never used
 src/cli/mcp/tools.rs	static `READ_PLUS_MUTATION_TOOLS_JSON` is never used

@@ -17,6 +17,34 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Minimum client protocol version the bridge will negotiate with (D4d).
 const MIN_ACCEPTED_PROTOCOL_VERSION: &str = "2025-06-18";
 
+/// The protocol version the HTTP transport ASSUMES when a request omits the
+/// `MCP-Protocol-Version` header. Transports 2025-11-25 makes a missing header
+/// mean `2025-03-26` (a backward-compat SHOULD) — an absent header is NOT a
+/// 400; only a present-and-unrecognized value is.
+#[cfg(all(feature = "mcp-http", unix))]
+pub(crate) const DEFAULT_HTTP_PROTOCOL_VERSION: &str = "2025-03-26";
+
+/// Protocol versions the HTTP listener accepts as an explicit
+/// `MCP-Protocol-Version` header value. Spans the back-compat default
+/// ([`DEFAULT_HTTP_PROTOCOL_VERSION`]), the negotiation floor
+/// ([`MIN_ACCEPTED_PROTOCOL_VERSION`]), and the advertised version
+/// ([`MCP_PROTOCOL_VERSION`]). A present header outside this set is a 400 (the
+/// Transports MUST); an absent header assumes the default rather than failing.
+#[cfg(all(feature = "mcp-http", unix))]
+pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    DEFAULT_HTTP_PROTOCOL_VERSION,
+    MIN_ACCEPTED_PROTOCOL_VERSION,
+    MCP_PROTOCOL_VERSION,
+];
+
+/// Whether `version` is an accepted explicit `MCP-Protocol-Version` header
+/// value. The caller treats an empty string as absent (assume the default);
+/// this answers only the non-empty case.
+#[cfg(all(feature = "mcp-http", unix))]
+pub(crate) fn is_supported_protocol_version(version: &str) -> bool {
+    SUPPORTED_PROTOCOL_VERSIONS.contains(&version)
+}
+
 // ─── JSON-RPC envelope (ported from 291ec6b0^:src/mcp/types.rs) ──────────────
 
 /// A JSON-RPC 2.0 request (or notification, when `id` is absent).

@@ -227,7 +227,13 @@ impl NoAuthAcknowledgement {
 /// Constant-time string compare. `subtle::ConstantTimeEq` returns a
 /// `Choice` (0 or 1); we collapse to bool. Timing-safe — same number
 /// of operations regardless of where the strings differ.
-fn ct_eq(a: &str, b: &str) -> bool {
+///
+/// `pub` (lib-public, re-exported at the serve root) so the MCP-HTTP listener —
+/// which lives in the BINARY crate (`cli::mcp::http`), across the lib/bin
+/// boundary — reuses the SAME timing-safe compare for its bearer token rather
+/// than hand-rolling `==`, which would reintroduce the byte-by-byte timing
+/// oracle this closes.
+pub fn ct_eq(a: &str, b: &str) -> bool {
     // Different lengths → not equal, but still iterate to a fixed cost
     // per bound length so we don't leak length via early-return timing.
     // `ct_eq` over `&[u8]` already does this.

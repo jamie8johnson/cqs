@@ -31,10 +31,46 @@
 //!   error-mapping invariant of Blocker #1).
 
 mod bridge;
+#[cfg(all(feature = "mcp-http", unix))]
+mod http;
 mod lifecycle;
 mod tools;
 
 pub use bridge::serve_stdio;
+
+// The Streamable HTTP MCP listener (Phase 3a). Three mutually-exclusive
+// `serve_http` definitions keep the symbol callable in every build config so
+// the dispatch shim needs no cfg branch: the real listener on a unix host with
+// the `mcp-http` feature, and clean-erroring stubs otherwise (built without the
+// feature, or a non-unix host where the unix daemon socket the listener relays
+// to does not exist).
+#[cfg(all(feature = "mcp-http", unix))]
+pub use http::serve_http;
+
+#[cfg(not(feature = "mcp-http"))]
+pub fn serve_http(
+    _cqs_dir: &std::path::Path,
+    _bind: &str,
+    _port: u16,
+    _token_file: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "cqs was built without the `mcp-http` feature; rebuild with \
+         `--features mcp-http` to use `cqs mcp --http`"
+    )
+}
+
+#[cfg(all(feature = "mcp-http", not(unix)))]
+pub fn serve_http(
+    _cqs_dir: &std::path::Path,
+    _bind: &str,
+    _port: u16,
+    _token_file: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "cqs mcp --http requires a unix daemon socket and is not supported on this platform"
+    )
+}
 // The per-command MCP `outputSchema` generator, re-exported so the shape-truth
 // guard in `commands::graph::callers` (which owns the `CallersCoreOutput` type)
 // can assert a real serialized response is described by the published schema.
