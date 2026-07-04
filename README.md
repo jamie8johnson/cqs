@@ -336,6 +336,8 @@ echo 'search "error handling" | callers | test-map' | cqs batch
 
 **Prerequisites**: a running `cqs watch --serve` daemon. The bridge forwards every request to the daemon; it loads no ML model and uses no GPU.
 
+**HTTP transport (opt-in)**: `cqs mcp --http <port>` serves the same tools over a **Streamable HTTP** listener instead of stdio, behind the non-default `mcp-http` build feature (unix-only). It is **loopback-bound by default** and **token-gated** — auth is unconditional, so pass `--token-file <path>` (preferred; the file must be user-owned and `0600`) or set `CQS_MCP_HTTP_TOKEN`. A non-loopback bind loud-warns and withholds mutating tools (no TLS in the stack — prefer loopback + an SSH tunnel). See SECURITY.md for the full threat model.
+
 ```bash
 # Start the daemon (if not already running)
 cqs watch --serve

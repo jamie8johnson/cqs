@@ -17,20 +17,31 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 | **`cqs serve` HTTP clients** | Untrusted by default | Per-launch 256-bit auth token gates every request (#1118 / SEC-7). Three credential channels: `Authorization: Bearer`, `cqs_token_<port>` cookie (port-scoped per RFC 6265, #1135 — concurrent instances don't collide in the browser jar), `?token=` query param. Cookie handoff is `HttpOnly; SameSite=Strict; Path=/`; compare is constant-time on every channel. Disabling auth requires `--no-auth` plus an internal `NoAuthAcknowledgement` proof token (#1136), so no internal caller can ship a fully-open server by accident; the disabled branch logs a structured `tracing::error!` regardless of `quiet`. Loud-warn banner on non-loopback binds with `--no-auth`. |
 | **Indexed content (in AI agent context)** | Untrusted | cqs relays code, comments, summaries, and developer notes verbatim. Injection payloads in any of those surfaces survive the relay. See [Indirect Prompt Injection](#indirect-prompt-injection--supply-chain-risks-from-indexed-content) below. |
 
-### MCP Bridge (`cqs mcp`)
+### MCP Server (`cqs mcp`)
 
 | Boundary | Trust Level | Notes |
 |----------|-------------|-------|
 | **MCP client** | Untrusted | The connecting client (e.g. Claude Code) is not trusted. It can send any `tools/call` request, including ones that carry adversarially-crafted query strings or that are themselves steered by indexed content (indirect injection via the relay). |
 | **Indexed content via relay** | Untrusted | `context`, `explain`, `read` (full-file and `--focus`), and `trace` responses surface file contents, doc-comments, signatures, and depended-on chunk bodies verbatim; injection payloads in those surfaces are faithfully relayed (never refused) but are **flagged** via `injection_flags` so a downstream agent can detect them. |
 
-The MCP bridge uses JSON-RPC over stdio. No network port is opened.
+`cqs mcp` has two transports. The **default** is a JSON-RPC bridge over **stdio** — it opens no network port. The **opt-in** `cqs mcp --http <port>` (behind the non-default `mcp-http` build feature, unix-only) instead opens a **Streamable HTTP** listener; it is loopback-bound by default and token-gated (see the MCP over HTTP subsection below). Both transports are transport-only clients of the warm `cqs watch --serve` daemon: every `tools/call` relays over the daemon's unix socket, there is no in-process fallback, and a daemon-absent call is a clean JSON-RPC error (never a panic or a 5xx).
 
 **Mitigations**:
 - **Read-only surface by default**: `tools/list` exposes 30 read-only tools. No mutation is possible without `CQS_MCP_ENABLE_MUTATIONS=1`.
 - **Gated mutation channel** (`CQS_MCP_ENABLE_MUTATIONS=1`): adds 4 mutating tools (`cqs_notes_add`, `cqs_notes_update`, `cqs_notes_remove`, `cqs_index`). Enforcement is double-gated — the bridge withholds the tools from the surface, and the daemon dispatch rejects mutation requests if the flag is unset. Fails closed: a misconfigured bridge cannot bypass daemon-side enforcement.
 - **Destructive set withheld by absence**: `gc`, `slot remove`, `index --force`, `model swap`, and `cache clear` are never registered as MCP tools and cannot be reached through the bridge regardless of env flags.
 - **Daemon Store stays read-only from MCP**: notes mutations write `docs/notes.toml`; `cqs_index` queues a reconcile (non-blocking). Neither path writes the daemon's in-memory Store from the MCP handler.
+
+#### MCP over HTTP (`cqs mcp --http`)
+
+`cqs mcp --http <port>` opens a Streamable HTTP listener behind the opt-in, non-default `mcp-http` build feature (unix-only — it relays to the unix daemon socket, so it has no meaning off-unix). Like the stdio bridge it holds only session state and relays every `tools/call` through the same daemon socket; there is no in-process fallback, and a daemon-absent call is a clean JSON-RPC `-32603` error, never a panic or an HTTP 500. Any TCP listener widens the daemon's same-UID `0o600`-socket boundary to every local UID (and, under WSL, Windows-side processes), so the posture below deliberately mirrors the `cqs serve` HTTP-clients row above — bearer token, constant-time compare, loopback default, non-loopback loud-warn:
+
+- **Auth is unconditional.** A bearer token is always required — there is **no `--no-auth`** — and the listener refuses to start without one. Token source is `--token-file` (preferred: the file must be owned by the current user and not group/world-readable, or the listener refuses to start; the mode check is skipped only on a genuine WSL drvfs mount, where unix modes are synthetic `0777` — that skip is **path-scoped, not host-global**, and the ownership check still applies) or the discouraged `CQS_MCP_HTTP_TOKEN` env var (whose value leaks through unit files / exec-capture / child env). The compare is `cqs serve`'s timing-safe `ct_eq`; the token value is **never logged** (only its source/path). Bearer auth gates POST, GET, and DELETE uniformly.
+- **Loopback default + loopback-only mutations.** The bind defaults to `127.0.0.1`. A non-loopback bind fires its own loud warning (the token and any mutation would cross the LAN in cleartext — there is no TLS in this stack) **and** withholds every mutating tool from **both** `tools/list` and `tools/call`: a withheld mutator resolves to JSON-RPC `-32601` (method not found) before any relay. A mutating tool is thus visible-and-callable only under the triple gate `CQS_MCP_ENABLE_MUTATIONS=1` ∧ a valid token ∧ a loopback bind; visibility and reachability read the same gate.
+- **Sessions are server-issued only.** `MCP-Session-Id` is minted by the server; a client-proposed id on `initialize` is **ignored** (session fixation closed). Ids are crypto-random visible-ASCII. Sessions are in-memory and non-durable, capped in count, and idle-expire; because auth gates DELETE, an unauthenticated request cannot tear down a victim session.
+- **Origin / Host.** A present-and-invalid `Origin` → 403; `Origin: null` → reject (sandboxed-iframe class); an **absent** `Origin` is allowed (headless agents send none). The Host allowlist (reused from `cqs serve`'s `enforce_host_allowlist`) rejects DNS-rebinding.
+- **Concurrency cap.** A semaphore bounds in-flight requests, installed as the **outermost** layer: a saturated listener returns `503` immediately via `try_acquire` — before any body buffer is allocated or any token compare runs — so one steered-but-authenticated client cannot fan out and exhaust the shared daemon for `serve` / CLI / other consumers. It reuses `cqs serve`'s concurrency budget.
+- **Body & protocol limits.** A POST body is capped at 1 MiB (a `413` **before auth**) and must be a single JSON-RPC message (arrays / batches → `400`). `GET` → `405` (no SSE in this build). An invalid `MCP-Protocol-Version` → `400`; an absent one assumes `2025-03-26`.
 
 ### What We Protect Against
 
@@ -93,7 +104,7 @@ These are defence in depth, not absolute protection. Subtle injections (a summar
 
 ## Architecture
 
-cqs runs locally by default. No network telemetry. Optional local command logging to `.cqs/telemetry.jsonl` — active when `CQS_TELEMETRY=1` is set OR when the telemetry file already exists (persists across shells/subprocesses). Never transmitted. Delete the file to opt out. The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
+cqs runs locally by default. No network telemetry. Optional local command logging to `.cqs/telemetry.jsonl` — active when `CQS_TELEMETRY=1` is set OR when the telemetry file already exists (persists across shells/subprocesses). Never transmitted. Delete the file to opt out. The optional `--llm-summaries` flag sends function code to the Anthropic API (see below). The opt-in `cqs mcp --http` listener (behind the `mcp-http` feature) accepts **inbound** MCP requests on a loopback port but makes no outbound requests and transmits nothing (its posture is documented in the MCP over HTTP subsection above); the outbound list under Network Requests below is therefore still complete.
 
 ## Network Requests
 
