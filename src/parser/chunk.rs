@@ -73,7 +73,18 @@ use super::Parser;
 /// the block from the definition (that path is now handled only by the
 /// sibling-walk). Either way `doc` — and thus the embedding text — can change,
 /// so a refresh is required even when the file's bytes are unchanged.
-pub const PARSER_VERSION: u32 = 15;
+/// 16: a file-top license / copyright banner is now a hard boundary in BOTH
+/// `doc` paths (`comment_is_license_banner`). The sibling walk's blank tolerance
+/// (`MAX_TOLERATED_BLANK_SIBLINGS`) and the fallback's strict adjacency both
+/// previously let a banner glued (or, in the walk, blank-separated within
+/// tolerance) directly above the file's FIRST definition become that def's
+/// `doc`. The walk / scan now stops at a head-anchored license signature (SPDX,
+/// `Copyright …`, `Licensed under …`, MIT/BSD/GPL/MPL body openers), keeping any
+/// real doc-comment lines between the banner and the def and dropping the banner
+/// itself. A byte-identical file whose first def carried a leaked banner loses
+/// it from `doc` (and thus its embedding text), so a refresh is required even
+/// when the file's bytes are unchanged.
+pub const PARSER_VERSION: u32 = 16;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -581,10 +592,22 @@ fn extract_doc_comment(
                 current = sibling.prev_sibling();
                 continue;
             }
+            // A file-top license / copyright banner documents the file's legal
+            // terms, not the definition below it. Stop the walk here (a hard
+            // boundary, like reaching code): any real doc-comment lines already
+            // collected between the banner and the def are kept, but the banner
+            // — and everything above it — never becomes the def's `doc`.
+            if comment_is_license_banner(text) {
+                break;
+            }
             comments.push(text.to_string());
             current = sibling.prev_sibling();
         } else if kind.contains("comment") {
-            // Keep looking past non-doc comments
+            // A non-doc comment: keep looking past it — unless it is a license
+            // banner, which bounds the walk exactly as in the doc-node branch.
+            if comment_is_license_banner(&source[sibling.byte_range()]) {
+                break;
+            }
             current = sibling.prev_sibling();
         } else {
             // Tolerate whitespace-only siblings — some grammars (notably the
@@ -762,6 +785,64 @@ fn is_shebang_or_modeline(text: &str) -> bool {
         || payload.starts_with("encoding=")
 }
 
+/// Returns true if a comment reads as a file-top license / copyright banner —
+/// text that documents the FILE's legal terms, not the definition it happens to
+/// sit above. Both `doc` paths treat such a comment as a hard boundary: the
+/// sibling walk ([`extract_doc_comment`]) and the leading-comment fallback
+/// ([`extract_leading_comment_doc`]) STOP at it, so a banner glued (or, in the
+/// sibling walk, blank-separated within tolerance) directly above the file's
+/// first definition never leaks into that def's `doc` and embedding text.
+///
+/// The decision is **head-anchored** on the first line carrying real content:
+/// blank and purely-decorative lines (comment openers like `/*`, `//-`, and
+/// separator rules of `-`/`=`/`*`/`#`) are skipped, then the FIRST content line
+/// is stripped of its comment marker and matched against a small set of license
+/// signatures at its HEAD. Only that first content line is the oracle — a later
+/// line is never consulted — so a legitimate definition doc that merely MENTIONS
+/// "license" or "copyright" mid-prose (or on a second sentence) survives. This
+/// mirrors the [`is_shebang_or_modeline`] discipline: match the signature at the
+/// head, never by substring containment.
+///
+/// The signatures are drawn from the classic banner shapes observed in real
+/// corpora (SPDX tags, `Copyright …`, `Licensed under …`, the MIT/BSD/GPL/MPL
+/// body openers, `All rights reserved`). A prose-intro header that defers its
+/// license to a later line (`// Translated from C to Rust …\n// Copyright …`) is
+/// deliberately NOT matched: such provenance notes are borderline doc-like and
+/// rejecting them would cost head-anchoring's precision.
+fn comment_is_license_banner(text: &str) -> bool {
+    // Chars that a comment marker or a decorative rule is built from. Stripping
+    // them from the head normalizes `// Copyright`, ` * SPDX-…`, `//-`, and
+    // `# ====` alike. `(`, `@`, `\`, and letters are preserved so `(c)`,
+    // `@license`, and real words remain matchable.
+    const DECOR: &[char] = &[' ', '\t', '/', '*', '#', ';', '%', '!', '~', '=', '+', '-'];
+
+    // Scan a bounded number of leading lines for the first with real content,
+    // skipping blank/decorative openers (a `/*` on its own line, a `//-`, a
+    // separator rule). Bounded so a giant comment can't drive an unbounded scan.
+    for raw in text.lines().take(6) {
+        let payload = raw.trim_matches(DECOR);
+        if payload.is_empty() {
+            continue;
+        }
+        // First real content line: this line — and only this line — decides.
+        let low = payload.to_ascii_lowercase();
+        return low.starts_with("copyright")
+            || low.starts_with("(c)")
+            || low.starts_with("spdx-")
+            || low.starts_with("licensed under")
+            || low.starts_with("licensed to")
+            || low.starts_with("license:")
+            || low.starts_with("all rights reserved")
+            || low.starts_with("permission is hereby granted")
+            || low.starts_with("redistribution and use")
+            || low.starts_with("this file is part of")
+            || low.starts_with("this program is free software")
+            || low.starts_with("this source code form is subject")
+            || low.starts_with("@license");
+    }
+    false
+}
+
 /// Fallback `doc` enrichment for a chunk whose tree-sitter sibling walk
 /// ([`extract_doc_comment`]) surfaced no doc-syntax comment. Captures the
 /// contiguous block of ordinary (non-doc-syntax) comment lines immediately
@@ -784,6 +865,10 @@ fn is_shebang_or_modeline(text: &str) -> bool {
 /// - **Shebang / modeline exclusion.** A leading `#!` shebang or an
 ///   editor/encoding modeline is a hard stop, never part of the block
 ///   ([`is_shebang_or_modeline`]).
+/// - **License-banner exclusion.** A file-top license / copyright banner is a
+///   hard stop ([`comment_is_license_banner`]): the scan keeps any real leading
+///   comment captured below it and drops the banner, so a banner glued directly
+///   above the file's FIRST definition no longer leaks onto it.
 /// - **Precedence.** Only reached via `extract_doc_comment(...).or_else(...)`,
 ///   so a real doc-syntax comment always wins; the fallback never overrides or
 ///   concatenates with it.
@@ -791,15 +876,6 @@ fn is_shebang_or_modeline(text: &str) -> bool {
 /// Comment markers (`//`, `--`, `#`, ...) are kept verbatim, matching the
 /// raw-with-markers convention of the primary `extract_doc_comment` path so the
 /// `doc` field has one consistent shape regardless of which path filled it.
-///
-/// **License-header trade-off.** Because the block must be glued with no blank
-/// line, a license/copyright banner — near-universally set off from code by a
-/// blank line — is rejected by the adjacency rule and can never leak onto a
-/// later definition. The one residual false positive is a banner glued with no
-/// blank directly above the file's FIRST definition, which is captured as that
-/// def's doc; this is accepted (rare in practice, and a content-based license
-/// sniff is locale/format-fragile). A blank-separated banner, the common form,
-/// is not captured.
 ///
 /// **Performance:** only the last `FALLBACK_DOC_MAX_LINES + 2` lines of the
 /// prefix are materialized. The tail is located by walking prefix bytes in
@@ -889,6 +965,13 @@ fn extract_leading_comment_doc(
             break;
         }
         if is_shebang_or_modeline(candidate) {
+            break;
+        }
+        // A file-top license / copyright banner bounds the block: it documents
+        // the file, not the definition. Stopping here keeps any real leading
+        // comment already captured below the banner and drops the banner itself,
+        // so a banner glued directly above the file's first def never leaks.
+        if comment_is_license_banner(candidate) {
             break;
         }
         if !line_looks_comment_like(candidate, language) {
@@ -3211,6 +3294,221 @@ pub fn first_function() -> u32 {
             assert!(
                 !doc.contains("Copyright") && !doc.contains("Licensed"),
                 "license banner must not leak onto the first def, got: {doc:?}"
+            );
+        }
+
+        /// Unit-level oracle for [`comment_is_license_banner`]: the classic
+        /// banner shapes observed in real corpora (SPDX tags, `Copyright …`,
+        /// `Licensed under …`, MIT/BSD body openers, `All rights reserved`,
+        /// block-comment `/* * SPDX */`, decorative `//-` / `====` leaders) are
+        /// detected; ordinary docs — including ones that MENTION "license" or
+        /// "copyright" mid-prose or on a later line — are not.
+        #[test]
+        fn license_banner_classifier_head_anchored() {
+            // Positive: real file-top banners.
+            for banner in [
+                "// Copyright 2018 Ulf Adams",
+                "// Copyright (c) The nextest Contributors",
+                "// Copyright © 2016-2018 winapi-rs developers",
+                "// SPDX-License-Identifier: MIT OR Apache-2.0",
+                "/*\n * SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION.\n * SPDX-License-Identifier: Apache-2.0\n */",
+                "// Licensed under the Apache License, Version 2.0",
+                "// Redistribution and use in source and binary forms",
+                "// Permission is hereby granted, free of charge",
+                "// This file is part of ICU4X. For terms of use, see LICENSE",
+                "// All rights reserved.",
+                "//-\n// Copyright 2017, 2018 The proptest developers", // decorative leader
+                "// =====================\n// Copyright 2020 Foo",       // separator rule
+                "-- Copyright 2020 The SQL Authors",                     // `--` comment lang
+                "# Copyright 2020 The Python Authors",                   // `#` comment lang
+            ] {
+                assert!(
+                    comment_is_license_banner(banner),
+                    "expected banner, got miss: {banner:?}"
+                );
+            }
+
+            // Negative: legitimate definition docs. A mid-prose mention of
+            // "license"/"copyright", or a banner word on a SECOND line after a
+            // real first content line, must NOT be classified as a banner.
+            for doc in [
+                "/// Validates the license key format before activation.",
+                "/// Returns the copyright holder recorded in the manifest.",
+                "// Parses the input file.\n// Copyright info is preserved in the output.",
+                "/// License-compatible: this is a permissive re-implementation.",
+                "-- Users table. See LICENSE at repo root for terms.",
+                "/// Computes the SPDX identifier for a detected license.",
+                "// Fix encoding: normalize input to NFC before hashing.",
+                "/// The registration copyright year, e.g. 2026.",
+            ] {
+                assert!(
+                    !comment_is_license_banner(doc),
+                    "expected NOT banner (legit doc), got hit: {doc:?}"
+                );
+            }
+        }
+
+        /// The #2205 leak: a license banner glued DIRECTLY above the file's
+        /// first definition (no intervening `use`, no blank) must NOT become
+        /// that def's `doc`. RED before the banner-boundary fix — the sibling
+        /// walk collected the `//` banner lines (Rust `//` is a doc-node) and
+        /// returned them as `first_glued`'s doc. Covers the glued case and the
+        /// blank-separated-within-tolerance case the walk's blank tolerance
+        /// (`MAX_TOLERATED_BLANK_SIBLINGS`) admits.
+        #[test]
+        fn banner_glued_to_first_def_does_not_leak() {
+            let doc_of = |content: &str, ext: &str, name: &str| -> Option<String> {
+                let file = write_temp_file(content, ext);
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                chunks
+                    .iter()
+                    .find(|c| c.name == name)
+                    .and_then(|c| c.doc.clone())
+            };
+
+            // Glued: banner immediately above the first def.
+            let glued = "\
+// Copyright 2026 The cqs Authors.
+// SPDX-License-Identifier: MIT
+pub fn first_glued() -> u32 {
+    0
+}
+";
+            let d = doc_of(glued, "rs", "first_glued").unwrap_or_default();
+            assert!(
+                !d.contains("Copyright") && !d.contains("SPDX"),
+                "glued banner must not leak onto first def, got: {d:?}"
+            );
+
+            // Blank-separated within the sibling walk's blank tolerance.
+            let spaced = "\
+// Copyright 2026 The cqs Authors.
+// Licensed under the Apache License, Version 2.0
+
+pub fn first_spaced() -> u32 {
+    0
+}
+";
+            let d = doc_of(spaced, "rs", "first_spaced").unwrap_or_default();
+            assert!(
+                !d.contains("Copyright") && !d.contains("Licensed"),
+                "blank-separated banner must not leak onto first def, got: {d:?}"
+            );
+
+            // C block/line-comment banner glued to the first def.
+            let c = "\
+// Copyright (c) 2015, Google Inc.
+// SPDX-License-Identifier: ISC
+int first_c(void) {
+    return 0;
+}
+";
+            let d = doc_of(c, "c", "first_c").unwrap_or_default();
+            assert!(
+                !d.contains("Copyright") && !d.contains("SPDX"),
+                "C banner must not leak onto first def, got: {d:?}"
+            );
+        }
+
+        /// Composite (the `nextest` / aws-lc shape): a license banner followed
+        /// by a REAL doc that belongs to the first def. The banner is stripped
+        /// but the real doc is KEPT — the walk breaks at the banner, retaining
+        /// the doc-comment lines already collected between it and the def.
+        #[test]
+        fn banner_above_real_doc_keeps_only_the_real_doc() {
+            let doc_of = |content: &str, ext: &str, name: &str| -> Option<String> {
+                let file = write_temp_file(content, ext);
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                chunks
+                    .iter()
+                    .find(|c| c.name == name)
+                    .and_then(|c| c.doc.clone())
+            };
+
+            // Rust: `///` doc below a `//` banner.
+            let rust = "\
+// Copyright (c) The nextest Contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+/// Documented exit codes for the runner.
+pub enum ExitCode {
+    Ok,
+}
+";
+            let d = doc_of(rust, "rs", "ExitCode").unwrap_or_default();
+            assert!(
+                d.contains("Documented exit codes for the runner"),
+                "real doc must survive below the banner, got: {d:?}"
+            );
+            assert!(
+                !d.contains("Copyright") && !d.contains("SPDX"),
+                "banner must be stripped from the kept doc, got: {d:?}"
+            );
+
+            // C: descriptive `//` line below a `//` banner (aws-lc shape).
+            let c = "\
+// Copyright (c) 2015, Google Inc.
+// SPDX-License-Identifier: ISC
+// Ensure we can't call OPENSSL_malloc circularly.
+int first_c(void) {
+    return 0;
+}
+";
+            let d = doc_of(c, "c", "first_c").unwrap_or_default();
+            assert!(
+                d.contains("Ensure we can't call OPENSSL_malloc"),
+                "real description must survive below the banner, got: {d:?}"
+            );
+            assert!(
+                !d.contains("Copyright") && !d.contains("SPDX"),
+                "banner must be stripped from the kept description, got: {d:?}"
+            );
+        }
+
+        /// Negative space for the banner filter: a legitimate first-def doc that
+        /// merely MENTIONS "License" mid-prose (not head-anchored as a banner)
+        /// SURVIVES intact. RED against a substring-containment banner matcher.
+        #[test]
+        fn first_def_doc_mentioning_license_in_prose_survives() {
+            let doc_of = |content: &str, ext: &str, name: &str| -> Option<String> {
+                let file = write_temp_file(content, ext);
+                let parser = Parser::new().unwrap();
+                let chunks = parser.parse_file(file.path()).unwrap();
+                chunks
+                    .iter()
+                    .find(|c| c.name == name)
+                    .and_then(|c| c.doc.clone())
+            };
+
+            let rust = "\
+/// Validates a license key against the vendor allowlist.
+/// The copyright holder is recorded alongside for audit.
+pub fn validate_license() -> bool {
+    true
+}
+";
+            let d = doc_of(rust, "rs", "validate_license").unwrap_or_default();
+            assert!(
+                d.contains("Validates a license key") && d.contains("copyright holder is recorded"),
+                "legit doc mentioning license/copyright must survive, got: {d:?}"
+            );
+
+            // SQL `--` header (the #2126 glued-header shape, the common case)
+            // that MENTIONS "license" in prose: the banner filter must not drop
+            // it. Glued with no blank, so v15's fallback captures it — the only
+            // way it can go missing is a wrong banner classification.
+            let sql = "\
+-- Accounts table. See the LICENSE file for redistribution terms.
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+";
+            let d = doc_of(sql, "sql", "accounts").unwrap_or_default();
+            assert!(
+                d.contains("Accounts table") && d.contains("LICENSE file"),
+                "glued non-banner SQL header mentioning license must survive, got: {d:?}"
             );
         }
     }
