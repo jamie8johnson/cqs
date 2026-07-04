@@ -160,22 +160,36 @@ from OOMing the daemon.
 
 ## Phase 3a PR ladder
 
-1. **P3a-1** HTTP listener: endpoint + server-issued sessions + Origin/Host +
-   auth (token-file, ct_eq, loopback-default, mutation-withhold-off-loopback) +
-   plain-JSON responses (GET → 405, no SSE yet), reusing `bridge::route()`.
-   **Red-team lane after** (session fixation, Origin/`null`, DELETE/GET auth,
-   token source, mutation-over-non-loopback, timing oracle).
-2. **P3a-2** SSE streams + Last-Event-ID resumability (the SSE MUSTs above).
-   **Second red-team pass after** — SSE replay / cross-session stream takeover
-   is the canonical attack there and does not exist until this rung.
-3. **P3a-3 (rides the surface PRs, not standalone):** SECURITY.md — AMEND
-   line 27 ("The MCP bridge uses JSON-RPC over stdio. No network port is
-   opened." → "stdio by default; `--http` opens a loopback-bound, token-gated
-   port"), amend the line-96 Architecture framing, add the MCP-HTTP section with
-   its own loud-warn trigger; README:335 / CONTRIBUTING:275 "stdio↔daemon
-   bridge" staleness; a docs-drift grep guard for the retired sentence.
-   PRIVACY.md:5 (outbound-only) is not contradicted by an inbound loopback
-   listener — no edit forced.
+1. **P3a-1 — LANDED.** HTTP listener: endpoint + server-issued sessions +
+   Origin/Host + auth (token-file, ct_eq, loopback-default,
+   mutation-withhold-off-loopback) + plain-JSON responses (GET → 405, no SSE
+   yet), reusing `bridge::route()`. The red-team lane after it (session
+   fixation, Origin/`null`, DELETE/GET auth, token source,
+   mutation-over-non-loopback, timing oracle) produced the **RT-DOS-1**
+   residual — an authenticated-but-steered client fanning out N connections to
+   exhaust the shared daemon — closed by an outermost concurrency-cap semaphore
+   (`try_acquire` → immediate 503, reusing serve's request budget). That cap
+   **LANDED** as a follow-up on top of P3a-1.
+2. **P3a-2 — DEFERRED to sit with Phase 3b.** SSE streams + Last-Event-ID
+   resumability. SSE has no functional consumer in 3a: its only payloads
+   (server-initiated messages, Tasks) are Phase 3b, which is itself deferred.
+   The transport floor is already met — `GET → 405` is spec-conformant for a
+   no-SSE Streamable-HTTP server — so shipping SSE now would add an unexercised
+   network-facing code path (and its canonical replay / cross-session
+   stream-takeover attack surface, the target of the second red-team pass)
+   ahead of any consumer. It rejoins 3b with the server-initiated-message work
+   it exists to carry.
+3. **P3a-3 — this PR.** Closes out the shipped 3a surface (listener + the
+   RT-DOS-1 concurrency cap) in the docs. SECURITY.md: retire the false
+   line-27 sentence ("The MCP bridge uses JSON-RPC over stdio. No network port
+   is opened.") for the accurate stdio-default / `--http` loopback-bound
+   token-gated framing, note the inbound listener in the Architecture section,
+   and add the MCP over HTTP subsection (auth, triple-gate mutation-withhold,
+   sessions, Origin/Host, concurrency + body caps). README / CONTRIBUTING /
+   `src/lib.rs`: note the `--http` transport. A default-feature docs-drift
+   guard (`tests/security_docs_mcp_http_guard.rs`) ratchets the retired
+   sentence out and the surface disclosure in. PRIVACY.md (outbound-only) is
+   not contradicted by an inbound loopback listener — no edit forced.
 
 ---
 
