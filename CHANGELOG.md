@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A ledgered `windows-check` guard now catches the dead-code-on-a-sibling-target regression class that `platform_cfg_sweep_test` never covered.** The sweep test pins only the E0277 unsized-cfg-arm HARD-error shape; the WARNING-only member — a `#[cfg(unix)]`-gated helper whose Windows twin becomes `dead_code` because nothing on the Windows target references it — was invisible on both Linux PR CI (cfg'd out) and the `windows-check` job (which runs without `-D warnings` because Windows carries a ~100-item intentional dead_code backlog: daemon-client + MCP-bridge code live only via the unix-socket path, becoming live once the named-pipe transport lands). Rather than force ~100 `#[cfg_attr(not(unix), allow)]` annotations that later invert, the `windows-check` job now runs `scripts/check_windows_deadcode.py` over its `cargo check --message-format=json`: today's backlog is frozen into a checked-in ledger (`tests/windows_deadcode_ledger.txt`, keyed on `<src path>\t<rustc message>` so line drift doesn't churn it), and the job fails only on a NEW dead_code item (a fresh straggler) or a STALE ledger entry (the backlog shrank — the anti-stale exactness floor, mirroring the JSON-noise guard). The same step keeps the orthogonal hard-error gate (a non-zero cargo exit is E0432/E0277). Acquisition is CI-side by necessity: the dead_code set is cfg-driven and materializes only when `cqs` compiles for a Windows target, which needs the MSVC toolchain — a cross `cargo check` from Linux dies in the C-dep build scripts before `Compiling cqs`. The guard's RED/GREEN decision logic (new-straggler / matching-ledger / stale-entry / hard-error / dependency-scope) is pinned on Linux by `tests/windows_deadcode_guard_test.rs` with synthetic diagnostics, so it runs under the ordinary `test` job. The ledger ships UNSEEDED (zero entries); the first `windows-check` run reports the full backlog as NEW and prints a copy-paste ledger block (also uploaded as a failure artifact) to seed it.
+
 ## [1.54.0] - 2026-07-03
 
 ### Added

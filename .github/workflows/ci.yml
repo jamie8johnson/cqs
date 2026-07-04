@@ -125,9 +125,12 @@ jobs:
     # daemon-client / MCP-bridge code that is live only via the (unix-only)
     # socket path and becomes live on Windows once the named-pipe transport
     # lands — so enforcing the dead-code-warning shape now would mean annotating
-    # ~100 items that then invert. That warning-shape enforcement is deferred to
-    # the transport work; the hard-error gate here is the durable, churn-free
-    # part (a hard error is fatal with or without `-D warnings`).
+    # ~100 items that then invert. Instead the ledger guard below freezes today's
+    # backlog and fails only on a NEW dead_code straggler (a cfg(unix)-gated
+    # helper's Windows twin that rotted) or a STALE ledger entry (the backlog
+    # shrank) — the warning-shape regression coverage without the annotation
+    # churn. The hard-error gate is orthogonal and durable (a hard error is fatal
+    # with or without `-D warnings`).
     #
     # Default features (no cuda/tiered) to match release.yml's Windows build and
     # keep the runner buildable; `check` (not clippy/test) to bound runner time.
@@ -136,5 +139,24 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Windows cargo check (sibling hard-error gate)
-        run: cargo check --verbose
+      - name: Windows cargo check (sibling hard-error gate + dead-code ledger)
+        shell: bash
+        run: |
+          # One compile. JSON diagnostics feed BOTH the hard-error gate (a
+          # non-zero cargo exit is E0432/E0277) and the dead_code ledger guard.
+          # `cargo clean -p cqs` forces the local crate to recompile so its
+          # warnings re-emit even on a warm rust-cache (which only caches deps).
+          cargo clean -p cqs || true
+          # `|| rc=$?` keeps `set -eo pipefail` (GitHub's bash default) from
+          # aborting on a hard error, so the guard still runs to render the
+          # errors readably and fail the step via --cargo-rc.
+          rc=0
+          cargo check --message-format=json > cargo-check.json || rc=$?
+          python scripts/check_windows_deadcode.py --cargo-rc "$rc" cargo-check.json
+      - name: Upload dead-code diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cargo-check-json
+          path: cargo-check.json
+          if-no-files-found: ignore

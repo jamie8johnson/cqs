@@ -1,0 +1,12 @@
+# Windows-only dead_code backlog ledger. Machine-managed; regenerate
+# with: python scripts/check_windows_deadcode.py --update cargo-check.json
+# (from a windows-latest `cargo check --message-format=json` capture).
+# One entry per line: <relative src path>\t<full rustc message>.
+# See scripts/check_windows_deadcode.py for the rationale.
+#
+# UNSEEDED: this ledger has zero entries. The dead_code set is cfg-driven and
+# only materializes when cqs is compiled for the Windows target (MSVC toolchain
+# required — a cross `cargo check` from Linux cannot produce it). The first
+# `windows-check` CI run reports the full backlog as NEW and fails with a
+# copy-paste ledger block between the ===WINDOWS-DEADCODE-LEDGER-BEGIN/END===
+# markers; commit that block here to seed the ledger and turn the job green.
