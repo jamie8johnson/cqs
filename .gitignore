@@ -33,6 +33,7 @@ credentials.toml
 evals/reranker_v2_checkpoint/
 checkpoints/
 evals/__pycache__/
+__pycache__/
 *.toml.lock
 .cqs/
 .cqs.*/
