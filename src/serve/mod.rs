@@ -54,6 +54,13 @@ mod tests;
 
 pub use auth::{AuthMode, AuthToken, InvalidTokenAlphabet, NoAuthAcknowledgement};
 pub use error::ServeError;
+// The timing-safe token compare, re-exported (lib-public) for the MCP-HTTP
+// listener (`cli::mcp::http`, in the binary crate) so its bearer check shares
+// serve's constant-time compare instead of a hand-rolled `==`. The `auth`
+// submodule is otherwise private. Gated on `mcp-http` so it only widens the lib
+// API for the build that consumes it.
+#[cfg(feature = "mcp-http")]
+pub use auth::ct_eq;
 
 /// Shared state passed to every axum handler. Wraps a read-only store
 /// behind an `Arc` so the handler tree can read concurrently.
@@ -100,7 +107,9 @@ pub(crate) struct AppState {
 /// LAN client gets `400 disallowed Host header` and operators are
 /// pushed to `--no-auth`. The per-launch token remains the primary
 /// defence in this mode.
-pub(crate) type AllowedHosts = Arc<HashSet<String>>;
+// `pub` (not `pub(crate)`) so the MCP-HTTP listener in the binary crate can
+// name the allowlist type it reuses across the lib/bin boundary.
+pub type AllowedHosts = Arc<HashSet<String>>;
 
 /// Run the `cqs serve` HTTP server.
 ///
@@ -509,7 +518,7 @@ pub(crate) fn build_router(state: AppState, allowed_hosts: AllowedHosts, auth: A
 /// set as "allow any Host" and emits a one-shot startup warning (the
 /// per-launch token still gates access). Operators who want the
 /// allowlist back can bind to a specific IP.
-pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
+pub fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
     if bind_addr.ip().is_unspecified() {
         // Empty allowlist = "Host: anything goes". Auth token still
         // checked downstream. See module-level note above.
@@ -548,7 +557,7 @@ pub(crate) fn allowed_host_set(bind_addr: &SocketAddr) -> AllowedHosts {
 /// allowlist has nothing to compare against) so we treat it as malformed.
 /// Tests must build requests with a Host header (see `src/serve/tests.rs`
 /// fixtures).
-async fn enforce_host_allowlist(
+pub async fn enforce_host_allowlist(
     State(allowed): State<AllowedHosts>,
     req: Request,
     next: Next,

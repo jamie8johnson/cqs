@@ -518,14 +518,40 @@ pub(super) enum Commands {
     /// Batch mode: read commands from stdin, output JSONL
     #[cqs_cmd(group = "a", batch = "cli")]
     Batch,
-    /// MCP server: bridge stdio JSON-RPC to the running cqs daemon
+    /// MCP server: bridge JSON-RPC to the running cqs daemon
     ///
-    /// Exposes the read-only cqs commands as MCP tools over stdio. Requires a
-    /// running daemon (`cqs watch --serve`); the bridge forwards each tool call
-    /// over the daemon socket and loads no model itself, so stdout stays a clean
-    /// JSON-RPC channel.
+    /// Default (no `--http`): a stdio bridge — exposes the read-only cqs
+    /// commands as MCP tools over stdin/stdout. With `--http <port>`: a
+    /// Streamable HTTP listener (Phase 3a), token-gated and loopback-bound by
+    /// default. Both require a running daemon (`cqs watch --serve`); the process
+    /// forwards each tool call over the daemon socket and loads no model itself.
+    /// The HTTP listener needs the `mcp-http` build feature and a unix host.
     #[cqs_cmd(group = "a", batch = "cli")]
-    Mcp,
+    Mcp {
+        /// Run a Streamable HTTP listener on this port instead of the stdio
+        /// bridge. A network surface: auth is UNCONDITIONAL (a bearer token is
+        /// always required — see `--token-file`) and the bind defaults to
+        /// loopback. Mutating tools are withheld from a non-loopback bind.
+        #[arg(long)]
+        http: Option<u16>,
+        /// Bind address for `--http`. Default 127.0.0.1 (loopback).
+        ///
+        /// A non-loopback bind travels the token (and any mutation) over the LAN
+        /// in cleartext (no TLS in the stack): it fires a loud warning and
+        /// withholds every mutating tool from `tools/list`. Prefer loopback +
+        /// an SSH tunnel, or terminate TLS at a reverse proxy.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Path to a file whose contents are the bearer token for `--http`.
+        ///
+        /// Preferred over the `CQS_MCP_HTTP_TOKEN` env var (whose value leaks
+        /// through systemd unit files, audit exec-capture, and child-process
+        /// env inheritance). The file must be owned by the current user and not
+        /// group/world-readable (mode `0600`), or the listener refuses to start.
+        /// The token itself is never logged — only the path.
+        #[arg(long)]
+        token_file: Option<std::path::PathBuf>,
+    },
     /// Semantic git blame: who changed a function, when, and why
     #[cqs_cmd(group = "b", batch = "daemon")]
     Blame {
