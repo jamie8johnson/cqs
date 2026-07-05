@@ -108,6 +108,7 @@ pub(crate) fn cmd_status(
                     emit_snapshot(&snap, json, watch)?;
                     Ok(())
                 }
+                Err(cqs::daemon_translate::DaemonRpcError::Busy(msg)) => emit_busy(&msg, json),
                 Err(err) => emit_no_daemon(&err.as_message(), json),
             };
         }
@@ -201,6 +202,7 @@ fn cmd_status_slot_scoped(
     loop {
         let snap = match cqs::daemon_translate::daemon_status(cqs_dir) {
             Ok(s) => s,
+            Err(cqs::daemon_translate::DaemonRpcError::Busy(msg)) => emit_busy(&msg, json),
             Err(err) => emit_no_daemon(&err.as_message(), json),
         };
         let Some(entry) = slot_entry(&snap, slot_name) else {
