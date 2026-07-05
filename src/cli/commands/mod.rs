@@ -175,7 +175,10 @@ pub(crate) use train::cmd_train_pairs;
 pub(crate) use train::{cmd_plan, plan_core, PlanArgs, PlanCoreOutput};
 
 // -- eval --
-pub(crate) use eval::{cmd_eval, EvalCmdArgs};
+pub(crate) use eval::{
+    cmd_eval, eval_core, EvalArgs, EvalCmdArgs, EvalCoreParams, EvalFreshness, EvalOutput,
+    IndexSubstrate,
+};
 
 // ---------------------------------------------------------------------------
 // Shared token-packing utilities (used by both CLI commands and batch handlers)

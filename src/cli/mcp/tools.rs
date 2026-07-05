@@ -290,9 +290,9 @@ use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, ImpactDiffCoreArgs,
-    PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs,
-    TraceCoreArgs,
+    DepsCoreArgs, EvalArgs as EvalCore, HealthArgs as HealthCore, ImpactCoreArgs,
+    ImpactDiffCoreArgs, PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore,
+    TestMapCoreArgs, TraceCoreArgs,
 };
 
 // Output (result `data`) core types for the `command_output_map!` — the typed
@@ -322,8 +322,8 @@ use crate::cli::commands::search::similar::SimilarOutput;
 use crate::cli::commands::search::where_cmd::WhereOutput;
 use crate::cli::commands::task::TaskOutputSchema;
 use crate::cli::commands::{
-    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, ImpactCoreOutput, PlanCoreOutput,
-    StaleOutput, StatsOutput, TestMapCoreOutput, TraceCoreOutput,
+    CalleesCoreOutput, CallersCoreOutput, DepsCoreOutput, EvalOutput, ImpactCoreOutput,
+    PlanCoreOutput, StaleOutput, StatsOutput, TestMapCoreOutput, TraceCoreOutput,
 };
 use crate::cli::display::SearchOutput;
 use cqs::health::HealthReport;
@@ -615,6 +615,22 @@ fn read_tools() -> &'static [ToolDef] {
             description:
                 "Codebase quality snapshot: dead-code count, staleness, hotspots (most-called \
                  functions), and untested functions. The pre-work health check.",
+            annotations: ToolAnnotations::READ,
+        },
+        // Eval harness. Runs on the daemon's RESIDENT index (single-flight —
+        // one eval at a time daemon-wide) and reports R@1/R@5/R@20 aggregates
+        // plus the `index_substrate` marker and a freshness snapshot. The
+        // `--save` / `--baseline` / `--tolerance` post-processing is CLI-only
+        // and withheld by absence. Selecting `reranker: onnx` triggers the
+        // daemon's one-time cross-encoder load.
+        ToolDef {
+            name: "cqs_eval",
+            command: "eval",
+            description:
+                "Run the search-quality eval harness against an in-repo JSON query set (v3 \
+                 schema): reports R@1/R@5/R@20 overall and per category, the model, the \
+                 index_substrate (resident here), and a freshness snapshot. Read-only; one \
+                 eval runs at a time (a second call gets a retryable `unavailable`).",
             annotations: ToolAnnotations::READ,
         },
     ]
@@ -1054,6 +1070,7 @@ command_core_map! {
     "impact-diff" => ImpactDiffCoreArgs, overlay;
     "stats" => StatsCore, plain;
     "health" => HealthCore, plain;
+    "eval" => EvalCore, plain;
     "notes-add" => NotesAddArgs, plain;
     "notes-update" => NotesUpdateArgs, plain;
     "notes-remove" => NotesRemoveArgs, plain;
@@ -1153,6 +1170,7 @@ command_output_map! {
     "impact-diff" => (DiffImpactResult);
     "stats" => (StatsOutput);
     "health" => (HealthReport);
+    "eval" => (EvalOutput);
     "notes-add" => (NoteMutationDaemonOutput);
     "notes-update" => (NoteMutationDaemonOutput);
     "notes-remove" => (NoteMutationDaemonOutput);
@@ -1667,6 +1685,8 @@ mod tests {
         assert_eq!(mcp_name_to_command("cqs_explain"), "explain");
         // Module-card tool: `cqs_context` → `context`.
         assert_eq!(mcp_name_to_command("cqs_context"), "context");
+        // Eval harness: `cqs_eval` → `eval` (single-word, no hyphenation).
+        assert_eq!(mcp_name_to_command("cqs_eval"), "eval");
     }
 
     /// Collect `cqs_<ident>` tokens from `text`, in order.

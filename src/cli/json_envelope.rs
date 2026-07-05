@@ -154,6 +154,10 @@ pub enum ErrorCode {
     /// timeout and any other time-bounded operation that times out before
     /// producing a result.
     Timeout,
+    /// A resource is transiently busy and the caller should retry shortly —
+    /// distinct from `InvalidInput` (a caller mistake). Surfaced by the eval
+    /// single-flight guard when a second eval arrives while one is in flight.
+    Unavailable,
 }
 
 impl ErrorCode {
@@ -167,6 +171,7 @@ impl ErrorCode {
             ErrorCode::IoError => "io_error",
             ErrorCode::Internal => "internal",
             ErrorCode::Timeout => "timeout",
+            ErrorCode::Unavailable => "unavailable",
         }
     }
 }
@@ -237,6 +242,8 @@ pub mod error_codes {
     /// timeout and any other time-bounded operation that times out before
     /// producing a result.
     pub const TIMEOUT: &str = ErrorCode::Timeout.as_str();
+    /// A resource is transiently busy — retry shortly (eval single-flight).
+    pub const UNAVAILABLE: &str = ErrorCode::Unavailable.as_str();
 }
 
 /// Standard envelope for all JSON-emitting commands.
@@ -1081,6 +1088,8 @@ mod tests {
         assert_eq!(ErrorCode::Internal.as_str(), error_codes::INTERNAL);
         assert_eq!(ErrorCode::Timeout.as_str(), error_codes::TIMEOUT);
         assert_eq!(error_codes::TIMEOUT, "timeout");
+        assert_eq!(ErrorCode::Unavailable.as_str(), error_codes::UNAVAILABLE);
+        assert_eq!(error_codes::UNAVAILABLE, "unavailable");
     }
 
     #[test]

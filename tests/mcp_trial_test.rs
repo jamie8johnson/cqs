@@ -240,6 +240,9 @@ fn args_for(tool: &str) -> Value {
     match tool {
         "cqs_explain" => json!({ "name": "foo" }),
         "cqs_plan" => json!({ "description": "add a flag" }),
+        // `eval` requires `query_file` (no default), so the bridge pre-check
+        // rejects a bare `{}`; supply a shape-valid path.
+        "cqs_eval" => json!({ "query_file": "evals/q.json" }),
         _ => json!({}),
     }
 }
@@ -273,7 +276,7 @@ fn assert_well_formed(tool: &str, result: &Value) {
     );
 }
 
-/// Full-surface sweep: with the mutation flag ON, `tools/list` advertises 34
+/// Full-surface sweep: with the mutation flag ON, `tools/list` advertises 35
 /// tools; every one of them, called once with a shape-valid argument object,
 /// routes to the daemon and comes back a well-formed success `CallToolResult`.
 /// Pins that NO advertised tool is unroutable (a drifted / rowless tool would
@@ -294,8 +297,8 @@ fn full_tool_surface_routes_through_bridge() {
         .collect();
     assert_eq!(
         names.len(),
-        34,
-        "flag-on tools/list must advertise 34 tools (30 read + 4 mutation): {names:?}"
+        35,
+        "flag-on tools/list must advertise 35 tools (31 read + 4 mutation): {names:?}"
     );
 
     // Call every advertised tool once; each must come back well-formed.
@@ -385,9 +388,9 @@ fn overlay_keys_advertised_exactly_for_capable_tools() {
 }
 
 /// Bridge-layer mutation double-gate, both flag states, end-to-end through the
-/// child. Flag OFF: `tools/list` is 30 read tools, no mutator, and a
+/// child. Flag OFF: `tools/list` is 31 read tools, no mutator, and a
 /// `cqs_notes_add` call is an unknown tool (-32601 — the bridge can't route what
-/// it doesn't advertise). Flag ON: `tools/list` is 34, the 4 mutators are
+/// it doesn't advertise). Flag ON: `tools/list` is 35, the 4 mutators are
 /// present, and `cqs_notes_add` routes to a success `CallToolResult`.
 #[test]
 fn bridge_mutation_gate_flag_off_then_on() {
@@ -404,7 +407,7 @@ fn bridge_mutation_gate_flag_off_then_on() {
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
             .collect();
-        assert_eq!(names.len(), 30, "flag-off tools/list must be 30 read tools");
+        assert_eq!(names.len(), 31, "flag-off tools/list must be 31 read tools");
         for m in MUTATION_TOOLS {
             assert!(
                 !names.contains(&m.to_string()),
@@ -434,7 +437,7 @@ fn bridge_mutation_gate_flag_off_then_on() {
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from))
             .collect();
-        assert_eq!(names.len(), 34, "flag-on tools/list must be 34 tools");
+        assert_eq!(names.len(), 35, "flag-on tools/list must be 35 tools");
         for m in MUTATION_TOOLS {
             assert!(
                 names.contains(&m.to_string()),

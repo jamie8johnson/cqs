@@ -1,6 +1,6 @@
 //! Baseline diff support for `cqs eval --baseline X`.
 //!
-//! Loads a previously saved `EvalReport` from disk, diffs its R@1 / R@5 /
+//! Loads a previously saved `EvalOutput` from disk, diffs its R@1 / R@5 /
 //! R@20 numbers against the current run (overall + per-category), and
 //! flags any per-category drop greater than `--tolerance` percentage
 //! points as a regression. The CLI exits non-zero when the returned
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
-use super::runner::EvalReport;
+use super::runner::EvalOutput;
 
 /// Per-K delta (current minus baseline) expressed in percentage points.
 ///
@@ -26,7 +26,7 @@ use super::runner::EvalReport;
 /// that K. Stored as `f64` so 0.0 round-trips exactly through JSON and
 /// the diff math doesn't accumulate float noise on small deltas.
 ///
-/// Field names match the sibling `EvalReport` shape (`r_at_1`, `r_at_5`,
+/// Field names match the sibling `EvalOutput` shape (`r_at_1`, `r_at_5`,
 /// `r_at_20` in `runner.rs`) so the same command emits one consistent JSON
 /// convention. The display labels stay `R@1` / `R@5` / `R@20` (those live in
 /// `Regression.metric`).
@@ -91,7 +91,7 @@ fn to_pp(fraction: f64) -> f64 {
     fraction * 100.0
 }
 
-/// Compare `current` against the `EvalReport` saved at `baseline_path`.
+/// Compare `current` against the `EvalOutput` saved at `baseline_path`.
 ///
 /// `tolerance_pp` is the per-category R@K drop (in percentage points) that
 /// is tolerated without triggering a regression entry. A drop of exactly
@@ -101,7 +101,7 @@ fn to_pp(fraction: f64) -> f64 {
 /// Does not print or exit — the caller (`cmd_eval`) handles output and
 /// exit code so this stays unit-testable without subprocess dance.
 pub(crate) fn compare_against_baseline(
-    current: &EvalReport,
+    current: &EvalOutput,
     baseline_path: &Path,
     tolerance_pp: f64,
 ) -> Result<DiffReport> {
@@ -116,7 +116,7 @@ pub(crate) fn compare_against_baseline(
             baseline_path.display()
         )
     })?;
-    let baseline: EvalReport = serde_json::from_str(&raw).with_context(|| {
+    let baseline: EvalOutput = serde_json::from_str(&raw).with_context(|| {
         format!(
             "Failed to parse baseline JSON at {}. \
              The file must be a `cqs eval --save` output.",
@@ -350,7 +350,7 @@ mod tests {
         cats: &[(&str, f64, f64, f64)],
         version: &str,
         model: &str,
-    ) -> EvalReport {
+    ) -> EvalOutput {
         let n = cats.len().max(1);
         let mut by_category = BTreeMap::new();
         for (name, r1, r5, r20) in cats {
@@ -364,7 +364,7 @@ mod tests {
                 },
             );
         }
-        EvalReport {
+        EvalOutput {
             query_count: n,
             skipped: 0,
             elapsed_secs: 1.0,
@@ -381,11 +381,15 @@ mod tests {
             query_file: "noop.json".into(),
             limit: 20,
             category_filter: None,
+            index_substrate: super::super::runner::IndexSubstrate::FreshBuilt
+                .as_str()
+                .to_string(),
+            freshness: None,
         }
     }
 
     /// Save a report to a tempfile so the comparator can read it back.
-    fn save_to_tmp(report: &EvalReport) -> tempfile::NamedTempFile {
+    fn save_to_tmp(report: &EvalOutput) -> tempfile::NamedTempFile {
         let tmp = tempfile::NamedTempFile::new().expect("tmp");
         std::fs::write(tmp.path(), serde_json::to_vec_pretty(report).unwrap()).unwrap();
         tmp

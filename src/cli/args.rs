@@ -72,9 +72,26 @@ pub const DEFAULT_DEPTH_TRACE: u16 = 10;
 ///
 /// Search and eval share this flag shape. `--reranker none|onnx` is the
 /// canonical form; `--help` lists only modes the binary supports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+///
+/// Also the wire type for `eval`'s `reranker` field: `serde::Deserialize` +
+/// `schemars::JsonSchema` (lowercase `none`/`onnx` variants matching the clap
+/// `ValueEnum` spelling) let the daemon/MCP surface accept it. No `Serialize`
+/// is derived — the value only rides eval's INPUT, never its output.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    clap::ValueEnum,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum RerankerMode {
     /// No reranking — stage-1 retrieval is the final answer (default).
+    #[default]
     None,
     /// Cross-encoder reranker via [`cqs::OnnxReranker`].
     Onnx,

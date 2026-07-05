@@ -12,24 +12,34 @@
 mod baseline;
 mod runner;
 
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
+use cqs::eval::schema::QuerySet;
 use cqs::store::ReadOnly;
 
 use crate::cli::args::RerankerMode;
 use crate::cli::commands::{daemon_control_hint, DaemonHint};
 use crate::cli::CommandContext;
 
-pub(crate) use runner::EvalReport;
+pub(crate) use runner::{
+    eval_core, EvalArgs, EvalCoreParams, EvalFreshness, EvalOutput, IndexSubstrate,
+};
 
-/// CLI args for `cqs eval`.
+/// CLI args for `cqs eval` — the full flag surface (query set + limit +
+/// category + reranker, plus the CLI-only `--save` / `--baseline` /
+/// `--tolerance` / `--require-fresh` post-processing + gate knobs).
 ///
-/// Kept as a flat struct on `Commands::Eval` instead of a shared
-/// `args::EvalArgs` because there is no batch handler for eval — `cqs eval`
-/// is CLI-only by design (long-running, progress to stderr, file I/O).
-/// Adding a batch handler later is a one-line move into `args.rs`.
+/// The WIRE subset the daemon/MCP surface accepts is the narrower
+/// [`runner::EvalArgs`] (query_file, limit, category, reranker); the
+/// post-processing + gate flags are adapter-owned and do not ride the wire.
+/// `Commands::Eval` stays `batch = "cli"`: the generic auto-forward never
+/// touches eval — [`cmd_eval`] OWNS the relay (gate → dial → honest outcome →
+/// post-process), because eval's NUMBERS depend on which substrate computed
+/// them, so the silent inline fallback the generic routing uses would lie.
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct EvalCmdArgs {
     /// Path to the queries JSON file (v3 schema)
@@ -108,7 +118,21 @@ pub(crate) struct EvalCmdArgs {
     pub reranker: RerankerMode,
 }
 
-/// CLI handler for `cqs eval`.
+/// CLI handler for `cqs eval` — the adapter that OWNS the relay.
+///
+/// Flow: validate flags → freshness gate → [`obtain_report`] (dial the resident
+/// daemon when eligible, else a fresh CLI-side build) → post-process (text/JSON,
+/// `--save`, `--baseline`). The report's `index_substrate` records which
+/// substrate produced the numbers so a gate can compare like with like.
+///
+/// Degradation + sharing: the daemon serves at most one eval at a time
+/// (single-flight); a busy or absent daemon degrades to one explicit notice
+/// then a fresh CLI-side run — an EXPLICIT substrate switch, never a silent one.
+/// The dial is a ONE-SHOT request/response: there is no progress stream and a
+/// disconnect does not abort the server-side run. A response lost past the eval
+/// budget (the daemon booked it and is still running) is a hard error, not a
+/// silent inline rerun — a second run would put a second GPU session on the same
+/// work.
 pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Result<()> {
     let _span = tracing::info_span!(
         "cmd_eval",
@@ -161,25 +185,17 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     // Gate the run on watch-mode freshness. Eval's R@K numbers shift 5-25pp
     // on a stale index from fixture-line drift alone, which is
     // indistinguishable from a real regression. Block until the daemon
-    // reports `state == fresh`, surface a clear error if it can't.
+    // reports `state == fresh`, surface a clear error if it can't. Runs on
+    // EVERY invocation, before the relay — the gate is a CLI-surface concern.
     require_fresh_gate(&args.no_require_fresh, args.require_fresh_secs)?;
 
-    // Resolve the reranker once before the search loop. `None` short-circuits
-    // the entire stage-2 path; `Onnx` builds via the same lazy factory the
-    // CLI search path uses (`CommandContext::reranker`), so eval doesn't
-    // accidentally diverge from production reranker config.
-    let reranker = match args.reranker {
-        RerankerMode::None => None,
-        RerankerMode::Onnx => Some(ctx.reranker()?),
-    };
-
-    let report = runner::run_eval(
-        ctx,
-        &args.query_file,
-        args.category.as_deref(),
-        args.limit,
-        reranker.as_deref(),
-    )?;
+    // Acquire the report: relay to the resident daemon when eligible (its
+    // in-memory index → `index_substrate = "resident"`), else compute a
+    // fresh cold build CLI-side (`index_substrate = "fresh-built"`). The
+    // relay is honest — an absent/busy daemon prints a notice and runs local;
+    // a daemon that BOOKED the run but lost the response is a hard error
+    // (rerunning inline would put a second GPU session on the same run).
+    let report = obtain_report(ctx, args)?;
 
     // When --baseline is set, prefer the diff output over the raw report —
     // a CI-shaped invocation just wants the diff. The raw report still
@@ -236,6 +252,192 @@ pub(crate) fn cmd_eval(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -
     }
 
     Ok(())
+}
+
+/// How an eval daemon dial resolved. The CLI adapter owns this decision — the
+/// generic silent-fallback routing would lie about which substrate produced
+/// the numbers.
+#[cfg(unix)]
+enum EvalDial {
+    /// The daemon answered with a usable report (computed on its resident,
+    /// memory-cached index; `index_substrate = "resident"`).
+    Answered(Box<EvalOutput>),
+    /// No daemon, a transient reject, or a pre-booking transport failure — run
+    /// the eval CLI-side on a fresh cold index (`index_substrate = "fresh-built"`).
+    /// `reason` is surfaced in the one-line notice.
+    RunLocal { reason: String },
+    /// The daemon read the request (booked the run) but its response was lost
+    /// to a read-budget expiry — it is likely STILL RUNNING the eval. Rerunning
+    /// inline would put a second GPU/ORT session on the same run, so this is a
+    /// hard error, never a silent local rerun.
+    BookedButLost(String),
+}
+
+/// Acquire the eval report — relay to the resident daemon when eligible, else
+/// compute a fresh cold build CLI-side. Honest outcomes only: an absent/busy
+/// daemon prints one notice and runs local; a booked-but-lost run is a hard
+/// error (see [`EvalDial`]).
+fn obtain_report(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Result<EvalOutput> {
+    #[cfg(unix)]
+    if let Some(canonical) = eval_relay_target(ctx, args) {
+        let wire = build_wire_args(args, &canonical);
+        match dial_daemon_eval(&ctx.project_cqs_dir, &wire) {
+            EvalDial::Answered(report) => return Ok(*report),
+            EvalDial::BookedButLost(msg) => {
+                let budget =
+                    cqs::daemon_translate::resolve_daemon_timeout_for_command("eval").as_secs();
+                anyhow::bail!(
+                    "the watch daemon booked this eval but its response was lost after the \
+                     {budget}s relay budget — it is most likely STILL RUNNING the eval. \
+                     Do NOT rerun (a second run would double up on the GPU); wait for it to \
+                     finish, or run with CQS_NO_DAEMON=1 to force a fresh CLI-side build. ({msg})"
+                );
+            }
+            EvalDial::RunLocal { reason } => {
+                eprintln!(
+                    "[eval] daemon unavailable ({reason}) — running CLI-side on a fresh-built index"
+                );
+            }
+        }
+    }
+
+    run_eval_local(ctx, args)
+}
+
+/// Compute the eval CLI-side against a freshly-built cold index. Reads + parses
+/// the fixture with friendly, path-echoing errors (the CLI is a trusted local
+/// surface, unlike the daemon path guard) and drives the shared [`eval_core`]
+/// with `index_substrate = "fresh-built"`.
+fn run_eval_local(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Result<EvalOutput> {
+    let raw = std::fs::read_to_string(&args.query_file)
+        .with_context(|| format!("Failed to read query file: {}", args.query_file.display()))?;
+    let set: QuerySet = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse query JSON: {}", args.query_file.display()))?;
+
+    let params = EvalCoreParams {
+        query_file_label: args.query_file.display().to_string(),
+        category_filter: args.category.clone(),
+        limit: args.limit,
+        reranker: args.reranker,
+        substrate: IndexSubstrate::FreshBuilt,
+        // The CLI ran its own `--require-fresh` gate above; freshness metadata
+        // is a daemon/MCP-surface concern (that surface does NOT block), so the
+        // CLI report omits it.
+        freshness: None,
+    };
+    eval_core(ctx, &set, &params)
+}
+
+/// Build the wire `arguments` object the daemon deserializes into
+/// [`runner::EvalArgs`]. Only the four wire knobs ride — `--save` /
+/// `--baseline` / `--tolerance` / freshness are adapter-owned post-processing.
+/// `canonical` is the absolute canonicalized fixture path so the daemon (whose
+/// cwd may differ from the client's) resolves the same file the CLI validated.
+#[cfg(unix)]
+fn build_wire_args(args: &EvalCmdArgs, canonical: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "query_file": canonical.to_string_lossy(),
+        "limit": args.limit,
+        "category": args.category,
+        "reranker": reranker_wire_str(args.reranker),
+    })
+}
+
+/// Stable wire spelling for the reranker mode (matches the clap `ValueEnum` and
+/// the `#[serde(rename_all = "lowercase")]` on `RerankerMode`). `RerankerMode`
+/// derives only `Deserialize`, so it is mapped explicitly here rather than
+/// serialized.
+#[cfg(unix)]
+fn reranker_wire_str(mode: RerankerMode) -> &'static str {
+    match mode {
+        RerankerMode::None => "none",
+        RerankerMode::Onnx => "onnx",
+    }
+}
+
+/// The canonical fixture path to relay to the resident daemon, or `None` to run
+/// CLI-side.
+///
+/// Off the daemon fast path when a slot is pinned (the daemon serves its own
+/// active slot, not the requested one), when `CQS_NO_DAEMON=1`, or when the
+/// fixture lives outside the served project root (the daemon path guard would
+/// reject it — the operator has legitimate local access, so run it CLI-side). A
+/// non-existent fixture (canonicalize fails) reads as out-of-root so the local
+/// path surfaces the friendly `Failed to read query file` error rather than the
+/// daemon's opaque rejection. Returns the canonical absolute path so the wire
+/// frame names the exact file the CLI validated.
+#[cfg(unix)]
+fn eval_relay_target(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Option<PathBuf> {
+    if ctx.cli.slot.is_some() {
+        return None;
+    }
+    if std::env::var("CQS_SLOT")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if std::env::var("CQS_NO_DAEMON").as_deref() == Ok("1") {
+        return None;
+    }
+    let canonical = dunce::canonicalize(&args.query_file).ok()?;
+    let root_canonical = dunce::canonicalize(&ctx.root).unwrap_or_else(|_| ctx.root.clone());
+    canonical.starts_with(&root_canonical).then_some(canonical)
+}
+
+/// Dial the daemon's `eval` handler over the JSON-args socket frame and
+/// classify the outcome. The eval relay budget (`max(40 × base, 20 min)`) is
+/// applied automatically by `resolve_daemon_timeout_for_command("eval")` inside
+/// the request helper.
+#[cfg(unix)]
+fn dial_daemon_eval(cqs_dir: &Path, wire_args: &serde_json::Value) -> EvalDial {
+    use cqs::daemon_translate::{classify_slim_envelope, daemon_json_args_request, SlimEnvelope};
+
+    match daemon_json_args_request(cqs_dir, "eval", wire_args) {
+        Ok(envelope) => {
+            let Some(output) = envelope.get("output") else {
+                return EvalDial::RunLocal {
+                    reason: "daemon response missing `output`".to_string(),
+                };
+            };
+            match classify_slim_envelope(output) {
+                Some(SlimEnvelope::Data { payload, .. }) => {
+                    match serde_json::from_value::<EvalOutput>(payload.clone()) {
+                        Ok(report) => EvalDial::Answered(Box::new(report)),
+                        Err(e) => EvalDial::RunLocal {
+                            reason: format!("daemon report unparseable ({e})"),
+                        },
+                    }
+                }
+                // A handler error (single-flight busy, a path rejection, ...) is
+                // a fast pre-embedder failure — the daemon booked no long run, so
+                // recomputing locally is safe and honest.
+                Some(SlimEnvelope::Error { code, message }) => EvalDial::RunLocal {
+                    reason: format!("daemon declined [{code}]: {message}"),
+                },
+                None => EvalDial::RunLocal {
+                    reason: "daemon returned an unrecognized envelope".to_string(),
+                },
+            }
+        }
+        Err(e) => classify_dial_error(e),
+    }
+}
+
+/// Map a daemon RPC error onto the honest eval outcome. Only a read-budget
+/// expiry (`Timeout`) is booked-but-lost — the daemon read the request and is
+/// still running the eval, so rerunning inline would double up on the GPU.
+/// Every other error is a pre-booking failure (no socket, connect/write failed,
+/// a socket-level reject), safe to recompute locally.
+#[cfg(unix)]
+fn classify_dial_error(e: cqs::daemon_translate::DaemonRpcError) -> EvalDial {
+    use cqs::daemon_translate::DaemonRpcError;
+    match e {
+        DaemonRpcError::Timeout(msg) => EvalDial::BookedButLost(msg),
+        other => EvalDial::RunLocal {
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Consult the watch daemon and block until the index is fresh, or bail with
@@ -439,7 +641,7 @@ fn env_disables_freshness_gate() -> bool {
 /// empty case) prints `"  0.0%"` for every metric — looks like a real result,
 /// but it's a structural zero, not a signal. Exits 2 so a downstream
 /// `cqs eval | grep R@5` chain notices.
-fn print_text_report(report: &EvalReport) {
+fn print_text_report(report: &EvalOutput) {
     if report.overall.n == 0 {
         eprintln!(
             "[eval] no queries with gold_chunk in {}; refusing to emit report \
@@ -461,7 +663,7 @@ fn print_text_report(report: &EvalReport) {
 /// exact format without capturing process stdout. Caller is responsible for
 /// the empty-fixture guard — this writer assumes the report is publishable
 /// (`overall.n > 0`).
-fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalReport) -> std::io::Result<()> {
+fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalOutput) -> std::io::Result<()> {
     writeln!(
         w,
         "=== eval results: {} (N={}) ===",
@@ -516,6 +718,35 @@ fn pct(x: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The booked-but-lost discriminator: ONLY a read-budget expiry (`Timeout`)
+    /// means the daemon booked the run and is still executing it — every other
+    /// RPC error is a pre-booking failure safe to recompute locally. Guards the
+    /// no-double-GPU rule without needing a live daemon.
+    #[cfg(unix)]
+    #[test]
+    fn dial_timeout_is_booked_but_lost_everything_else_is_local() {
+        use cqs::daemon_translate::DaemonRpcError;
+        assert!(
+            matches!(
+                classify_dial_error(DaemonRpcError::Timeout("budget".into())),
+                EvalDial::BookedButLost(_)
+            ),
+            "a read-budget expiry must be a hard error (daemon still running)"
+        );
+        for e in [
+            DaemonRpcError::SocketMissing("s".into()),
+            DaemonRpcError::Transport("t".into()),
+            DaemonRpcError::DaemonError("d".into()),
+            DaemonRpcError::BadResponse("b".into()),
+            DaemonRpcError::ResponseTooLarge("r".into()),
+        ] {
+            assert!(
+                matches!(classify_dial_error(e), EvalDial::RunLocal { .. }),
+                "a pre-booking failure must fall back to a local run"
+            );
+        }
+    }
 
     /// `pct` formats fractions consistently across the spectrum so the
     /// text report aligns in columns.
@@ -748,7 +979,7 @@ mod tests {
     /// R@5) and asserts every expected substring on the output.
     #[test]
     fn print_text_report_renders_canonical_header_and_metrics() {
-        use super::runner::{CategoryStats, EvalReport, Overall};
+        use super::runner::{CategoryStats, EvalOutput, Overall};
         use std::collections::BTreeMap;
 
         let mut by_category = BTreeMap::new();
@@ -762,7 +993,7 @@ mod tests {
             },
         );
 
-        let report = EvalReport {
+        let report = EvalOutput {
             query_count: 2,
             skipped: 0,
             elapsed_secs: 1.5,
@@ -779,6 +1010,8 @@ mod tests {
             query_file: "fixture.json".to_string(),
             limit: 20,
             category_filter: None,
+            index_substrate: IndexSubstrate::FreshBuilt.as_str().to_string(),
+            freshness: None,
         };
 
         let mut buf = Vec::new();

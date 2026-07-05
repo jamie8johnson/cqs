@@ -279,6 +279,19 @@ pub(crate) enum BatchCmd {
     Index {
         args: crate::cli::commands::index::IndexArgs,
     },
+    /// Run the eval harness (MCP `cqs_eval` + the `cmd_eval` relay dial).
+    ///
+    /// `#[command(skip)]` — NOT argv-reachable on the daemon socket. Its only
+    /// constructor is `json_args::build_batch_cmd`, driven by the `cmd_eval`
+    /// relay dial and the MCP `cqs_eval` tool. `Commands::Eval` stays
+    /// `BatchSupport::Cli`: the generic auto-forward never touches eval, so this
+    /// variant serves only the deliberate, substrate-aware dial. Holds the wire
+    /// `EvalArgs` core directly (no clap flags — save/baseline/tolerance are
+    /// adapter-owned and never ride the wire).
+    #[command(skip)]
+    Eval {
+        args: crate::cli::commands::EvalArgs,
+    },
     /// One-shot implementation context (terminal — no pipeline chaining)
     Task {
         #[command(flatten)]
@@ -474,6 +487,7 @@ macro_rules! for_each_batch_cmd {
                 (NotesUpdate, dispatch_notes_update, "notes-update", false)
                 (NotesRemove, dispatch_notes_remove, "notes-remove", false)
                 (Index,      dispatch_index,        "index",       false)
+                (Eval,       dispatch_eval,         "eval",        false)
                 (Task,       dispatch_task,         "task",        false)
                 (Review,     dispatch_review,       "review",      false)
                 (Ci,         dispatch_ci,           "ci",          false)
@@ -1225,18 +1239,21 @@ mod tests {
     }
 
     /// The `#[command(skip)]` variants — argv-UNreachable on the daemon
-    /// socket (their only constructor is `json_args::build_batch_cmd`, gated
-    /// behind `CQS_MCP_ENABLE_MUTATIONS`), so clap's `find_subcommand` does
-    /// NOT know them. They never fire kind-fallbacks (they're notes-mutation /
-    /// reindex commands, not graph cores), so their `command_name()` is inert
-    /// for telemetry attribution. Listed here so the exhaustiveness test below
-    /// excludes them DELIBERATELY: adding a new `#[command(skip)]` variant
-    /// forces a conscious edit to this slice, and dropping `#[command(skip)]`
-    /// from one of these (making it a real subcommand) trips the
-    /// `skip_set_is_genuinely_not_clap_subcommands` arm.
+    /// socket (their only constructor is `json_args::build_batch_cmd`), so
+    /// clap's `find_subcommand` does NOT know them. The `notes-*` / `index`
+    /// mutators are gated behind `CQS_MCP_ENABLE_MUTATIONS`; `eval` is an
+    /// UNgated read command reachable only through the deliberate,
+    /// substrate-aware dial (the `cmd_eval` relay + the MCP `cqs_eval` tool),
+    /// never casual argv batch. None fire kind-fallbacks (they aren't graph
+    /// cores), so their `command_name()` is inert for telemetry attribution.
+    /// Listed here so the exhaustiveness test below excludes them DELIBERATELY:
+    /// adding a new `#[command(skip)]` variant forces a conscious edit to this
+    /// slice, and dropping `#[command(skip)]` from one of these (making it a
+    /// real subcommand) trips the `skip_set_is_genuinely_not_clap_subcommands`
+    /// arm.
     #[cfg(test)]
     const CLAP_SKIPPED_COMMAND_NAMES: &[&str] =
-        &["notes-add", "notes-update", "notes-remove", "index"];
+        &["notes-add", "notes-update", "notes-remove", "index", "eval"];
 
     /// `command_name()` must return the canonical clap subcommand string for
     /// EVERY argv-reachable variant — the same name

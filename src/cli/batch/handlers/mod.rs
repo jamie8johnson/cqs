@@ -19,7 +19,8 @@ mod search;
 mod dispatch_tests;
 
 pub(super) use analysis::{
-    dispatch_ci, dispatch_dead, dispatch_health, dispatch_review, dispatch_stale, dispatch_suggest,
+    dispatch_ci, dispatch_dead, dispatch_eval, dispatch_health, dispatch_review, dispatch_stale,
+    dispatch_suggest,
 };
 pub(super) use graph::{
     dispatch_callees, dispatch_callers, dispatch_deps, dispatch_impact, dispatch_impact_diff,

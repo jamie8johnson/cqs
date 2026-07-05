@@ -3,6 +3,8 @@
 //! Handlers take a single `&XArgs` argument so the macro-driven
 //! `BatchCmd::dispatch` calls every row uniformly.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use super::super::BatchView;
@@ -182,6 +184,178 @@ pub(in crate::cli::batch) fn dispatch_suggest(
         &crate::cli::commands::SuggestArgs::default(),
     )?;
     Ok(serde_json::to_value(&output)?)
+}
+
+// ─── eval single-flight ──────────────────────────────────────────────────────
+
+/// At most one eval may run daemon-wide. A full fixture run holds real GPU time
+/// for minutes; a second concurrent submission (a fallback retry, an MCP client
+/// retry, a racing tool call) would double up on the device outside the
+/// per-embed serialization the fairness argument relies on. The flag is flipped
+/// by [`EvalSlotGuard::try_acquire`] and released on drop — including panic
+/// unwind — so a failed or panicking run never wedges the slot.
+static EVAL_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// RAII single-flight token for [`dispatch_eval`]. `try_acquire` returns `None`
+/// when an eval is already in flight; the returned guard releases the slot on
+/// drop.
+struct EvalSlotGuard;
+
+impl EvalSlotGuard {
+    /// Claim the single-flight slot, or `None` if an eval is already running.
+    fn try_acquire() -> Option<EvalSlotGuard> {
+        use std::sync::atomic::Ordering;
+        EVAL_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(EvalSlotGuard)
+    }
+}
+
+impl Drop for EvalSlotGuard {
+    fn drop(&mut self) {
+        EVAL_IN_FLIGHT.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Uniform, opaque rejection for a fixture the daemon must not read or parse.
+/// Traversal (out-of-root) AND an in-root non-JSON file both surface THIS error,
+/// so the daemon is never an oracle for whether an in-root path exists or holds
+/// valid JSON, and never echoes the host path.
+fn eval_fixture_rejected() -> anyhow::Error {
+    crate::cli::json_envelope::ClientFacingError::new(
+        crate::cli::json_envelope::ErrorCode::InvalidInput,
+        "eval query_file is not a readable in-root JSON fixture",
+    )
+    .into()
+}
+
+/// Read + parse the fixture, OWNING the read so `eval_core` never touches the
+/// path. Canonicalize + `starts_with` the served root, read the bytes, parse the
+/// JSON — ANY failure collapses to the same opaque [`eval_fixture_rejected`]
+/// error (no in-root content oracle, no path echo).
+fn read_fixture_within_root(query_file: &Path, root: &Path) -> Result<cqs::eval::schema::QuerySet> {
+    let canonical = dunce::canonicalize(query_file).map_err(|_| eval_fixture_rejected())?;
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if !canonical.starts_with(&root_canonical) {
+        return Err(eval_fixture_rejected());
+    }
+    let raw = std::fs::read_to_string(&canonical).map_err(|_| eval_fixture_rejected())?;
+    serde_json::from_str(&raw).map_err(|_| eval_fixture_rejected())
+}
+
+/// Relativize the fixture path to the served root for the wire `query_file`
+/// label — the absolute host path never rides the wire. Falls back to the bare
+/// file name if the strip fails (it should not: the guard already confirmed
+/// in-root membership before this runs).
+fn relativize_query_file(query_file: &Path, root: &Path) -> String {
+    let canonical = dunce::canonicalize(query_file).unwrap_or_else(|_| query_file.to_path_buf());
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    canonical
+        .strip_prefix(&root_canonical)
+        .ok()
+        .map(|rel| rel.to_string_lossy().to_string())
+        .or_else(|| {
+            query_file
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Run the eval harness on the daemon — the surface behind the MCP `cqs_eval`
+/// tool and the `cmd_eval` relay dial. Serves the run from the daemon's
+/// RESIDENT index (`index_substrate = "resident"`) with a single-flight cap and
+/// an in-root path guard.
+///
+/// Degradation + sharing mode: at most one eval runs daemon-wide; a second
+/// submission gets a typed retryable-busy (`unavailable`) BEFORE any read/embed
+/// work. There is NO parked freshness wait — a minutes-long park would sit on
+/// the single-flight slot; the output instead carries the watch-loop freshness
+/// snapshot so the consumer decides. A disconnected client does not abort a
+/// server-side run (bounded by single-flight). Selecting `reranker = onnx`
+/// triggers the daemon's one-time cross-encoder load, which it can already
+/// incur on the search path.
+pub(in crate::cli::batch) fn dispatch_eval(
+    ctx: &BatchView,
+    args: &crate::cli::commands::EvalArgs,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_eval", limit = args.limit).entered();
+
+    // Single-flight: refuse a second concurrent eval BEFORE any read/embed work.
+    // The guard releases the slot on drop, including on the `?` early-returns
+    // and eval_core panics below.
+    let Some(_slot) = EvalSlotGuard::try_acquire() else {
+        tracing::warn!("eval rejected: another eval is already in flight (single-flight)");
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::Unavailable,
+            "an eval is already running on this daemon; retry shortly",
+        )
+        .into());
+    };
+
+    // The guard OWNS the read + parse; any failure is the same opaque error, so
+    // eval_core receives an already-parsed set and never touches the path.
+    let set = read_fixture_within_root(&args.query_file, &ctx.root)?;
+
+    let params = crate::cli::commands::EvalCoreParams {
+        query_file_label: relativize_query_file(&args.query_file, &ctx.root),
+        category_filter: args.category.clone(),
+        limit: args.limit,
+        reranker: args.reranker,
+        substrate: crate::cli::commands::IndexSubstrate::Resident,
+        freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
+            &ctx.watch_snapshot(),
+        )),
+    };
+
+    let output = crate::cli::commands::eval_core(ctx, &set, &params)?;
+    Ok(serde_json::to_value(&output)?)
+}
+
+#[cfg(test)]
+mod eval_slot_tests {
+    use super::{EvalSlotGuard, EVAL_IN_FLIGHT};
+    use std::sync::atomic::Ordering;
+
+    /// The single-flight slot admits one holder; a second `try_acquire` while
+    /// the first is held returns `None`, and dropping the first frees it.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn single_flight_admits_one_holder() {
+        assert!(!EVAL_IN_FLIGHT.load(Ordering::SeqCst), "slot starts free");
+        let first = EvalSlotGuard::try_acquire().expect("first acquire wins");
+        assert!(
+            EvalSlotGuard::try_acquire().is_none(),
+            "second concurrent acquire must be refused"
+        );
+        drop(first);
+        assert!(
+            !EVAL_IN_FLIGHT.load(Ordering::SeqCst),
+            "dropping the sole holder frees the slot"
+        );
+        // Freed → a fresh acquire succeeds again.
+        let again = EvalSlotGuard::try_acquire().expect("slot reusable after release");
+        drop(again);
+    }
+
+    /// The slot releases even when the holding scope panics (RAII on unwind),
+    /// so a panicking eval never wedges the daemon.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn single_flight_releases_after_panic() {
+        assert!(!EVAL_IN_FLIGHT.load(Ordering::SeqCst), "slot starts free");
+        let panicked = std::panic::catch_unwind(|| {
+            let _slot = EvalSlotGuard::try_acquire().expect("acquire before panic");
+            assert!(EVAL_IN_FLIGHT.load(Ordering::SeqCst), "slot held pre-panic");
+            panic!("eval blew up mid-run");
+        });
+        assert!(panicked.is_err(), "the closure must have panicked");
+        assert!(
+            !EVAL_IN_FLIGHT.load(Ordering::SeqCst),
+            "slot must be released after a panicking run"
+        );
+    }
 }
 
 /// Runs a diff-aware review and returns results as JSON.
@@ -622,5 +796,133 @@ mod parity_tests {
         assert!(val.get("gate").is_some(), "ci output carries gate: {val}");
         assert!(val.get("token_count").is_none());
         assert!(val.get("token_budget").is_none());
+    }
+
+    /// Write an in-root fixture and return its path. The daemon path guard
+    /// resolves the fixture relative to the served root, so it must live under
+    /// `view.root` (the tempdir).
+    fn write_fixture(root: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::write(&path, body).expect("write fixture");
+        path
+    }
+
+    /// `dispatch_eval` on an EMPTY fixture is byte-equal to
+    /// `serde_json::to_value(eval_core(...))` with the daemon's substrate +
+    /// freshness posture. Embedder-free by construction (an empty query set
+    /// short-circuits before `ctx.embedder()`), so the parity holds without an
+    /// ONNX session. Serial with the single-flight slot so a concurrent slot
+    /// test can't busy-reject this dispatch.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn parity_eval_dispatch_equals_core() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        let fixture = write_fixture(&view.root, "empty_queries.json", r#"{"queries":[]}"#);
+
+        let args = crate::cli::commands::EvalArgs {
+            query_file: fixture.clone(),
+            limit: 20,
+            category: None,
+            reranker: crate::cli::args::RerankerMode::None,
+        };
+        let dispatched = super::dispatch_eval(&view, &args).expect("dispatch_eval");
+
+        // Rebuild the core call the same way the handler does (same relativized
+        // label, same resident substrate, same freshness snapshot).
+        let set: cqs::eval::schema::QuerySet =
+            serde_json::from_str(r#"{"queries":[]}"#).expect("parse empty set");
+        let params = crate::cli::commands::EvalCoreParams {
+            query_file_label: super::relativize_query_file(&fixture, &view.root),
+            category_filter: None,
+            limit: 20,
+            reranker: crate::cli::args::RerankerMode::None,
+            substrate: crate::cli::commands::IndexSubstrate::Resident,
+            freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
+                &view.watch_snapshot(),
+            )),
+        };
+        let core = crate::cli::commands::eval_core(&view, &set, &params).expect("eval_core");
+        let core_val = serde_json::to_value(&core).expect("serialize core");
+
+        assert_eq!(
+            dispatched, core_val,
+            "dispatch_eval must equal eval_core on the empty fixture"
+        );
+    }
+
+    /// The daemon dispatch stamps the RESIDENT substrate marker and a freshness
+    /// snapshot on every eval output, and relativizes the fixture path (never the
+    /// absolute host path). Serial with the single-flight slot.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn eval_dispatch_stamps_substrate_and_freshness() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        let fixture = write_fixture(&view.root, "q.json", r#"{"queries":[]}"#);
+
+        let args = crate::cli::commands::EvalArgs {
+            query_file: fixture,
+            limit: 20,
+            category: None,
+            reranker: crate::cli::args::RerankerMode::None,
+        };
+        let out = super::dispatch_eval(&view, &args).expect("dispatch_eval");
+
+        assert_eq!(
+            out["index_substrate"], "resident",
+            "daemon eval must mark the resident substrate: {out}"
+        );
+        assert!(
+            out.get("freshness").is_some(),
+            "daemon eval must carry a freshness snapshot: {out}"
+        );
+        // The label is relativized to the served root, not the absolute host path.
+        assert_eq!(
+            out["query_file"], "q.json",
+            "wire query_file must be relativized to the served root: {out}"
+        );
+    }
+
+    /// The in-root path guard is not a content oracle. A traversal (out-of-root)
+    /// fixture AND an in-root file that is NOT valid JSON produce the SAME opaque
+    /// rejection — the daemon never reveals whether an in-root path exists or
+    /// holds valid JSON, and never echoes the host path.
+    #[test]
+    fn eval_fixture_guard_traversal_and_non_json_are_indistinguishable() {
+        let dir = TempDir::new().expect("root tempdir");
+        let root = dir.path();
+
+        // In-root, valid → Ok.
+        let good = write_fixture(root, "good.json", r#"{"queries":[]}"#);
+        assert!(
+            super::read_fixture_within_root(&good, root).is_ok(),
+            "an in-root valid fixture must read"
+        );
+
+        // In-root, NOT JSON → opaque error.
+        let bad = write_fixture(root, "bad.txt", "definitely not json {{{");
+        let non_json_err = super::read_fixture_within_root(&bad, root)
+            .expect_err("in-root non-JSON must reject")
+            .to_string();
+
+        // Out-of-root (a valid JSON fixture in a sibling tree) → opaque error.
+        let outside = TempDir::new().expect("outside tempdir");
+        let escaped = write_fixture(outside.path(), "q.json", r#"{"queries":[]}"#);
+        let traversal_err = super::read_fixture_within_root(&escaped, root)
+            .expect_err("out-of-root must reject")
+            .to_string();
+
+        assert_eq!(
+            non_json_err, traversal_err,
+            "an in-root non-JSON file and a traversal must yield the SAME opaque error \
+             (no content oracle): non_json={non_json_err:?} traversal={traversal_err:?}"
+        );
+        // And the message must not echo either host path.
+        assert!(
+            !non_json_err.contains(&bad.to_string_lossy().to_string())
+                && !traversal_err.contains(&escaped.to_string_lossy().to_string()),
+            "the opaque error must not echo the host path: {non_json_err:?}"
+        );
     }
 }
