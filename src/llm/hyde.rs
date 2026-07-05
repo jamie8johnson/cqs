@@ -58,7 +58,9 @@ pub fn hyde_query_pass(
             super::provider::BatchSubmitItem {
                 custom_id: ec.content_hash,
                 content,
-                context: ec.signature,
+                context: super::provider::PromptContext::Hyde {
+                    signature: ec.signature,
+                },
                 language: ec.language,
             }
         })
