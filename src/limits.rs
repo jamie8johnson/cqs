@@ -566,6 +566,14 @@ pub fn serve_chunk_detail_tests_limit() -> usize {
     parse_env_usize_clamped("CQS_SERVE_CHUNK_DETAIL_TESTS", 20, 1, 1_000)
 }
 
+/// Per-section cap on `/api/impact` (direct callers / transitive callers /
+/// affected tests / type-impacted). Default 200 — enough to highlight a large
+/// blast radius in the callers hierarchy while bounding the JSON payload a
+/// single unauth request can materialise. Env: `CQS_SERVE_IMPACT_SECTION`.
+pub fn serve_impact_section_limit() -> usize {
+    parse_env_usize_clamped("CQS_SERVE_IMPACT_SECTION", 200, 1, 10_000)
+}
+
 /// Cap on concurrent `spawn_blocking` jobs in `cqs serve`. Default tracks
 /// the SQLite connection pool size (default
 /// 4 from `CQS_MAX_CONNECTIONS`) so the permit budget can't outrun the pool

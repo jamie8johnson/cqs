@@ -752,6 +752,134 @@ pub(crate) fn build_hierarchy(
     Ok(Some(response))
 }
 
+/// One entry in an impact section (direct caller / transitive caller / affected
+/// test / type-impacted). Carries only what the impact analysis produces —
+/// `(name, file, line)` — and deliberately NO chunk id: impact resolves by name
+/// against the call graph, not by chunk id, so the frontend matches these
+/// against hierarchy nodes by the `(file, name)` composite key. `file` is
+/// forward-slash normalized (via `crate::normalize_path`) to match the
+/// hierarchy view's relative `origin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ImpactNode {
+    pub name: String,
+    pub file: String,
+    pub line: u32,
+}
+
+/// Top-level response for `GET /api/impact/{id}` — the "what breaks if I change
+/// this" enrichment for the hierarchy-callers view.
+///
+/// `callers` + `transitive_callers` are the red-highlight set (production code
+/// that transitively depends on the target); `affected_tests` is the yellow set
+/// (the union of tests reaching the target). `type_impacted` and `degraded` have
+/// no place in the callers tree itself but are surfaced so the UI can show the
+/// full blast radius and warn when the analysis was incomplete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ImpactResponse {
+    /// Echo of the resolved root chunk id (the path param).
+    pub root: String,
+    /// Resolved function name the impact analysis ran against.
+    pub name: String,
+    /// Direct callers (depth 1).
+    pub callers: Vec<ImpactNode>,
+    /// Transitive callers (depth 2..=`depth`).
+    pub transitive_callers: Vec<ImpactNode>,
+    /// Union of tests reaching the target across the transitive set.
+    pub affected_tests: Vec<ImpactNode>,
+    /// Functions impacted via shared type dependencies (one-hop type expansion).
+    pub type_impacted: Vec<ImpactNode>,
+    /// True when the analysis degraded (a batch fetch failed): some sections may
+    /// be silently incomplete.
+    pub degraded: bool,
+}
+
+/// Build the `GET /api/impact/{id}` payload: resolve the chunk id to its name,
+/// run the shared `cqs::analyze_impact` in-process (no embedder/vector/SPLADE),
+/// cap each section, and project to the wire shape.
+///
+/// Returns `None` for an unknown chunk id (the handler maps it to 404). Paths in
+/// the analysis are relativized against `root`, then forward-slash normalized so
+/// they align with the hierarchy view's relative `origin` for `(file, name)`
+/// matching. Each section is capped at `serve_impact_section_limit()` to bound
+/// the payload a single unauth request can materialise.
+pub(crate) fn build_impact(
+    store: &Store<ReadOnly>,
+    root: &Path,
+    root_id: &str,
+    depth: u32,
+) -> Result<Option<ImpactResponse>, ServeError> {
+    let _span = tracing::info_span!("build_impact", root_id = %root_id, depth).entered();
+
+    // Resolve root chunk_id → name (404 if it doesn't exist) — same
+    // root-resolution step as `build_hierarchy`.
+    let Some(name) = store.serve_chunk_name_by_id(root_id)? else {
+        tracing::info!(root_id, "build_impact: root chunk not found");
+        return Ok(None);
+    };
+
+    let opts = crate::ImpactOptions {
+        depth: depth as usize,
+        include_types: true,
+    };
+    let mut result = crate::analyze_impact(store, &name, root, &opts).map_err(|e| {
+        tracing::warn!(target = %name, error = %e, "build_impact: analyze_impact failed");
+        ServeError::Internal(format!("impact analysis failed: {e}"))
+    })?;
+
+    // Bound each section. Unlike the CLI's `--limit` (which reports a
+    // pre-truncation total), the serve enrichment only needs a hard DoS ceiling
+    // — the frontend highlight degrades gracefully if a pathological blast
+    // radius is clipped.
+    let cap = crate::limits::serve_impact_section_limit();
+    result.callers.truncate(cap);
+    result.transitive_callers.truncate(cap);
+    result.tests.truncate(cap);
+    result.type_impacted.truncate(cap);
+
+    let to_node = |name: &str, file: &Path, line: u32| ImpactNode {
+        name: name.to_string(),
+        file: crate::normalize_path(file),
+        line,
+    };
+
+    let response = ImpactResponse {
+        root: root_id.to_string(),
+        name,
+        callers: result
+            .callers
+            .iter()
+            .map(|c| to_node(&c.name, &c.file, c.line))
+            .collect(),
+        transitive_callers: result
+            .transitive_callers
+            .iter()
+            .map(|c| to_node(&c.name, &c.file, c.line))
+            .collect(),
+        affected_tests: result
+            .tests
+            .iter()
+            .map(|t| to_node(&t.name, &t.file, t.line))
+            .collect(),
+        type_impacted: result
+            .type_impacted
+            .iter()
+            .map(|ti| to_node(&ti.name, &ti.file, ti.line))
+            .collect(),
+        degraded: result.degraded,
+    };
+
+    tracing::info!(
+        callers = response.callers.len(),
+        transitive = response.transitive_callers.len(),
+        tests = response.affected_tests.len(),
+        type_impacted = response.type_impacted.len(),
+        degraded = response.degraded,
+        "build_impact: built response"
+    );
+
+    Ok(Some(response))
+}
+
 /// Build the embedding cluster response — every chunk that has UMAP coords,
 /// annotated with caller/callee degree counts so the frontend can size and
 /// elevate nodes by importance.

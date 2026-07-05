@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use super::data::{
     ChunkDetail, ClusterResponse, EvalGoldResponse, GraphResponse, HierarchyDirection,
-    HierarchyResponse, NodeRef, SearchResponse, StatsResponse,
+    HierarchyResponse, ImpactResponse, NodeRef, SearchResponse, StatsResponse,
 };
 use super::error::ServeError;
 use super::AppState;
@@ -162,6 +162,15 @@ pub(crate) struct HierarchyQuery {
 
 const DEFAULT_HIERARCHY_DEPTH: u32 = 5;
 const MAX_HIERARCHY_DEPTH: u32 = 10;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImpactQuery {
+    /// Transitive-caller BFS depth. Defaults to `DEFAULT_HIERARCHY_DEPTH` and is
+    /// clamped to 1..=`MAX_HIERARCHY_DEPTH` — the same bounds as the hierarchy
+    /// view this enriches, so the impact set aligns with the tree the user sees.
+    #[serde(default)]
+    pub depth: Option<u32>,
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ClusterQuery {
@@ -402,7 +411,7 @@ async fn search_legs_dispatch(
 /// index, so the frontend can fetch `/api/search_legs` per query and read the
 /// honest per-query R@K delta (gold's fused-leg rank vs dense-alone rank).
 ///
-/// Reads the fixtures from the project root passed at launch (`state.eval_root`).
+/// Reads the fixtures from the project root passed at launch (`state.root`).
 /// Returns a clean 503 when no root was resolved (the route is structurally
 /// unavailable) or when the fixtures are absent at that root — the tour degrades
 /// to "no eval set here", never a fake empty success.
@@ -411,7 +420,7 @@ pub(crate) async fn eval_gold(
 ) -> Result<Json<EvalGoldResponse>, ServeError> {
     tracing::info!("serve::eval_gold");
 
-    let root = match &state.eval_root {
+    let root = match &state.root {
         Some(r) => r.clone(),
         None => {
             return Err(ServeError::ServiceUnavailable(
@@ -462,6 +471,53 @@ pub(crate) async fn hierarchy(
     let id_clone = id.clone();
     let response = with_blocking(&state, "hierarchy", move |store| {
         super::data::build_hierarchy(store, &id_clone, direction, depth)
+    })
+    .await?;
+
+    response
+        .map(Json)
+        .ok_or_else(|| ServeError::NotFound(format!("chunk: {id}")))
+}
+
+/// `GET /api/impact/{id}?depth=N` — the "what breaks if I change this"
+/// enrichment layered on the hierarchy-callers view.
+///
+/// Runs the shared impact analysis (`cqs::analyze_impact`) in-process against
+/// the read-only store — no embedder / vector / SPLADE, so no daemon relay is
+/// needed (unlike `/api/search_legs`). Returns the direct + transitive callers
+/// (the red-highlight set), the union of affected tests (the yellow set),
+/// type-impacted functions, and the `degraded` flag. The frontend matches these
+/// against the hierarchy nodes by `(file, name)` to colour the tree.
+///
+/// 404 for an unknown chunk id; 503 when serve was not launched from a project
+/// root (impact paths can't be relativized to align with the tree) — the same
+/// structural-unavailability contract `/api/eval_gold` uses.
+pub(crate) async fn impact(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<ImpactQuery>,
+) -> Result<Json<ImpactResponse>, ServeError> {
+    let depth = params
+        .depth
+        .unwrap_or(DEFAULT_HIERARCHY_DEPTH)
+        .clamp(1, MAX_HIERARCHY_DEPTH);
+
+    tracing::info!(chunk_id = %id, depth, "serve::impact");
+
+    let root = match &state.root {
+        Some(r) => r.clone(),
+        None => {
+            return Err(ServeError::ServiceUnavailable(
+                "impact enrichment unavailable: cqs serve was not launched from a project root \
+                 (impact caller/test paths can't be relativized to the served index)"
+                    .to_string(),
+            ));
+        }
+    };
+
+    let id_clone = id.clone();
+    let response = with_blocking(&state, "impact", move |store| {
+        super::data::build_impact(store, root.as_ref(), &id_clone, depth)
     })
     .await?;
 

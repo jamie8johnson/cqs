@@ -98,10 +98,11 @@ fn fixture_state() -> Fixture {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
-            // The eval-gold tour route has its own dedicated tests that supply
-            // a temp `eval_root`; the handler-shape fixtures leave it unset so
-            // `/api/eval_gold` 503s (its structurally-unavailable path).
-            eval_root: None,
+            // The eval-gold tour + impact routes have their own dedicated tests
+            // that supply a temp `root`; the handler-shape fixtures leave it
+            // unset so `/api/eval_gold` and `/api/impact` 503 (their
+            // structurally-unavailable path).
+            root: None,
         }),
         _dir: Some(dir),
     }
@@ -244,10 +245,11 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
-            // The eval-gold tour route has its own dedicated tests that supply
-            // a temp `eval_root`; the handler-shape fixtures leave it unset so
-            // `/api/eval_gold` 503s (its structurally-unavailable path).
-            eval_root: None,
+            // The eval-gold tour + impact routes have their own dedicated tests
+            // that supply a temp `root`; the handler-shape fixtures leave it
+            // unset so `/api/eval_gold` and `/api/impact` 503 (their
+            // structurally-unavailable path).
+            root: None,
         }),
         _dir: Some(dir),
     }
@@ -332,10 +334,11 @@ fn single_chunk_fixture(content: &str, vendored: bool) -> (Fixture, String) {
             // No daemon socket in the handler-shape tests — mechanism mode
             // (`/api/search_legs`) is exercised by its own dedicated tests.
             daemon_socket: None,
-            // The eval-gold tour route has its own dedicated tests that supply
-            // a temp `eval_root`; the handler-shape fixtures leave it unset so
-            // `/api/eval_gold` 503s (its structurally-unavailable path).
-            eval_root: None,
+            // The eval-gold tour + impact routes have their own dedicated tests
+            // that supply a temp `root`; the handler-shape fixtures leave it
+            // unset so `/api/eval_gold` and `/api/impact` 503 (their
+            // structurally-unavailable path).
+            root: None,
         }),
         _dir: Some(dir),
     };
@@ -663,6 +666,7 @@ async fn index_html_loads_view_modules() {
         "view-2d",
         "view-3d",
         "view-cluster",
+        "view-impact",
         "hierarchy-controls",
         "hierarchy-direction",
         "hierarchy-depth",
@@ -2604,7 +2608,7 @@ fn auth_banner_non_tty_omits_token_and_hints() {
 // ─── /api/eval_gold (Stage-2b tour driver) ───────────────────────────────────
 
 /// Build a fixture whose store carries chunks at the given `(origin, name)`
-/// pairs and whose `eval_root` points at a temp dir holding `eval_json` as
+/// pairs and whose `root` points at a temp dir holding `eval_json` as
 /// `evals/queries/v3_test.v2.json`. Returns the `Fixture` (owns the store dir +
 /// drop discipline) and the eval-root `TempDir` (caller keeps it alive for the
 /// request). Separate dirs because `Fixture` holds only one.
@@ -2669,7 +2673,7 @@ fn eval_gold_fixture(chunks: &[(&str, &str)], eval_json: &str) -> (Fixture, Temp
             )),
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             daemon_socket: None,
-            eval_root: Some(Arc::new(eval_dir.path().to_path_buf())),
+            root: Some(Arc::new(eval_dir.path().to_path_buf())),
         }),
         _dir: Some(store_dir),
     };
@@ -2768,7 +2772,7 @@ async fn eval_gold_resolves_golds_and_drops_unusable() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn eval_gold_503_when_no_root() {
-    // The default handler-shape fixture leaves eval_root unset → structurally
+    // The default handler-shape fixture leaves root unset → structurally
     // unavailable → clean 503, never a 500 or an empty 200.
     let fixture = fixture_state();
     let app = test_router(fixture.state());
@@ -2778,7 +2782,7 @@ async fn eval_gold_503_when_no_root() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn eval_gold_503_when_fixtures_absent() {
-    // eval_root is set but the dir holds no evals/queries fixtures → 503, so the
+    // root is set but the dir holds no evals/queries fixtures → 503, so the
     // tour degrades to "no eval set here" rather than a misleading empty success.
     let store_dir = TempDir::new().expect("store tempdir");
     let db_path = store_dir.path().join(crate::INDEX_DB_FILENAME);
@@ -2800,11 +2804,279 @@ async fn eval_gold_503_when_fixtures_absent() {
             )),
             last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             daemon_socket: None,
-            eval_root: Some(Arc::new(empty_root.path().to_path_buf())),
+            root: Some(Arc::new(empty_root.path().to_path_buf())),
         }),
         _dir: Some(store_dir),
     };
     let app = test_router(fixture.state());
     let (status, _json) = get_json(app, "/api/eval_gold").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ─── /api/impact ("what breaks if I change this" enrichment) ──────────────────
+
+/// Clone `state` with its project root set to a fixed path. `build_impact` uses
+/// the root only to `strip_prefix` display paths (it never touches the
+/// filesystem), and the seeded chunk origins are already relative, so any root
+/// value leaves them relative — matching the hierarchy origins the frontend
+/// keys on. The route 503s when root is `None`, so the shape/positive tests
+/// need it `Some`.
+fn state_with_root(mut state: AppState) -> AppState {
+    state.root = Some(Arc::new(PathBuf::from("/nonexistent-serve-root")));
+    state
+}
+
+/// Percent-encode a chunk id for a single path segment. Chunk ids embed the
+/// origin (`src/foo.rs:…`), so the `/` must be `%2F` or the `{id}` route
+/// captures only the first segment and 404s — the frontend does the same via
+/// `encodeURIComponent`.
+fn enc_id(id: &str) -> String {
+    id.replace('/', "%2F")
+}
+
+/// Seed a store with a target function, a regular caller, and a test that calls
+/// the target — enough to exercise `build_impact`'s direct-caller set AND the
+/// union of affected tests. Returns the fixture (root preset) and the target
+/// chunk id. The `chunk_type = 'test'` tag makes the test chunk detectable by
+/// `find_test_chunks` regardless of name/path.
+fn impact_fixture() -> (Fixture, String) {
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join(crate::INDEX_DB_FILENAME);
+    let path_for_setup = db_path.clone();
+    let (ro, target_id) = std::thread::spawn(move || {
+        let store = Store::open(&path_for_setup).expect("open RW");
+        store.init(&ModelInfo::default()).expect("init");
+        let dim = store.dim();
+
+        let seed = |name: &str, file: &str, kind: ChunkType, idx: usize| -> String {
+            let content = format!("fn {name}() {{ target_fn(); }}");
+            let hash = blake3::hash(format!("{file}:{name}").as_bytes())
+                .to_hex()
+                .to_string();
+            let id = format!("{file}:1:{}:{idx}", &hash[..8]);
+            let chunk = Chunk {
+                id: id.clone(),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: kind,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content,
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                byte_start: 0,
+                content_hash: hash,
+                canonical_hash: String::new(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+            };
+            let mut v = vec![0.0f32; dim];
+            if !v.is_empty() {
+                v[idx % dim] = 1.0;
+            }
+            store
+                .upsert_chunk(&chunk, &Embedding::new(v), Some(100))
+                .unwrap();
+            id
+        };
+
+        let target_id = seed("target_fn", "src/target.rs", ChunkType::Function, 0);
+        seed("caller_fn", "src/caller.rs", ChunkType::Function, 1);
+        seed(
+            "test_covers_target",
+            "tests/impact_target_test.rs",
+            ChunkType::Test,
+            2,
+        );
+
+        store
+            .block_on(async {
+                for (file, caller, callee) in [
+                    ("src/caller.rs", "caller_fn", "target_fn"),
+                    (
+                        "tests/impact_target_test.rs",
+                        "test_covers_target",
+                        "target_fn",
+                    ),
+                ] {
+                    sqlx::query(
+                        "INSERT INTO function_calls \
+                         (file, caller_name, callee_name, caller_line, call_line) \
+                         VALUES (?, ?, ?, 1, 2)",
+                    )
+                    .bind(file)
+                    .bind(caller)
+                    .bind(callee)
+                    .execute(store.pool())
+                    .await?;
+                }
+                Ok::<(), sqlx::Error>(())
+            })
+            .expect("seed edges");
+
+        drop(store);
+        let ro = Store::open_readonly(&path_for_setup).expect("open RO");
+        (ro, target_id)
+    })
+    .join()
+    .expect("OS thread join");
+
+    let fixture = Fixture {
+        state: Some(AppState {
+            store: Arc::new(ro),
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(
+                crate::limits::serve_blocking_permits(),
+            )),
+            last_request_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            daemon_socket: None,
+            root: Some(Arc::new(PathBuf::from("/nonexistent-serve-root"))),
+        }),
+        _dir: Some(dir),
+    };
+    (fixture, target_id)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn impact_route_returns_shape_for_known_fn() {
+    // 3-ring func_0000 → func_0001 → func_0002 → func_0000. Impact on func_0001:
+    // direct caller func_0000; transitive callers reach func_0002 at depth 2.
+    let fixture = populated_fixture(3, false);
+    let state = state_with_root(fixture.state());
+    let target = chunk_id_for_name(&state, "func_0001");
+    let app = test_router(state);
+
+    let (status, json) = get_json(app, &format!("/api/impact/{}", enc_id(&target))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Every top-level enrichment key is present.
+    for key in [
+        "root",
+        "name",
+        "callers",
+        "transitive_callers",
+        "affected_tests",
+        "type_impacted",
+        "degraded",
+    ] {
+        assert!(
+            json.get(key).is_some(),
+            "impact response missing key `{key}`"
+        );
+    }
+    assert_eq!(json["name"], "func_0001", "resolved target name");
+    assert_eq!(json["root"], target, "root echoes the chunk id");
+
+    let callers: Vec<&str> = json["callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(callers, vec!["func_0000"], "direct caller is func_0000");
+
+    // Transitive callers (depth 2..) reach func_0002 (calls func_0000 → func_0001).
+    let transitive: Vec<&str> = json["transitive_callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        transitive.contains(&"func_0002"),
+        "transitive callers should reach func_0002, got {transitive:?}"
+    );
+
+    // No test-kind chunks seeded → affected_tests empty (not absent).
+    assert!(
+        json["affected_tests"].as_array().unwrap().is_empty(),
+        "no tests seeded → empty affected_tests"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn impact_route_unions_affected_tests_and_callers() {
+    // Fixture: caller_fn AND test_covers_target both call target_fn directly.
+    // Impact on target_fn should list both as callers and surface the test in
+    // the affected-tests union.
+    let (fixture, target_id) = impact_fixture();
+    let app = test_router(fixture.state());
+
+    let (status, json) = get_json(app, &format!("/api/impact/{}", enc_id(&target_id))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["name"], "target_fn");
+
+    let caller_names: std::collections::HashSet<&str> = json["callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        caller_names.contains("caller_fn") && caller_names.contains("test_covers_target"),
+        "both direct callers present, got {caller_names:?}"
+    );
+
+    let tests: Vec<&str> = json["affected_tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tests,
+        vec!["test_covers_target"],
+        "the test reaching target_fn is in the affected-tests union"
+    );
+
+    // Each impact node carries (name, file, line) — the (file, name) key the
+    // frontend matches against hierarchy nodes.
+    let test_node = &json["affected_tests"][0];
+    assert_eq!(test_node["file"], "tests/impact_target_test.rs");
+    assert!(test_node["line"].is_number(), "line present for matching");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn impact_route_unknown_id_returns_404() {
+    // Populated store, valid root, but the id matches no chunk → 404 (not 500).
+    let fixture = populated_fixture(3, false);
+    let app = test_router(state_with_root(fixture.state()));
+    let (status, _json) = get_json(app, "/api/impact/no-such-chunk-id").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn impact_route_503_when_no_root() {
+    // The default handler-shape fixture leaves root unset → impact can't
+    // relativize its paths to the served index → clean 503, never a 500.
+    let fixture = fixture_state();
+    let app = test_router(fixture.state());
+    let (status, _json) = get_json(app, "/api/impact/some-id").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn impact_route_is_token_gated() {
+    // Auth is router-wide via build_router, so the new route inherits the
+    // per-launch token gate for free. Assert an un-credentialed request 401s
+    // before the handler runs (root state is irrelevant — auth rejects first).
+    let fixture = fixture_state();
+    let token = super::AuthToken::try_from_string("test-token-fixed")
+        .expect("test token must be valid alphabet");
+    let app = test_router_with_auth(fixture.state(), token);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/impact/anything")
+                .header("host", "127.0.0.1:8080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

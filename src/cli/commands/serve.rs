@@ -119,10 +119,12 @@ pub(crate) fn cmd_serve(port: u16, bind: String, open: bool, no_auth: bool) -> R
     #[cfg(not(unix))]
     let daemon_socket: Option<std::path::PathBuf> = None;
 
-    // The eval-gold tour (`/api/eval_gold`) reads `evals/queries/*.json` relative
-    // to the project root so the fixtures stay fresh with the checkout. Pass the
-    // same root the index was resolved from; the route 503s cleanly when the
-    // fixtures aren't present there.
+    // The project root, passed to two routes: `/api/eval_gold` reads
+    // `evals/queries/*.json` relative to it so the fixtures stay fresh with the
+    // checkout, and `/api/impact` relativizes its caller/test paths against it so
+    // they align with the hierarchy view's relative origins. Pass the same root
+    // the index was resolved from; both routes 503 cleanly when it can't serve
+    // them (fixtures absent / no root).
     cqs::serve::run_server(store, bind_addr, false, auth, daemon_socket, Some(root))
 }
 

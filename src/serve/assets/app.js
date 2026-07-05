@@ -19,6 +19,7 @@
   const $toggle2D = document.getElementById("view-2d");
   const $toggle3D = document.getElementById("view-3d");
   const $toggleCluster = document.getElementById("view-cluster");
+  const $toggleImpact = document.getElementById("view-impact");
   const $hierarchyControls = document.getElementById("hierarchy-controls");
   const $directionGroup = document.getElementById("hierarchy-direction");
   const $depthGroup = document.getElementById("hierarchy-depth");
@@ -29,10 +30,15 @@
   const $goldTour = document.getElementById("gold-tour");
 
   // --- View registry ---
+  // `impact` deliberately reuses the hierarchy renderer: impact is not a fourth
+  // graph view, it's the callers-hierarchy BFS tree with the "what breaks"
+  // enrichment (red transitive callers, yellow affected tests). The module reads
+  // `context.view === "impact"` in loadData to switch on the enrichment.
   const VIEWS = {
     "2d": () => window.CqsCallgraph2D,
     "3d": () => window.CqsCallgraph3D,
     hierarchy: () => window.CqsHierarchy3D,
+    impact: () => window.CqsHierarchy3D,
     cluster: () => window.CqsCluster3D,
   };
 
@@ -50,7 +56,8 @@
   const MAX_NODES = parseInt(url.searchParams.get("max") || "300", 10);
   function pickInitialView() {
     const v = url.searchParams.get("view");
-    if (v === "3d" || v === "hierarchy" || v === "cluster") return v;
+    if (v === "3d" || v === "hierarchy" || v === "impact" || v === "cluster")
+      return v;
     return "2d";
   }
   const INITIAL_VIEW = pickInitialView();
@@ -105,6 +112,8 @@
     if ($toggle3D) $toggle3D.classList.toggle("active", viewName === "3d");
     if ($toggleCluster)
       $toggleCluster.classList.toggle("active", viewName === "cluster");
+    if ($toggleImpact)
+      $toggleImpact.classList.toggle("active", viewName === "impact");
   }
 
   function showClusterControls(show) {
@@ -112,9 +121,15 @@
     $clusterControls.style.display = show ? "inline-flex" : "none";
   }
 
-  function showHierarchyControls(show) {
+  // The hierarchy controls (direction + depth) are shared by the hierarchy and
+  // impact views. Impact is inherently "callers" (what breaks if I change this),
+  // so its direction toggle is hidden — only depth remains meaningful.
+  function showHierarchyControls(show, isImpact) {
     if (!$hierarchyControls) return;
     $hierarchyControls.style.display = show ? "inline-flex" : "none";
+    if ($directionGroup) {
+      $directionGroup.style.display = show && isImpact ? "none" : "";
+    }
   }
 
   function syncUrlView(viewName) {
@@ -124,9 +139,9 @@
     const stripIfNotInView = (key, owners) => {
       if (!owners.includes(viewName)) u.searchParams.delete(key);
     };
-    stripIfNotInView("root", ["hierarchy"]);
-    stripIfNotInView("direction", ["hierarchy"]);
-    stripIfNotInView("depth", ["hierarchy"]);
+    stripIfNotInView("root", ["hierarchy", "impact"]);
+    stripIfNotInView("direction", ["hierarchy", "impact"]);
+    stripIfNotInView("depth", ["hierarchy", "impact"]);
     stripIfNotInView("color", ["cluster"]);
 
     if (viewName === "2d") {
@@ -151,14 +166,18 @@
   }
 
   function setHierarchyParam(key, value) {
+    // Stay in impact mode when the depth control is used there; otherwise this
+    // is the plain hierarchy view. (Impact hides its direction group, so only
+    // depth reaches here in impact mode.)
+    const view = currentViewName === "impact" ? "impact" : "hierarchy";
     const u = new URL(window.location.href);
-    u.searchParams.set("view", "hierarchy");
+    u.searchParams.set("view", view);
     u.searchParams.set(key, value);
     window.history.replaceState({}, "", u.toString());
     syncHierarchyControls();
-    // Force re-fetch of hierarchy data on re-activate.
+    // Force re-fetch of hierarchy/impact data on re-activate.
     currentGraphData = null;
-    activateView("hierarchy");
+    activateView(view);
   }
 
   function syncClusterControls() {
@@ -236,9 +255,10 @@
     currentView = newView;
     currentViewName = viewName;
     setActiveToggle(viewName);
-    showHierarchyControls(viewName === "hierarchy");
+    const isHierarchyLike = viewName === "hierarchy" || viewName === "impact";
+    showHierarchyControls(isHierarchyLike, viewName === "impact");
     showClusterControls(viewName === "cluster");
-    if (viewName === "hierarchy") syncHierarchyControls();
+    if (isHierarchyLike) syncHierarchyControls();
     if (viewName === "cluster") syncClusterControls();
     syncUrlView(viewName);
 
@@ -262,6 +282,7 @@
         dataForRender = await currentView.loadData({
           url: new URL(window.location.href),
           maxNodes: MAX_NODES,
+          view: viewName,
         });
       } catch (e) {
         setStatus(`loadData error: ${e.message}`);
@@ -366,6 +387,7 @@
         <div class="sidebar-actions">
           <button type="button" class="btn-link" data-action="hierarchy-callees" data-id="${escapeHtml(c.id)}">view callees as hierarchy ↓</button>
           <button type="button" class="btn-link" data-action="hierarchy-callers" data-id="${escapeHtml(c.id)}">view callers as hierarchy ↑</button>
+          <button type="button" class="btn-link" data-action="impact" data-id="${escapeHtml(c.id)}">what breaks if I change this ⚠</button>
         </div>
         ${c.doc ? `<h4>doc</h4><pre>${escapeHtml(c.doc)}</pre>` : ""}
         <h4>source preview</h4>
@@ -389,6 +411,11 @@
           const targetId = btn.getAttribute("data-id");
           const direction = action === "hierarchy-callers" ? "callers" : "callees";
           openHierarchy(targetId, direction);
+        });
+      });
+      $sidebar.querySelectorAll("button[data-action='impact']").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          openImpact(btn.getAttribute("data-id"));
         });
       });
     } catch (e) {
@@ -440,6 +467,21 @@
     activateView("hierarchy");
   }
 
+  // Open the impact enrichment for a chunk: the callers hierarchy with the
+  // "what breaks" overlay. Impact is inherently callers-direction.
+  function openImpact(rootId) {
+    const u = new URL(window.location.href);
+    u.searchParams.set("view", "impact");
+    u.searchParams.set("root", rootId);
+    u.searchParams.set("direction", "callers");
+    if (!u.searchParams.get("depth")) {
+      u.searchParams.set("depth", "5");
+    }
+    window.history.replaceState({}, "", u.toString());
+    currentGraphData = null; // impact uses its own loadData
+    activateView("impact");
+  }
+
   // Wire toggle buttons + search input
   if ($toggle2D) {
     $toggle2D.addEventListener("click", () => activateView("2d"));
@@ -449,6 +491,9 @@
   }
   if ($toggleCluster) {
     $toggleCluster.addEventListener("click", () => activateView("cluster"));
+  }
+  if ($toggleImpact) {
+    $toggleImpact.addEventListener("click", () => activateView("impact"));
   }
   // Hierarchy controls (depth + direction). Buttons carry data-attrs that
   // map to URL params; clicking re-activates the view to refetch.
