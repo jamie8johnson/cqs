@@ -84,7 +84,16 @@ use super::Parser;
 /// itself. A byte-identical file whose first def carried a leaked banner loses
 /// it from `doc` (and thus its embedding text), so a refresh is required even
 /// when the file's bytes are unchanged.
-pub const PARSER_VERSION: u32 = 16;
+/// 17: a method whose node kind matches `method_node_kinds` but whose language
+/// has no `receiver_type_extractor` now recovers its enclosing container by
+/// falling through to the `method_containers` parent walk (previously it
+/// early-returned with `parent_type_name = None`). Ruby `singleton_method`s
+/// (`def self.x` inside a `class`/`module`) and Structured-Text `method_definition`s
+/// (a `METHOD` inside a `FUNCTION_BLOCK`) now carry their container's name. A
+/// byte-identical Ruby/ST file re-parsed under v17 gains `parent_type_name` on
+/// those method chunks where it was `None` before, so a refresh is required
+/// even when the file's bytes are unchanged.
+pub const PARSER_VERSION: u32 = 17;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -1082,9 +1091,17 @@ fn infer_chunk_type(
 ) -> (ChunkType, Option<String>) {
     let def = language.def();
 
-    // Check if the node itself is a method kind (e.g., Go's "method_declaration")
+    // Node is itself a method kind (e.g. Go's "method_declaration"). Prefer the
+    // language's receiver extractor; when it is absent or yields nothing, fall
+    // through to the container walk so a method sitting inside a walkable
+    // container (Ruby `class`/`module`, ST `function_block_definition`) still
+    // recovers its parent type. The chunk stays a `Method` regardless of walk
+    // outcome — a method-kind node is a method even where no container is found.
     if def.method_node_kinds.contains(&node.kind()) {
-        let parent_type = def.receiver_type_extractor.and_then(|ex| ex(node, source));
+        let parent_type = def
+            .receiver_type_extractor
+            .and_then(|ex| ex(node, source))
+            .or_else(|| walk_method_container(node, language, source).flatten());
         return (ChunkType::Method, parent_type);
     }
 
@@ -1096,17 +1113,39 @@ fn infer_chunk_type(
         }
     }
 
-    // Walk parents looking for method containers (e.g., impl blocks, class bodies)
+    // Walk parents looking for method containers (e.g., impl blocks, class bodies).
+    // A container ancestor makes this a `Method`; its absence leaves a plain
+    // `Function`.
+    match walk_method_container(node, language, source) {
+        Some(parent_type) => (ChunkType::Method, parent_type),
+        None => (ChunkType::Function, None),
+    }
+}
+
+/// Walk the ancestor chain for the nearest `method_containers` node and return
+/// its extracted type name.
+///
+/// The nested `Option` is load-bearing. The outer layer answers *whether a
+/// container ancestor exists*: `Some(_)` when the node sits inside a
+/// `method_containers` kind, `None` when it does not — that distinction is what
+/// separates a `Method` from a plain `Function` on the non-method-kind path.
+/// The inner layer is the container's own type name, itself `Option` because
+/// name extraction can fail (a container whose `name` field is absent yields
+/// `Some(None)` — found, but unnamed).
+fn walk_method_container(
+    node: tree_sitter::Node,
+    language: Language,
+    source: &str,
+) -> Option<Option<String>> {
+    let def = language.def();
     let mut current = node.parent();
     while let Some(parent) = current {
         if def.method_containers.contains(&parent.kind()) {
-            let parent_type = extract_container_type_name(parent, language, source);
-            return (ChunkType::Method, parent_type);
+            return Some(extract_container_type_name(parent, language, source));
         }
         current = parent.parent();
     }
-
-    (ChunkType::Function, None)
+    None
 }
 
 /// Extract type name from a method container node.
@@ -2278,28 +2317,57 @@ func (p Point) Distance() float64 { return 0.0 }
             assert_eq!(method.parent_type_name.as_deref(), Some("Point"));
         }
 
-        /// Pins today's behavior: Ruby's `singleton_method` matches
-        /// `method_node_kinds` and yields a `Method` with no parent type, because
-        /// Ruby sets no `receiver_type_extractor`. A follow-up container-recovery
-        /// lane will change indexed data by giving the method its enclosing class;
-        /// this guard makes that flip visible rather than silent.
+        /// Ruby's `singleton_method` matches `method_node_kinds` but Ruby sets no
+        /// `receiver_type_extractor`, so its parent type is recovered by walking to
+        /// the enclosing `class`/`module` container. A `def self.bar` inside
+        /// `class Foo` therefore carries `parent_type_name = Some("Foo")`.
         #[test]
-        fn test_ruby_singleton_method_has_no_parent_type() {
+        fn test_ruby_singleton_method_recovers_class_container() {
             let content = "class Foo\n  def self.bar\n  end\nend\n";
             let file = write_temp_file(content, "rb");
             let parser = Parser::new().unwrap();
             let chunks = parser.parse_file(file.path()).unwrap();
             let method = chunks.iter().find(|c| c.name == "bar").unwrap();
             assert_eq!(method.chunk_type, ChunkType::Method);
-            assert_eq!(method.parent_type_name, None);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Foo"));
         }
 
-        /// Same pin for Structured Text: a `method_definition` matches
-        /// `method_node_kinds` and yields a `Method` with no parent type (no
-        /// `receiver_type_extractor` on the ST def). Guards the same forthcoming
-        /// container-recovery flip.
+        /// A Ruby `singleton_method` inside a `module` recovers the module name,
+        /// exercising the second `method_containers` kind on the fall-through walk.
         #[test]
-        fn test_structured_text_method_has_no_parent_type() {
+        fn test_ruby_singleton_method_recovers_module_container() {
+            let content = "module Bar\n  def self.baz\n  end\nend\n";
+            let file = write_temp_file(content, "rb");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "baz").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Bar"));
+        }
+
+        /// Structured Text's `method_definition` matches `method_node_kinds` with no
+        /// `receiver_type_extractor`, so its parent type is recovered by walking to
+        /// the enclosing `function_block_definition`. A `METHOD` inside a
+        /// `FUNCTION_BLOCK` therefore carries the block's name as `parent_type_name`.
+        #[test]
+        fn test_structured_text_method_recovers_function_block_container() {
+            let content = "FUNCTION_BLOCK FB_Motor\nMETHOD bar\nEND_METHOD\nEND_FUNCTION_BLOCK\n";
+            let file = write_temp_file(content, "st");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "bar").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("FB_Motor"));
+        }
+
+        /// Boundary of the recovery: the ST grammar does not model IEC-61131-3
+        /// OOP `CLASS`, so `CLASS Foo ... END_CLASS` parses the wrapper to `ERROR`
+        /// nodes and the `method_definition` becomes a direct child of
+        /// `source_file` with no `method_containers` ancestor. The container walk
+        /// finds nothing, so the method stays a `Method` with `parent_type_name =
+        /// None` — recovery only reaches grammar-modeled containers.
+        #[test]
+        fn test_structured_text_method_in_unmodeled_class_has_no_parent_type() {
             let content = "CLASS Foo\nMETHOD bar\nEND_METHOD\nEND_CLASS\n";
             let file = write_temp_file(content, "st");
             let parser = Parser::new().unwrap();
