@@ -208,18 +208,15 @@ fn run_with_dispatch(
     // precedence shape as the synonym overlay above — user-global plus
     // project-local appended; AhoCorasick rebuilt once with the merged set.
     {
-        let mut neg: Vec<String> = Vec::new();
-        let mut multi: Vec<String> = Vec::new();
+        let mut overlay = cqs::search::router::ClassifierVocabOverlay::default();
         if let Some(global) = dirs::config_dir().map(|d| d.join("cqs/classifier.toml")) {
-            let (g_neg, g_multi) = cqs::search::router::load_classifier_vocab_overlay(&global);
-            neg.extend(g_neg);
-            multi.extend(g_multi);
+            overlay.extend(cqs::search::router::load_classifier_vocab_overlay(&global));
         }
         let project_local = project_cqs_dir.join("classifier.toml");
-        let (p_neg, p_multi) = cqs::search::router::load_classifier_vocab_overlay(&project_local);
-        neg.extend(p_neg);
-        multi.extend(p_multi);
-        cqs::search::router::install_classifier_vocab_overlay(neg, multi);
+        overlay.extend(cqs::search::router::load_classifier_vocab_overlay(
+            &project_local,
+        ));
+        cqs::search::router::install_classifier_vocab_overlay(overlay);
     }
 
     // Install reranker pool-sizing overrides from `[reranker]` TOML so
