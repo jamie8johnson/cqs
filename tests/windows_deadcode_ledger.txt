@@ -5,6 +5,8 @@
 # See scripts/check_windows_deadcode.py for the rationale.
 src/cli/batch/commands.rs	method `query` is never used
 src/cli/batch/commands.rs	variants `NotesAdd`, `NotesUpdate`, `NotesRemove`, `Index`, and `Eval` are never constructed
+src/cli/batch/handlers/analysis.rs	function `dispatch_eval_task` is never used
+src/cli/batch/handlers/analysis.rs	function `eval_task_unavailable` is never used
 src/cli/batch/json_args.rs	constant `NO_CORE_REJECTION` is never used
 src/cli/batch/json_args.rs	function `blame_args_from_core` is never used
 src/cli/batch/json_args.rs	function `build_batch_cmd` is never used
@@ -37,6 +39,40 @@ src/cli/batch/json_args.rs	function `test_map_args_from_core` is never used
 src/cli/batch/json_args.rs	function `text_json` is never used
 src/cli/batch/json_args.rs	function `trace_args_from_core` is never used
 src/cli/batch/json_args.rs	function `where_args_from_core` is never used
+src/cli/batch/tasks/mod.rs	associated items `from_u8`, `is_terminal`, and `as_wire` are never used
+src/cli/batch/tasks/mod.rs	associated items `generate`, `from_wire`, and `as_str` are never used
+src/cli/batch/tasks/mod.rs	associated items `new_working`, `status`, `publish`, `descriptor`, and `is_expired` are never used
+src/cli/batch/tasks/mod.rs	constant `DEFAULT_TASK_TTL_SECS` is never used
+src/cli/batch/tasks/mod.rs	constant `RETAINED_TASK_BYTES_CEILING` is never used
+src/cli/batch/tasks/mod.rs	constant `RETAINED_TASK_COUNT_CAP` is never used
+src/cli/batch/tasks/mod.rs	enum `TaskLookup` is never used
+src/cli/batch/tasks/mod.rs	enum `TaskResultLookup` is never used
+src/cli/batch/tasks/mod.rs	enum `TaskStatus` is never used
+src/cli/batch/tasks/mod.rs	fields `kind`, `finished_at`, and `finished_at_iso` are never read
+src/cli/batch/tasks/mod.rs	fields `tasks` and `job_seq` are never read
+src/cli/batch/tasks/mod.rs	function `now_rfc3339` is never used
+src/cli/batch/tasks/mod.rs	method `retained_bytes` is never used
+src/cli/batch/tasks/mod.rs	multiple associated items are never used
+src/cli/batch/tasks/mod.rs	multiple fields are never read
+src/cli/batch/tasks/mod.rs	struct `StaleMeta` is never constructed
+src/cli/batch/tasks/mod.rs	struct `TaskDescriptor` is never constructed
+src/cli/batch/tasks/mod.rs	variants `ToolResult` and `RpcError` are never constructed
+src/cli/batch/tasks/runner.rs	associated items `new` and `publish` are never used
+src/cli/batch/tasks/runner.rs	function `spawn_eval_worker` is never used
+src/cli/batch/tasks/runner.rs	function `worker_thread_name` is never used
+src/cli/batch/tasks/runner.rs	struct `TerminalPublisher` is never constructed
+src/cli/batch/tasks/wire.rs	constant `CMD_EVAL_TASK` is never used
+src/cli/batch/tasks/wire.rs	constant `CMD_TASK_GET` is never used
+src/cli/batch/tasks/wire.rs	constant `CMD_TASK_RESULT` is never used
+src/cli/batch/tasks/wire.rs	function `admit_eval_task` is never used
+src/cli/batch/tasks/wire.rs	function `descriptor_json` is never used
+src/cli/batch/tasks/wire.rs	function `dispatch_task_verb` is never used
+src/cli/batch/tasks/wire.rs	function `get_task` is never used
+src/cli/batch/tasks/wire.rs	function `is_task_verb` is never used
+src/cli/batch/tasks/wire.rs	function `result_task` is never used
+src/cli/batch/tasks/wire.rs	function `task_id_from_args` is never used
+src/cli/batch/tasks/wire.rs	function `terminal_json` is never used
+src/cli/batch/view.rs	field `task_store` is never read
 src/cli/batch/view.rs	function `dispatch_via_view_json` is never used
 src/cli/batch/view.rs	function `dispatch_via_view` is never used
 src/cli/batch/view.rs	function `json_value_contains_nul` is never used
@@ -80,6 +116,31 @@ src/cli/mcp/lifecycle.rs	struct `JsonRpcRequest` is never constructed
 src/cli/mcp/lifecycle.rs	struct `JsonRpcResponse` is never constructed
 src/cli/mcp/mod.rs	constant `MUTATIONS_ENV` is never used
 src/cli/mcp/mod.rs	function `mutations_enabled` is never used
+src/cli/mcp/tasks.rs	constant `CLIENT_POLL_INTERVAL_MS` is never used
+src/cli/mcp/tasks.rs	constant `INTERNAL_POLL_INTERVAL` is never used
+src/cli/mcp/tasks.rs	constant `MAX_BLOCK_DURATION` is never used
+src/cli/mcp/tasks.rs	constant `RELATED_TASK_META_KEY` is never used
+src/cli/mcp/tasks.rs	constant `TASK_FRESHNESS_META_KEY` is never used
+src/cli/mcp/tasks.rs	constant `TTL_SECS_DEFAULT_AND_MAX` is never used
+src/cli/mcp/tasks.rs	enum `Dialed` is never used
+src/cli/mcp/tasks.rs	enum `ResultStep` is never used
+src/cli/mcp/tasks.rs	function `block_backstop_error` is never used
+src/cli/mcp/tasks.rs	function `block_for_result_stdio` is never used
+src/cli/mcp/tasks.rs	function `create_task` is never used
+src/cli/mcp/tasks.rs	function `descriptor_ttl_secs_to_ms` is never used
+src/cli/mcp/tasks.rs	function `dial` is never used
+src/cli/mcp/tasks.rs	function `get_task` is never used
+src/cli/mcp/tasks.rs	function `is_augmented` is never used
+src/cli/mcp/tasks.rs	function `poll_result_once` is never used
+src/cli/mcp/tasks.rs	function `related_task_meta` is never used
+src/cli/mcp/tasks.rs	function `resolve_ttl` is never used
+src/cli/mcp/tasks.rs	function `rpc_error` is never used
+src/cli/mcp/tasks.rs	function `shape_create_result` is never used
+src/cli/mcp/tasks.rs	function `shape_get_result` is never used
+src/cli/mcp/tasks.rs	function `task_gone` is never used
+src/cli/mcp/tasks.rs	function `task_id_from_params` is never used
+src/cli/mcp/tasks.rs	function `taxonomy_to_jsonrpc` is never used
+src/cli/mcp/tasks.rs	function `terminal_response` is never used
 src/cli/mcp/tools.rs	associated items `READ` and `to_json` are never used
 src/cli/mcp/tools.rs	constant `MAX_TEXT_MIRROR_BYTES` is never used
 src/cli/mcp/tools.rs	constant `OVERLAY_KEYS` is never used
@@ -102,6 +163,7 @@ src/cli/mcp/tools.rs	function `schema_with_overlay` is never used
 src/cli/mcp/tools.rs	function `schema` is never used
 src/cli/mcp/tools.rs	function `strip_required` is never used
 src/cli/mcp/tools.rs	function `success_result` is never used
+src/cli/mcp/tools.rs	function `task_support` is never used
 src/cli/mcp/tools.rs	function `text_mirror` is never used
 src/cli/mcp/tools.rs	function `tool_error_result` is never used
 src/cli/mcp/tools.rs	function `tool_table_with` is never used
