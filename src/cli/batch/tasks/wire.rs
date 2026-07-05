@@ -16,11 +16,13 @@
 //!   the transport polls until terminal. The blocking is transport-side; this
 //!   verb never blocks the daemon handler pool.
 //!
-//! Each verb returns the daemon's slim success envelope (`{"data": …}` via
-//! [`crate::cli::json_envelope::wrap_value`]); the transport peels `output.data`
-//! and shapes the MCP wire form (nested `CreateTaskResult`, flat `GetTaskResult`,
-//! or the verbatim `tasks/result` terminal). An admission reject rides the slim
-//! ERROR envelope the shared dispatch path already emits from an `Err`.
+//! Each verb returns its RAW payload; the shared dispatch (`write_json_line`)
+//! applies the single `{"data": …}` slim envelope the transport peels as
+//! `output.data` before shaping the MCP wire form (nested `CreateTaskResult`,
+//! flat `GetTaskResult`, or the verbatim `tasks/result` terminal). The verbs must
+//! NOT pre-wrap with [`crate::cli::json_envelope::wrap_value`] — that double-nests
+//! the payload under `output.data.data`, where the transport dial never looks. An
+//! admission reject rides the slim ERROR envelope the shared path emits from `Err`.
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -124,9 +126,11 @@ fn admit_eval_task(view: &BatchView, arguments: &Value) -> Result<Value> {
     }
 
     let descriptor = crate::cli::batch::handlers::dispatch_eval_task(view, &args, ttl_secs)?;
-    Ok(crate::cli::json_envelope::wrap_value(&json!({
-        "task": descriptor_json(&descriptor)
-    })))
+    // Return the RAW payload: `dispatch_via_view_json` writes every verb's value
+    // through `write_json_line`, which applies the single `{"data": …}` envelope
+    // the transport `dial` reads as `output.data`. Pre-wrapping here would
+    // double-nest it to `output.data.data`, which the dial cannot see.
+    Ok(json!({ "task": descriptor_json(&descriptor) }))
 }
 
 /// `task-get`: non-blocking status read. `found` carries the descriptor; `gone`
@@ -141,7 +145,10 @@ fn get_task(view: &BatchView, arguments: &Value) -> Value {
         // transport surfaces `-32602`), never an oracle.
         None => json!({ "state": "gone" }),
     };
-    crate::cli::json_envelope::wrap_value(&payload)
+    // Raw payload — `write_json_line` applies the single `data` envelope wrap
+    // (see `admit_eval_task`); pre-wrapping would hide the state behind a second
+    // `data` layer the transport `dial` never unwraps.
+    payload
 }
 
 /// `task-result`: non-blocking terminal read. Compares the run's stamped epoch to
@@ -161,7 +168,9 @@ fn result_task(view: &BatchView, arguments: &Value) -> Value {
         },
         None => json!({ "state": "gone" }),
     };
-    crate::cli::json_envelope::wrap_value(&payload)
+    // Raw payload — the single `data` envelope wrap is `write_json_line`'s job
+    // (see `admit_eval_task`); a pre-wrap here would double-nest the state.
+    payload
 }
 
 /// Serialize a terminal outcome so the transport can return it verbatim: a

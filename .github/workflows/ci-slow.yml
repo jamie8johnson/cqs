@@ -121,6 +121,12 @@ jobs:
     # download dependency" assumption is what let #1959 panic mid-suite). Could
     # later graduate to PR-time CI if the wall time stays under budget. See
     # Cargo.toml `slow-tests` comment for the gated file inventory. (#1286 Phase 2)
+    #
+    # `mcp-http` rides alongside `slow-tests` so the `all(unix, "mcp-http",
+    # "slow-tests")` MCP-HTTP task-lifecycle e2e (live daemon + HTTP listener)
+    # compiles and RUNS here — its only CI home. The feature reuses the default
+    # `serve` deps (no new crates); the warm step matches the flag set so cqs is
+    # built once.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -156,7 +162,7 @@ jobs:
           ok=0
           for attempt in 1 2 3; do
             echo "::group::model warm attempt $attempt"
-            cargo run --release --features slow-tests --quiet -- doctor || true
+            cargo run --release --features slow-tests,mcp-http --quiet -- doctor || true
             echo "::endgroup::"
             data=$(find "$HOME/.cache/huggingface/hub" -name 'model.onnx_data' -path '*embeddinggemma*' 2>/dev/null | head -1)
             if [ -n "$data" ] && [ -s "$data" ]; then
@@ -170,7 +176,7 @@ jobs:
           [ "$ok" = 1 ] || { echo "::error::EmbeddingGemma model.onnx_data could not be fetched after 3 attempts"; exit 1; }
 
       - name: Run slow-tests feature suite
-        run: cargo test --release --features slow-tests --verbose
+        run: cargo test --release --features slow-tests,mcp-http --verbose
 
   notify-failure:
     needs: [full-suite, slow-tests-feature]
