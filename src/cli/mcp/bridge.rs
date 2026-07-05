@@ -185,10 +185,29 @@ pub(crate) fn route_with(
         // The `initialized` notification (both spellings) — no reply.
         "notifications/initialized" | "initialized" => lifecycle::notification_handled(id),
         "tools/list" => lifecycle::success(id, tools::list_with(mutations_permitted)),
-        "tools/call" => match tools::call_with(cqs_dir, request.params, mutations_permitted) {
-            CallOutcome::Result(result) => lifecycle::success(id, result),
-            CallOutcome::ProtocolError(code, message) => lifecycle::error(id, code, message),
-        },
+        "tools/call" => {
+            // MCP Tasks (Phase 3b floor): a `task` augmentation turns a
+            // `tools/call` into task creation (a `CreateTaskResult`) instead of an
+            // immediate call. Only `cqs_eval` is augmentable — the augment path
+            // enforces that (`-32601` otherwise).
+            if super::tasks::is_augmented(&request.params) {
+                super::tasks::create_task(cqs_dir, id, request.params)
+            } else {
+                match tools::call_with(cqs_dir, request.params, mutations_permitted) {
+                    CallOutcome::Result(result) => lifecycle::success(id, result),
+                    CallOutcome::ProtocolError(code, message) => {
+                        lifecycle::error(id, code, message)
+                    }
+                }
+            }
+        }
+        // `tasks/get`: a cheap non-blocking status read (flat `GetTaskResult`).
+        "tasks/get" => super::tasks::get_task(cqs_dir, id, request.params),
+        // `tasks/result`: block until terminal. On stdio (one sequential client)
+        // the block loops inline; the HTTP transport intercepts this method
+        // upstream so it can run the block on an isolated budget that never holds
+        // an outermost request permit (the block-budget isolation) — see `http.rs`.
+        "tasks/result" => super::tasks::block_for_result_stdio(cqs_dir, id, request.params),
         // `ping` is a JSON-RPC utility method (empty result), distinct from the
         // `cqs ping` daemon command — clients may send it as a keepalive.
         "ping" => lifecycle::success(id, serde_json::json!({})),

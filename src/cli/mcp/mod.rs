@@ -34,6 +34,10 @@ mod bridge;
 #[cfg(all(feature = "mcp-http", unix))]
 mod http;
 mod lifecycle;
+/// The MCP Tasks surface (Phase 3b floor): task-augmented `tools/call`,
+/// `tasks/get`, and `tasks/result`. Shared by the stdio bridge and the HTTP
+/// transport (only the `tasks/result` blocking budget is HTTP-specific).
+mod tasks;
 mod tools;
 
 pub use bridge::serve_stdio;
@@ -336,6 +340,46 @@ mod tests {
              got properties: {:?}",
             index_schema.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// MCP Tasks `execution.taskSupport` is advertised as `"optional"` on
+    /// `cqs_eval` ALONE (task-augmentable while its one-shot path stays intact);
+    /// every other tool omits the `execution` block entirely (default-forbidden).
+    /// Runs with the mutation flag ON so the gated mutators are covered too.
+    #[test]
+    #[serial_test::serial(mcp_mutations_env)]
+    fn task_support_is_optional_on_eval_only() {
+        let _guard = MutationsEnvGuard::set(true);
+        let listed = tools::list();
+        let arr = listed
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .expect("tools array");
+        let mut saw_eval = false;
+        for t in arr {
+            let name = t
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("<unnamed>");
+            let task_support = t
+                .get("execution")
+                .and_then(|e| e.get("taskSupport"))
+                .and_then(|v| v.as_str());
+            if name == "cqs_eval" {
+                assert_eq!(
+                    task_support,
+                    Some("optional"),
+                    "cqs_eval must advertise execution.taskSupport:\"optional\""
+                );
+                saw_eval = true;
+            } else {
+                assert!(
+                    task_support.is_none(),
+                    "tool `{name}` must NOT advertise taskSupport (only cqs_eval is augmentable)"
+                );
+            }
+        }
+        assert!(saw_eval, "cqs_eval must be present in tools/list");
     }
 
     /// Every exposed tool carries the `cqs_` prefix (D1), an `inputSchema` that

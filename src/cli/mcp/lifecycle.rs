@@ -180,7 +180,13 @@ pub fn handle_initialize(params: Option<Value>) -> Value {
     serde_json::json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
-            "tools": { "listChanged": false }
+            "tools": { "listChanged": false },
+            // MCP Tasks (2025-11-25): task-augmented `tools/call` is supported.
+            // `list` and `cancel` are omitted ENTIRELY (not declaring a
+            // sub-capability = not implementing it): under the shared-token,
+            // single-principal model the receiver cannot scope `tasks/list`
+            // safely (spec SHOULD-NOT), and cancel is out of the floor.
+            "tasks": { "requests": { "tools": { "call": {} } } }
         },
         "serverInfo": {
             "name": "cqs",
@@ -231,6 +237,38 @@ mod tests {
             .and_then(|s| s.get("title"))
             .is_some());
         assert!(result.get("instructions").is_some());
+    }
+
+    /// The MCP Tasks capability (2025-11-25) is advertised as
+    /// `tasks.requests.tools.call`, with `list` and `cancel` OMITTED entirely
+    /// (not-declared = not-implemented under the shared-token model — D2).
+    #[test]
+    fn initialize_advertises_tasks_capability_without_list_or_cancel() {
+        let result = handle_initialize(Some(serde_json::json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION
+        })));
+        let tasks = result
+            .get("capabilities")
+            .and_then(|c| c.get("tasks"))
+            .expect("tasks capability must be advertised");
+        // `requests.tools.call` present (an object, even if empty).
+        assert!(
+            tasks
+                .get("requests")
+                .and_then(|r| r.get("tools"))
+                .and_then(|t| t.get("call"))
+                .is_some(),
+            "tasks.requests.tools.call must be advertised, got {tasks}"
+        );
+        // `list` and `cancel` are omitted entirely — not merely false.
+        assert!(
+            tasks.get("list").is_none(),
+            "tasks.list must be OMITTED (not declared), got {tasks}"
+        );
+        assert!(
+            tasks.get("cancel").is_none(),
+            "tasks.cancel must be OMITTED (not declared), got {tasks}"
+        );
     }
 
     /// An old-but-accepted client version (>= floor) still gets our advertised

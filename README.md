@@ -338,6 +338,8 @@ echo 'search "error handling" | callers | test-map' | cqs batch
 
 **HTTP transport (opt-in)**: `cqs mcp --http <port>` serves the same tools over a **Streamable HTTP** listener instead of stdio, behind the non-default `mcp-http` build feature (unix-only). It is **loopback-bound by default** and **token-gated** — auth is unconditional, so pass `--token-file <path>` (preferred; the file must be user-owned and `0600`) or set `CQS_MCP_HTTP_TOKEN`. A non-loopback bind loud-warns and withholds mutating tools (no TLS in the stack — prefer loopback + an SSH tunnel). See SECURITY.md for the full threat model.
 
+**Async tasks (MCP Tasks, `2025-11-25`)**: the long-running `cqs_eval` harness can run as a task on either transport — augment its `tools/call` with a `task:{ttl?}` field to get a `taskId` back immediately, then `tasks/get` (cheap, non-blocking, `pollInterval`-guided — the recommended path) or `tasks/result` (blocks until the run finishes). Only `cqs_eval` is task-augmentable (`taskSupport:"optional"`); a moved-index result carries a `_meta` freshness marker so the recall-gate refuses a stale-substrate verdict.
+
 ```bash
 # Start the daemon (if not already running)
 cqs watch --serve

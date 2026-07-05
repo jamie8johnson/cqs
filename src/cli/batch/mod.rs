@@ -49,16 +49,11 @@ mod json_args;
 mod overlay_interleaving_model;
 mod pipeline;
 mod session;
-/// Daemon-scoped Tasks store + eval task worker (MCP Phase 3b floor). Reachable
-/// from `cli::watch` (which owns the `Arc<TaskStore>` and threads it into the
-/// daemon thread), so the module is `pub(crate)` rather than private.
-///
-/// `allow(dead_code)`: this is the daemon-side floor lane. The admission chain
-/// (`dispatch_eval_task`), the `tasks/get` + `tasks/result` read API, and the
-/// worker are exercised by this module's tests but only wired to production by
-/// the MCP transport lane that lands next; the allow is removed when that lane
-/// consumes this surface end to end.
-#[allow(dead_code)]
+/// Daemon-scoped Tasks store + eval task worker + wire verbs (MCP Phase 3b
+/// floor). Reachable from `cli::watch` (which owns the `Arc<TaskStore>` and
+/// threads it into the daemon thread), so the module is `pub(crate)` rather than
+/// private. Wired to production end to end: the wire verbs (`tasks::wire`) are
+/// dialed by the MCP transport and dispatched from `dispatch_via_view_json`.
 pub(crate) mod tasks;
 mod view;
 

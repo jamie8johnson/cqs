@@ -221,6 +221,26 @@ pub(crate) fn dispatch_via_view_json(
     // (NUL rejection does not count as a query).
     view.query_count.fetch_add(1, Ordering::Relaxed);
 
+    // Task wire verbs (MCP Phase 3b floor): the three transport-dialed verbs
+    // (`eval-task` / `task-get` / `task-result`) have no `BatchCmd` — they read
+    // this view's `TaskStore` + `checkout_epoch` directly — so they are
+    // intercepted here, ahead of `build_batch_cmd` (which would reject them as
+    // unknown commands). The NUL / query_count / error-redaction contract above
+    // and below is shared; only the dispatch body differs.
+    if super::tasks::wire::is_task_verb(command) {
+        match super::tasks::wire::dispatch_task_verb(view, command, arguments) {
+            Ok(value) => {
+                let _ = write_json_line(out, &value);
+            }
+            Err(e) => {
+                view.error_count.fetch_add(1, Ordering::Relaxed);
+                let (code, msg) = crate::cli::json_envelope::redact_error(&e);
+                let _ = write_envelope_error(out, code.as_str(), &msg);
+            }
+        }
+        return;
+    }
+
     let cmd = match super::json_args::build_batch_cmd(command, arguments) {
         Ok(cmd) => cmd,
         Err(e) => {
