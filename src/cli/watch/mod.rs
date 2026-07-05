@@ -231,6 +231,33 @@ struct WatchState {
 /// tighter than this would re-stat without giving observers any new bits.
 const LAST_SYNCED_REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Wall-clock cadence for trimming the shared embeddings cache and the
+/// persistent query cache from the watch loop. Once per hour keeps the SQLite
+/// WAL files from churning while still bounding growth over a 24/7 daemon
+/// lifetime.
+const CACHE_EVICT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Whether the periodic embeddings + query cache eviction should fire on this
+/// watch-loop tick.
+///
+/// Wall-clock gated only: `true` once `since_last_evict >= interval`. The
+/// decision is INDEPENDENT of `flush_due`. A query-only daemon — one serving
+/// searches with no file churn — never sets `flush_due`, so gating eviction on
+/// it would leave the shared embeddings cache and the persistent query cache
+/// growing unbounded over the daemon's lifetime. The eviction therefore fires
+/// on both the file-event flush path and idle ticks, bounded only by the
+/// throttle. `flush_due` is threaded through so the flush-independence is
+/// explicit at the call site and exercisable in tests; it is intentionally not
+/// consulted.
+fn cache_evict_due(
+    since_last_evict: std::time::Duration,
+    interval: std::time::Duration,
+    flush_due: bool,
+) -> bool {
+    let _ = flush_due;
+    since_last_evict >= interval
+}
+
 /// Publish a fresh `WatchSnapshot` into the shared `Arc<RwLock<...>>`
 /// the daemon thread reads through. Called once per outer watch-loop tick.
 ///
@@ -2324,8 +2351,11 @@ pub fn cmd_watch(
         // events arriving faster than the 100 ms recv timeout never
         // reaches the timeout arm at all; without this placement the
         // max-latency cap could never fire under exactly the load it
-        // exists for.
-        if flush_due(&state, &debounce) {
+        // exists for. Captured once so the periodic cache-evict decision
+        // below sees this tick's flush state (the reindex block drains
+        // `state`, so a re-evaluation afterwards would always read false).
+        let is_flush_due = flush_due(&state, &debounce);
+        if is_flush_due {
             cycles_since_clear = 0;
 
             // Acquire index lock before reindexing. If another process
@@ -2377,25 +2407,6 @@ pub fn cmd_watch(
             store.clear_caches();
             db_id = db_file_identity(&index_path);
 
-            // Periodically evict the global embedding cache so
-            // long-running watch sessions don't let the shared
-            // ~/.cache/cqs/embeddings.db grow past its
-            // CQS_CACHE_MAX_SIZE cap (default 10GB). Gated by
-            // `last_cache_evict.elapsed()` so we don't churn the
-            // SQLite file on every single reindex cycle. Reuses the
-            // shared runtime so this one-shot eviction piggybacks on
-            // the existing worker pool.
-            if last_cache_evict.elapsed() >= Duration::from_secs(3600) {
-                let project_cqs_dir = cqs::resolve_index_dir(&root);
-                let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
-                super::batch::evict_embeddings_cache_with_runtime(
-                    &cache_path,
-                    "watch reindex cycle",
-                    Some(Arc::clone(&shared_rt)),
-                );
-                last_cache_evict = std::time::Instant::now();
-            }
-
             // Release lock after all reindex work (including HNSW rebuild).
             drop(lock);
 
@@ -2403,6 +2414,33 @@ pub fn cmd_watch(
             // the next accepted event starts a fresh burst.
             state.first_pending_event = None;
         }
+
+        // Periodically evict the shared embeddings cache and the persistent
+        // query cache so long-running sessions don't let either grow past its
+        // CQS_CACHE_MAX_SIZE cap. Evaluated every loop iteration — OUTSIDE the
+        // `flush_due` branch — so it fires on a query-only daemon too: one
+        // serving searches with no file churn never flushes, and gating
+        // eviction on the flush path would leave the caches growing unbounded
+        // over the daemon's lifetime. Throttled by `last_cache_evict` so the
+        // per-tick check stays cheap and the SQLite WAL files don't churn.
+        // Reuses the shared runtime so the eviction piggybacks on the existing
+        // worker pool. Touches only the cache DBs (never index.db), so no index
+        // lock is required.
+        if cache_evict_due(
+            last_cache_evict.elapsed(),
+            CACHE_EVICT_INTERVAL,
+            is_flush_due,
+        ) {
+            let project_cqs_dir = cqs::resolve_index_dir(&root);
+            let cache_path = cqs::cache::EmbeddingCache::project_default_path(&project_cqs_dir);
+            super::batch::evict_embeddings_cache_with_runtime(
+                &cache_path,
+                "watch periodic tick",
+                Some(Arc::clone(&shared_rt)),
+            );
+            last_cache_evict = std::time::Instant::now();
+        }
+
         // Publish freshness snapshot once per outer iteration.
         // Cheap — counter reads, one optional `metadata()` on `index.db`,
         // and a brief write-lock acquire. Runs every ~100 ms cycle so the
