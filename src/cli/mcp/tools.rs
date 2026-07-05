@@ -1276,6 +1276,18 @@ fn relay_and_classify(cqs_dir: &Path, command: &str, arguments: &Value) -> CallO
                 format!("cqs daemon rejected the request: {msg}"),
             );
         }
+        Err(DaemonRpcError::Busy(msg)) => {
+            // The daemon refused at its client-connection cap before reading the
+            // command — retryable and healthy, NOT a caller mistake. Preserve
+            // the retryable signal as a tool-level error carrying the
+            // `unavailable` code (what an MCP client keys off to back off and
+            // retry), the same shape a handler's own Unavailable surfaces
+            // through `classify_output` — never a caller-error INVALID_PARAMS.
+            return CallOutcome::Result(tool_error_result(
+                crate::cli::json_envelope::ErrorCode::Unavailable.as_str(),
+                format!("cqs daemon busy (retry shortly): {msg}"),
+            ));
+        }
         Err(DaemonRpcError::BadResponse(msg)) => {
             return CallOutcome::ProtocolError(
                 lifecycle::INTERNAL_ERROR,
@@ -1320,6 +1332,20 @@ fn relay_and_classify(_cqs_dir: &Path, _command: &str, _arguments: &Value) -> Ca
     )
 }
 
+/// Build a tool-level error `CallToolResult`: `isError:true`, the message in
+/// `content[text]`, and the taxonomy `code` in `_meta.error.code` — the signal
+/// an MCP client keys off to tell a retryable `unavailable` from a `not_found`
+/// or a caller mistake. Shared by the handler-error path ([`classify_output`])
+/// and the transport-layer busy reject in [`relay_and_classify`] so both a
+/// handler's own `Unavailable` and a socket-cap busy reject render one shape.
+fn tool_error_result(code: &str, message: String) -> Value {
+    serde_json::json!({
+        "content": [{ "type": "text", "text": message }],
+        "isError": true,
+        "_meta": { "error": { "code": code } }
+    })
+}
+
 /// Classify the dispatch-layer `output` into a `CallToolResult` (Blocker #1,
 /// #5; D4c). `output` is the slim envelope: `{data, (opt)_meta}` on success or
 /// `{error:{code,message}, (opt)_meta}` on a handler error riding under
@@ -1331,11 +1357,7 @@ fn classify_output(output: &Value) -> Value {
         // Handler error under status:"ok" (Blocker #1) → isError:true.
         Some(SlimEnvelope::Error { code, message }) => {
             tracing::warn!(code = %code, "MCP tool handler error mapped to isError:true");
-            serde_json::json!({
-                "content": [{ "type": "text", "text": message }],
-                "isError": true,
-                "_meta": { "error": { "code": code } }
-            })
+            tool_error_result(&code, message)
         }
         // Success → structuredContent + content[text] mirror + _meta hoist.
         Some(SlimEnvelope::Data { payload, meta }) => {
@@ -1950,6 +1972,69 @@ mod tests {
                 );
             }
             CallOutcome::Result(_) => panic!("expected a protocol error on a relay timeout"),
+        }
+    }
+
+    /// A daemon busy-reject (`{"status":"error", ..., "retryable":true}`, the
+    /// `write_daemon_busy` shape) reaches the MCP client as a tool-level error
+    /// carrying the retryable `unavailable` code in `_meta.error.code` — NOT a
+    /// caller-error INVALID_PARAMS protocol error. An MCP client keys off that
+    /// code to back off and retry; collapsing busy into INVALID_PARAMS tells it
+    /// "your arguments are wrong", which is false.
+    #[cfg(unix)]
+    #[test]
+    fn relay_busy_reject_reaches_client_as_unavailable_not_invalid_params() {
+        use cqs::daemon_translate::{daemon_socket_path, set_socket_dir_override_for_test};
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let busy_envelope = serde_json::json!({
+            "status": "error",
+            "message": "daemon busy (too many concurrent clients)",
+            "retryable": true,
+        })
+        .to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut req);
+            writeln!(stream, "{busy_envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let outcome = relay_and_classify(&cqs_dir, "search", &serde_json::json!({}));
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+
+        match outcome {
+            CallOutcome::Result(result) => {
+                assert_eq!(
+                    result.get("isError").and_then(|v| v.as_bool()),
+                    Some(true),
+                    "a busy reject must be a tool-level error, got: {result}"
+                );
+                assert_eq!(
+                    result
+                        .get("_meta")
+                        .and_then(|m| m.get("error"))
+                        .and_then(|e| e.get("code"))
+                        .and_then(|c| c.as_str()),
+                    Some("unavailable"),
+                    "a busy reject must carry the retryable `unavailable` code, got: {result}"
+                );
+            }
+            CallOutcome::ProtocolError(code, msg) => {
+                panic!("busy must not collapse to a protocol error ({code}): {msg}")
+            }
         }
     }
 

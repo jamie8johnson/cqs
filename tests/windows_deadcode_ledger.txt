@@ -103,6 +103,7 @@ src/cli/mcp/tools.rs	function `schema` is never used
 src/cli/mcp/tools.rs	function `strip_required` is never used
 src/cli/mcp/tools.rs	function `success_result` is never used
 src/cli/mcp/tools.rs	function `text_mirror` is never used
+src/cli/mcp/tools.rs	function `tool_error_result` is never used
 src/cli/mcp/tools.rs	function `tool_table_with` is never used
 src/cli/mcp/tools.rs	function `validate_arguments` is never used
 src/cli/mcp/tools.rs	function `validate_max_depth` is never used

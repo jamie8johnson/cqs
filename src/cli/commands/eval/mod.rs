@@ -445,8 +445,13 @@ fn classify_dial_error(e: cqs::daemon_translate::DaemonRpcError) -> EvalDial {
     use cqs::daemon_translate::DaemonRpcError;
     match e {
         DaemonRpcError::Timeout(msg) => EvalDial::BookedButLost(msg),
+        // A busy reject is a socket-level refusal at the client cap: the daemon
+        // never read the request, so the eval was never booked — safe to
+        // recompute inline (the same never-booked class as SocketMissing /
+        // Transport), no concurrent double-run.
         e @ (DaemonRpcError::SocketMissing(_)
         | DaemonRpcError::Transport(_)
+        | DaemonRpcError::Busy(_)
         | DaemonRpcError::BadResponse(_)
         | DaemonRpcError::DaemonError(_)
         | DaemonRpcError::ResponseTooLarge(_)) => EvalDial::RunLocal {
@@ -577,6 +582,21 @@ fn require_fresh_gate(no_require_fresh_flag: &bool, wait_secs: u64) -> Result<()
                      run `{restart}` so the daemon binds the new path.",
                     start = daemon_control_hint(DaemonHint::Start),
                     restart = daemon_control_hint(DaemonHint::Restart),
+                )
+            }
+            // Busy — daemon at its client-connection cap. Retryable and
+            // healthy: advise a retry, NOT the hung/crashed restart the
+            // Transport arm gives.
+            FreshnessWait::Busy(msg) => {
+                tracing::info!(outcome = "busy", elapsed_ms, "require_fresh_gate: resolved",);
+                anyhow::bail!(
+                    "watch daemon busy: {msg}\n\
+                     \n\
+                     The daemon is at its client-connection cap — it is healthy, \
+                     just at capacity (this is transient, not a crash). Try:\n  \
+                       - retry in a moment (the cap frees as in-flight queries finish)\n  \
+                       - raise the cap with `CQS_MAX_DAEMON_CLIENTS`\n  \
+                       - rerun with `--no-require-fresh` to skip the gate",
                 )
             }
             // Transport — socket exists but daemon isn't responding (hung,
@@ -752,6 +772,8 @@ mod tests {
         for e in [
             DaemonRpcError::SocketMissing("s".into()),
             DaemonRpcError::Transport("t".into()),
+            // A busy reject is a pre-booking cap refusal: never booked → local.
+            DaemonRpcError::Busy("busy".into()),
             DaemonRpcError::DaemonError("d".into()),
             DaemonRpcError::BadResponse("b".into()),
             DaemonRpcError::ResponseTooLarge("r".into()),
