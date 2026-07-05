@@ -42,114 +42,133 @@ pub enum InsertionPosition {
     InsideBody,
 }
 
+/// Default format: bare `//` line comments before the function.
+/// Used by every language whose `LanguageDef` does not override `doc_format`.
+pub static DOC_FORMAT_DEFAULT: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "// ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// `///` line comments (Rust, F#, Swift, C#, ...).
+pub static DOC_FORMAT_TRIPLE_SLASH: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "/// ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// `"""`-delimited docstring inside the function body (Python).
+pub static DOC_FORMAT_PYTHON_DOCSTRING: DocFormat = DocFormat {
+    prefix: "\"\"\"",
+    line_prefix: "",
+    suffix: "\"\"\"",
+    position: InsertionPosition::InsideBody,
+    prepend_func_name: false,
+};
+
+/// `//` line comments with the Go subject-first convention (`// FuncName does X`).
+pub static DOC_FORMAT_GO_COMMENT: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "// ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    // Go convention is "// FuncName does X".
+    prepend_func_name: true,
+};
+
+/// Javadoc block comments (`/** * */`) — Java, C, TypeScript, and kin.
+pub static DOC_FORMAT_JAVADOC: DocFormat = DocFormat {
+    prefix: "/**",
+    line_prefix: " * ",
+    suffix: " */",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// `#` line comments (Ruby, Perl, ...).
+pub static DOC_FORMAT_HASH_COMMENT: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "# ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// Elixir `@doc """ ... """` module attribute.
+pub static DOC_FORMAT_ELIXIR_DOC: DocFormat = DocFormat {
+    prefix: "@doc \"\"\"",
+    line_prefix: "",
+    suffix: "\"\"\"",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// Lua LDoc `---` line comments.
+pub static DOC_FORMAT_LUA_LDOC: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "--- ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// Haskell Haddock `-- |` line comments.
+pub static DOC_FORMAT_HASKELL_HADDOCK: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "-- | ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// OCaml `(** ... *)` doc comments.
+pub static DOC_FORMAT_OCAML_DOC: DocFormat = DocFormat {
+    prefix: "(** ",
+    line_prefix: "",
+    suffix: " *)",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// Erlang EDoc `%%` line comments.
+pub static DOC_FORMAT_ERLANG_EDOC: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "%% ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// R roxygen2 `#'` line comments.
+pub static DOC_FORMAT_R_ROXYGEN: DocFormat = DocFormat {
+    prefix: "",
+    line_prefix: "#' ",
+    suffix: "",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
+/// `(* ... *)` block comments (Pascal, Structured Text).
+pub static DOC_FORMAT_BLOCK_COMMENT: DocFormat = DocFormat {
+    prefix: "(*",
+    line_prefix: "",
+    suffix: "*)",
+    position: InsertionPosition::BeforeFunction,
+    prepend_func_name: false,
+};
+
 /// Returns the doc comment format for a given language.
-/// Delegates to the `doc_format` field on `LanguageDef`, which each language
-/// definition populates. The string tag is mapped to a `DocFormat` struct here.
-pub fn doc_format_for(language: Language) -> DocFormat {
-    let tag = language
+/// Reads the typed `doc_format` reference off the language's `LanguageDef`.
+/// Languages without a `LanguageDef` fall back to `DOC_FORMAT_DEFAULT`.
+pub fn doc_format_for(language: Language) -> &'static DocFormat {
+    language
         .try_def()
         .map(|d| d.doc_format)
-        .unwrap_or("default");
-    doc_format_from_tag(tag)
-}
-
-/// Map a doc format tag string to its concrete `DocFormat`.
-fn doc_format_from_tag(tag: &str) -> DocFormat {
-    match tag {
-        "triple_slash" => DocFormat {
-            prefix: "",
-            line_prefix: "/// ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "python_docstring" => DocFormat {
-            prefix: "\"\"\"",
-            line_prefix: "",
-            suffix: "\"\"\"",
-            position: InsertionPosition::InsideBody,
-            prepend_func_name: false,
-        },
-        "go_comment" => DocFormat {
-            prefix: "",
-            line_prefix: "// ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            // Go convention is "// FuncName does X".
-            prepend_func_name: true,
-        },
-        "javadoc" => DocFormat {
-            prefix: "/**",
-            line_prefix: " * ",
-            suffix: " */",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "hash_comment" => DocFormat {
-            prefix: "",
-            line_prefix: "# ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "elixir_doc" => DocFormat {
-            prefix: "@doc \"\"\"",
-            line_prefix: "",
-            suffix: "\"\"\"",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "lua_ldoc" => DocFormat {
-            prefix: "",
-            line_prefix: "--- ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "haskell_haddock" => DocFormat {
-            prefix: "",
-            line_prefix: "-- | ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "ocaml_doc" => DocFormat {
-            prefix: "(** ",
-            line_prefix: "",
-            suffix: " *)",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "erlang_edoc" => DocFormat {
-            prefix: "",
-            line_prefix: "%% ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "r_roxygen" => DocFormat {
-            prefix: "",
-            line_prefix: "#' ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        "block_comment" => DocFormat {
-            prefix: "(*",
-            line_prefix: "",
-            suffix: "*)",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-        // "default" and any unknown tag
-        _ => DocFormat {
-            prefix: "",
-            line_prefix: "// ",
-            suffix: "",
-            position: InsertionPosition::BeforeFunction,
-            prepend_func_name: false,
-        },
-    }
+        .unwrap_or(&DOC_FORMAT_DEFAULT)
 }
 
 /// Format raw doc text into a language-specific doc comment with indentation.
@@ -176,7 +195,7 @@ pub fn format_doc_comment(text: &str, language: Language, indent: &str, func_nam
 
     // Subject-first prepend driven by `DocFormat.prepend_func_name`. Go is
     // the only language with this convention; others can opt in by setting
-    // the flag in `doc_format_from_tag`.
+    // the flag on their named `DocFormat` static.
     let prepended_first_line: String;
     let effective_lines: Vec<&str> = if format.prepend_func_name {
         if let Some(&first) = lines.first() {
@@ -474,31 +493,31 @@ mod tests {
     }
 
     #[test]
-    fn all_language_doc_formats_are_valid() {
-        // Verify all language doc_format tags map to known formats.
-        // A typo in a language definition would silently fall through to "default".
-        let valid = [
-            "triple_slash",
-            "python_docstring",
-            "go_comment",
-            "javadoc",
-            "hash_comment",
-            "elixir_doc",
-            "lua_ldoc",
-            "haskell_haddock",
-            "ocaml_doc",
-            "erlang_edoc",
-            "r_roxygen",
-            "block_comment",
-            "default",
+    fn every_language_uses_a_canonical_doc_format() {
+        // Typing makes a mistyped format name a compile error, but a language
+        // could still wire up an ad-hoc inline `DocFormat` that drifts from the
+        // shared registry. Assert every def points at one of the canonical
+        // statics by identity — the one drift the compiler does not catch.
+        let canonical: [&'static DocFormat; 13] = [
+            &DOC_FORMAT_DEFAULT,
+            &DOC_FORMAT_TRIPLE_SLASH,
+            &DOC_FORMAT_PYTHON_DOCSTRING,
+            &DOC_FORMAT_GO_COMMENT,
+            &DOC_FORMAT_JAVADOC,
+            &DOC_FORMAT_HASH_COMMENT,
+            &DOC_FORMAT_ELIXIR_DOC,
+            &DOC_FORMAT_LUA_LDOC,
+            &DOC_FORMAT_HASKELL_HADDOCK,
+            &DOC_FORMAT_OCAML_DOC,
+            &DOC_FORMAT_ERLANG_EDOC,
+            &DOC_FORMAT_R_ROXYGEN,
+            &DOC_FORMAT_BLOCK_COMMENT,
         ];
         for lang in Language::all_variants() {
             if let Some(def) = lang.try_def() {
                 assert!(
-                    valid.contains(&def.doc_format),
-                    "Language {:?} has unknown doc_format: {:?}",
-                    lang,
-                    def.doc_format
+                    canonical.iter().any(|c| std::ptr::eq(*c, def.doc_format)),
+                    "Language {lang:?} uses a non-canonical doc_format"
                 );
             }
         }
@@ -506,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_block_comment_format() {
-        let fmt = doc_format_from_tag("block_comment");
+        let fmt = &DOC_FORMAT_BLOCK_COMMENT;
         assert_eq!(fmt.prefix, "(*");
         assert_eq!(fmt.line_prefix, "");
         assert_eq!(fmt.suffix, "*)");
@@ -515,7 +534,7 @@ mod tests {
 
     #[test]
     fn test_format_block_comment_single_line() {
-        let fmt = doc_format_from_tag("block_comment");
+        let fmt = &DOC_FORMAT_BLOCK_COMMENT;
         // Simulate format_doc_comment logic for block_comment
         let text = "Moves the axis to home position.";
         let indent = "  ";

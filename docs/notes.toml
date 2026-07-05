@@ -1893,3 +1893,11 @@ mentions = [
     "src/parser/chunk.rs",
     "eval",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "PARSER_VERSION 16 (banner-leak fix #2205) is a NO-OP on cqs's own corpus — 0 license banners in src/ (hand-written). A self-fixture A/B measures only HNSW variance; the fix's value is on external indexed code (3.2% Rust / 8.2% C banner rates). Lesson: a parser doc-extraction fix's eval impact is only visible where the target pattern EXISTS in the indexed corpus."
+mentions = [
+    "src/parser/chunk.rs",
+    "eval",
+]

@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`LanguageDef.doc_format` is now a typed `&'static DocFormat` reference instead of a string tag, so a mistyped doc format is a compile error rather than a silent fallback (part of #1463).** Each language def pointed its `doc_format` at a string tag (`"javadoc"`, `"go_comment"`, ...) that `doc_format_for` mapped to a `DocFormat` through a 12-arm `match` whose `_ =>` arm silently returned the default format — a typo'd tag in a def degraded a whole language's doc style to `//` with nothing failing. The field now references one of the named `DOC_FORMAT_*` statics (`&DOC_FORMAT_JAVADOC`, `&DOC_FORMAT_GO_COMMENT`, `DEFAULTS` → `&DOC_FORMAT_DEFAULT`), the tag `match` and its silent `_ =>` arm are deleted, and the mapping is compiler-enforced and exhaustive. Behavior-preserving: every language's formatted doc output (including Go's subject-first `prepend_func_name`) is byte-identical; `doc_writer` only formats LLM-generated doc text and does not affect indexed data, so no PARSER_VERSION bump and no reindex.
+
 - **Go receiver-type extraction moved from a hardcoded `Language::Go` parser gate to a `LanguageDef::receiver_type_extractor` hook (part of #1463).** `infer_chunk_type` now invokes the per-language hook when a node matches `method_node_kinds`, instead of branching on the Go language inside the parser; only the Go def sets the hook. Behavior-preserving internal extensibility refactor — extracted chunk data is byte-identical for every language, so no PARSER_VERSION bump and no reindex. Lets a future lane give Ruby/Structured Text their own receiver/container extractor without touching the parser.
 
 ## [1.54.0] - 2026-07-03

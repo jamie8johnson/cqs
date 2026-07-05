@@ -16,6 +16,12 @@
 use super::{
     ChunkType, FieldStyle, InjectionRule, LanguageDef, PostProcessChunkFn, SignatureStyle,
 };
+use crate::doc_writer::formats::{
+    DOC_FORMAT_BLOCK_COMMENT, DOC_FORMAT_DEFAULT, DOC_FORMAT_ELIXIR_DOC, DOC_FORMAT_ERLANG_EDOC,
+    DOC_FORMAT_GO_COMMENT, DOC_FORMAT_HASH_COMMENT, DOC_FORMAT_HASKELL_HADDOCK, DOC_FORMAT_JAVADOC,
+    DOC_FORMAT_LUA_LDOC, DOC_FORMAT_OCAML_DOC, DOC_FORMAT_PYTHON_DOCSTRING, DOC_FORMAT_R_ROXYGEN,
+    DOC_FORMAT_TRIPLE_SLASH,
+};
 use crate::where_to_add::patterns_data;
 
 // ============================================================================
@@ -54,7 +60,7 @@ const DEFAULTS: LanguageDef = LanguageDef {
     entry_point_names: &[],
     trait_method_names: &[],
     injections: &[],
-    doc_format: "default",
+    doc_format: &DOC_FORMAT_DEFAULT,
     doc_convention: "",
     field_style: FieldStyle::None,
     skip_line_prefixes: &[],
@@ -195,7 +201,7 @@ static LANG_C: LanguageDef = LanguageDef {
     ],
     test_path_patterns: &["%/tests/%", "%\\_test.c"],
     entry_point_names: &["main"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile extern unsigned signed",
@@ -496,7 +502,7 @@ static LANG_CPP: LanguageDef = LanguageDef {
     endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.cpp", "%\\_test.cc"],
     entry_point_names: &["main"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile mutable virtual inline",
@@ -753,7 +759,7 @@ static LANG_CSHARP: LanguageDef = LanguageDef {
         "GetEnumerator",
         "MoveNext",
     ],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns>, <exception> tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes:
@@ -1055,7 +1061,7 @@ static LANG_CUDA: LanguageDef = LanguageDef {
     endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%\\_test.cu"],
     entry_point_names: &["main"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile mutable virtual inline",
@@ -1170,7 +1176,7 @@ static LANG_DART: LanguageDef = LanguageDef {
     endpoint_markers: &[],
     test_path_patterns: &["%_test.dart", "%/test/%"],
     entry_point_names: &["main"],
-    doc_format: "triple_slash",
+    doc_format: &DOC_FORMAT_TRIPLE_SLASH,
     doc_convention:
         "Use /// for documentation comments. Follow Effective Dart documentation guidelines.",
     field_style: FieldStyle::NameFirst {
@@ -1421,7 +1427,7 @@ static LANG_ELIXIR: LanguageDef = LanguageDef {
         "terminate",
         "code_change",
     ],
-    doc_format: "elixir_doc",
+    doc_format: &DOC_FORMAT_ELIXIR_DOC,
     doc_convention: "Use @doc with ## Examples section per Elixir conventions.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -1584,7 +1590,7 @@ static LANG_ERLANG: LanguageDef = LanguageDef {
         "terminate",
         "code_change",
     ],
-    doc_format: "erlang_edoc",
+    doc_format: &DOC_FORMAT_ERLANG_EDOC,
     doc_convention: "Use EDoc format: @param, @returns, @throws tags.",
     skip_line_prefixes: &["-record"],
     // Erlang functions: `name(Args) -> ...` — no introducer keyword.
@@ -1760,7 +1766,7 @@ static LANG_FSHARP: LanguageDef = LanguageDef {
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%Tests.fs"],
     entry_point_names: &["main"],
     trait_method_names: &["Equals", "GetHashCode", "ToString", "CompareTo", "Dispose"],
-    doc_format: "triple_slash",
+    doc_format: &DOC_FORMAT_TRIPLE_SLASH,
     doc_convention: "Use XML doc comments: <summary>, <param>, <returns> tags.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -2062,7 +2068,7 @@ static LANG_GLSL: LanguageDef = LanguageDef {
         "sampler2DShadow",
     ],
     entry_point_names: &["main"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Doxygen format: @param, @return tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "static const volatile extern unsigned signed",
@@ -2267,7 +2273,7 @@ static LANG_GO: LanguageDef = LanguageDef {
         "MarshalJSON",
         "UnmarshalJSON",
     ],
-    doc_format: "go_comment",
+    doc_format: &DOC_FORMAT_GO_COMMENT,
     doc_convention: "Start with the function name per Go conventions.",
     field_style: FieldStyle::NameFirst {
         separators: " ",
@@ -2493,7 +2499,7 @@ static LANG_HASKELL: LanguageDef = LanguageDef {
         "return",
         "fromInteger",
     ],
-    doc_format: "haskell_haddock",
+    doc_format: &DOC_FORMAT_HASKELL_HADDOCK,
     doc_convention: "Use Haddock format with -- | comments.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -3266,7 +3272,7 @@ static LANG_JAVA: LanguageDef = LanguageDef {
         "apply",
         "get",
     ],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Javadoc format: @param, @return, @throws tags.",
     field_style: FieldStyle::TypeFirst {
         strip_prefixes: "private protected public static final volatile transient",
@@ -3415,7 +3421,7 @@ static LANG_JAVASCRIPT: LanguageDef = LanguageDef {
         "afterAll",
     ],
     trait_method_names: &["toString", "valueOf", "toJSON"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
     field_style: FieldStyle::NameFirst {
         separators: ":=;",
@@ -3884,7 +3890,7 @@ static LANG_KOTLIN: LanguageDef = LanguageDef {
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.kt"],
     entry_point_names: &["main"],
     trait_method_names: &["equals", "hashCode", "toString", "compareTo", "iterator"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use KDoc format: @param, @return, @throws tags.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -4239,7 +4245,7 @@ static LANG_LUA: LanguageDef = LanguageDef {
     extract_return_nl: extract_return_lua,
     post_process_chunk: Some(post_process_lua_lua as PostProcessChunkFn),
     test_path_patterns: &["%/tests/%", "%/test/%", "%_test.lua", "%_spec.lua"],
-    doc_format: "lua_ldoc",
+    doc_format: &DOC_FORMAT_LUA_LDOC,
     doc_convention: "Use LDoc format: @param, @return tags.",
     field_style: FieldStyle::NameFirst {
         separators: "=",
@@ -4693,7 +4699,7 @@ static LANG_OBJC: LanguageDef = LanguageDef {
         "encodeWithCoder",
         "initWithCoder",
     ],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Doxygen format: @param, @return, @throws tags.",
     skip_line_prefixes: &["@interface", "@implementation", "@protocol"],
     // Objective-C method declarations use `- (Type)name:`. The C-family
@@ -4859,7 +4865,7 @@ static LANG_OCAML: LanguageDef = LanguageDef {
         "to_string",
         "of_string",
     ],
-    doc_format: "ocaml_doc",
+    doc_format: &DOC_FORMAT_OCAML_DOC,
     doc_convention: "Use OCamldoc format with (** *) comments.",
     skip_line_prefixes: &["type "],
     function_keywords: &["let"],
@@ -4945,7 +4951,7 @@ static LANG_PERL: LanguageDef = LanguageDef {
     test_path_patterns: &["%/t/%", "%.t"],
     entry_point_names: &["main"],
     trait_method_names: &["new", "AUTOLOAD", "DESTROY", "import", "BEGIN", "END"],
-    doc_format: "hash_comment",
+    doc_format: &DOC_FORMAT_HASH_COMMENT,
     doc_convention: "Use POD format for documentation sections.",
     field_style: FieldStyle::NameFirst {
         separators: "=",
@@ -5157,7 +5163,7 @@ static LANG_PHP: LanguageDef = LanguageDef {
             content_scoped_lines: true,
         },
     ],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use PHPDoc format: @param, @return, @throws tags.",
     field_style: FieldStyle::NameFirst {
         separators: "=;",
@@ -5543,7 +5549,7 @@ static LANG_PYTHON: LanguageDef = LanguageDef {
         "__init_subclass__",
         "__class_getitem__",
     ],
-    doc_format: "python_docstring",
+    doc_format: &DOC_FORMAT_PYTHON_DOCSTRING,
     doc_convention: "Format as a Google-style docstring (Args/Returns/Raises sections).",
     field_style: FieldStyle::NameFirst {
         separators: ":=",
@@ -5763,7 +5769,7 @@ static LANG_R: LanguageDef = LanguageDef {
     test_markers: &["test_that", "expect_"],
     endpoint_markers: &[],
     test_path_patterns: &["%/tests/%", "%/testthat/%", "test-%.R", "test_%.R"],
-    doc_format: "r_roxygen",
+    doc_format: &DOC_FORMAT_R_ROXYGEN,
     doc_convention: "Use roxygen2 format: @param, @return, @export tags.",
     field_style: FieldStyle::NameFirst {
         separators: "=<",
@@ -6229,7 +6235,7 @@ static LANG_RUBY: LanguageDef = LanguageDef {
         "each",
         "initialize",
     ],
-    doc_format: "hash_comment",
+    doc_format: &DOC_FORMAT_HASH_COMMENT,
     doc_convention: "Use YARD format: @param, @return, @raise tags.",
     field_style: FieldStyle::NameFirst {
         separators: "=",
@@ -6530,7 +6536,7 @@ static LANG_RUST: LanguageDef = LanguageDef {
         // std::future
         "poll",
     ],
-    doc_format: "triple_slash",
+    doc_format: &DOC_FORMAT_TRIPLE_SLASH,
     doc_convention:
         "Use `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
     field_style: FieldStyle::NameFirst {
@@ -6661,7 +6667,7 @@ static LANG_SCALA: LanguageDef = LanguageDef {
     trait_method_names: &[
         "equals", "hashCode", "toString", "compare", "apply", "unapply",
     ],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Scaladoc format: @param, @return, @throws tags.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -6782,7 +6788,7 @@ static LANG_SOLIDITY: LanguageDef = LanguageDef {
     container_body_kinds: &["contract_body"],
     test_path_patterns: &["%/test/%", "%.t.sol"],
     entry_point_names: &["constructor", "receive", "fallback"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use NatSpec format: @param, @return, @dev tags.",
     field_style: FieldStyle::NameFirst {
         separators: ";",
@@ -7035,7 +7041,7 @@ static LANG_STRUCTURED_TEXT: LanguageDef = LanguageDef {
         "CTU", "CTD", "CTUD", "R_TRIG", "F_TRIG",
     ],
     entry_point_names: &["Main", "MAIN"],
-    doc_format: "block_comment",
+    doc_format: &DOC_FORMAT_BLOCK_COMMENT,
     doc_convention: "Use (* ... *) block comments before declarations.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -7493,7 +7499,7 @@ static LANG_SWIFT: LanguageDef = LanguageDef {
     test_path_patterns: &["%/Tests/%", "%Tests.swift"],
     entry_point_names: &["main"],
     trait_method_names: &["hash", "encode", "init", "deinit", "description"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use Swift doc comments: - Parameters:, - Returns:, - Throws: sections.",
     field_style: FieldStyle::NameFirst {
         separators: ":",
@@ -7728,7 +7734,7 @@ static LANG_TYPESCRIPT: LanguageDef = LanguageDef {
         "afterAll",
     ],
     trait_method_names: &["toString", "valueOf", "toJSON"],
-    doc_format: "javadoc",
+    doc_format: &DOC_FORMAT_JAVADOC,
     doc_convention: "Use JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
     field_style: FieldStyle::NameFirst {
         separators: ":=;",
