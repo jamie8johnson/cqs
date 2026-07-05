@@ -264,11 +264,25 @@ const NL_INDICATORS: &[&str] = &[
     "using",
 ];
 
-/// Aho-Corasick automaton over [`NL_INDICATORS`] for whole-query scans.
-/// Match ids are not used — only the presence of a whole-word match matters.
-static NL_INDICATORS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
-    AhoCorasick::new(NL_INDICATORS).expect("NL_INDICATORS is a valid pattern set (static)")
-});
+/// Builtin natural-language indicator floor, sourced from [`NL_INDICATORS`].
+/// Seeds [`NL_INDICATORS_AC`]; extended by overlay entries via
+/// [`install_classifier_vocab_overlay`].
+fn builtin_nl_indicators() -> Vec<String> {
+    NL_INDICATORS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Runtime-extensible Aho-Corasick automaton over the NL indicators. Seeded
+/// from [`NL_INDICATORS`]; rebuilt over builtins ∪ overlay by
+/// [`install_classifier_vocab_overlay`]. `RwLock<Arc<AhoCorasick>>` so the hot
+/// classification path just read-locks and clones the inner `Arc` — no
+/// per-query rebuild. Match ids are not used — only the presence of a
+/// whole-word match matters.
+static NL_INDICATORS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCorasick>>> =
+    LazyLock::new(|| {
+        let ac =
+            AhoCorasick::new(NL_INDICATORS).expect("NL_INDICATORS is a valid pattern set (static)");
+        std::sync::RwLock::new(std::sync::Arc::new(ac))
+    });
 
 /// Behavioral verbs suggesting a behavioral search
 const BEHAVIORAL_VERBS: &[&str] = &[
@@ -303,11 +317,23 @@ const BEHAVIORAL_VERBS: &[&str] = &[
     "renders",
 ];
 
-/// Aho-Corasick automaton over [`BEHAVIORAL_VERBS`].
-/// Only whole-word matches trigger behavioral classification.
-static BEHAVIORAL_VERBS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
-    AhoCorasick::new(BEHAVIORAL_VERBS).expect("BEHAVIORAL_VERBS is a valid pattern set (static)")
-});
+/// Builtin behavioral-verb floor, sourced from [`BEHAVIORAL_VERBS`]. Seeds
+/// [`BEHAVIORAL_VERBS_AC`]; extended by overlay entries via
+/// [`install_classifier_vocab_overlay`].
+fn builtin_behavioral_verbs() -> Vec<String> {
+    BEHAVIORAL_VERBS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Runtime-extensible Aho-Corasick automaton over the behavioral verbs. Seeded
+/// from [`BEHAVIORAL_VERBS`]; rebuilt over builtins ∪ overlay by
+/// [`install_classifier_vocab_overlay`]. Only whole-word matches trigger
+/// behavioral classification.
+static BEHAVIORAL_VERBS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCorasick>>> =
+    LazyLock::new(|| {
+        let ac = AhoCorasick::new(BEHAVIORAL_VERBS)
+            .expect("BEHAVIORAL_VERBS is a valid pattern set (static)");
+        std::sync::RwLock::new(std::sync::Arc::new(ac))
+    });
 
 /// Abstract nouns suggesting conceptual search
 const CONCEPTUAL_NOUNS: &[&str] = &[
@@ -327,11 +353,23 @@ const CONCEPTUAL_NOUNS: &[&str] = &[
     "methodology",
 ];
 
-/// Aho-Corasick automaton over [`CONCEPTUAL_NOUNS`].
-/// Only whole-word matches trigger conceptual classification.
-static CONCEPTUAL_NOUNS_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
-    AhoCorasick::new(CONCEPTUAL_NOUNS).expect("CONCEPTUAL_NOUNS is a valid pattern set (static)")
-});
+/// Builtin conceptual-noun floor, sourced from [`CONCEPTUAL_NOUNS`]. Seeds
+/// [`CONCEPTUAL_NOUNS_AC`]; extended by overlay entries via
+/// [`install_classifier_vocab_overlay`].
+fn builtin_conceptual_nouns() -> Vec<String> {
+    CONCEPTUAL_NOUNS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Runtime-extensible Aho-Corasick automaton over the conceptual nouns. Seeded
+/// from [`CONCEPTUAL_NOUNS`]; rebuilt over builtins ∪ overlay by
+/// [`install_classifier_vocab_overlay`]. Only whole-word matches trigger
+/// conceptual classification.
+static CONCEPTUAL_NOUNS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCorasick>>> =
+    LazyLock::new(|| {
+        let ac = AhoCorasick::new(CONCEPTUAL_NOUNS)
+            .expect("CONCEPTUAL_NOUNS is a valid pattern set (static)");
+        std::sync::RwLock::new(std::sync::Arc::new(ac))
+    });
 
 /// Negation tokens matched against word-split query tokens (not substrings),
 /// so words like `cannot`, `piano`, `nano` don't false-fire.
@@ -365,19 +403,34 @@ fn builtin_negation_tokens() -> std::collections::HashSet<String> {
 static NEGATION_TOKENS: LazyLock<std::sync::RwLock<std::collections::HashSet<String>>> =
     LazyLock::new(|| std::sync::RwLock::new(builtin_negation_tokens()));
 
-/// Structural keywords from programming languages
-const STRUCTURAL_KEYWORDS: &[&str] = &[
-    "struct",
-    "enum",
-    "trait",
-    "impl",
-    "interface",
-    "class",
-    "module",
-    "namespace",
-    "protocol",
-    "type",
-];
+/// Structural keywords from programming languages. The compile-time floor;
+/// operators add domain keywords via [`install_classifier_vocab_overlay`].
+/// Matched against whitespace-split query tokens (word-exact, not substring),
+/// so this mirrors the [`NEGATION_TOKENS`] `HashSet` shape rather than an AC.
+fn builtin_structural_keywords() -> std::collections::HashSet<String> {
+    [
+        "struct",
+        "enum",
+        "trait",
+        "impl",
+        "interface",
+        "class",
+        "module",
+        "namespace",
+        "protocol",
+        "type",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Runtime-extensible structural keyword set. Seeded from
+/// [`builtin_structural_keywords`]; overlay entries are lowercased and merged
+/// by [`install_classifier_vocab_overlay`]. Lookups are word-exact against the
+/// already-lowercased query tokens, so set entries are stored lowercase.
+static STRUCTURAL_KEYWORDS: LazyLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::RwLock::new(builtin_structural_keywords()));
 
 /// Common aliases that users type but don't match registry names.
 /// Registry names cover the canonical forms ("cpp", "csharp", etc.);
@@ -469,105 +522,218 @@ static MULTISTEP_PATTERNS_AC: LazyLock<std::sync::RwLock<std::sync::Arc<AhoCoras
         std::sync::RwLock::new(std::sync::Arc::new(ac))
     });
 
-/// Merge a classifier-vocab overlay into the runtime NEGATION + MULTISTEP
-/// sets. Called once at CLI/daemon startup after parsing
-/// `~/.config/cqs/classifier.toml` (user-global) and
-/// `<project>/.cqs/classifier.toml` (project-local; layered on top).
+/// A parsed `classifier.toml` overlay: extra entries for each of the six
+/// runtime-extensible classifier vocabularies. Every field extends (never
+/// replaces) its builtin floor. Produced by [`load_classifier_vocab_overlay`]
+/// and applied by [`install_classifier_vocab_overlay`]. `Default` is the
+/// all-empty overlay (a no-op install).
+#[derive(Debug, Default, Clone)]
+pub struct ClassifierVocabOverlay {
+    /// Extra negation tokens (word-exact; e.g. `ignoring`).
+    pub negation_tokens: Vec<String>,
+    /// Extra multistep conjunction patterns (substring; e.g. `sequentially`).
+    pub multistep_patterns: Vec<String>,
+    /// Extra behavioral verbs (whole-word; e.g. `orchestrates`).
+    pub behavioral_verbs: Vec<String>,
+    /// Extra conceptual nouns (whole-word; e.g. `topology`).
+    pub conceptual_nouns: Vec<String>,
+    /// Extra structural keywords (word-exact; e.g. `record`).
+    pub structural_keywords: Vec<String>,
+    /// Extra natural-language indicators (whole-word; e.g. `explain`).
+    pub nl_indicators: Vec<String>,
+}
+
+impl ClassifierVocabOverlay {
+    /// Append every field of `other` onto `self`, preserving order. Used to
+    /// layer the project-local overlay on top of the user-global one.
+    pub fn extend(&mut self, other: ClassifierVocabOverlay) {
+        self.negation_tokens.extend(other.negation_tokens);
+        self.multistep_patterns.extend(other.multistep_patterns);
+        self.behavioral_verbs.extend(other.behavioral_verbs);
+        self.conceptual_nouns.extend(other.conceptual_nouns);
+        self.structural_keywords.extend(other.structural_keywords);
+        self.nl_indicators.extend(other.nl_indicators);
+    }
+
+    /// True when no field carries any entry — installing it is a no-op.
+    fn is_empty(&self) -> bool {
+        self.negation_tokens.is_empty()
+            && self.multistep_patterns.is_empty()
+            && self.behavioral_verbs.is_empty()
+            && self.conceptual_nouns.is_empty()
+            && self.structural_keywords.is_empty()
+            && self.nl_indicators.is_empty()
+    }
+}
+
+/// Merge overlay entries into a runtime `HashSet` vocabulary (lowercasing each
+/// entry, as the lookup sites compare against already-lowercased query tokens).
+/// Empty overlay → no write.
+fn merge_hashset_overlay(
+    lock: &std::sync::RwLock<std::collections::HashSet<String>>,
+    extra: Vec<String>,
+) {
+    if extra.is_empty() {
+        return;
+    }
+    let mut g = lock.write().unwrap_or_else(|p| p.into_inner());
+    for tok in extra {
+        g.insert(tok.to_lowercase());
+    }
+}
+
+/// Rebuild a runtime AC automaton over `builtins ∪ extra` so the overlay
+/// extends rather than replaces the set. Empty/whitespace-only and duplicate
+/// entries are dropped. Empty overlay → no rebuild. An `AhoCorasick` build
+/// failure warns and KEEPS the previous automaton (per-set containment — one
+/// bad set never poisons the others).
+fn rebuild_ac_overlay(
+    lock: &std::sync::RwLock<std::sync::Arc<AhoCorasick>>,
+    mut all: Vec<String>,
+    extra: Vec<String>,
+    set_name: &str,
+) {
+    if extra.is_empty() {
+        return;
+    }
+    for pat in extra {
+        if !pat.trim().is_empty() && !all.contains(&pat) {
+            all.push(pat);
+        }
+    }
+    match AhoCorasick::new(&all) {
+        Ok(ac) => {
+            let mut g = lock.write().unwrap_or_else(|p| p.into_inner());
+            *g = std::sync::Arc::new(ac);
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                set = set_name,
+                "Classifier vocab overlay patterns rejected by AhoCorasick — \
+                 keeping previous automaton"
+            );
+        }
+    }
+}
+
+/// Merge a classifier-vocab overlay into all six runtime vocabularies. Called
+/// once at CLI/daemon startup after parsing `~/.config/cqs/classifier.toml`
+/// (user-global) and `<project>/.cqs/classifier.toml` (project-local; layered
+/// on top).
 ///
-/// `extra_negation` entries are lowercased and merged into the negation
-/// set. `extra_multistep` entries are merged with the builtin patterns
-/// and a new `AhoCorasick` automaton is built — empty/whitespace-only
-/// entries are dropped at the loader.
+/// Each set extends (never replaces) its builtin floor: `HashSet` sets
+/// (negation, structural) lowercase-and-merge; AC sets (multistep, behavioral,
+/// conceptual, nl_indicators) rebuild an automaton over `builtins ∪ overlay`.
+/// Empty/whitespace-only and duplicate entries are dropped; an AC-build failure
+/// warns and keeps that set's previous automaton without disturbing the others.
 ///
-/// Both vecs empty → no-op.
-pub fn install_classifier_vocab_overlay(extra_negation: Vec<String>, extra_multistep: Vec<String>) {
-    if extra_negation.is_empty() && extra_multistep.is_empty() {
+/// All fields empty → no-op.
+pub fn install_classifier_vocab_overlay(overlay: ClassifierVocabOverlay) {
+    if overlay.is_empty() {
         return;
     }
     // Info-level so operators editing `~/.config/cqs/classifier.toml` see
     // their config land in journald without RUST_LOG=debug. Fires only when
-    // at least one set is non-empty.
-    let neg_count = extra_negation.len();
-    let multi_count = extra_multistep.len();
-    if !extra_negation.is_empty() {
-        let mut g = NEGATION_TOKENS.write().unwrap_or_else(|p| p.into_inner());
-        for tok in extra_negation {
-            g.insert(tok.to_lowercase());
-        }
-    }
-    if !extra_multistep.is_empty() {
-        // Rebuild the AC over the union of builtins + overlay so the
-        // overlay extends rather than replaces the set.
-        let mut all = builtin_multistep_patterns();
-        for pat in extra_multistep {
-            if !pat.trim().is_empty() && !all.contains(&pat) {
-                all.push(pat);
-            }
-        }
-        let new_ac = match AhoCorasick::new(&all) {
-            Ok(ac) => ac,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Classifier vocab overlay multistep patterns rejected by AhoCorasick — \
-                     keeping builtin AC"
-                );
-                return;
-            }
-        };
-        let mut g = MULTISTEP_PATTERNS_AC
-            .write()
-            .unwrap_or_else(|p| p.into_inner());
-        *g = std::sync::Arc::new(new_ac);
-    }
+    // at least one set is non-empty. Counts are the post-loader-filter input
+    // sizes (dup-skip against builtins is not reflected).
+    let neg_count = overlay.negation_tokens.len();
+    let multi_count = overlay.multistep_patterns.len();
+    let behavioral_count = overlay.behavioral_verbs.len();
+    let conceptual_count = overlay.conceptual_nouns.len();
+    let structural_count = overlay.structural_keywords.len();
+    let nl_count = overlay.nl_indicators.len();
+
+    merge_hashset_overlay(&NEGATION_TOKENS, overlay.negation_tokens);
+    merge_hashset_overlay(&STRUCTURAL_KEYWORDS, overlay.structural_keywords);
+    rebuild_ac_overlay(
+        &MULTISTEP_PATTERNS_AC,
+        builtin_multistep_patterns(),
+        overlay.multistep_patterns,
+        "multistep",
+    );
+    rebuild_ac_overlay(
+        &BEHAVIORAL_VERBS_AC,
+        builtin_behavioral_verbs(),
+        overlay.behavioral_verbs,
+        "behavioral",
+    );
+    rebuild_ac_overlay(
+        &CONCEPTUAL_NOUNS_AC,
+        builtin_conceptual_nouns(),
+        overlay.conceptual_nouns,
+        "conceptual",
+    );
+    rebuild_ac_overlay(
+        &NL_INDICATORS_AC,
+        builtin_nl_indicators(),
+        overlay.nl_indicators,
+        "nl_indicators",
+    );
+
     tracing::info!(
         negation_added = neg_count,
         multistep_added = multi_count,
+        behavioral_added = behavioral_count,
+        conceptual_added = conceptual_count,
+        structural_added = structural_count,
+        nl_indicators_added = nl_count,
         "Installed classifier vocab overlay"
     );
 }
 
-/// Test-only: reset both vocab tables to the compile-time builtins.
+/// Test-only: reset all six vocab tables to the compile-time builtins.
 #[cfg(test)]
 pub(crate) fn reset_classifier_vocab_for_test() {
-    {
-        let mut g = NEGATION_TOKENS.write().unwrap_or_else(|p| p.into_inner());
-        *g = builtin_negation_tokens();
+    fn set_hash(
+        lock: &std::sync::RwLock<std::collections::HashSet<String>>,
+        v: std::collections::HashSet<String>,
+    ) {
+        *lock.write().unwrap_or_else(|p| p.into_inner()) = v;
     }
-    {
-        let patterns = builtin_multistep_patterns();
+    fn set_ac(lock: &std::sync::RwLock<std::sync::Arc<AhoCorasick>>, patterns: Vec<String>) {
         let ac = AhoCorasick::new(&patterns).expect("rebuild builtin AC");
-        let mut g = MULTISTEP_PATTERNS_AC
-            .write()
-            .unwrap_or_else(|p| p.into_inner());
-        *g = std::sync::Arc::new(ac);
+        *lock.write().unwrap_or_else(|p| p.into_inner()) = std::sync::Arc::new(ac);
     }
+    set_hash(&NEGATION_TOKENS, builtin_negation_tokens());
+    set_hash(&STRUCTURAL_KEYWORDS, builtin_structural_keywords());
+    set_ac(&MULTISTEP_PATTERNS_AC, builtin_multistep_patterns());
+    set_ac(&NL_INDICATORS_AC, builtin_nl_indicators());
+    set_ac(&BEHAVIORAL_VERBS_AC, builtin_behavioral_verbs());
+    set_ac(&CONCEPTUAL_NOUNS_AC, builtin_conceptual_nouns());
 }
 
 /// Parse a `classifier.toml` overlay from disk.
 ///
-/// Schema:
+/// Schema (all keys optional; each extends its builtin floor):
 /// ```toml
 /// [classifier]
-/// negation_tokens = ["ignoring", "without using"]
+/// negation_tokens    = ["ignoring", "without using"]
 /// multistep_patterns = ["sequentially", "step by step"]
+/// behavioral_verbs   = ["orchestrates", "dispatches"]
+/// conceptual_nouns   = ["topology", "invariant"]
+/// structural_keywords = ["record", "actor"]
+/// nl_indicators      = ["explain", "describe"]
 /// ```
 ///
-/// Returns `(extra_negation, extra_multistep)`. Missing file → `(empty,
-/// empty)` (no warn). Malformed TOML → warn + empty. Bounded read at 4 KiB.
-pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Vec<String>) {
+/// Returns a [`ClassifierVocabOverlay`]. Missing file → `Default` (empty; no
+/// warn). Malformed TOML → warn + `Default`. Bounded read at 16 KiB — generous
+/// for six string lists while still rejecting a hostile multi-MB file.
+pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> ClassifierVocabOverlay {
     use std::io::Read;
-    const MAX_BYTES: u64 = 4096;
+    const MAX_BYTES: u64 = 16 * 1024;
 
     let mut file = match std::fs::File::open(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return ClassifierVocabOverlay::default()
+        }
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "Failed to open classifier vocab overlay; falling back to builtins"
             );
-            return (Vec::new(), Vec::new());
+            return ClassifierVocabOverlay::default();
         }
         Ok(f) => f,
     };
@@ -578,7 +744,7 @@ pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Ve
             error = %e,
             "Bounded read of classifier vocab failed; falling back to builtins"
         );
-        return (Vec::new(), Vec::new());
+        return ClassifierVocabOverlay::default();
     }
 
     #[derive(serde::Deserialize)]
@@ -591,6 +757,14 @@ pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Ve
         negation_tokens: Vec<String>,
         #[serde(default)]
         multistep_patterns: Vec<String>,
+        #[serde(default)]
+        behavioral_verbs: Vec<String>,
+        #[serde(default)]
+        conceptual_nouns: Vec<String>,
+        #[serde(default)]
+        structural_keywords: Vec<String>,
+        #[serde(default)]
+        nl_indicators: Vec<String>,
     }
 
     let parsed: File = match toml::from_str(&raw) {
@@ -601,37 +775,42 @@ pub fn load_classifier_vocab_overlay(path: &std::path::Path) -> (Vec<String>, Ve
                 error = %e,
                 "Classifier vocab overlay is malformed TOML; falling back to builtins"
             );
-            return (Vec::new(), Vec::new());
+            return ClassifierVocabOverlay::default();
         }
     };
 
     let section = match parsed.classifier {
         Some(s) => s,
-        None => return (Vec::new(), Vec::new()),
+        None => return ClassifierVocabOverlay::default(),
     };
 
     // Drop empty / whitespace-only entries before they reach the
     // AhoCorasick builder — the builder can panic on `""` and any
     // whitespace-only pattern would either match constantly or be useless.
-    let neg: Vec<String> = section
-        .negation_tokens
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .collect();
-    let multi: Vec<String> = section
-        .multistep_patterns
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .collect();
-    if !neg.is_empty() || !multi.is_empty() {
+    fn drop_empty(v: Vec<String>) -> Vec<String> {
+        v.into_iter().filter(|s| !s.trim().is_empty()).collect()
+    }
+    let overlay = ClassifierVocabOverlay {
+        negation_tokens: drop_empty(section.negation_tokens),
+        multistep_patterns: drop_empty(section.multistep_patterns),
+        behavioral_verbs: drop_empty(section.behavioral_verbs),
+        conceptual_nouns: drop_empty(section.conceptual_nouns),
+        structural_keywords: drop_empty(section.structural_keywords),
+        nl_indicators: drop_empty(section.nl_indicators),
+    };
+    if !overlay.is_empty() {
         tracing::debug!(
             path = %path.display(),
-            negation_added = neg.len(),
-            multistep_added = multi.len(),
+            negation_added = overlay.negation_tokens.len(),
+            multistep_added = overlay.multistep_patterns.len(),
+            behavioral_added = overlay.behavioral_verbs.len(),
+            conceptual_added = overlay.conceptual_nouns.len(),
+            structural_added = overlay.structural_keywords.len(),
+            nl_indicators_added = overlay.nl_indicators.len(),
             "Loaded classifier vocab overlay"
         );
     }
-    (neg, multi)
+    overlay
 }
 
 // ── Classification ───────────────────────────────────────────────────
@@ -1089,7 +1268,7 @@ fn is_identifier_query(query: &str, words: &[&str]) -> bool {
         // NL indicator words are not identifiers. On a single-word query the
         // word itself IS the whole query and carries no whitespace, so the
         // AC word-boundary match reduces to "some pattern equals w".
-        if ac_has_word_bounded_match(&NL_INDICATORS_AC, query) {
+        if nl_indicators_match(query) {
             return false;
         }
         // Pure identifier chars (including :: and .)
@@ -1101,7 +1280,7 @@ fn is_identifier_query(query: &str, words: &[&str]) -> bool {
     // Multi-word: require at least one strong identifier signal
     // (underscore, ::, ., or mixed case within a single token)
     if words.len() <= 3 {
-        let has_nl = ac_has_word_bounded_match(&NL_INDICATORS_AC, query);
+        let has_nl = nl_indicators_match(query);
         if has_nl {
             return false;
         }
@@ -1161,10 +1340,10 @@ fn is_structural_query(query: &str) -> bool {
     }
     // Contains structural keywords as NL words (not identifiers)
     // e.g., "find all structs" but not "MyStruct"
-    let words: Vec<&str> = query.split_whitespace().collect();
-    STRUCTURAL_KEYWORDS
-        .iter()
-        .any(|kw| words.iter().any(|w| w == kw))
+    let g = STRUCTURAL_KEYWORDS
+        .read()
+        .unwrap_or_else(|p| p.into_inner());
+    query.split_whitespace().any(|w| g.contains(w))
 }
 
 /// Check if query describes behavior.
@@ -1173,7 +1352,7 @@ fn is_structural_query(query: &str) -> bool {
 /// substring contains) so hyphenated identifiers like
 /// `code-that-was-deleted-yesterday` don't false-fire.
 fn is_behavioral_query(query: &str, _words: &[&str]) -> bool {
-    if ac_has_word_bounded_match(&BEHAVIORAL_VERBS_AC, query) {
+    if behavioral_verbs_match(query) {
         return true;
     }
     // "code that" / "function that" are specific phrasings used by genuine
@@ -1233,15 +1412,42 @@ fn ac_has_word_bounded_match(ac: &AhoCorasick, query: &str) -> bool {
     false
 }
 
+/// Whole-word NL-indicator match against the runtime automaton. Read-locks
+/// [`NL_INDICATORS_AC`] and clones the inner `Arc` so the match runs off a
+/// stable snapshot without holding the lock.
+fn nl_indicators_match(query: &str) -> bool {
+    let ac = NL_INDICATORS_AC
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    ac_has_word_bounded_match(&ac, query)
+}
+
+/// Whole-word behavioral-verb match against the runtime automaton.
+fn behavioral_verbs_match(query: &str) -> bool {
+    let ac = BEHAVIORAL_VERBS_AC
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    ac_has_word_bounded_match(&ac, query)
+}
+
+/// Whole-word conceptual-noun match against the runtime automaton.
+fn conceptual_nouns_match(query: &str) -> bool {
+    let ac = CONCEPTUAL_NOUNS_AC
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    ac_has_word_bounded_match(&ac, query)
+}
+
 /// Check if query is about abstract concepts.
 fn is_conceptual_query(query: &str, words: &[&str]) -> bool {
-    if ac_has_word_bounded_match(&CONCEPTUAL_NOUNS_AC, query) {
+    if conceptual_nouns_match(query) {
         return true;
     }
     // Short queries (1-3 words) that aren't identifiers and aren't structural
-    words.len() <= 3
-        && ac_has_word_bounded_match(&NL_INDICATORS_AC, query)
-        && !is_structural_query(query)
+    words.len() <= 3 && nl_indicators_match(query) && !is_structural_query(query)
 }
 
 /// Pre-computed `(phrase, chunk_type)` table assembled from
@@ -1577,6 +1783,13 @@ mod tests {
 
     // ─── classifier vocab overlay ───────────────────────────────────────
 
+    /// Build a single-set overlay for a test, leaving the other five empty.
+    fn overlay_with(f: impl FnOnce(&mut ClassifierVocabOverlay)) -> ClassifierVocabOverlay {
+        let mut o = ClassifierVocabOverlay::default();
+        f(&mut o);
+        o
+    }
+
     /// An overlay-installed negation token routes a query into the
     /// `Negation` category, just like a builtin would.
     #[test]
@@ -1593,7 +1806,9 @@ mod tests {
             pre.category
         );
 
-        install_classifier_vocab_overlay(vec!["ignoring".to_string()], Vec::new());
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.negation_tokens = vec!["ignoring".to_string()]
+        }));
 
         let post = classify_query("find functions ignoring case");
         assert_eq!(
@@ -1621,7 +1836,9 @@ mod tests {
             pre.category
         );
 
-        install_classifier_vocab_overlay(Vec::new(), vec!["sequentially".to_string()]);
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.multistep_patterns = vec!["sequentially".to_string()]
+        }));
 
         let post = classify_query("walk the tree sequentially");
         assert_eq!(
@@ -1640,7 +1857,9 @@ mod tests {
     #[serial_test::serial(classifier_vocab_overlay)]
     fn classifier_overlay_reset_restores_builtins() {
         reset_classifier_vocab_for_test();
-        install_classifier_vocab_overlay(vec!["ignoring".to_string()], Vec::new());
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.negation_tokens = vec!["ignoring".to_string()]
+        }));
         // confirm the overlay is live
         assert_eq!(
             classify_query("find functions ignoring case").category,
@@ -1660,7 +1879,7 @@ mod tests {
     #[serial_test::serial(classifier_vocab_overlay)]
     fn classifier_overlay_empty_is_noop() {
         reset_classifier_vocab_for_test();
-        install_classifier_vocab_overlay(Vec::new(), Vec::new());
+        install_classifier_vocab_overlay(ClassifierVocabOverlay::default());
         // Builtin negation still works — sanity check.
         assert_eq!(
             classify_query("sort without allocating").category,
@@ -1669,7 +1888,166 @@ mod tests {
         reset_classifier_vocab_for_test();
     }
 
-    /// `load_classifier_vocab_overlay` parses the typed `[classifier]` section.
+    /// An overlay-installed behavioral verb routes a query into the
+    /// `Behavioral` category.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_behavioral_verb_routes_to_behavioral_category() {
+        reset_classifier_vocab_for_test();
+        // "orchestrates" isn't a builtin behavioral verb.
+        let pre = classify_query("orchestrates records across shards");
+        assert_ne!(
+            pre.category,
+            QueryCategory::Behavioral,
+            "orchestrates is not a builtin — pre-overlay must not be Behavioral; got {:?}",
+            pre.category
+        );
+
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.behavioral_verbs = vec!["orchestrates".to_string()]
+        }));
+
+        assert_eq!(
+            classify_query("orchestrates records across shards").category,
+            QueryCategory::Behavioral,
+            "post-overlay 'orchestrates' must route to Behavioral"
+        );
+        // Builtin behavioral verb still fires.
+        assert_eq!(
+            classify_query("validates user input").category,
+            QueryCategory::Behavioral,
+            "builtin behavioral verb must still route to Behavioral"
+        );
+
+        reset_classifier_vocab_for_test();
+        assert_ne!(
+            classify_query("orchestrates records across shards").category,
+            QueryCategory::Behavioral,
+            "after reset, overlay-only verb should no longer trigger Behavioral"
+        );
+    }
+
+    /// An overlay-installed conceptual noun routes a query into the
+    /// `Conceptual` category.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_conceptual_noun_routes_to_conceptual_category() {
+        reset_classifier_vocab_for_test();
+        // "topology" isn't a builtin conceptual noun; a 4-word query also
+        // dodges the short-query NL fallback, so pre-overlay it is not
+        // Conceptual.
+        let pre = classify_query("distributed system topology mapping");
+        assert_ne!(
+            pre.category,
+            QueryCategory::Conceptual,
+            "topology is not a builtin — pre-overlay must not be Conceptual; got {:?}",
+            pre.category
+        );
+
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.conceptual_nouns = vec!["topology".to_string()]
+        }));
+
+        assert_eq!(
+            classify_query("distributed system topology mapping").category,
+            QueryCategory::Conceptual,
+            "post-overlay 'topology' must route to Conceptual"
+        );
+        // Builtin conceptual noun still fires.
+        assert_eq!(
+            classify_query("dependency injection pattern").category,
+            QueryCategory::Conceptual,
+            "builtin conceptual noun must still route to Conceptual"
+        );
+
+        reset_classifier_vocab_for_test();
+        assert_ne!(
+            classify_query("distributed system topology mapping").category,
+            QueryCategory::Conceptual,
+            "after reset, overlay-only noun should no longer trigger Conceptual"
+        );
+    }
+
+    /// An overlay-installed structural keyword routes a query into the
+    /// `Structural` category.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_structural_keyword_routes_to_structural_category() {
+        reset_classifier_vocab_for_test();
+        // "record" isn't a builtin structural keyword.
+        let pre = classify_query("find all record definitions");
+        assert_ne!(
+            pre.category,
+            QueryCategory::Structural,
+            "record is not a builtin — pre-overlay must not be Structural; got {:?}",
+            pre.category
+        );
+
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.structural_keywords = vec!["record".to_string()]
+        }));
+
+        assert_eq!(
+            classify_query("find all record definitions").category,
+            QueryCategory::Structural,
+            "post-overlay 'record' must route to Structural"
+        );
+        // Builtin structural keyword still fires.
+        assert_eq!(
+            classify_query("find all struct").category,
+            QueryCategory::Structural,
+            "builtin structural keyword must still route to Structural"
+        );
+
+        reset_classifier_vocab_for_test();
+        assert_ne!(
+            classify_query("find all record definitions").category,
+            QueryCategory::Structural,
+            "after reset, overlay-only keyword should no longer trigger Structural"
+        );
+    }
+
+    /// An overlay-installed NL indicator suppresses identifier classification
+    /// on a bare single-word query — the router's entire use of the NL set.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_nl_indicator_suppresses_identifier() {
+        reset_classifier_vocab_for_test();
+        // "explain" isn't a builtin NL indicator, so a bare "explain" reads
+        // as an identifier lookup pre-overlay.
+        assert_eq!(
+            classify_query("explain").category,
+            QueryCategory::IdentifierLookup,
+            "pre-overlay 'explain' should classify as IdentifierLookup"
+        );
+
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.nl_indicators = vec!["explain".to_string()]
+        }));
+
+        assert_ne!(
+            classify_query("explain").category,
+            QueryCategory::IdentifierLookup,
+            "post-overlay 'explain' is an NL indicator, so it must not be IdentifierLookup"
+        );
+        // Builtin NL indicator still suppresses identifier classification.
+        assert_ne!(
+            classify_query("using").category,
+            QueryCategory::IdentifierLookup,
+            "builtin NL indicator 'using' must still suppress IdentifierLookup"
+        );
+
+        reset_classifier_vocab_for_test();
+        assert_eq!(
+            classify_query("explain").category,
+            QueryCategory::IdentifierLookup,
+            "after reset, 'explain' should read as an identifier again"
+        );
+    }
+
+    /// `load_classifier_vocab_overlay` parses the typed `[classifier]` section,
+    /// including the four keys added when the overlay was extended to all six
+    /// vocabularies.
     #[test]
     fn classifier_overlay_loader_parses_typed_section() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1678,28 +2056,47 @@ mod tests {
             &path,
             "[classifier]\n\
              negation_tokens = [\"ignoring\", \"without using\"]\n\
-             multistep_patterns = [\"sequentially\", \"step by step\"]\n",
+             multistep_patterns = [\"sequentially\", \"step by step\"]\n\
+             behavioral_verbs = [\"orchestrates\", \"dispatches\"]\n\
+             conceptual_nouns = [\"topology\", \"invariant\"]\n\
+             structural_keywords = [\"record\", \"actor\"]\n\
+             nl_indicators = [\"explain\", \"describe\"]\n",
         )
         .unwrap();
 
-        let (neg, multi) = load_classifier_vocab_overlay(&path);
+        let overlay = load_classifier_vocab_overlay(&path);
         assert_eq!(
-            neg,
+            overlay.negation_tokens,
             vec!["ignoring".to_string(), "without using".to_string()]
         );
         assert_eq!(
-            multi,
+            overlay.multistep_patterns,
             vec!["sequentially".to_string(), "step by step".to_string()]
+        );
+        assert_eq!(
+            overlay.behavioral_verbs,
+            vec!["orchestrates".to_string(), "dispatches".to_string()]
+        );
+        assert_eq!(
+            overlay.conceptual_nouns,
+            vec!["topology".to_string(), "invariant".to_string()]
+        );
+        assert_eq!(
+            overlay.structural_keywords,
+            vec!["record".to_string(), "actor".to_string()]
+        );
+        assert_eq!(
+            overlay.nl_indicators,
+            vec!["explain".to_string(), "describe".to_string()]
         );
     }
 
-    /// Missing file → empty pair (no warn).
+    /// Missing file → empty overlay (no warn).
     #[test]
     fn classifier_overlay_loader_missing_file_returns_empty() {
-        let (neg, multi) =
+        let overlay =
             load_classifier_vocab_overlay(std::path::Path::new("/nonexistent/classifier.toml"));
-        assert!(neg.is_empty());
-        assert!(multi.is_empty());
+        assert!(overlay.is_empty());
     }
 
     /// Empty / whitespace-only entries are filtered before reaching
@@ -1712,13 +2109,15 @@ mod tests {
             &path,
             "[classifier]\n\
              negation_tokens = [\"ignoring\", \"\", \"   \"]\n\
-             multistep_patterns = [\"step by step\", \"\"]\n",
+             multistep_patterns = [\"step by step\", \"\"]\n\
+             behavioral_verbs = [\"orchestrates\", \"  \"]\n",
         )
         .unwrap();
 
-        let (neg, multi) = load_classifier_vocab_overlay(&path);
-        assert_eq!(neg, vec!["ignoring".to_string()]);
-        assert_eq!(multi, vec!["step by step".to_string()]);
+        let overlay = load_classifier_vocab_overlay(&path);
+        assert_eq!(overlay.negation_tokens, vec!["ignoring".to_string()]);
+        assert_eq!(overlay.multistep_patterns, vec!["step by step".to_string()]);
+        assert_eq!(overlay.behavioral_verbs, vec!["orchestrates".to_string()]);
     }
 
     #[test]
