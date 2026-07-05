@@ -73,6 +73,23 @@ pub static SCORING_KNOBS: &[ScoringKnob] = &[
         max: 100.0,
         cache: false,
     },
+    // testcode_demote: multiplicative demotion applied to test-origin chunks on
+    // non-test-seeking queries (finalize step 4b2). Default 1.0 is inert — the
+    // score path short-circuits the whole block at 1.0, so the knob-off output
+    // is byte-identical. `cache: false` is load-bearing — the paired A/B sweep
+    // mutates `CQS_TESTCODE_DEMOTE` between queries in one process and expects
+    // every call to re-read the env (matching the `type_boost` contract). Range
+    // (0.0, 1.0]: min just above 0.0 rejects 0/negatives (an out-of-range value
+    // warns and falls back to the 1.0 default), max 1.0 keeps it a demotion,
+    // never a boost.
+    ScoringKnob {
+        name: "testcode_demote",
+        env_var: Some("CQS_TESTCODE_DEMOTE"),
+        default: 1.0,
+        min: 0.0001,
+        max: 1.0,
+        cache: false,
+    },
     // Score-tier knobs (mirror the `ScoringConfig::DEFAULT` consts in
     // `src/search/scoring/config.rs`). Consumed via
     // `ScoringConfig::current()` — the override path flows from
