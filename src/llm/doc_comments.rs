@@ -273,7 +273,9 @@ pub fn doc_comment_pass(
                 items.push(super::provider::BatchSubmitItem {
                     custom_id: cs.content_hash.clone(),
                     content,
-                    context: cs.chunk_type.to_string(),
+                    context: super::provider::PromptContext::DocComment {
+                        chunk_type: cs.chunk_type.to_string(),
+                    },
                     language: cs.language.to_string(),
                 });
                 if items.len() >= max_batch_size {

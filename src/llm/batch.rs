@@ -51,7 +51,11 @@ impl LlmClient {
                     max_tokens,
                     messages: vec![ChatMessage {
                         role: "user".to_string(),
-                        content: prompt_builder(&item.content, &item.context, &item.language),
+                        content: prompt_builder(
+                            &item.content,
+                            item.context.payload(),
+                            &item.language,
+                        ),
                     }],
                 },
             })
@@ -742,7 +746,7 @@ impl BatchPhase2<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::provider::{BatchSubmitItem, MockBatchProvider};
+    use crate::llm::provider::{BatchSubmitItem, MockBatchProvider, PromptContext};
     use crate::test_helpers::setup_store;
     use std::collections::HashMap;
 
@@ -882,7 +886,7 @@ mod tests {
         let items = vec![BatchSubmitItem {
             custom_id: "hash_aaa".to_string(),
             content: "fn aaa() {}".to_string(),
-            context: "function".to_string(),
+            context: PromptContext::Prebuilt,
             language: "rust".to_string(),
         }];
 
@@ -1005,7 +1009,7 @@ mod tests {
         let items = vec![BatchSubmitItem {
             custom_id: "nonexistent_hash_1".to_string(),
             content: "fn ghost() {}".to_string(),
-            context: "function".to_string(),
+            context: PromptContext::Prebuilt,
             language: "rust".to_string(),
         }];
 

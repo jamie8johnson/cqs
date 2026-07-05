@@ -39,6 +39,45 @@ pub(crate) trait ProviderRegistry: Sync {
 /// both streaming and `fetch_batch_results` paths.
 pub type OnItemCallback = Box<dyn Fn(&str, &str) + Send + Sync>;
 
+/// Typed per-[`BatchKind`] prompt context carried by each [`BatchSubmitItem`].
+///
+/// Each variant carries exactly the payload the matching prompt builder
+/// consumes, so a construction-site typo cannot send the wrong field. The
+/// `Prebuilt` path ignores per-item context, so it carries no payload — the
+/// "unused" state is a unit variant, enforced by the type rather than by
+/// convention.
+///
+/// | Variant      | Prompt builder        | Payload                    |
+/// |--------------|-----------------------|----------------------------|
+/// | `Prebuilt`   | content is verbatim   | none                       |
+/// | `DocComment` | `build_doc_prompt`    | chunk-type label (`ct`)    |
+/// | `Hyde`       | `build_hyde_prompt`   | function signature (`sig`) |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptContext {
+    /// Pre-built prompts — [`BatchSubmitItem::content`] IS the user message,
+    /// so no per-item context is consumed.
+    Prebuilt,
+    /// Doc-comment generation — carries the chunk-type label that
+    /// `build_doc_prompt` substitutes into "Write a concise doc comment for
+    /// this {chunk_type}".
+    DocComment { chunk_type: String },
+    /// HyDE query prediction — carries the function signature that
+    /// `build_hyde_prompt` renders on the "Signature:" line.
+    Hyde { signature: String },
+}
+
+impl PromptContext {
+    /// The string the selected prompt builder consumes. `Prebuilt` yields the
+    /// empty string because its builder ignores per-item context.
+    pub(super) fn payload(&self) -> &str {
+        match self {
+            Self::Prebuilt => "",
+            Self::DocComment { chunk_type } => chunk_type,
+            Self::Hyde { signature } => signature,
+        }
+    }
+}
+
 /// A single item in a batch submission.
 /// Named fields replace the opaque `(String, String, String, String)` tuple
 /// to prevent positional errors at call sites.
@@ -47,26 +86,11 @@ pub struct BatchSubmitItem {
     pub custom_id: String,
     /// Source code content or pre-built prompt
     pub content: String,
-    /// Stringly-typed context bag whose meaning depends on which prompt
-    /// builder (`build_summary_prompt` / `build_doc_prompt` /
-    /// `build_hyde_prompt` / pre-built path) consumes the item. A typed
-    /// `PromptContext` enum would touch every reader and construction site
-    /// (`llm/batch.rs:874,993`, `llm/doc_comments.rs:266`,
-    /// `llm/summary.rs:86`, `llm/hyde.rs:57`, `llm/local.rs:739`). The
-    /// field's payload is:
-    ///
-    /// | Submission path                          | Field carries           |
-    /// |------------------------------------------|-------------------------|
-    /// | `BatchKind::Prebuilt` (contrastive)      | unused (`String::new`)  |
-    /// | `BatchKind::DocComment` (doc comments)   | function signature      |
-    /// | `BatchKind::Hyde` (HyDE queries)         | unused (`String::new`)  |
-    /// | summary batches (`llm_summary_pass`)     | chunk type label        |
-    ///
-    /// The receiver decides; a typo at the call site silently sends
-    /// the wrong field. This is the same tuple-with-named-fields
-    /// problem the struct was meant to solve, just one level deeper —
-    /// hence the deferred refactor.
-    pub context: String,
+    /// Typed per-kind prompt context. Each variant carries only the payload
+    /// its prompt builder reads; the `Prebuilt` path carries none. Replaces
+    /// the former overloaded `String` whose meaning depended on the
+    /// [`BatchKind`] chosen at submit time.
+    pub context: PromptContext,
     /// Programming language name
     pub language: String,
 }
@@ -83,13 +107,14 @@ pub struct BatchSubmitItem {
 pub enum BatchKind {
     /// Pre-built prompts — `BatchSubmitItem::content` IS the user message.
     /// Used by the contrastive summary path which pre-builds prompts with
-    /// neighbor context. `context` / `language` fields ignored.
+    /// neighbor context. Pairs with [`PromptContext::Prebuilt`] (no payload);
+    /// the `language` field is ignored.
     Prebuilt,
-    /// Doc-comment generation — uses `LlmClient::build_doc_prompt`.
-    /// `BatchSubmitItem::context` carries the function signature.
+    /// Doc-comment generation — uses `LlmClient::build_doc_prompt`, which
+    /// reads the chunk-type label from [`PromptContext::DocComment`].
     DocComment,
-    /// HyDE query prediction — uses `LlmClient::build_hyde_prompt`.
-    /// `BatchSubmitItem::context` carries the function signature.
+    /// HyDE query prediction — uses `LlmClient::build_hyde_prompt`, which
+    /// reads the function signature from [`PromptContext::Hyde`].
     Hyde,
 }
 
