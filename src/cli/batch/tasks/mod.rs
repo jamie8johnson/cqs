@@ -515,6 +515,20 @@ mod tests {
         store.tasks.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
+    /// The taskId is a capability handle; its `Debug` must never render the raw
+    /// value, so a `?task_id` in a tracing call or a crash trace can't leak it.
+    /// A future `#[derive(Debug)]` would silently un-redact it — this guard
+    /// fails if the redaction is ever removed.
+    #[test]
+    fn task_id_debug_is_redacted() {
+        let secret = "aGVsbG8td29ybGQtc2VjcmV0LXRhc2staWQtZXhhbXBsZS0x";
+        let rendered = format!("{:?}", TaskId::from_wire(secret));
+        assert!(
+            !rendered.contains(secret),
+            "TaskId Debug must not leak the raw capability handle, got {rendered:?}"
+        );
+    }
+
     /// Admission refuses the `(N+1)`th task with the opaque `Unavailable` path
     /// (here: `try_admit` returns false), and the store stays bounded at the cap
     /// even without any GC sweep.

@@ -266,6 +266,7 @@ src/
       handlers/ - Daemon dispatch adapters (one per command); each `dispatch_*` is a thin wrapper that parses the wire request into the command's typed `*Args` and calls the shared `*_core`
         mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs, dispatch_tests.rs (cross-surface parity tests: daemon dispatch == direct core)
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
+      tasks/    - Daemon-side MCP Tasks store + runner (Phase 3b): mod.rs (TaskStore/TaskEntry — AtomicU8 status + write-once terminal slot, crypto-secure redacted TaskId, admission caps + one-opaque-Unavailable, epoch-stamp staleness marker, sweep_expired GC, tasks/get+result read API), runner.rs (spawn_hnsw_rebuild-shaped eval worker: non-secret thread name, guard moved in, publish-on-drop `failed`). Wired to the transport by the MCP Tasks lane; daemon-owned (`cmd_watch` → BatchContext → BatchView).
     args.rs     - Shared CLI/batch arg structs via #[command(flatten)]
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
