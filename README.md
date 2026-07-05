@@ -622,7 +622,7 @@ Key commands (`--json` works on all commands; `--format mermaid` also accepted o
 - `cqs ping` - daemon healthcheck; reports daemon socket path and uptime if running
 - `cqs eval <fixture>` - run a query fixture against the current index and emit R@K metrics. `--baseline <path>` to compare two reports
 - `cqs model show/list/swap` - inspect the embedding model recorded in the index, list presets, or swap with restore-on-failure semantics
-- `cqs serve [--bind ADDR]` - launch the read-only web UI (graph, hierarchy, cluster, chunk-detail). Per-launch auth token; banner prints the URL
+- `cqs serve [--bind ADDR]` - launch the read-only web UI (graph, hierarchy, cluster, chunk-detail, impact — the callers hierarchy with what-breaks enrichment: transitive callers + affected tests). Per-launch auth token; banner prints the URL
 - `cqs refresh` - invalidate daemon caches and re-open the Store. Alias `cqs invalidate`. No-op when no daemon is running
 - `cqs doctor` - check model, index, hardware (execution provider, CAGRA availability)
 - `cqs hook install/uninstall/status/fire` - manage `.git/hooks/post-{checkout,merge,rewrite}` for watch-mode reconciliation. Idempotent; respects third-party hooks via marker check (#1182)

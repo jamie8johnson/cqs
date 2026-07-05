@@ -97,8 +97,9 @@ The eval harness pins itself to `v1` via env. The batch / daemon JSONL path is *
 - `io_error` — filesystem/network/socket failure. **Emitted** by `redact_error`'s `std::io::Error` downcast on the daemon batch path.
 - `internal` — catch-all; carries a redacted summary or a correlation chain-id (`err-<hex>`), with the full anyhow chain logged via `tracing::warn!`.
 - `timeout` — operation exceeded its time budget (e.g. `cqs status --wait`).
+- `unavailable` — a resource is transiently busy; retry shortly (distinct from `invalid_input`, which is a caller mistake). **Emitted** by the daemon's eval single-flight guard, and by a daemon at its client-connection cap on the `cqs status` and MCP-relay surfaces (the MCP bridge maps daemon-busy to a tool-level error carrying this code, never a caller-error `INVALID_PARAMS`).
 
-All six codes can reach a client. The redaction boundary (`redact_error`) downcasts the root cause: sqlx errors → `internal` (query text never leaks), IO errors → `io_error`, unknown → `internal` with a chain-id.
+All seven codes can reach a client. The redaction boundary (`redact_error`) downcasts the root cause: sqlx errors → `internal` (query text never leaks), IO errors → `io_error`, unknown → `internal` with a chain-id.
 
 **`version`** (v1 envelope only) is the wire-format version — bump `JSON_OUTPUT_VERSION` on any breaking change to inner `data` payload shapes. The slim default shapes omit it entirely.
 
@@ -251,7 +252,7 @@ src/
       index/      - build, gc, stale, stats, umap; index_args.rs (core index args struct shared by CLI and daemon paths)
       io/         - blame, brief, context, diff, drift, notes, read, reconstruct
       infra/      - audit_mode, cache_cmd, convert, doctor, hook, init, model, ping, project, reference, slot, status, telemetry_cmd
-      eval/       - `cqs eval` A/B harness: mod.rs (cmd_eval, require_fresh_gate), runner.rs (load query set, run search, score against gold — reuses production search path), baseline.rs (diff R@K against a saved EvalReport, regression gate). Shared on-disk types live in `src/eval/` (not here).
+      eval/       - `cqs eval` A/B harness: mod.rs (cmd_eval — owns the daemon relay: freshness gate → daemon dial → honest answered/local-fallback/hard-error outcomes; require_fresh_gate), runner.rs (eval_core — the surface-agnostic core shared by cmd_eval and the daemon's dispatch_eval, plus wire EvalArgs/EvalOutput; load query set, run search, score against gold — reuses production search path), baseline.rs (diff R@K against a saved EvalReport, regression gate; save/baseline/tolerance stay CLI-only). Daemon-answerable (dispatch_eval in batch/handlers/analysis.rs, process-wide single-flight) and MCP-exposed as `cqs_eval`. Shared on-disk types live in `src/eval/` (not here).
       serve.rs   - cmd_serve (auth-gated read-only HTTP UI launcher)
       train/      - export_model, plan, task, train_data, train_pairs
     chat.rs     - Interactive REPL (wraps batch mode with rustyline)
@@ -457,7 +458,7 @@ src/
     query.rs    - Query normalization for training pairs
   serve/        - `cqs serve` web UI (gated on `serve` feature; axum + tower)
     mod.rs      - run_server, build_router, server wiring
-    handlers.rs - axum route handlers (search, search_legs, eval_gold, graph, hierarchy, cluster, chunk detail); each emits a tracing event and wraps sync Store calls in spawn_blocking
+    handlers.rs - axum route handlers (search, search_legs, eval_gold, graph, hierarchy, cluster, chunk detail, impact — `/api/impact/{id}`, the what-breaks enrichment for the callers view); each emits a tracing event and wraps sync Store calls in spawn_blocking
     daemon_client.rs - Synchronous client of the retrieval daemon socket; `/api/search_legs` (SPLADE-fusion inspector) forwards to the daemon rather than loading the embedder/index into the web process
     data.rs     - Wire-format types + builders for `/api/*` (Node/Edge shapes matching Cytoscape.js element-data convention); wire-shaping only — SQL lives in store/serve_queries.rs
     error.rs    - HTTP-side error type wrapping StoreError → 4xx/5xx responses (incl. 503 ServiceUnavailable for daemon-down mechanism mode)
