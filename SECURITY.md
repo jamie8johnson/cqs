@@ -27,7 +27,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 `cqs mcp` has two transports. The **default** is a JSON-RPC bridge over **stdio** — it opens no network port. The **opt-in** `cqs mcp --http <port>` (behind the non-default `mcp-http` build feature, unix-only) instead opens a **Streamable HTTP** listener; it is loopback-bound by default and token-gated (see the MCP over HTTP subsection below). Both transports are transport-only clients of the warm `cqs watch --serve` daemon: every `tools/call` relays over the daemon's unix socket, there is no in-process fallback, and a daemon-absent call is a clean JSON-RPC error (never a panic or a 5xx).
 
 **Mitigations**:
-- **Read-only surface by default**: `tools/list` exposes 30 read-only tools. No mutation is possible without `CQS_MCP_ENABLE_MUTATIONS=1`.
+- **Read-only surface by default**: `tools/list` exposes 31 read-only tools. No mutation is possible without `CQS_MCP_ENABLE_MUTATIONS=1`.
 - **Gated mutation channel** (`CQS_MCP_ENABLE_MUTATIONS=1`): adds 4 mutating tools (`cqs_notes_add`, `cqs_notes_update`, `cqs_notes_remove`, `cqs_index`). Enforcement is double-gated — the bridge withholds the tools from the surface, and the daemon dispatch rejects mutation requests if the flag is unset. Fails closed: a misconfigured bridge cannot bypass daemon-side enforcement.
 - **Destructive set withheld by absence**: `gc`, `slot remove`, `index --force`, `model swap`, and `cache clear` are never registered as MCP tools and cannot be reached through the bridge regardless of env flags.
 - **Daemon Store stays read-only from MCP**: notes mutations write `docs/notes.toml`; `cqs_index` queues a reconcile (non-blocking). Neither path writes the daemon's in-memory Store from the MCP handler.

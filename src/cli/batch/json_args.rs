@@ -77,9 +77,9 @@ use crate::cli::commands::search::where_cmd::WhereArgs as WhereCore;
 use crate::cli::commands::task::TaskArgs as TaskCore;
 use crate::cli::commands::{
     CalleesArgs as CalleesCore, CallersCoreArgs, CiArgs as CiCore, DeadArgs as DeadCore,
-    DepsCoreArgs, HealthArgs as HealthCore, ImpactCoreArgs, ImpactDiffCoreArgs,
-    PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore, TestMapCoreArgs,
-    TraceCoreArgs,
+    DepsCoreArgs, EvalArgs as EvalCore, HealthArgs as HealthCore, ImpactCoreArgs,
+    ImpactDiffCoreArgs, PlanArgs as PlanCore, ReviewArgs as ReviewCore, StatsArgs as StatsCore,
+    TestMapCoreArgs, TraceCoreArgs,
 };
 
 /// Default `TextJsonArgs` for a JSON-args-built variant. The daemon always
@@ -205,6 +205,7 @@ pub(crate) const JSON_ARGS_CAPABLE_COMMANDS: &[&str] = &[
     "notes",
     "stats",
     "health",
+    "eval",
     "notes-add",
     "notes-update",
     "notes-remove",
@@ -524,6 +525,25 @@ pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
                 output: text_json(),
             }
         }
+        // The eval harness (`cqs_eval` tool + the `cmd_eval` relay dial). The
+        // wire core is the four-knob `EvalArgs` (query_file, limit, category,
+        // reranker); the CLI-only `--save` / `--baseline` / `--tolerance` /
+        // freshness flags are adapter-owned and have no wire representation, so
+        // they are unreachable here by ABSENCE (the same withhold as `cqs_index`
+        // `--force`). `dispatch_eval` owns the in-root path guard + single-flight
+        // cap, and the JSON OUTPUT is the separate `EvalOutput`.
+        "eval" => {
+            reject_eval_cli_only_keys(arguments)?;
+            let c: EvalCore = parse_core(command, arguments)?;
+            if c.limit == 0 {
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    "limit must be at least 1".to_string(),
+                )
+                .into());
+            }
+            BatchCmd::Eval { args: c }
+        }
         // ─── MCP Phase 2a: the gated notes-mutation channel ────────────────────
         //
         // These reverse the historical "notes mutations not on daemon" rejection,
@@ -601,6 +621,39 @@ fn require_mutations_enabled(command: &str) -> Result<()> {
             ),
         )
         .into());
+    }
+    Ok(())
+}
+
+/// Reject a wire `eval` frame that carries a CLI-adapter-only key
+/// (`save`/`baseline`/`tolerance`/`no_require_fresh`/`require_fresh_secs`).
+/// These are absent from the wire `EvalCore`, so serde would silently drop
+/// them — but a client sending `save` would believe a baseline was written
+/// when the daemon never can. An explicit `invalid_input` reject names the
+/// offending key so the failure is honest instead of silent. (The security
+/// property — no daemon-side save, no routing influence — already holds by
+/// absence; this only closes the silent-success gap.)
+fn reject_eval_cli_only_keys(arguments: &serde_json::Value) -> Result<()> {
+    const CLI_ONLY: &[&str] = &[
+        "save",
+        "baseline",
+        "tolerance",
+        "no_require_fresh",
+        "require_fresh_secs",
+    ];
+    if let Some(obj) = arguments.as_object() {
+        for key in CLI_ONLY {
+            if obj.contains_key(*key) {
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    format!(
+                        "'{key}' is a CLI-only eval flag and cannot be set over the wire \
+                         (baseline comparison and result-saving are local post-processing)"
+                    ),
+                )
+                .into());
+            }
+        }
     }
     Ok(())
 }
@@ -1365,6 +1418,108 @@ mod tests {
                 other => panic!("expected BatchCmd::Suggest, got {other:?}"),
             }
         }
+    }
+
+    /// The `eval` JSON-args frame builds a `BatchCmd::Eval` carrying the four
+    /// wire knobs. Proves the wire core deserializes + projects onto the variant
+    /// (the daemon dial and the MCP `cqs_eval` tool both route through this).
+    #[test]
+    fn eval_json_args_builds_eval_cmd() {
+        let cmd = build_batch_cmd(
+            "eval",
+            &json!({
+                "query_file": "evals/queries/v3_test.json",
+                "limit": 50,
+                "category": "multi_step",
+                "reranker": "onnx",
+            }),
+        )
+        .expect("eval must build from a full wire object");
+        match cmd {
+            BatchCmd::Eval { args } => {
+                assert_eq!(
+                    args.query_file,
+                    std::path::PathBuf::from("evals/queries/v3_test.json")
+                );
+                assert_eq!(args.limit, 50);
+                assert_eq!(args.category.as_deref(), Some("multi_step"));
+                assert_eq!(args.reranker, crate::cli::args::RerankerMode::Onnx);
+            }
+            other => panic!("expected BatchCmd::Eval, got {other:?}"),
+        }
+    }
+
+    /// The wire `eval` core CANNOT carry `--save` / `--baseline` / `--tolerance`
+    /// — those are CLI-adapter post-processing. Rather than silently drop a
+    /// smuggled key (which would let a client believe a baseline was written
+    /// when the daemon never can), the arm rejects it with `invalid_input`
+    /// naming the offending key. The security property (no daemon-side save, no
+    /// routing influence) holds by absence regardless; this pins the HONEST
+    /// failure over the silent one.
+    #[test]
+    fn eval_wire_rejects_save_baseline_or_tolerance() {
+        for key in ["save", "baseline", "tolerance"] {
+            let mut obj = serde_json::Map::new();
+            obj.insert("query_file".into(), json!("evals/q.json"));
+            obj.insert(
+                key.into(),
+                if key == "tolerance" {
+                    json!(5.0)
+                } else {
+                    json!("x.json")
+                },
+            );
+            let err = build_batch_cmd("eval", &serde_json::Value::Object(obj))
+                .expect_err(&format!("eval must reject the CLI-only key '{key}'"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(key) && msg.contains("CLI-only"),
+                "reject message must name the offending key '{key}': {msg}"
+            );
+        }
+    }
+
+    /// A bare wire `eval` frame (only the four wire knobs) still builds — the
+    /// reject is scoped to the CLI-only keys, not the whole surface.
+    #[test]
+    fn eval_wire_bare_frame_builds() {
+        let cmd = build_batch_cmd("eval", &json!({ "query_file": "evals/q.json" }))
+            .expect("a clean wire frame must build");
+        match cmd {
+            BatchCmd::Eval { args } => {
+                assert_eq!(args.query_file, std::path::PathBuf::from("evals/q.json"));
+                assert_eq!(args.limit, 20);
+                assert!(args.category.is_none());
+                assert_eq!(args.reranker, crate::cli::args::RerankerMode::None);
+            }
+            other => panic!("expected BatchCmd::Eval, got {other:?}"),
+        }
+    }
+
+    /// A wire `eval` frame with `limit: 0` is rejected daemon-side, matching the
+    /// CLI's pre-dial `--limit must be at least 1` guard — validation parity, so
+    /// the daemon surface can't be handed an all-zeros report from a zero limit.
+    #[test]
+    fn eval_wire_rejects_zero_limit() {
+        let err = build_batch_cmd("eval", &json!({ "query_file": "evals/q.json", "limit": 0 }))
+            .expect_err("eval must reject limit 0 over the wire");
+        assert!(
+            err.to_string().contains("limit must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `eval` requires `query_file`: an empty wire object is rejected (missing
+    /// field), NOT the argv-only catch-all — so `eval` is correctly JSON-args
+    /// capable. Pins that the capability probe classifies it as a real core.
+    #[test]
+    fn eval_json_args_requires_query_file() {
+        let err = build_batch_cmd("eval", &json!({})).expect_err("missing query_file must reject");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains(NO_CORE_REJECTION),
+            "eval must reject `{{}}` as a missing-field error, not the argv-only catch-all: {msg}"
+        );
     }
 
     /// Read-only withhold: a JSON-args `impact-diff` request CANNOT read stdin —

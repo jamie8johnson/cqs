@@ -10,11 +10,13 @@ Answers one question with evidence: **did retrieval change?** Numbers moving is 
 ## 1. Run both splits
 
 ```bash
-cqs eval evals/queries/v3_test.v2.json 2>/dev/null | grep OVERALL
-cqs eval evals/queries/v3_dev.v2.json  2>/dev/null | grep OVERALL
+CQS_NO_DAEMON=1 cqs eval evals/queries/v3_test.v2.json 2>/dev/null | grep OVERALL
+CQS_NO_DAEMON=1 cqs eval evals/queries/v3_dev.v2.json  2>/dev/null | grep OVERALL
 ```
 
 Aggregate = mean of the two (equal n=109). Compare against the latest recorded gate in `~/training-data/research/eval.md` — NEVER against numbers from memory. Run-to-run noise is ±1pp with an active daemon.
+
+**Pin the substrate.** Eval numbers depend on WHICH index computed them — a bare `cqs eval` relays to the daemon's RESIDENT index (`index_substrate: "resident"` in `--json`), while `CQS_NO_DAEMON=1` forces a fresh CLI-side build (`"fresh-built"`). The two differ within the ~1pp HNSW-reconstruction noise, so comparing a resident run against a fresh-built baseline manufactures a phantom delta. Either pin `CQS_NO_DAEMON=1` on every run (as above — fresh-built always) OR assert the `--json` `index_substrate` marker is uniform across every run you compare (including the recorded baseline). The recorded gate must note which substrate it was taken on.
 
 ## 2. If any metric dropped: check dead golds FIRST
 

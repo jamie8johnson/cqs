@@ -441,15 +441,35 @@ pub fn heavy_command(command: &str) -> bool {
     )
 }
 
+/// Multiplier applied to the base [`resolve_daemon_timeout_ms`] budget for the
+/// `eval` relay. A full eval run is a search+score loop over hundreds of
+/// fixture queries against a resident index — minutes, not the seconds the
+/// heavy set straddles. 40× (20 min at the default 30 s base) gives the daemon
+/// an honest budget to finish before the client declares the response lost.
+const EVAL_COMMAND_TIMEOUT_MULTIPLIER: u32 = 40;
+
+/// Hard floor on the `eval` relay budget, independent of the base knob. The
+/// 40× above rides `CQS_DAEMON_TIMEOUT_MS`, so an operator who set that low for
+/// snappy searches (`=5000`) would otherwise shrink eval to 200 s and guarantee
+/// a spurious read-expiry on a large fixture. The floor decouples the eval
+/// budget from that tuning: `budget = max(40 × base, floor)`.
+const EVAL_TIMEOUT_FLOOR: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
 /// Resolve the effective relay read/write timeout for a specific wire command.
 /// [`heavy_command`]s get [`HEAVY_COMMAND_TIMEOUT_MULTIPLIER`]× the base
-/// [`resolve_daemon_timeout_ms`] budget; everything else inherits the base
-/// unchanged. `CQS_DAEMON_TIMEOUT_MS` stays the single base knob — raising it
-/// lifts both the light and heavy budgets proportionally.
+/// [`resolve_daemon_timeout_ms`] budget; `eval` gets its own decoupled budget
+/// (`max(40 × base, 20 min)` — a full fixture run is minutes, not seconds);
+/// everything else inherits the base unchanged. `CQS_DAEMON_TIMEOUT_MS` stays
+/// the single base knob — raising it lifts all budgets proportionally.
 ///
 /// `saturating_mul` keeps a huge base override from overflowing `Duration`.
 pub fn resolve_daemon_timeout_for_command(command: &str) -> std::time::Duration {
     let base = resolve_daemon_timeout_ms();
+    if command == "eval" {
+        return base
+            .saturating_mul(EVAL_COMMAND_TIMEOUT_MULTIPLIER)
+            .max(EVAL_TIMEOUT_FLOOR);
+    }
     if heavy_command(command) {
         base.saturating_mul(HEAVY_COMMAND_TIMEOUT_MULTIPLIER)
     } else {
@@ -3182,6 +3202,32 @@ mod tests {
             resolve_daemon_timeout_for_command("search"),
             base,
             "a light command must inherit the base budget unchanged"
+        );
+    }
+
+    /// `eval` gets its own decoupled budget: `max(40 × base, 20-min floor)`. The
+    /// floor makes the eval budget independent of a low `CQS_DAEMON_TIMEOUT_MS`
+    /// set for snappy searches, so a large fixture never spuriously read-expires.
+    #[test]
+    fn eval_budget_is_max_of_forty_times_base_and_the_floor() {
+        let base = resolve_daemon_timeout_ms();
+        let expected = base
+            .saturating_mul(EVAL_COMMAND_TIMEOUT_MULTIPLIER)
+            .max(EVAL_TIMEOUT_FLOOR);
+        assert_eq!(
+            resolve_daemon_timeout_for_command("eval"),
+            expected,
+            "eval must get max(40 × base, 20-min floor)"
+        );
+        // The budget is never below the 20-minute floor, whatever the base is.
+        assert!(
+            resolve_daemon_timeout_for_command("eval") >= EVAL_TIMEOUT_FLOOR,
+            "the eval budget must never dip below the floor"
+        );
+        // And eval is NOT lumped in with the seconds-scale heavy set.
+        assert!(
+            !heavy_command("eval"),
+            "eval is budgeted separately, not heavy"
         );
     }
 

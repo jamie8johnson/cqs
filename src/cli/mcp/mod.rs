@@ -195,13 +195,13 @@ mod tests {
     ///
     /// With `CQS_MCP_ENABLE_MUTATIONS` unset, the exposed MCP tool set must
     /// equal the daemon's JSON-args-capable read command set MINUS the withheld
-    /// set — 30 read tools (the zero-arg `stats`/`health`, the Phase-2
+    /// set — 31 read tools (the zero-arg `stats`/`health`, the Phase-2
     /// `where`/`related`/`stale`, the Phase-3 overlay-capable `task`, the
-    /// read-only `notes`, the Phase-4 `suggest`/`impact-diff`, and the
-    /// fully-scanned function-card `explain` + module card `context`), zero
-    /// mutation delta. Fails if a JSON-args command is added/removed without
-    /// updating the MCP surface, or if a withheld command leaks into
-    /// `tools/list`.
+    /// read-only `notes`, the Phase-4 `suggest`/`impact-diff`, the
+    /// fully-scanned function-card `explain` + module card `context`, and the
+    /// resident-index `eval` harness), zero mutation delta. Fails if a JSON-args
+    /// command is added/removed without updating the MCP surface, or if a
+    /// withheld command leaks into `tools/list`.
     #[test]
     #[serial_test::serial(mcp_mutations_env)]
     fn tools_list_matches_json_args_registry() {
@@ -213,11 +213,11 @@ mod tests {
             "MCP tools/list (flag off) must equal the JSON-args read registry minus the \
              withheld set.\nexposed (mapped to commands): {exposed:?}\nexpected: {expected:?}"
         );
-        // The flag-off read surface = exactly 30 read tools.
+        // The flag-off read surface = exactly 31 read tools.
         assert_eq!(
             exposed.len(),
-            30,
-            "flag-off tools/list must expose 30 tools"
+            31,
+            "flag-off tools/list must expose 31 tools"
         );
     }
 
@@ -256,7 +256,7 @@ mod tests {
                 "flag-on tools/list must be the read set plus exactly the 3 notes mutators \
                  and the index queue tool"
             );
-            assert_eq!(on.len(), 34, "flag-on tools/list must expose 34 tools");
+            assert_eq!(on.len(), 35, "flag-on tools/list must expose 35 tools");
         }
     }
 
@@ -710,6 +710,7 @@ mod tests {
                 serde_json::json!({ "name": "foo", "max_depth": 5 }),
             ),
             ("dead", serde_json::json!({})),
+            ("eval", serde_json::json!({ "query_file": "evals/q.json" })),
             (
                 "notes-add",
                 serde_json::json!({ "text": "n", "sentiment": 0.5 }),
