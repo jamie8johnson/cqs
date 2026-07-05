@@ -203,6 +203,7 @@ fn setup_project() -> (TempDir, PathBuf) {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     };
     let pairs = vec![(chunk, mock_embedding(1.0_f32))];
     store
