@@ -805,6 +805,16 @@ pub enum DaemonRpcError {
     /// handler-level error. The `message` is the daemon's own description.
     #[error("daemon error: {0}")]
     DaemonError(String),
+    /// The daemon refused this connection transiently: it was at its
+    /// client-connection cap and rejected before reading the request, marking
+    /// the reply `retryable: true`. This is a HEALTHY, retryable state — the
+    /// daemon is merely busy, not wedged or crashed, and the request carries no
+    /// caller mistake. Distinct from [`Self::Transport`] (a wedged/gone daemon
+    /// the operator must restart) and [`Self::DaemonError`] (a deterministic
+    /// protocol error the caller must not blindly retry): the caller should
+    /// back off and retry, or fall back to inline execution.
+    #[error("daemon busy (retryable): {0}")]
+    Busy(String),
     /// The daemon's response filled the bridge read cap before a newline
     /// arrived. The payload is valid but larger than the relay buffer, so it
     /// would parse as garbage if forwarded — distinct from [`Self::BadResponse`]
@@ -1094,6 +1104,21 @@ pub fn daemon_json_args_request(
             .and_then(|m| m.as_str())
             .unwrap_or("daemon error")
             .to_string();
+        // A `retryable: true` marker means the daemon refused the connection at
+        // its client-connection cap before reading the command — a transient,
+        // healthy-daemon condition. Classify it as Busy so the caller retries /
+        // falls back rather than reading it as a caller-error or a wedged
+        // daemon. Absent the marker, a non-ok status is a genuine socket-layer
+        // failure.
+        if envelope.get("retryable").and_then(|v| v.as_bool()) == Some(true) {
+            tracing::warn!(
+                stage = "parse",
+                status,
+                command,
+                "daemon json-args request rejected: retryable busy"
+            );
+            return Err(DaemonRpcError::Busy(msg));
+        }
         tracing::warn!(
             stage = "parse",
             status,
@@ -1212,6 +1237,23 @@ fn daemon_request_with_timeout<T: serde::de::DeserializeOwned>(
             DaemonRpcError::BadResponse("missing 'status' field in daemon response".to_string())
         })?;
     if status != "ok" {
+        // A `retryable: true` marker with a string message is a transient
+        // busy-reject: the daemon was at its client-connection cap and refused
+        // before reading the request. Classify it as Busy (retryable, healthy)
+        // so callers do not read it as a wedged daemon. Without the marker (or
+        // with a non-string message) the reply falls through to the genuine
+        // socket-layer classification below.
+        if envelope.get("retryable").and_then(|v| v.as_bool()) == Some(true) {
+            if let Some(msg) = envelope.get("message").and_then(|m| m.as_str()) {
+                tracing::warn!(
+                    stage = "parse",
+                    status,
+                    command,
+                    "daemon request rejected: retryable busy"
+                );
+                return Err(DaemonRpcError::Busy(msg.to_string()));
+            }
+        }
         return Err(match envelope.get("message") {
             // String message: the daemon's own handler-level description.
             Some(serde_json::Value::String(msg)) => {
@@ -1406,7 +1448,7 @@ pub fn daemon_reconcile(
 
 /// Outcome of [`wait_for_fresh`].
 ///
-/// Five cases callers need to distinguish so the caller-side advice
+/// Six cases callers need to distinguish so the caller-side advice
 /// matches the actual failure mode:
 /// - `Fresh` — daemon reported `state == fresh` within the budget; safe to
 ///   proceed with the gated work.
@@ -1418,6 +1460,10 @@ pub fn daemon_reconcile(
 /// - `Transport` — socket exists but the daemon isn't responding (connect /
 ///   read / write / timeout). Operator action: check the daemon log,
 ///   consider restarting the unit.
+/// - `Busy` — daemon refused the connection at its client-connection cap
+///   (retryable). It is healthy, just at capacity: retry shortly, do NOT
+///   restart. Kept distinct from `Transport` so the advice is "retry", not
+///   "the daemon is hung/crashed".
 /// - `BadResponse` — daemon answered but the response was unparseable.
 ///   Most often a CLI/daemon version skew — restart `cqs-watch`.
 #[cfg(unix)]
@@ -1429,6 +1475,9 @@ pub enum FreshnessWait {
     NoDaemon(String),
     /// Connect/read/write/timeout — daemon is gone or hung.
     Transport(String),
+    /// Daemon at its client-connection cap — a retryable busy reject. The
+    /// daemon is healthy; the caller should retry shortly rather than restart.
+    Busy(String),
     /// Envelope/JSON/parse error — daemon answered but garbled.
     BadResponse(String),
 }
@@ -1531,6 +1580,13 @@ pub fn wait_for_fresh(cqs_dir: &std::path::Path, wait_secs: u64) -> FreshnessWai
         Err(DaemonRpcError::BadResponse(msg)) => {
             tracing::warn!(error = %msg, "wait_for_fresh: malformed daemon response");
             FreshnessWait::BadResponse(msg)
+        }
+        Err(DaemonRpcError::Busy(msg)) => {
+            // A retryable busy reject: the daemon is at its client-connection
+            // cap, not wedged. Keep it distinct from Transport so the gate
+            // advises "retry", not "the daemon is hung — restart it".
+            tracing::info!(error = %msg, "wait_for_fresh: daemon busy (retryable)");
+            FreshnessWait::Busy(msg)
         }
         Err(DaemonRpcError::DaemonError(msg)) => {
             tracing::warn!(error = %msg, "wait_for_fresh: daemon-side error");
@@ -2560,6 +2616,98 @@ mod tests {
         match result {
             FreshnessWait::Transport(_) => { /* expected */ }
             other => panic!("expected Transport after daemon drop, got: {other:?}"),
+        }
+    }
+
+    /// A daemon busy-reject (`{"status":"error", ..., "retryable":true}`, the
+    /// `write_daemon_busy` shape) classifies to `FreshnessWait::Busy`, NOT
+    /// `Transport`. The gate must advise "retry" for a daemon at its
+    /// client-connection cap, not the hung/crashed "restart" the transport
+    /// path gives — the whole point of the retryable marker.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_fresh_classifies_busy_reject_as_busy_not_transport() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Mock the daemon at its connection cap: read the request, then reply
+        // with the retryable busy envelope.
+        let busy_envelope = serde_json::json!({
+            "status": "error",
+            "message": "daemon busy (too many concurrent clients)",
+            "retryable": true,
+        })
+        .to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{busy_envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = wait_for_fresh(&cqs_dir, 5);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+
+        match result {
+            FreshnessWait::Busy(msg) => {
+                assert!(
+                    msg.contains("busy"),
+                    "the busy outcome must carry the daemon's message, got: {msg}"
+                );
+            }
+            other => panic!("expected Busy for a retryable reject, got: {other:?}"),
+        }
+    }
+
+    /// A non-retryable non-ok reply (no `retryable` marker) stays on the genuine
+    /// socket-layer path — `Transport`, via the `DaemonError` fold — so the
+    /// busy classification does not swallow a real daemon fault.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_fresh_non_retryable_error_stays_transport() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        set_socket_dir_override_for_test(Some(dir.path().to_path_buf()));
+
+        let sock_path = daemon_socket_path(&cqs_dir);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let err_envelope = serde_json::json!({
+            "status": "error",
+            "message": "unknown command",
+        })
+        .to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = String::new();
+            BufReader::new(&stream).read_line(&mut req).unwrap();
+            writeln!(stream, "{err_envelope}").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = wait_for_fresh(&cqs_dir, 5);
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        set_socket_dir_override_for_test(None);
+
+        match result {
+            FreshnessWait::Transport(_) => { /* expected — a real fault */ }
+            other => panic!("expected Transport for a non-retryable error, got: {other:?}"),
         }
     }
 

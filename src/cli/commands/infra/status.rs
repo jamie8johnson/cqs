@@ -145,6 +145,10 @@ pub(crate) fn cmd_status(
                 std::process::exit(1);
             }
             cqs::daemon_translate::FreshnessWait::NoDaemon(msg) => emit_no_daemon(&msg, json),
+            // Busy — a retryable cap reject. Distinct from the no-daemon path:
+            // the daemon is healthy, just at capacity, so the JSON code is
+            // `unavailable` (retry shortly), not `io_error` (restart).
+            cqs::daemon_translate::FreshnessWait::Busy(msg) => emit_busy(&msg, json),
             // Transport / BadResponse fold into the same exit-1 path as
             // NoDaemon — the operator-side detail (which class fired) is
             // in the message verbatim.
@@ -312,6 +316,23 @@ fn emit_no_daemon(msg: &str, json: bool) -> ! {
         );
     } else {
         eprintln!("cqs: {msg}");
+    }
+    std::process::exit(1);
+}
+
+/// Surface a retryable busy reject (daemon at its client-connection cap) as a
+/// `unavailable` error envelope (JSON) or stderr line (text), then process-exit
+/// 1. Distinct from [`emit_no_daemon`]: the daemon is healthy, so the code
+/// tells a scripted consumer to retry shortly rather than to restart the unit.
+#[cfg(unix)]
+fn emit_busy(msg: &str, json: bool) -> ! {
+    if json {
+        let _ = crate::cli::json_envelope::emit_json_error(
+            crate::cli::json_envelope::error_codes::UNAVAILABLE,
+            msg,
+        );
+    } else {
+        eprintln!("cqs: {msg} (retry shortly)");
     }
     std::process::exit(1);
 }
