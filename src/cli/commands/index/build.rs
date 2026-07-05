@@ -260,8 +260,12 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     .entered();
 
     // Detect a running cqs-watch --serve daemon BEFORE we touch anything.
-    // The daemon holds a shared file lock on `index.hnsw.lock` for the
-    // lifetime of its in-memory HNSW.
+    // Detection is a connect probe on the daemon's unix socket — NOT a file
+    // lock: the daemon does not hold `index.hnsw.lock` while serving (the
+    // HNSW load path releases its shared flock at the end of the read phase,
+    // deliberately, because a held shared lock would self-deadlock the
+    // daemon's own rebuild thread saving through a second fd on the same
+    // path).
     //
     // Two paths from here, depending on whether `--force` is set:
     //
@@ -272,13 +276,13 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
     //   asked for without paying for a redundant from-scratch rebuild.
     //
     // - **With `--force`**: the operator wants a complete from-scratch
-    //   rebuild. That requires invalidating the daemon's in-memory HNSW
-    //   (which the daemon won't release without a restart). We can't
-    //   transparently swap an in-memory HNSW under the daemon, so bail
-    //   with the original "stop the daemon" message — running this would
-    //   block indefinitely in `locks_lock_inode_wait` for an exclusive
-    //   write lock the daemon will never release. On WSL/NTFS the
-    //   "advisory-only" warning fires but the wait still happens.
+    //   rebuild, which renames `index.db` and rebuilds in a fresh inode.
+    //   Under a live daemon that swap races the daemon's writers: the
+    //   daemon's inode-swap detection is tick-based (idle/flush), not
+    //   transactional, so a reconcile committing during the rebuild lands
+    //   in the renamed old inode and is silently lost, and both processes
+    //   would race on HNSW generation saves. Bail with the
+    //   "stop the daemon" message instead of risking a torn rebuild.
     //
     // We use a connect-only probe (not the typed `daemon_ping`) so a
     // daemon running an older `PingResponse` schema still gets detected;
@@ -306,9 +310,9 @@ pub(crate) fn cmd_index(cli: &Cli, args: &IndexArgs) -> Result<()> {
                         // in-memory HNSW. Bail with the operator-actionable
                         // message (the original behavior).
                         anyhow::bail!(
-                            "A cqs-watch --serve daemon is currently running ({}). It holds a shared lock on \
-                             the HNSW index, so this reindex would block indefinitely in locks_lock_inode_wait. \
-                             Stop the daemon before reindexing:\n\n  \
+                            "A cqs-watch --serve daemon is currently running ({}). A --force rebuild swaps \
+                             index.db out from under it, racing its incremental writes (work committed during \
+                             the swap would be silently lost). Stop the daemon before reindexing:\n\n  \
                              {stop} && cqs index --force && {start}\n\n\
                              (If you launched the daemon manually, kill that process instead.)",
                             sock_path.display(),
