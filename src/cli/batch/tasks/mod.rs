@@ -41,6 +41,22 @@ use crate::cli::json_envelope::ErrorCode;
 
 pub(crate) mod runner;
 
+/// Loom model of the TaskStore cross-thread publication + admission protocol (the
+/// interleaving-auditor lane for the MCP 3b floor). Compiled ONLY under
+/// `--cfg cqs_loom` AND a test build — `loom` is a dev-dependency and the module
+/// `use`s it at module scope, so it must never reach a plain `cargo build`. Same
+/// gate + run shape as the sibling `interleaving_model`s. Absent from a normal
+/// build.
+#[cfg(all(cqs_loom, test))]
+mod publication_interleaving_model;
+
+/// Multi-threaded stress harness for the real TaskStore (the integration
+/// schedules loom can't bound: `HashMap` map lock, `std::thread` workers,
+/// get/result reads racing publishes + the GC sweep). Test-only; a fast default
+/// iteration count keeps the normal suite quick, `CQS_STRESS_ITERS` cranks it.
+#[cfg(test)]
+mod stress;
+
 /// Max number of tasks (working + retained terminal) held at once. Checked at
 /// admission: the `(N+1)`th augmented call is refused with the opaque
 /// `Unavailable` and allocates nothing, so the store stays bounded even across a
