@@ -78,6 +78,11 @@ pub(super) fn spawn_daemon_thread(
     daemon_pending_notes_signal: cqs::watch_status::SharedNotesSignal,
     daemon_fresh_notifier: cqs::watch_status::SharedFreshNotifier,
     in_flight: Arc<AtomicUsize>,
+    // The `cmd_watch`-owned daemon Tasks store (MCP 3b). Adopted into the
+    // query-side BatchContext so the eval-task workers publish into the same
+    // store the read handlers resolve against, and a clone drives the accept
+    // loop's GC sweep.
+    daemon_task_store: Arc<crate::cli::batch::tasks::TaskStore>,
     // Effective slot pin — a `--slot X` flag OR the equivalent `CQS_SLOT` env
     // var, snapshotted at daemon startup — or `None` for the common unpinned
     // deployment. Threaded into the query-side BatchContext so its staleness
@@ -147,6 +152,11 @@ pub(super) fn spawn_daemon_thread(
         // on the same notifier the watch loop signals from
         // `publish_watch_snapshot`.
         ctx.adopt_fresh_notifier(daemon_fresh_notifier);
+        // Adopt the shared Tasks store. Keep a clone in `task_store_for_sweep`
+        // for the accept-loop GC before the original moves into `ctx`, so the
+        // sweep reaches the store without taking the BatchContext mutex.
+        let task_store_for_sweep = Arc::clone(&daemon_task_store);
+        ctx.adopt_task_store(daemon_task_store);
 
         // Wrap the BatchContext in Arc<Mutex> so each accepted connection gets
         // its own handler thread. Without this, a single malicious client
@@ -206,6 +216,11 @@ pub(super) fn spawn_daemon_thread(
                 if let Ok(ctx_guard) = ctx.try_lock() {
                     ctx_guard.sweep_idle_sessions();
                 }
+                // Tasks-store GC backstop (MCP 3b). Reclaims terminal +
+                // ttl-expired task entries; independent of the ctx lock (its own
+                // `try_lock` on the map), and a memory backstop only — admission,
+                // not this sweep, is what bounds the store.
+                task_store_for_sweep.sweep_expired();
                 last_idle_sweep = std::time::Instant::now();
             }
             // Periodic in-flight report so operators can spot saturation in

@@ -235,12 +235,28 @@ fn eval_fixture_rejected() -> anyhow::Error {
 /// JSON — ANY failure collapses to the same opaque [`eval_fixture_rejected`]
 /// error (no in-root content oracle, no path echo).
 fn read_fixture_within_root(query_file: &Path, root: &Path) -> Result<cqs::eval::schema::QuerySet> {
+    use std::io::Read as _;
     let canonical = dunce::canonicalize(query_file).map_err(|_| eval_fixture_rejected())?;
     let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     if !canonical.starts_with(&root_canonical) {
         return Err(eval_fixture_rejected());
     }
-    let raw = std::fs::read_to_string(&canonical).map_err(|_| eval_fixture_rejected())?;
+    // Byte-capped read: read at most `MAX_FIXTURE_BYTES + 1` and
+    // reject anything over the cap, so an attacker-controlled in-root fixture
+    // cannot force an arbitrarily large read. `take(cap + 1)` is race-free vs a
+    // stat-then-read (a file that grows between stat and read can't slip
+    // through). ANY failure collapses to the same opaque error (no in-root
+    // content oracle, no path echo).
+    let cap = crate::cli::batch::tasks::MAX_FIXTURE_BYTES;
+    let file = std::fs::File::open(&canonical).map_err(|_| eval_fixture_rejected())?;
+    let mut raw = String::new();
+    let read = file
+        .take(cap as u64 + 1)
+        .read_to_string(&mut raw)
+        .map_err(|_| eval_fixture_rejected())?;
+    if read > cap {
+        return Err(eval_fixture_rejected());
+    }
     serde_json::from_str(&raw).map_err(|_| eval_fixture_rejected())
 }
 
@@ -307,10 +323,126 @@ pub(in crate::cli::batch) fn dispatch_eval(
         freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
             &ctx.watch_snapshot(),
         )),
+        // Direct (non-task) eval: synchronous, no cancel side-channel.
+        cancel: None,
     };
 
     let output = crate::cli::commands::eval_core(ctx, &set, &params)?;
     Ok(serde_json::to_value(&output)?)
+}
+
+/// One opaque, retryable rejection shared by BOTH task-admission at-cap
+/// conditions — single-flight-busy (an eval is already running) and
+/// retained-cap-full (the store is saturated) — so the reject is never a
+/// store-state oracle distinguishing "eval running now" from "store full of
+/// terminal results". Byte-identical code + message.
+// Wired to production by the MCP transport lane (built next); exercised by the
+// task tests here in the meantime.
+#[allow(dead_code)]
+fn eval_task_unavailable() -> anyhow::Error {
+    crate::cli::json_envelope::ClientFacingError::new(
+        crate::cli::json_envelope::ErrorCode::Unavailable,
+        "the eval task queue is busy; retry shortly",
+    )
+    .into()
+}
+
+/// Admit a `cqs_eval` run as an MCP task: enforce the single-flight cap and the
+/// admission-time retained caps, read + parse the fixture (byte-capped), insert
+/// a `working` entry, and spawn the detached worker. Returns the created task
+/// descriptor immediately (the worker publishes the terminal result into the
+/// entry). This is the daemon-side core behind the (lane-2) `tools/call`
+/// augmentation; it lives here beside `dispatch_eval` because it shares the
+/// single-flight guard and fixture helpers.
+///
+/// `ttl_secs`: the resolved retention (`Some(n)` seconds, `None` = unlimited).
+/// The transport resolves an omitted augmentation `ttl` to
+/// [`crate::cli::batch::tasks::DEFAULT_TASK_TTL_SECS`] before calling this.
+///
+/// Admission order: single-flight guard → cap fast-reject
+/// (no I/O, allocate nothing when full) → worker view checkout (stamps the
+/// substrate epoch) → byte-capped fixture read → authoritative cap-check + entry
+/// insert → spawn. The worker owns a publish-on-drop handle, so a spawn failure
+/// after the insert self-heals the orphan to `failed`.
+// Wired to production by the MCP transport lane (built next); exercised by the
+// task tests here in the meantime.
+#[allow(dead_code)]
+pub(in crate::cli::batch) fn dispatch_eval_task(
+    ctx: &BatchView,
+    args: &crate::cli::commands::EvalArgs,
+    ttl_secs: Option<u64>,
+) -> Result<crate::cli::batch::tasks::TaskDescriptor> {
+    let _span = tracing::info_span!("batch_eval_task", limit = args.limit).entered();
+
+    // (1) Single-flight admission — the SAME guard a direct `dispatch_eval`
+    //     takes, so a task eval and a direct eval never double-book the GPU. The
+    //     won guard is moved into the worker below and releases on its drop.
+    let Some(guard) = EvalSlotGuard::try_acquire() else {
+        tracing::warn!("eval task rejected: another eval is already in flight (single-flight)");
+        return Err(eval_task_unavailable());
+    };
+
+    // (2) Cap fast-reject BEFORE any fixture I/O — a saturated store does no work
+    //     and allocates nothing. Same opaque error as single-flight-busy.
+    if ctx.task_store.at_capacity() {
+        tracing::warn!("eval task rejected: task store at capacity");
+        return Err(eval_task_unavailable());
+    }
+
+    // (3) The worker needs its OWN Send `BatchView` snapshot; check one out from
+    //     the outer BatchContext lock (the daemon path). Its `checkout_epoch` is
+    //     the invalidation epoch the run's substrate belongs to — the
+    //     freshness stamp compared at result-read time.
+    let Some(outer) = ctx.outer_lock.as_ref() else {
+        // No outer lock ⇒ not the daemon serve path; task execution needs it.
+        return Err(crate::cli::json_envelope::ClientFacingError::new(
+            crate::cli::json_envelope::ErrorCode::Unavailable,
+            "eval tasks require the serving daemon",
+        )
+        .into());
+    };
+    let worker_view = crate::cli::batch::checkout_view_from_arc(outer);
+    let spawn_epoch = worker_view.checkout_epoch;
+
+    // (4) Byte-capped fixture read + parse. The daemon owns the read so
+    //     `eval_core` never touches the path; any failure is the opaque
+    //     fixture-rejected error (distinct from the busy error above).
+    let set = read_fixture_within_root(&args.query_file, &ctx.root)?;
+
+    // (5) Build the working entry and authoritatively admit it (cap re-check +
+    //     insert under one lock). At cap ⇒ the same opaque busy error.
+    let entry = ctx.task_store.new_entry(spawn_epoch, ttl_secs);
+    if !ctx.task_store.try_admit(std::sync::Arc::clone(&entry)) {
+        tracing::warn!("eval task rejected: task store at capacity (admit)");
+        return Err(eval_task_unavailable());
+    }
+
+    // (6) Build the eval params carrying the daemon-shutdown cancel token
+    //     and spawn the worker (entry already inserted ⇒ a spawn-fail
+    //     self-heals to `failed` via the worker's publish-on-drop).
+    let params = crate::cli::commands::EvalCoreParams {
+        query_file_label: relativize_query_file(&args.query_file, &ctx.root),
+        category_filter: args.category.clone(),
+        limit: args.limit,
+        reranker: args.reranker,
+        substrate: crate::cli::commands::IndexSubstrate::Resident,
+        freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
+            &worker_view.watch_snapshot(),
+        )),
+        cancel: Some(ctx.task_store.shutdown_token()),
+    };
+    let descriptor = ctx.task_store.describe(&entry);
+    let job_seq = ctx.task_store.next_job_seq();
+    crate::cli::batch::tasks::runner::spawn_eval_worker(
+        worker_view,
+        set,
+        params,
+        entry,
+        guard,
+        job_seq,
+    );
+
+    Ok(descriptor)
 }
 
 #[cfg(test)]
@@ -842,6 +974,7 @@ mod parity_tests {
             freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
                 &view.watch_snapshot(),
             )),
+            cancel: None,
         };
         let core = crate::cli::commands::eval_core(&view, &set, &params).expect("eval_core");
         let core_val = serde_json::to_value(&core).expect("serialize core");
@@ -893,6 +1026,161 @@ mod parity_tests {
         assert!(
             !EVAL_IN_FLIGHT.load(Ordering::SeqCst),
             "slot freed after the test releases it"
+        );
+    }
+
+    /// The fixture byte cap rejects an over-cap file with the opaque
+    /// fixture error — proven with VALID JSON (trailing whitespace) that would
+    /// parse fine were it not for the size, so the rejection is the byte cap, not
+    /// a parse failure. A small in-cap fixture still parses.
+    #[test]
+    fn fixture_byte_cap_rejects_oversized() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        let cap = crate::cli::batch::tasks::MAX_FIXTURE_BYTES;
+        // Valid QuerySet JSON padded past the cap with trailing whitespace.
+        let body = format!(r#"{{"queries":[]}}{}"#, " ".repeat(cap));
+        assert!(body.len() > cap, "test fixture must exceed the cap");
+        let oversized = write_fixture(&view.root, "oversized.json", &body);
+        let err = super::read_fixture_within_root(&oversized, &view.root)
+            .expect_err("oversized fixture must be rejected");
+        let cfe = err
+            .downcast_ref::<crate::cli::json_envelope::ClientFacingError>()
+            .expect("opaque fixture error is a typed ClientFacingError");
+        assert_eq!(
+            cfe.code,
+            crate::cli::json_envelope::ErrorCode::InvalidInput,
+            "over-cap fixture collapses to the opaque fixture-rejected error"
+        );
+        let small = write_fixture(&view.root, "small.json", r#"{"queries":[]}"#);
+        assert!(
+            super::read_fixture_within_root(&small, &view.root).is_ok(),
+            "an in-cap fixture still parses"
+        );
+    }
+
+    /// Both task-admission at-cap conditions — single-flight-busy and
+    /// retained-cap-full — return a byte-identical `Unavailable` envelope,
+    /// so the reject never distinguishes "eval running now" from
+    /// "store full of terminal results". Serial so it owns the single-flight slot.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn task_admission_at_cap_conditions_are_byte_identical() {
+        let (_dir, ctx) = seed_minimal_ctx();
+        let ctx_arc = std::sync::Arc::new(std::sync::Mutex::new(ctx));
+        let view = crate::cli::batch::checkout_view_from_arc(&ctx_arc);
+        let args = crate::cli::commands::EvalArgs {
+            // Never read: both rejections fire before the fixture read.
+            query_file: view.root.join("never_read.json"),
+            limit: 20,
+            category: None,
+            reranker: crate::cli::args::RerankerMode::None,
+        };
+
+        // (a) single-flight-busy: pre-hold the slot so the handler's own
+        //     try_acquire loses.
+        let held = super::EvalSlotGuard::try_acquire().expect("test holds the slot");
+        let busy = super::dispatch_eval_task(&view, &args, Some(60))
+            .expect_err("busy admission must reject");
+        drop(held);
+
+        // (b) retained-cap-full: slot free, store saturated to the count cap.
+        for _ in 0..crate::cli::batch::tasks::RETAINED_TASK_COUNT_CAP {
+            assert!(
+                view.task_store
+                    .try_admit(view.task_store.new_entry(0, Some(60))),
+                "fill the store to the count cap"
+            );
+        }
+        let full = super::dispatch_eval_task(&view, &args, Some(60))
+            .expect_err("at-cap admission must reject");
+
+        let busy_cfe = busy
+            .downcast_ref::<crate::cli::json_envelope::ClientFacingError>()
+            .expect("busy reject is typed");
+        let full_cfe = full
+            .downcast_ref::<crate::cli::json_envelope::ClientFacingError>()
+            .expect("cap-full reject is typed");
+        assert_eq!(busy_cfe.code, full_cfe.code, "same error code");
+        assert_eq!(
+            busy_cfe.message, full_cfe.message,
+            "byte-identical message — no store-state oracle"
+        );
+    }
+
+    /// End-to-end: admitting an empty-fixture eval task spawns the worker (guard
+    /// moved in), which runs `eval_core` and publishes a terminal `completed`
+    /// result the read API returns — with no staleness marker (same epoch) and
+    /// the single-flight slot released afterward. Serial so it owns the slot.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn eval_task_admit_runs_worker_and_publishes() {
+        use crate::cli::batch::tasks::{TaskId, TaskLookup, TaskResultLookup, TaskStatus};
+        let (_dir, ctx) = seed_minimal_ctx();
+        let ctx_arc = std::sync::Arc::new(std::sync::Mutex::new(ctx));
+        let view = crate::cli::batch::checkout_view_from_arc(&ctx_arc);
+        let fixture = write_fixture(&view.root, "empty_task.json", r#"{"queries":[]}"#);
+        let args = crate::cli::commands::EvalArgs {
+            query_file: fixture,
+            limit: 20,
+            category: None,
+            reranker: crate::cli::args::RerankerMode::None,
+        };
+
+        let descriptor =
+            super::dispatch_eval_task(&view, &args, Some(60)).expect("admit the eval task");
+        assert_eq!(
+            descriptor.status,
+            TaskStatus::Working,
+            "a freshly admitted task starts `working`"
+        );
+        let id = TaskId::from_wire(&descriptor.task_id);
+
+        // Poll `tasks/get` until terminal (an empty fixture completes fast).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match view.task_store.get(&id) {
+                TaskLookup::Found(d) if d.status == TaskStatus::Completed => break,
+                TaskLookup::Found(d) if d.status == TaskStatus::Working => {}
+                other => panic!(
+                    "unexpected task state: {:?}",
+                    match other {
+                        TaskLookup::Found(d) => format!("{:?}", d.status),
+                        TaskLookup::Gone => "Gone".to_string(),
+                    }
+                ),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not publish a terminal result in time"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // `tasks/result` returns the completed EvalOutput verbatim, no staleness.
+        match view.task_store.result(&id, view.checkout_epoch) {
+            TaskResultLookup::Ready { kind, staleness } => {
+                assert!(staleness.is_none(), "same epoch ⇒ no staleness marker");
+                match kind {
+                    crate::cli::batch::tasks::TerminalKind::ToolResult { value, is_error } => {
+                        assert!(!is_error, "a successful eval is not a tool error");
+                        assert_eq!(
+                            value.get("query_count").and_then(|v| v.as_u64()),
+                            Some(0),
+                            "the empty fixture yields a zero-query EvalOutput"
+                        );
+                    }
+                    _ => panic!("expected a ToolResult payload"),
+                }
+            }
+            _ => panic!("expected a Ready terminal result"),
+        }
+
+        // The single-flight slot released when the worker dropped its guard.
+        let reacquired = super::EvalSlotGuard::try_acquire();
+        assert!(
+            reacquired.is_some(),
+            "the worker must have released the single-flight slot on completion"
         );
     }
 

@@ -131,6 +131,14 @@ pub(crate) struct EvalCoreParams {
     pub substrate: IndexSubstrate,
     /// Watch-loop freshness, stamped only on the daemon/MCP surface.
     pub freshness: Option<EvalFreshness>,
+    /// Shutdown/cancel side-channel (MCP task worker only). Checked once per
+    /// query so a daemon shutdown bails a long task run within one query instead
+    /// of detaching a 20-min thread against systemd's stop timeout. `None` on the
+    /// CLI and direct-daemon-eval paths (a no-op there). Non-serde: it lives on
+    /// this adapter bundle, never on `EvalOutput`, so the dispatch↔core parity
+    /// guard is untouched. Shutdown-only until a user-facing `tasks/cancel` lane
+    /// reuses the same token.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
@@ -265,6 +273,18 @@ pub(crate) fn eval_core(
     let mut last_progress = Instant::now();
 
     for (idx, q) in set.queries.iter().enumerate() {
+        // Daemon-shutdown bail: checked once per query so a 20-min task
+        // aborts within one query instead of detaching a thread that keeps the
+        // process alive against systemd's stop timeout. `None` on the CLI and
+        // direct-eval paths, so this is a no-op there. Returning `Err` (rather
+        // than a partial aggregate) keeps a truncated run from ever reading as a
+        // complete R@K.
+        if let Some(cancel) = &params.cancel {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::bail!("eval cancelled: daemon shutting down");
+            }
+        }
+
         // Filter by category if requested. Skip silently — these don't count
         // toward total or skipped (they're outside the requested slice).
         if let Some(cat) = category_filter {

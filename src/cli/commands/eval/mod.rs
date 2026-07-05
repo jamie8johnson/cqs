@@ -328,6 +328,8 @@ fn run_eval_local(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Res
         // is a daemon/MCP-surface concern (that surface does NOT block), so the
         // CLI report omits it.
         freshness: None,
+        // Non-task surface: no cancel side-channel.
+        cancel: None,
     };
     eval_core(ctx, &set, &params)
 }
