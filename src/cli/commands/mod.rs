@@ -176,8 +176,8 @@ pub(crate) use train::{cmd_plan, plan_core, PlanArgs, PlanCoreOutput};
 
 // -- eval --
 pub(crate) use eval::{
-    cmd_eval, eval_core, EvalArgs, EvalCmdArgs, EvalCoreParams, EvalFreshness, EvalOutput,
-    IndexSubstrate,
+    cmd_eval, eval_core, post_filter_count, EvalArgs, EvalCmdArgs, EvalCoreParams, EvalFreshness,
+    EvalOutput, IndexSubstrate, ProgressCounters,
 };
 
 // ---------------------------------------------------------------------------

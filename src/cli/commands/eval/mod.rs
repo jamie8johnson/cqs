@@ -26,7 +26,8 @@ use crate::cli::commands::{daemon_control_hint, DaemonHint};
 use crate::cli::CommandContext;
 
 pub(crate) use runner::{
-    eval_core, EvalArgs, EvalCoreParams, EvalFreshness, EvalOutput, IndexSubstrate,
+    eval_core, post_filter_count, EvalArgs, EvalCoreParams, EvalFreshness, EvalOutput,
+    IndexSubstrate, ProgressCounters,
 };
 
 /// CLI args for `cqs eval` — the full flag surface (query set + limit +
@@ -328,8 +329,9 @@ fn run_eval_local(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Res
         // is a daemon/MCP-surface concern (that surface does NOT block), so the
         // CLI report omits it.
         freshness: None,
-        // Non-task surface: no cancel side-channel.
+        // Non-task surface: no cancel or progress side-channel.
         cancel: None,
+        progress: None,
     };
     eval_core(ctx, &set, &params)
 }

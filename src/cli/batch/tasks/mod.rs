@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
+use crate::cli::commands::ProgressCounters;
 use crate::cli::json_envelope::ErrorCode;
 
 pub(crate) mod runner;
@@ -208,6 +209,16 @@ pub(crate) struct StaleMeta {
     pub index_moved_since_run: bool,
 }
 
+/// A task's `{done, total}` progress snapshot, read into the descriptor for the
+/// transport to shape into a `notifications/progress` frame. `done` is the count
+/// of post-filter processed queries finished, `total` the admission-stamped M
+/// (see [`ProgressCounters`] for the frame). Both monotone; `done <= total`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct TaskProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
 /// Wire-facing snapshot of a task's identity + lifecycle fields. Returned by
 /// admission and `tasks/get`; the transport shapes the two wire forms
 /// (nested `CreateTaskResult`, flat `GetTaskResult`) from it.
@@ -217,6 +228,14 @@ pub(crate) struct TaskDescriptor {
     pub created_at: String,
     pub last_updated_at: String,
     pub ttl_secs: Option<u64>,
+    /// Optional `{done, total}` progress. `None` only for a task type carrying
+    /// no counters or a cross-version (pre-PR1) descriptor; every eval entry
+    /// here stamps `Some`. The daemon wire (`descriptor_json`) serializes it
+    /// skip-if-none — an absent key, never a `null` — so a later SSE lane reads
+    /// it skip-if-absent without a descriptor reshape. Read AFTER `status` (see
+    /// [`TaskEntry::descriptor`]) so a single read can never pair a terminal
+    /// status with stale progress.
+    pub progress: Option<TaskProgress>,
 }
 
 impl std::fmt::Debug for TaskDescriptor {
@@ -230,6 +249,9 @@ impl std::fmt::Debug for TaskDescriptor {
             .field("created_at", &self.created_at)
             .field("last_updated_at", &self.last_updated_at)
             .field("ttl_secs", &self.ttl_secs)
+            // Progress is `{done, total}` counts — no capability handle, safe to
+            // render.
+            .field("progress", &self.progress)
             .finish()
     }
 }
@@ -257,10 +279,18 @@ pub(crate) struct TaskEntry {
     /// admission byte-sum reads it without locking every result slot. `0` until
     /// terminal.
     retained_bytes: AtomicUsize,
+    /// Live `{done, total}` progress, shared with the worker's
+    /// `EvalCoreParams::progress`. The admission path stamps `total` (M) here
+    /// BEFORE insert (so a poll never sees `{0,0}`); the worker's `eval_core`
+    /// bumps `done` per processed query. Defaults `{0, 0}` for entries with no
+    /// eval worker wired (the store's own unit tests, a future non-eval task).
+    progress: Arc<ProgressCounters>,
 }
 
 impl TaskEntry {
-    /// A fresh `working` entry, before insert.
+    /// A fresh `working` entry, before insert. `progress` starts `{0, 0}`; the
+    /// admission path stamps `total` before insert and clones the handle into
+    /// the worker's params.
     fn new_working(id: TaskId, spawn_epoch: u64, ttl_secs: Option<u64>) -> TaskEntry {
         TaskEntry {
             id,
@@ -270,7 +300,23 @@ impl TaskEntry {
             ttl_secs,
             spawn_epoch,
             retained_bytes: AtomicUsize::new(0),
+            progress: Arc::new(ProgressCounters::default()),
         }
+    }
+
+    /// Stamp the admission-time denominator `total` (M) into the progress
+    /// counters. Called BEFORE the entry is admitted (inserted), while the entry
+    /// is still single-owner and unpollable, so a `tasks/get` between insert and
+    /// worker-start reads the real M, never the `{0, 0}` default.
+    pub(in crate::cli::batch) fn stamp_progress_total(&self, total: u64) {
+        self.progress.total.store(total, Ordering::Relaxed);
+    }
+
+    /// A handle to the shared progress counters, cloned into the worker's
+    /// `EvalCoreParams::progress` so `eval_core`'s `done` bumps land on the same
+    /// atomics this entry's descriptor reads.
+    pub(in crate::cli::batch) fn progress_handle(&self) -> Arc<ProgressCounters> {
+        Arc::clone(&self.progress)
     }
 
     fn status(&self) -> TaskStatus {
@@ -302,7 +348,20 @@ impl TaskEntry {
     }
 
     fn descriptor(&self) -> TaskDescriptor {
+        // READ-ORDER PIN (seam-coherent join): load `status` (Acquire) FIRST,
+        // then the progress counters. The worker's store order is the inverse —
+        // it bumps the counters, then fills the result slot, then flips `status`
+        // with `Release`. So a reader that observes a terminal `status` here has,
+        // by happens-before, already synchronized-with every counter bump; the
+        // subsequent counter load therefore sees the FINAL `done`. A single
+        // descriptor can never pair a terminal status with a stale `done < total`.
         let status = self.status();
+        // Progress read AFTER status. `Relaxed` is sound: the ordering guarantee
+        // rides the `status` Acquire above, not these loads.
+        let progress = Some(TaskProgress {
+            done: self.progress.done.load(Ordering::Relaxed),
+            total: self.progress.total.load(Ordering::Relaxed),
+        });
         // `lastUpdatedAt` moves to the terminal instant once terminal; before
         // that it equals `createdAt`.
         let last_updated_at = if status.is_terminal() {
@@ -321,6 +380,7 @@ impl TaskEntry {
             created_at: self.created_at_iso.clone(),
             last_updated_at,
             ttl_secs: self.ttl_secs,
+            progress,
         }
     }
 
@@ -928,6 +988,94 @@ mod tests {
                 _ => panic!("expected RpcError passthrough"),
             },
             _ => panic!("expected Ready"),
+        }
+    }
+
+    /// STAMP-BEFORE-POLLABLE (D2): admission stamps `total` (M) into the entry
+    /// BEFORE it is inserted, so a `tasks/get` in the window between insert and
+    /// worker-start reads the real M — never the `{0,0}` default. Stamp, admit,
+    /// then read the descriptor immediately (no worker ever runs): it reports
+    /// `{done:0, total:M}`. The unstamped negative control proves the assertion
+    /// genuinely depends on the stamp (an unstamped entry reads `{0,0}`).
+    #[test]
+    fn descriptor_reports_stamped_total_before_any_progress() {
+        let store = TaskStore::new();
+        let entry = store.new_entry(0, Some(60));
+        entry.stamp_progress_total(5); // M stamped pre-admission
+        let id = insert_entry(&store, entry);
+        match store.get(&id) {
+            TaskLookup::Found(d) => assert_eq!(
+                d.progress,
+                Some(TaskProgress { done: 0, total: 5 }),
+                "a poll right after admission reads the stamped M with done=0, never {{0,0}}"
+            ),
+            _ => panic!("expected Found"),
+        }
+
+        // Negative control: an entry that never stamped `total` reads `{0,0}`,
+        // so the positive assertion above genuinely depends on the stamp.
+        let unstamped = store.new_entry(0, Some(60));
+        let uid = insert_entry(&store, unstamped);
+        match store.get(&uid) {
+            TaskLookup::Found(d) => assert_eq!(
+                d.progress,
+                Some(TaskProgress { done: 0, total: 0 }),
+                "an unstamped entry reads the {{0,0}} default"
+            ),
+            _ => panic!("expected Found"),
+        }
+    }
+
+    /// READ-ORDER PIN + terminal identity (D2): the descriptor loads `status`
+    /// (Acquire) before the counters, matching the worker's store order (bump
+    /// counters, fill slot, flip `status` Release), so a terminal descriptor can
+    /// never pair a terminal status with a stale `done < total`. Drive the
+    /// worker's order by hand and assert: (1) mid-flight, before terminal, the
+    /// descriptor reads live `done < total` (so the terminal equality is a real
+    /// transition, not a constant); (2) a terminal descriptor reports the FINAL
+    /// `done == total`.
+    #[test]
+    fn terminal_descriptor_reports_done_equals_total() {
+        let store = TaskStore::new();
+        let entry = store.new_entry(0, Some(60));
+        entry.stamp_progress_total(3);
+        let progress = entry.progress_handle();
+
+        // Mid-flight: one of three queries processed. A poll reads live progress.
+        progress.done.fetch_add(1, Ordering::Relaxed);
+        let id = insert_entry(&store, Arc::clone(&entry));
+        match store.get(&id) {
+            TaskLookup::Found(d) => {
+                assert_eq!(d.status, TaskStatus::Working);
+                assert_eq!(
+                    d.progress,
+                    Some(TaskProgress { done: 1, total: 3 }),
+                    "mid-flight the descriptor reads live done < total"
+                );
+            }
+            _ => panic!("expected Found"),
+        }
+
+        // Finish the remaining queries (worker order: bump counters …) then
+        // publish terminal (… fill slot, flip status with Release).
+        progress.done.fetch_add(2, Ordering::Relaxed);
+        entry.publish(
+            TerminalKind::ToolResult {
+                value: serde_json::json!({"ok": true}),
+                is_error: false,
+            },
+            TaskStatus::Completed,
+        );
+        match store.get(&id) {
+            TaskLookup::Found(d) => {
+                assert_eq!(d.status, TaskStatus::Completed);
+                assert_eq!(
+                    d.progress,
+                    Some(TaskProgress { done: 3, total: 3 }),
+                    "a terminal descriptor reports the FINAL done == total"
+                );
+            }
+            _ => panic!("expected Found"),
         }
     }
 }

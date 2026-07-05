@@ -323,8 +323,10 @@ pub(in crate::cli::batch) fn dispatch_eval(
         freshness: Some(crate::cli::commands::EvalFreshness::from_snapshot(
             &ctx.watch_snapshot(),
         )),
-        // Direct (non-task) eval: synchronous, no cancel side-channel.
+        // Direct (non-task) eval: synchronous, no cancel or progress
+        // side-channel (nothing polls a synchronous run).
         cancel: None,
+        progress: None,
     };
 
     let output = crate::cli::commands::eval_core(ctx, &set, &params)?;
@@ -407,17 +409,29 @@ pub(in crate::cli::batch) fn dispatch_eval_task(
     //     fixture-rejected error (distinct from the busy error above).
     let set = read_fixture_within_root(&args.query_file, &ctx.root)?;
 
-    // (5) Build the working entry and authoritatively admit it (cap re-check +
-    //     insert under one lock). At cap ⇒ the same opaque busy error.
+    // M — the post-filter query count — computed here at admission while the
+    // parsed set is in hand, then stamped into the entry BEFORE insert (below)
+    // so a `tasks/get` between insert and worker-start never serves the
+    // `{done:0,total:0}` window. `total` is post-filter; `eval_core`'s `done`
+    // counts post-filter processed queries through the SAME predicate — one
+    // frame, no mirror bug.
+    let progress_total = crate::cli::commands::post_filter_count(&set, args.category.as_deref());
+
+    // (5) Build the working entry, stamp `total` (M) into its progress BEFORE it
+    //     is pollable, then authoritatively admit it (cap re-check + insert
+    //     under one lock). At cap ⇒ the same opaque busy error.
     let entry = ctx.task_store.new_entry(spawn_epoch, ttl_secs);
+    entry.stamp_progress_total(progress_total);
     if !ctx.task_store.try_admit(std::sync::Arc::clone(&entry)) {
         tracing::warn!("eval task rejected: task store at capacity (admit)");
         return Err(eval_task_unavailable());
     }
 
-    // (6) Build the eval params carrying the daemon-shutdown cancel token
-    //     and spawn the worker (entry already inserted ⇒ a spawn-fail
-    //     self-heals to `failed` via the worker's publish-on-drop).
+    // (6) Build the eval params carrying the daemon-shutdown cancel token and a
+    //     handle to the entry's progress counters (the worker's `done` bumps
+    //     land on the same atomics the descriptor reads), then spawn the worker
+    //     (entry already inserted ⇒ a spawn-fail self-heals to `failed` via the
+    //     worker's publish-on-drop).
     let params = crate::cli::commands::EvalCoreParams {
         query_file_label: relativize_query_file(&args.query_file, &ctx.root),
         category_filter: args.category.clone(),
@@ -428,6 +442,7 @@ pub(in crate::cli::batch) fn dispatch_eval_task(
             &worker_view.watch_snapshot(),
         )),
         cancel: Some(ctx.task_store.shutdown_token()),
+        progress: Some(entry.progress_handle()),
     };
     let descriptor = ctx.task_store.describe(&entry);
     let job_seq = ctx.task_store.next_job_seq();
@@ -973,6 +988,7 @@ mod parity_tests {
                 &view.watch_snapshot(),
             )),
             cancel: None,
+            progress: None,
         };
         let core = crate::cli::commands::eval_core(&view, &set, &params).expect("eval_core");
         let core_val = serde_json::to_value(&core).expect("serialize core");
@@ -980,6 +996,104 @@ mod parity_tests {
         assert_eq!(
             dispatched, core_val,
             "dispatch_eval must equal eval_core on the empty fixture"
+        );
+    }
+
+    /// END-TO-END progress frame (D2), embedder-gated. Runs the REAL `eval_core`
+    /// loop through a `BatchView` under a `--category` filter over a mix of a
+    /// scored and a no-gold in-scope query (plus an out-of-scope query the filter
+    /// drops), driving the exact `ProgressCounters` the daemon worker wires in.
+    /// Pins the frame end-to-end:
+    ///   (a) `done == total == post_filter_count` at completion — the mirror-bug
+    ///       guard; a numerator over the full set would overtake M and trip the
+    ///       `mark_processed` tripwire mid-run, and the out-of-scope query must
+    ///       never advance `done`;
+    ///   (c) `done` counts the no-gold skip as processed, so it exceeds
+    ///       `EvalOutput.query_count` (scored only) — the two are distinct.
+    /// `eval_core` needs a real ONNX embedder for a non-empty set; when the model
+    /// is unavailable (CI without the cache) the run is skipped rather than
+    /// failed, matching the established eval-harness graceful-skip pattern.
+    /// Serial to avoid GPU contention with the other eval tests.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn eval_core_progress_frame_end_to_end() {
+        use std::sync::atomic::Ordering;
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+
+        // Non-empty eval needs a real embedder; skip if the model can't load in
+        // this env rather than fail.
+        if view.embedder().is_err() {
+            eprintln!(
+                "embedder unavailable in test env; skipping eval_core progress frame e2e (#1305)"
+            );
+            return;
+        }
+
+        // The seeded chunk is `foo` @ src/lib.rs (gold matches on (origin, name),
+        // not line). Two in-scope `alpha` queries — one gold-bearing (scored),
+        // one no-gold (skipped-but-processed) — plus a `beta` query the filter
+        // drops (which must never advance `done`).
+        let set: cqs::eval::schema::QuerySet = serde_json::from_value(serde_json::json!({
+            "queries": [
+                {"query": "the foo function", "category": "alpha",
+                 "gold_chunk": {"name": "foo", "origin": "src/lib.rs", "line_start": 1}},
+                {"query": "an alpha query with no gold", "category": "alpha"},
+                {"query": "a beta query filtered out", "category": "beta",
+                 "gold_chunk": {"name": "foo", "origin": "src/lib.rs", "line_start": 1}}
+            ]
+        }))
+        .expect("parse set");
+
+        // Wire the counters the daemon worker wires: stamp M = post_filter_count
+        // (as admission does), hand the same handle on `EvalCoreParams::progress`.
+        let m = crate::cli::commands::post_filter_count(&set, Some("alpha"));
+        assert_eq!(
+            m, 2,
+            "M = the two alpha queries (scored + no-gold), NOT the full set of 3"
+        );
+        let progress = std::sync::Arc::new(crate::cli::commands::ProgressCounters::default());
+        progress.total.store(m, Ordering::Relaxed);
+
+        let params = crate::cli::commands::EvalCoreParams {
+            query_file_label: "e2e.json".to_string(),
+            category_filter: Some("alpha".to_string()),
+            limit: 20,
+            reranker: crate::cli::args::RerankerMode::None,
+            substrate: crate::cli::commands::IndexSubstrate::Resident,
+            freshness: None,
+            cancel: None,
+            progress: Some(std::sync::Arc::clone(&progress)),
+        };
+        let out = crate::cli::commands::eval_core(&view, &set, &params).expect("eval_core");
+
+        let done = progress.done.load(Ordering::Relaxed);
+        let total = progress.total.load(Ordering::Relaxed);
+        // (a) one frame: numerator == denominator == M at completion; the beta
+        //     query never bumped `done`.
+        assert_eq!(done, total, "done reaches total at completion");
+        assert_eq!(
+            done, 2,
+            "both in-scope alpha queries processed; the out-of-scope beta query never advanced done"
+        );
+
+        // (c) `done` (processed, incl the no-gold skip) is DISTINCT from
+        //     `EvalOutput.query_count` (scored only). Read via JSON so the check
+        //     doesn't depend on field visibility.
+        let val = serde_json::to_value(&out).expect("serialize EvalOutput");
+        assert_eq!(
+            val["query_count"].as_u64(),
+            Some(1),
+            "only the gold-bearing alpha query is scored"
+        );
+        assert_eq!(
+            val["skipped"].as_u64(),
+            Some(1),
+            "the no-gold alpha query is skipped-but-processed"
+        );
+        assert!(
+            done > val["query_count"].as_u64().expect("query_count is a number"),
+            "done counts the no-gold skip as processed; query_count excludes it — distinct quantities"
         );
     }
 

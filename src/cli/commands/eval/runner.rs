@@ -27,7 +27,7 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use cqs::eval::schema::{GoldChunk, QuerySet};
+use cqs::eval::schema::{EvalQuery, GoldChunk, QuerySet};
 use cqs::language::ChunkType;
 use cqs::store::{ReadOnly, Store, UnifiedResult};
 use cqs::SearchFilter;
@@ -139,6 +139,86 @@ pub(crate) struct EvalCoreParams {
     /// guard is untouched. Shutdown-only until a user-facing `tasks/cancel` lane
     /// reuses the same token.
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Live progress side-channel (MCP task worker only). Bumped once per
+    /// post-filter processed query so a `tasks/get` poll can report `{done,
+    /// total}`. Mirrors the `cancel` shape exactly: non-serde, lives on this
+    /// adapter bundle and NEVER on [`EvalOutput`], so the dispatch↔core parity
+    /// guard is untouched by construction. `None` on the CLI and
+    /// direct-daemon-eval paths (a no-op there). See [`ProgressCounters`] for
+    /// the one-frame contract.
+    pub progress: Option<std::sync::Arc<ProgressCounters>>,
+}
+
+/// Live eval-task progress. std-only atomics, NON-serde — it rides the
+/// [`EvalCoreParams`] adapter bundle exactly like [`EvalCoreParams::cancel`],
+/// never touching [`EvalOutput`], so the dispatch↔core parity guard is
+/// untouched by construction.
+///
+/// THE ONE FRAME (do NOT cross the numerator/denominator — the mirror bug two
+/// seam reviews caught):
+/// - `done` counts POST-FILTER **processed** queries: a query advances it iff
+///   it survives the `--category` filter ([`query_in_scope`]), counting a
+///   no-gold skip as processed, and it is bumped at ITERATION END (via
+///   [`ProgressCounters::mark_processed`]) so `done` means *finished*, not
+///   *started*.
+/// - `total` = M = the post-filter query count ([`post_filter_count`]), stamped
+///   ONCE at admission before the entry is pollable, so a poll between insert
+///   and worker-start never serves `{done:0,total:0}`.
+///
+/// So at the run's end `done == final (hits.len() + skipped) == total`. This is
+/// a DIFFERENT quantity than [`EvalOutput::query_count`] (= scored `hits.len()`,
+/// which EXCLUDES no-gold skips) — the two must not be conflated.
+#[derive(Debug, Default)]
+pub(crate) struct ProgressCounters {
+    /// Post-filter processed queries finished so far. Monotone, ceilings at
+    /// `total`.
+    pub done: std::sync::atomic::AtomicU64,
+    /// M — the post-filter query count, stamped once at admission.
+    pub total: std::sync::atomic::AtomicU64,
+}
+
+impl ProgressCounters {
+    /// Mark one post-filter query FINISHED. Called at each PROCESSED iteration's
+    /// end (both the no-gold skip and the scored path), after the `--category`
+    /// `continue`, so a filtered-out query never advances it. `Relaxed` suffices
+    /// — the value is published to a `tasks/get` reader through the entry's
+    /// `status` Release/Acquire fence (the descriptor read-order pin), not by
+    /// this increment.
+    fn mark_processed(&self) {
+        let done = self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // Mirror-bug tripwire on the real path: the numerator must never overtake
+        // the admission-stamped denominator. `total == 0` = "no denominator
+        // stamped" (a CLI/degraded 0/0 counter), where the check doesn't apply.
+        debug_assert!(
+            {
+                let total = self.total.load(std::sync::atomic::Ordering::Relaxed);
+                total == 0 || done <= total
+            },
+            "eval progress `done` overtook `total` — numerator/denominator frame mismatch"
+        );
+    }
+}
+
+/// Does `q` survive the eval's `--category` filter? The SINGLE predicate shared
+/// by [`eval_core`]'s per-query skip AND [`post_filter_count`]'s denominator, so
+/// the progress numerator and denominator are the same frame by construction —
+/// the mirror bug (a numerator over the full set paired with a post-filter
+/// denominator) is unrepresentable.
+fn query_in_scope(q: &EvalQuery, category_filter: Option<&str>) -> bool {
+    match category_filter {
+        Some(cat) => q.category.as_deref() == Some(cat),
+        None => true,
+    }
+}
+
+/// M — the count of queries surviving the `--category` filter. The eval task's
+/// progress `total`, computed at admission (the parsed set is in hand before the
+/// entry is inserted) and stamped before the entry is pollable.
+pub(crate) fn post_filter_count(set: &QuerySet, category_filter: Option<&str>) -> u64 {
+    set.queries
+        .iter()
+        .filter(|q| query_in_scope(q, category_filter))
+        .count() as u64
 }
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
@@ -285,12 +365,12 @@ pub(crate) fn eval_core(
             }
         }
 
-        // Filter by category if requested. Skip silently — these don't count
-        // toward total or skipped (they're outside the requested slice).
-        if let Some(cat) = category_filter {
-            if q.category.as_deref() != Some(cat) {
-                continue;
-            }
+        // Filter by category if requested. Skip silently BEFORE the progress
+        // bump — these are outside the requested slice, so they count toward
+        // neither `total`/`skipped` NOR the progress numerator (`query_in_scope`
+        // is the SAME predicate `post_filter_count` uses for the denominator).
+        if !query_in_scope(q, category_filter) {
+            continue;
         }
 
         let gold = match &q.gold_chunk {
@@ -301,6 +381,11 @@ pub(crate) fn eval_core(
                     "Skipping query: no gold_chunk"
                 );
                 skipped += 1;
+                // Iteration end for a no-gold query: it survived the category
+                // filter, so it IS a processed query — advance `done`.
+                if let Some(p) = &params.progress {
+                    p.mark_processed();
+                }
                 continue;
             }
         };
@@ -331,6 +416,13 @@ pub(crate) fn eval_core(
         };
 
         hits.push(QueryHit { category, rank });
+
+        // Iteration end for a scored query: the search has FINISHED, so advance
+        // `done` here (not before the search) — a `tasks/get` mid-search then
+        // reads `done` = finished queries, never a started-but-pending one.
+        if let Some(p) = &params.progress {
+            p.mark_processed();
+        }
 
         // Progress every 10 queries (or at least every 5s). Routed through
         // `tracing::info!` so it honors `RUST_LOG`, JSON-log redirect, and
@@ -666,5 +758,137 @@ mod tests {
     fn index_substrate_wire_strings() {
         assert_eq!(IndexSubstrate::Resident.as_str(), "resident");
         assert_eq!(IndexSubstrate::FreshBuilt.as_str(), "fresh-built");
+    }
+
+    // ── Progress frame (D2) ──────────────────────────────────────────────
+    // The one-frame contract lives in three decomposable pieces the loop
+    // composes: `post_filter_count` is the DENOMINATOR M, `mark_processed`
+    // the NUMERATOR bump, and both go through the SAME `query_in_scope`
+    // predicate so the mirror bug (numerator over the full set paired with a
+    // post-filter denominator) is unrepresentable. These pin each piece
+    // without the ~500 MB embedder a full `eval_core` run needs (that wiring
+    // is covered end-to-end by `eval_core_progress_frame_end_to_end` in the
+    // dispatch tests, embedder-gated). The `EvalOutput` guard pins that the
+    // side-channel never leaks into the serialized output.
+
+    /// `post_filter_count` is the progress DENOMINATOR (M): the count of
+    /// queries surviving `--category`, through the SAME `query_in_scope`
+    /// predicate `eval_core`'s per-query skip uses. This pins (1) under a
+    /// category, M is the POST-filter count — NOT the full set (the mirror
+    /// bug would return the full set here); (2) a no-gold query still counts
+    /// toward M (it is in-scope, hence processed); (3) no filter yields the
+    /// full set; (4) an unmatched category yields a legitimate zero.
+    #[test]
+    fn post_filter_count_is_the_post_filter_denominator() {
+        let set: QuerySet = serde_json::from_value(serde_json::json!({
+            "queries": [
+                {"query": "a1", "category": "alpha",
+                 "gold_chunk": {"name": "x", "origin": "src/lib.rs", "line_start": 1}},
+                // In-scope alpha query with NO gold — must still count toward M.
+                {"query": "a2-nogold", "category": "alpha"},
+                {"query": "b1", "category": "beta",
+                 "gold_chunk": {"name": "y", "origin": "src/lib.rs", "line_start": 2}},
+                {"query": "u1",
+                 "gold_chunk": {"name": "z", "origin": "src/lib.rs", "line_start": 3}}
+            ]
+        }))
+        .expect("parse set");
+
+        // The full set is 4; the mirror bug would report 4 under a filter.
+        assert_eq!(
+            post_filter_count(&set, Some("alpha")),
+            2,
+            "M under --category=alpha is the POST-filter count, incl the no-gold alpha query"
+        );
+        assert_eq!(post_filter_count(&set, Some("beta")), 1);
+        assert_eq!(
+            post_filter_count(&set, None),
+            4,
+            "no filter ⇒ the whole set is in scope"
+        );
+        assert_eq!(
+            post_filter_count(&set, Some("gamma")),
+            0,
+            "a category no query carries ⇒ M is a legitimate zero"
+        );
+    }
+
+    /// `mark_processed` is the progress NUMERATOR: monotone, exactly one per
+    /// call. After M calls a counter stamped with M reads `done == total ==
+    /// M` — the run-end identity the descriptor reports.
+    #[test]
+    fn mark_processed_counts_to_the_stamped_total() {
+        use std::sync::atomic::Ordering;
+        let p = ProgressCounters::default();
+        // Stamp M the way the admission path's `stamp_progress_total` does.
+        p.total.store(3, Ordering::Relaxed);
+        assert_eq!(p.done.load(Ordering::Relaxed), 0);
+        for expected in 1..=3 {
+            p.mark_processed();
+            assert_eq!(
+                p.done.load(Ordering::Relaxed),
+                expected,
+                "each mark_processed advances done by exactly one"
+            );
+        }
+        assert_eq!(
+            p.done.load(Ordering::Relaxed),
+            p.total.load(Ordering::Relaxed),
+            "at run end done == total == M"
+        );
+    }
+
+    /// The mirror-bug tripwire: were the numerator bumped over the PRE-filter
+    /// set (`done` reaching N) while `total` holds the POST-filter M (< N),
+    /// `mark_processed`'s `debug_assert` fires. Pins that the runtime guard
+    /// bites — delete the assert and this test stops panicking. Debug-only:
+    /// the assert is compiled out under `--release`, so gate the test on
+    /// `debug_assertions` to match.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "numerator/denominator frame mismatch")]
+    fn mark_processed_tripwire_fires_when_numerator_overtakes_total() {
+        use std::sync::atomic::Ordering;
+        let p = ProgressCounters::default();
+        // M = 1 (a one-query --category slice).
+        p.total.store(1, Ordering::Relaxed);
+        p.mark_processed(); // done = 1 == total: fine.
+        p.mark_processed(); // done = 2 > total: tripwire.
+    }
+
+    /// The progress side-channel NEVER appears in `EvalOutput` — it rides
+    /// `EvalCoreParams` (exactly like `cancel`), so the dispatch↔core parity
+    /// guard holds by construction. Build an output from params
+    /// carrying a NON-None, already-advanced progress counter and assert the
+    /// serialized JSON carries none of the side-channel's keys (a regression
+    /// here would be someone lifting progress onto `EvalOutput`).
+    #[test]
+    fn eval_output_never_serializes_progress_side_channel() {
+        use std::sync::atomic::Ordering;
+        let progress = std::sync::Arc::new(ProgressCounters::default());
+        progress.total.store(7, Ordering::Relaxed);
+        progress.mark_processed();
+        let params = EvalCoreParams {
+            query_file_label: "q.json".to_string(),
+            category_filter: Some("alpha".to_string()),
+            limit: 20,
+            reranker: RerankerMode::None,
+            substrate: IndexSubstrate::Resident,
+            freshness: None,
+            cancel: None,
+            progress: Some(progress),
+        };
+        let out = assemble_output(&[], 0, 0.0, "model".to_string(), &params);
+        let val = serde_json::to_value(&out).expect("serialize EvalOutput");
+        let obj = val.as_object().expect("EvalOutput serializes as an object");
+        for k in ["progress", "done", "total"] {
+            assert!(
+                !obj.contains_key(k),
+                "EvalOutput must not carry the progress side-channel key `{k}`: {val}"
+            );
+        }
+        // Positive control: the fields that SHOULD be present are.
+        assert!(obj.contains_key("query_count"));
+        assert!(obj.contains_key("category_filter"));
     }
 }

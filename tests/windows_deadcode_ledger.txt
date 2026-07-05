@@ -41,7 +41,6 @@ src/cli/batch/json_args.rs	function `trace_args_from_core` is never used
 src/cli/batch/json_args.rs	function `where_args_from_core` is never used
 src/cli/batch/tasks/mod.rs	associated items `from_u8`, `is_terminal`, and `as_wire` are never used
 src/cli/batch/tasks/mod.rs	associated items `generate`, `from_wire`, and `as_str` are never used
-src/cli/batch/tasks/mod.rs	associated items `new_working`, `status`, `publish`, `descriptor`, and `is_expired` are never used
 src/cli/batch/tasks/mod.rs	constant `DEFAULT_TASK_TTL_SECS` is never used
 src/cli/batch/tasks/mod.rs	constant `RETAINED_TASK_BYTES_CEILING` is never used
 src/cli/batch/tasks/mod.rs	constant `RETAINED_TASK_COUNT_CAP` is never used
@@ -56,6 +55,7 @@ src/cli/batch/tasks/mod.rs	multiple associated items are never used
 src/cli/batch/tasks/mod.rs	multiple fields are never read
 src/cli/batch/tasks/mod.rs	struct `StaleMeta` is never constructed
 src/cli/batch/tasks/mod.rs	struct `TaskDescriptor` is never constructed
+src/cli/batch/tasks/mod.rs	struct `TaskProgress` is never constructed
 src/cli/batch/tasks/mod.rs	variants `ToolResult` and `RpcError` are never constructed
 src/cli/batch/tasks/runner.rs	associated items `new` and `publish` are never used
 src/cli/batch/tasks/runner.rs	function `spawn_eval_worker` is never used
@@ -76,6 +76,7 @@ src/cli/batch/view.rs	field `task_store` is never read
 src/cli/batch/view.rs	function `dispatch_via_view_json` is never used
 src/cli/batch/view.rs	function `dispatch_via_view` is never used
 src/cli/batch/view.rs	function `json_value_contains_nul` is never used
+src/cli/commands/eval/runner.rs	function `post_filter_count` is never used
 src/cli/commands/graph/explain.rs	function `default_explain_limit` is never used
 src/cli/commands/graph/explain.rs	struct `ExplainArgs` is never constructed
 src/cli/commands/graph/impact_diff.rs	struct `ImpactDiffArgs` is never constructed
