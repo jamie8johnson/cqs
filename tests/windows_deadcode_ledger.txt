@@ -25,6 +25,7 @@ src/cli/batch/json_args.rs	function `output_text` is never used
 src/cli/batch/json_args.rs	function `overlay_from_args` is never used
 src/cli/batch/json_args.rs	function `parse_core` is never used
 src/cli/batch/json_args.rs	function `plan_args_from_core` is never used
+src/cli/batch/json_args.rs	function `reject_eval_cli_only_keys` is never used
 src/cli/batch/json_args.rs	function `related_args_from_core` is never used
 src/cli/batch/json_args.rs	function `require_mutations_enabled` is never used
 src/cli/batch/json_args.rs	function `review_args_from_core` is never used
