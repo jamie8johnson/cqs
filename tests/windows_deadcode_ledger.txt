@@ -4,7 +4,7 @@
 # One entry per line: <relative src path>\t<full rustc message>.
 # See scripts/check_windows_deadcode.py for the rationale.
 src/cli/batch/commands.rs	method `query` is never used
-src/cli/batch/commands.rs	variants `NotesAdd`, `NotesUpdate`, `NotesRemove`, and `Index` are never constructed
+src/cli/batch/commands.rs	variants `NotesAdd`, `NotesUpdate`, `NotesRemove`, `Index`, and `Eval` are never constructed
 src/cli/batch/json_args.rs	constant `NO_CORE_REJECTION` is never used
 src/cli/batch/json_args.rs	function `blame_args_from_core` is never used
 src/cli/batch/json_args.rs	function `build_batch_cmd` is never used
