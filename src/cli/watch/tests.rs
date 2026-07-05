@@ -3487,6 +3487,47 @@ fn flush_due_notes_only_pending_flushes() {
 }
 
 #[test]
+fn cache_evict_fires_on_query_only_daemon_without_flush() {
+    // BUG GUARD: the embeddings + query cache eviction used to live inside the
+    // `flush_due` reindex branch, so a query-only daemon — serving searches
+    // with no file churn — never flushed and therefore never evicted, letting
+    // both caches grow unbounded over the daemon's lifetime. The decision is
+    // now wall-clock gated and independent of flush.
+    let interval = CACHE_EVICT_INTERVAL;
+
+    // The load-bearing case: NO flush is due (the query-only path) yet the
+    // throttle interval has elapsed — eviction must still fire. Under the old
+    // `flush_due && throttle` gating this returned false; the assertion below
+    // fails there and passes under the wall-clock gating.
+    assert!(
+        cache_evict_due(interval, interval, /* flush_due */ false),
+        "query-only daemon (no flush) must evict once the interval elapses"
+    );
+    assert!(
+        cache_evict_due(interval + Duration::from_secs(1), interval, false),
+        "well past the interval with no flush must still evict"
+    );
+
+    // File-event path still evicts — behaviour-preserving for the flush case.
+    assert!(cache_evict_due(interval, interval, true));
+
+    // Throttle respected on BOTH paths: no eviction before the interval,
+    // regardless of flush state, so the per-tick check stays a cheap no-op and
+    // the SQLite WAL files don't churn.
+    assert!(!cache_evict_due(
+        interval - Duration::from_secs(1),
+        interval,
+        false
+    ));
+    assert!(!cache_evict_due(
+        interval - Duration::from_secs(1),
+        interval,
+        true
+    ));
+    assert!(!cache_evict_due(Duration::ZERO, interval, false));
+}
+
+#[test]
 fn drain_pending_notes_signal_set_arms_pending_notes_and_flush() {
     // DATA-SAFETY: a daemon notes-mutation handler flips the shared signal after
     // writing docs/notes.toml. The loop's drain must map it onto pending_notes,
