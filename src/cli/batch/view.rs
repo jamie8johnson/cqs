@@ -714,6 +714,10 @@ pub(crate) struct BatchView {
     /// `dispatch_wait_fresh` parks on this until the watch loop publishes a
     /// Fresh transition or the caller's deadline runs out.
     pub(super) fresh_notifier: cqs::watch_status::SharedFreshNotifier,
+    /// Snapshot of the daemon Tasks store (MCP 3b). Cloned from
+    /// `BatchContext::task_store` at checkout; the eval-task admission handler
+    /// spawns workers into it and the task read handlers resolve ids against it.
+    pub(super) task_store: Arc<super::tasks::TaskStore>,
 }
 
 impl BatchView {

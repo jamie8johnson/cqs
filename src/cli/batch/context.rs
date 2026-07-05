@@ -333,6 +333,12 @@ pub(crate) struct BatchContext {
     /// flag stays `false` forever — a stray `wait_fresh` request without an
     /// active watch loop hits the caller's deadline naturally.
     pub(crate) fresh_notifier: cqs::watch_status::SharedFreshNotifier,
+    /// Daemon-scoped Tasks store (MCP 3b). Defaults to a fresh per-context store;
+    /// inside `cqs watch --serve` the daemon adopts the `cmd_watch`-owned shared
+    /// one via [`Self::adopt_task_store`], so the accept-loop GC sweep and the
+    /// worker publish path share it. Each `BatchView` snapshots the `Arc` at
+    /// checkout.
+    pub(super) task_store: Arc<super::tasks::TaskStore>,
 }
 
 /// A number of `BatchContext` accessors are unreachable from non-test
@@ -408,6 +414,7 @@ impl BatchContext {
             reconcile_signal: cqs::watch_status::shared_reconcile_signal(),
             pending_notes_signal: cqs::watch_status::shared_notes_signal(),
             fresh_notifier: cqs::watch_status::shared_fresh_notifier(),
+            task_store: super::tasks::TaskStore::new(),
         };
         // Baseline the data_version probe at construction (not lazily on the
         // first staleness check) so WAL commits landing between construction
@@ -1250,6 +1257,17 @@ impl BatchContext {
         self.fresh_notifier = shared;
     }
 
+    /// Install the `cmd_watch`-owned shared `Arc<TaskStore>`. Called from the
+    /// daemon thread before lock-wrapping the `BatchContext`, so the accept
+    /// loop's GC sweep and the eval-task workers operate on the same store the
+    /// task read handlers resolve ids against.
+    ///
+    /// Outside `cqs watch --serve` this is never called and the field stays at
+    /// the constructor's fresh per-context default.
+    pub fn adopt_task_store(&mut self, shared: Arc<super::tasks::TaskStore>) {
+        self.task_store = shared;
+    }
+
     /// Get or create the embedder for the current `model_config` (~500ms first
     /// call). Returns an owned `Arc` (not a borrow) because the resident lives
     /// behind the `SharedEmbedder`'s `RwLock` — a reference would outlive the
@@ -1672,6 +1690,7 @@ impl BatchContext {
             reconcile_signal: Arc::clone(&self.reconcile_signal),
             pending_notes_signal: Arc::clone(&self.pending_notes_signal),
             fresh_notifier: Arc::clone(&self.fresh_notifier),
+            task_store: Arc::clone(&self.task_store),
         }
     }
 }

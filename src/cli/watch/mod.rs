@@ -1403,6 +1403,11 @@ pub fn cmd_watch(
     let in_flight_clients_handle: Arc<std::sync::atomic::AtomicUsize> =
         Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    // Daemon-scoped Tasks store (MCP 3b). Owned here in `cmd_watch` so both the
+    // daemon thread (which adopts it into its BatchContext) and the shutdown
+    // path below (which signals in-flight workers to bail) reach the same store.
+    let task_store_handle = crate::cli::batch::tasks::TaskStore::new();
+
     // Pick up a leftover `.cqs/.dirty` marker from a previous session where
     // a git hook fired without a daemon listening.
     // The hook touches this file as a fallback; on next daemon start we
@@ -1466,6 +1471,9 @@ pub fn cmd_watch(
             // per-connection bookkeeping is visible to the watch loop's
             // snapshot publisher.
             let daemon_in_flight = Arc::clone(&in_flight_clients_handle);
+            // Clone the Tasks store into the daemon thread; `cmd_watch` keeps the
+            // original for the shutdown-signal path.
+            let daemon_task_store = Arc::clone(&task_store_handle);
             // Stays non-blocking: the accept loop below polls so it can
             // notice SHUTDOWN_REQUESTED on SIGTERM.
             let thread = daemon::spawn_daemon_thread(
@@ -1478,6 +1486,7 @@ pub fn cmd_watch(
                 daemon_pending_notes_signal,
                 daemon_fresh_notifier,
                 daemon_in_flight,
+                daemon_task_store,
                 // Pin the query side to the same effective pin (flag OR `CQS_SLOT`
                 // env) the write side honors, so a `cqs slot promote` cannot flip
                 // only the served slot out from under a pinned daemon.
@@ -2472,6 +2481,12 @@ pub fn cmd_watch(
             break;
         }
     }
+
+    // Signal any in-flight eval-task worker to bail: it checks this
+    // token once per query, so a long run stops within one query on shutdown
+    // rather than doing further GPU work while the process tears down. Idempotent
+    // and a no-op when no worker is running.
+    task_store_handle.signal_shutdown();
 
     // Bounded join of the daemon socket thread. The thread already observes
     // `daemon_should_exit()` at the top of its accept

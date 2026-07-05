@@ -568,6 +568,10 @@ mod tests {
         "src/cli/batch/handlers/info.rs",
         "src/cli/batch/handlers/misc.rs",
         "src/cli/batch/handlers/search.rs",
+        // MCP 3b Tasks store + eval worker — reached from the augmented-call
+        // admission and the task read handlers on the daemon request path.
+        "src/cli/batch/tasks/mod.rs",
+        "src/cli/batch/tasks/runner.rs",
     ];
 
     /// Source substrings that introduce a bare panic source — a request that
