@@ -587,6 +587,11 @@ fn merge_hashset_overlay(
 /// entries are dropped. Empty overlay → no rebuild. An `AhoCorasick` build
 /// failure warns and KEEPS the previous automaton (per-set containment — one
 /// bad set never poisons the others).
+///
+/// Entries are lowercased at install: every AC read site matches against the
+/// pre-lowercased query (`QueryContext::lower`), and the builtin sets are
+/// all-lowercase, so a mixed-case overlay entry would otherwise never match —
+/// a silent no-op knob.
 fn rebuild_ac_overlay(
     lock: &std::sync::RwLock<std::sync::Arc<AhoCorasick>>,
     mut all: Vec<String>,
@@ -597,6 +602,7 @@ fn rebuild_ac_overlay(
         return;
     }
     for pat in extra {
+        let pat = pat.to_lowercase();
         if !pat.trim().is_empty() && !all.contains(&pat) {
             all.push(pat);
         }
@@ -1925,6 +1931,27 @@ mod tests {
             QueryCategory::Behavioral,
             "after reset, overlay-only verb should no longer trigger Behavioral"
         );
+    }
+
+    /// A MIXED-CASE overlay entry still matches: queries are lowercased before
+    /// AC matching, so entries must be lowercased at install or the knob is a
+    /// silent no-op. Guards the `to_lowercase` in `rebuild_ac_overlay`.
+    #[test]
+    #[serial_test::serial(classifier_vocab_overlay)]
+    fn classifier_overlay_ac_entry_is_case_insensitive_at_install() {
+        reset_classifier_vocab_for_test();
+
+        install_classifier_vocab_overlay(overlay_with(|o| {
+            o.behavioral_verbs = vec!["Orchestrates".to_string()]
+        }));
+
+        assert_eq!(
+            classify_query("orchestrates records across shards").category,
+            QueryCategory::Behavioral,
+            "a mixed-case overlay entry must be lowercased at install and match"
+        );
+
+        reset_classifier_vocab_for_test();
     }
 
     /// An overlay-installed conceptual noun routes a query into the
