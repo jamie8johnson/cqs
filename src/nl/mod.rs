@@ -167,6 +167,7 @@ pub fn generate_nl_with_call_context_and_summary(
 ///     window_idx: None,
 ///     parent_type_name: None,
 ///     parser_version: 0,
+///     is_test: false,
 /// };
 ///
 /// let nl = generate_nl_description_with_seq_len(&chunk, 512);

@@ -138,7 +138,9 @@ fn test_delete_by_origin() {
         .unwrap();
 
     // Delete chunks from test.rs
-    let deleted = store.delete_by_origin(&PathBuf::from("src/lib.rs")).unwrap();
+    let deleted = store
+        .delete_by_origin(&PathBuf::from("src/lib.rs"))
+        .unwrap();
     assert_eq!(deleted, 1);
 
     // Only chunk2 should remain
@@ -149,7 +151,9 @@ fn test_delete_by_origin() {
     assert_eq!(results[0].chunk.name, "fn2");
 
     // Deleting again should return 0
-    let deleted_again = store.delete_by_origin(&PathBuf::from("src/lib.rs")).unwrap();
+    let deleted_again = store
+        .delete_by_origin(&PathBuf::from("src/lib.rs"))
+        .unwrap();
     assert_eq!(deleted_again, 0);
 }
 
