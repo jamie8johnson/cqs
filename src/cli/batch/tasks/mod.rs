@@ -49,6 +49,22 @@ pub(in crate::cli::batch) mod wire;
 // daemon intercepts — the `wire` module itself is `pub(in crate::cli::batch)`.
 pub(crate) use wire::{CMD_EVAL_TASK, CMD_TASK_GET, CMD_TASK_RESULT};
 
+/// Loom model of the TaskStore cross-thread publication + admission protocol (the
+/// interleaving-auditor lane for the MCP 3b floor). Compiled ONLY under
+/// `--cfg cqs_loom` AND a test build — `loom` is a dev-dependency and the module
+/// `use`s it at module scope, so it must never reach a plain `cargo build`. Same
+/// gate + run shape as the sibling `interleaving_model`s. Absent from a normal
+/// build.
+#[cfg(all(cqs_loom, test))]
+mod publication_interleaving_model;
+
+/// Multi-threaded stress harness for the real TaskStore (the integration
+/// schedules loom can't bound: `HashMap` map lock, `std::thread` workers,
+/// get/result reads racing publishes + the GC sweep). Test-only; a fast default
+/// iteration count keeps the normal suite quick, `CQS_TEST_STRESS_ITERS` cranks it.
+#[cfg(test)]
+mod stress;
+
 /// Max number of tasks (working + retained terminal) held at once. Checked at
 /// admission: the `(N+1)`th augmented call is refused with the opaque
 /// `Unavailable` and allocates nothing, so the store stays bounded even across a
@@ -534,6 +550,147 @@ mod tests {
         assert!(
             !rendered.contains(secret),
             "TaskId Debug must not leak the raw capability handle, got {rendered:?}"
+        );
+        // Pin the redaction MARKER, not just the absence of the secret: an empty
+        // (or otherwise gutted) `Debug` also happens not to contain the secret,
+        // so the leak-absence check alone stays green if `fmt` is neutered to
+        // write nothing. Requiring the "redacted" marker keeps the guard biting
+        // when the render is silently emptied rather than un-redacted.
+        assert!(
+            rendered.contains("redacted"),
+            "TaskId Debug must render the explicit redaction marker, got {rendered:?}"
+        );
+    }
+
+    /// `TaskDescriptor`'s `Debug` redacts `task_id` with the same posture as
+    /// `TaskId` — a `?descriptor` in a tracing call must never leak the handle.
+    /// No existing test formats a descriptor with `{:?}`, so its redaction had
+    /// zero coverage; this pins it (both leak-absence and the marker).
+    #[test]
+    fn descriptor_debug_redacts_task_id() {
+        let secret = "aGVsbG8td29ybGQtc2VjcmV0LXRhc2staWQtZXhhbXBsZS0x";
+        let entry = Arc::new(TaskEntry::new_working(
+            TaskId::from_wire(secret),
+            0,
+            Some(60),
+        ));
+        let rendered = format!("{:?}", entry.descriptor());
+        assert!(
+            !rendered.contains(secret),
+            "TaskDescriptor Debug must not leak the taskId, got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("redacted"),
+            "TaskDescriptor Debug must render the redaction marker, got {rendered:?}"
+        );
+    }
+
+    /// Every task response carries `createdAt` / `lastUpdatedAt` as RFC3339 /
+    /// ISO-8601 strings (a D6 MUST — NOT epoch ms). Several tests build a
+    /// descriptor and read `.status`, but NONE asserted the timestamp shape, so
+    /// `now_rfc3339` returning `""` or garbage left the suite green. This pins
+    /// the format at both the pre-terminal and terminal reads, and that
+    /// `lastUpdatedAt` advances to the terminal instant.
+    #[test]
+    fn task_timestamps_are_rfc3339() {
+        let store = TaskStore::new();
+        let entry = store.new_entry(0, Some(60));
+
+        // Pre-terminal: `lastUpdatedAt` equals `createdAt`, both valid RFC3339.
+        let d0 = entry.descriptor();
+        chrono::DateTime::parse_from_rfc3339(&d0.created_at)
+            .expect("createdAt must be a valid RFC3339 string");
+        assert_eq!(
+            d0.last_updated_at, d0.created_at,
+            "pre-terminal lastUpdatedAt equals createdAt"
+        );
+
+        // A tick so the terminal stamp is observably distinct from creation.
+        std::thread::sleep(Duration::from_millis(2));
+        entry.publish(
+            TerminalKind::ToolResult {
+                value: serde_json::json!({"ok": true}),
+                is_error: false,
+            },
+            TaskStatus::Completed,
+        );
+
+        // Terminal: both stamps valid RFC3339; lastUpdatedAt moved to the finish
+        // instant (never before creation).
+        let d1 = entry.descriptor();
+        let created = chrono::DateTime::parse_from_rfc3339(&d1.created_at)
+            .expect("terminal createdAt must be a valid RFC3339 string");
+        let updated = chrono::DateTime::parse_from_rfc3339(&d1.last_updated_at)
+            .expect("terminal lastUpdatedAt must be a valid RFC3339 string");
+        assert!(
+            updated >= created,
+            "terminal lastUpdatedAt ({}) advances to the finish instant, not before createdAt ({})",
+            d1.last_updated_at,
+            d1.created_at
+        );
+        // The terminal stamp MOVED — it is the finish instant, not a frozen copy
+        // of createdAt. Pins the `descriptor()` terminal branch (which cargo-
+        // mutants could only replace wholesale, an unviable Default); the 2ms
+        // tick above guarantees a distinct RFC3339 rendering.
+        assert_ne!(
+            d1.last_updated_at, d1.created_at,
+            "terminal lastUpdatedAt must move to the finish instant, not stay == createdAt"
+        );
+    }
+
+    /// The GC horizon is STRICT: at exactly `finished_at + ttl` the task is NOT
+    /// yet expired; it expires only strictly past it. The sweep test steps OVER
+    /// the horizon (a 5ms sleep against a 0s ttl), so a `>`→`>=` off-by-one at
+    /// the boundary survived it. This hits the horizon exactly by reading the
+    /// terminal instant and feeding `is_expired` a controlled `now`.
+    #[test]
+    fn is_expired_horizon_is_strict() {
+        let store = TaskStore::new();
+        let ttl_secs = 60u64;
+        let entry = store.new_entry(0, Some(ttl_secs));
+        entry.publish(
+            TerminalKind::ToolResult {
+                value: serde_json::json!({}),
+                is_error: false,
+            },
+            TaskStatus::Completed,
+        );
+        // The exact instant the predicate compares against.
+        let finished_at = {
+            let slot = entry.result.lock().unwrap_or_else(|p| p.into_inner());
+            slot.as_ref().expect("published ⇒ slot filled").finished_at
+        };
+        let horizon = finished_at + Duration::from_secs(ttl_secs);
+        assert!(
+            !entry.is_expired(horizon),
+            "at exactly finished_at + ttl the task is NOT expired (strict >, not >=)"
+        );
+        assert!(
+            !entry.is_expired(horizon - Duration::from_nanos(1)),
+            "just before the horizon: not expired"
+        );
+        assert!(
+            entry.is_expired(horizon + Duration::from_nanos(1)),
+            "one tick past the horizon: expired"
+        );
+    }
+
+    /// `signal_shutdown` must flip the SAME `AtomicBool` that `shutdown_token`
+    /// hands each worker (the seam-1d cancel side-channel). No test exercised the
+    /// wiring, so a `shutdown_token` returning a fresh unshared token — or a
+    /// `signal_shutdown` that did nothing — went unnoticed. This pins the share.
+    #[test]
+    fn signal_shutdown_flips_the_worker_token() {
+        let store = TaskStore::new();
+        let token = store.shutdown_token();
+        assert!(
+            !token.load(Ordering::Acquire),
+            "the worker token starts un-signalled"
+        );
+        store.signal_shutdown();
+        assert!(
+            token.load(Ordering::Acquire),
+            "signal_shutdown must flip the SAME token handed to workers"
         );
     }
 
