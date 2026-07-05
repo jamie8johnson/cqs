@@ -16,6 +16,7 @@ pub mod knob;
 mod name_match;
 mod note_boost;
 mod provenance;
+mod testcode;
 
 pub(crate) use candidate::{
     apply_parent_boost, apply_scoring_pipeline, score_candidate, BoundedScoreHeap, ScoringContext,
@@ -28,3 +29,4 @@ pub use fusion::set_rrf_k_from_config;
 pub(crate) use name_match::NameMatcher;
 pub(crate) use note_boost::{NoteBoost, NoteBoostCache, NoteBoostIndex, OwnedNoteBoostIndex};
 pub(crate) use provenance::{signals_for, RankSignalCtx, RankSignalInputs};
+pub(crate) use testcode::{apply_testcode_demote, query_is_test_seeking, testcode_demote_factor};

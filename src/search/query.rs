@@ -19,8 +19,9 @@ use crate::store::{NoteSummary, Store, StoreError};
 
 use super::mmr::{mmr_lambda_from_env, mmr_rerank, MmrCandidate};
 use super::scoring::{
-    apply_parent_boost, apply_scoring_pipeline, build_filter_sql, compile_glob_filter, rrf_fuse,
-    score_candidate, signals_for, BoundedScoreHeap, NameMatcher, NoteBoost, RankSignalCtx,
+    apply_parent_boost, apply_scoring_pipeline, apply_testcode_demote, build_filter_sql,
+    compile_glob_filter, query_is_test_seeking, rrf_fuse, score_candidate, signals_for,
+    testcode_demote_factor, BoundedScoreHeap, NameMatcher, NoteBoost, RankSignalCtx,
     RankSignalInputs, ScoringContext,
 };
 use super::synonyms::expand_query_for_fts;
@@ -667,6 +668,29 @@ impl<Mode> Store<Mode> {
             });
         }
 
+        // Step 4b2: Test-code demotion (CQS_TESTCODE_DEMOTE). Multiplicatively
+        // demotes test-origin chunks for queries that are NOT test-seeking —
+        // test chunks that near-duplicate the production code they exercise
+        // crowd the top-5 for non-test queries (the R@5 near-dup/test-code
+        // failure mode). Structurally inert at the default factor 1.0: the query
+        // classification and the per-result loop are skipped, and the re-sort
+        // runs only when a chunk was actually demoted, so the knob-off path is
+        // byte-identical (ordering-stable) to pre-knob output. Query
+        // classification is short-circuited off the factor so the default path
+        // never even tokenizes the query.
+        let demote_factor = testcode_demote_factor();
+        let query_test_seeking = demote_factor < 1.0 && query_is_test_seeking(query_text);
+        if apply_testcode_demote(&mut results, demote_factor, query_test_seeking) {
+            // Re-sort after demotion. Secondary sort on chunk id keeps ties
+            // deterministic (mirrors the type-boost sort above).
+            results.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.chunk.id.cmp(&b.chunk.id))
+            });
+            tracing::debug!(factor = demote_factor, "test-code demotion applied");
+        }
+
         // Step 4c: MMR re-rank for diversity (opt-in via SearchFilter or
         // CQS_MMR_LAMBDA env). Runs against the full post-dedup pool, which
         // is up to `limit * 2` (RRF) or `limit * 3` (no-RRF expansion). Pure
@@ -737,6 +761,8 @@ impl<Mode> Store<Mode> {
                 is_rrf: use_rrf,
                 suppress_note_boost: inputs.suppress_note_boost,
                 parent_boosts: &parent_boost_ref,
+                testcode_demote_factor: demote_factor,
+                query_is_test_seeking: query_test_seeking,
             };
             for r in &mut results {
                 r.rank_signals = signals_for(r, &signal_ctx);
