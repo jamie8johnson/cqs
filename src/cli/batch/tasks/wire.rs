@@ -68,7 +68,9 @@ pub(in crate::cli::batch) fn dispatch_task_verb(
 
 /// Render a task descriptor as the flat wire object both `eval-task` and
 /// `task-get` return (the transport nests it for `CreateTaskResult`). `ttl` is
-/// `number | null` per the spec.
+/// `number | null` (null = unlimited) in SECONDS — this is the internal
+/// daemon-socket surface; the MCP transport converts to the spec's
+/// milliseconds at its boundary (`descriptor_ttl_secs_to_ms`).
 fn descriptor_json(d: &TaskDescriptor) -> Value {
     json!({
         "taskId": d.task_id,

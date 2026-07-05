@@ -572,6 +572,7 @@ mod tests {
         // admission and the task read handlers on the daemon request path.
         "src/cli/batch/tasks/mod.rs",
         "src/cli/batch/tasks/runner.rs",
+        "src/cli/batch/tasks/wire.rs",
     ];
 
     /// Source substrings that introduce a bare panic source — a request that

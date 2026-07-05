@@ -180,15 +180,34 @@ fn related_task_meta(task_id: &str) -> Value {
     json!({ RELATED_TASK_META_KEY: { "taskId": task_id } })
 }
 
-/// Resolve an augmentation `task.ttl` to a concrete retention. Absent / null /
-/// non-positive ⇒ the default; a client value is clamped to the max so retention
-/// stays bounded.
+/// Resolve an augmentation `task.ttl` to a concrete retention in SECONDS.
+///
+/// UNIT BOUNDARY: the spec's `TaskMetadata.ttl` is "requested duration in
+/// **milliseconds** to retain task from creation" (2025-11-25 schema.ts); the
+/// store's retention is seconds. This is the single inbound conversion point:
+/// ms → secs with ceiling division (a 1..999ms request rounds up to 1s, never
+/// down to an instant-GC 0). Absent / null / non-positive ⇒ the default; the
+/// result is clamped to the max so retention stays bounded.
 fn resolve_ttl(task: &Value) -> u64 {
     task.get("ttl")
         .and_then(|v| v.as_u64())
         .filter(|n| *n >= 1)
-        .map(|n| n.min(TTL_SECS_DEFAULT_AND_MAX))
+        .map(|ms| ms.div_ceil(1000).min(TTL_SECS_DEFAULT_AND_MAX))
         .unwrap_or(TTL_SECS_DEFAULT_AND_MAX)
+}
+
+/// Convert a daemon descriptor's `ttl` field (internal SECONDS, `null` for
+/// unlimited) to the spec's wire unit (**milliseconds**) in place. The single
+/// outbound conversion point, applied wherever a descriptor is shaped into a
+/// spec `Task` (`CreateTaskResult` nested, `GetTaskResult` flat). `null`
+/// (unlimited) passes through untouched; a saturating multiply keeps a
+/// pathological stored value from wrapping.
+fn descriptor_ttl_secs_to_ms(task: &mut Value) {
+    if let Some(obj) = task.as_object_mut() {
+        if let Some(ttl_secs) = obj.get("ttl").and_then(|v| v.as_u64()) {
+            obj.insert("ttl".to_string(), json!(ttl_secs.saturating_mul(1000)));
+        }
+    }
 }
 
 /// Build a JSON-RPC error response carrying optional `data`.
@@ -387,6 +406,7 @@ fn shape_create_result(id: Option<Value>, data: &Value) -> JsonRpcResponse {
         .unwrap_or("")
         .to_string();
     let mut task = descriptor;
+    descriptor_ttl_secs_to_ms(&mut task);
     if let Some(obj) = task.as_object_mut() {
         obj.insert("pollInterval".to_string(), json!(CLIENT_POLL_INTERVAL_MS));
     }
@@ -443,6 +463,7 @@ fn shape_get_result(id: Option<Value>, task_id: &str, data: &Value) -> JsonRpcRe
         Some("found") => {
             let descriptor = data.get("descriptor").cloned().unwrap_or(Value::Null);
             let mut flat = descriptor;
+            descriptor_ttl_secs_to_ms(&mut flat);
             if let Some(obj) = flat.as_object_mut() {
                 obj.insert("pollInterval".to_string(), json!(CLIENT_POLL_INTERVAL_MS));
                 obj.insert("_meta".to_string(), related_task_meta(task_id));
@@ -562,9 +583,12 @@ fn terminal_response(id: Option<Value>, task_id: &str, data: &Value) -> JsonRpcR
             }
             rpc_error(id, taxonomy_to_jsonrpc(code), message, Some(err_data))
         }
-        // A `ready` state with no recognizable terminal shape: treat as a torn
-        // read (retry) rather than an error — matches the daemon's own
-        // terminal-status-with-empty-slot posture.
+        // A `ready` state with no recognizable terminal shape: unreachable via
+        // a healthy daemon (it returns `Pending` on an empty slot and
+        // `terminal_json` only emits known kinds), so treat it as GONE
+        // (-32602) — a crisp terminal error. Returning `Pending` here would
+        // spin the block loop against a shape we will never learn to parse,
+        // burning the full 20-min backstop for nothing.
         _ => task_gone(id),
     }
 }
@@ -623,10 +647,14 @@ mod tests {
     #[test]
     fn resolve_ttl_clamps_and_defaults() {
         assert_eq!(resolve_ttl(&json!({})), TTL_SECS_DEFAULT_AND_MAX);
-        assert_eq!(resolve_ttl(&json!({ "ttl": 60 })), 60);
+        // Spec unit is MILLISECONDS: 60_000ms = 60s.
+        assert_eq!(resolve_ttl(&json!({ "ttl": 60_000 })), 60);
+        // A sub-second request rounds UP to 1s (never down to instant-GC 0).
+        assert_eq!(resolve_ttl(&json!({ "ttl": 500 })), 1);
+        assert_eq!(resolve_ttl(&json!({ "ttl": 60 })), 1);
         // Above the max clamps down.
         assert_eq!(
-            resolve_ttl(&json!({ "ttl": TTL_SECS_DEFAULT_AND_MAX + 10_000 })),
+            resolve_ttl(&json!({ "ttl": TTL_SECS_DEFAULT_AND_MAX * 1000 + 1 })),
             TTL_SECS_DEFAULT_AND_MAX
         );
         // Zero / null / non-integer fall back to the default.
@@ -691,6 +719,15 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(CLIENT_POLL_INTERVAL_MS)
         );
+        // Wire `ttl` is MILLISECONDS (spec unit); the daemon descriptor's 900
+        // is seconds and must be converted at this boundary.
+        assert_eq!(
+            result
+                .get("task")
+                .and_then(|t| t.get("ttl"))
+                .and_then(|v| v.as_u64()),
+            Some(900_000)
+        );
         assert_eq!(
             result
                 .get("_meta")
@@ -733,8 +770,9 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("tid")
         );
-        // ttl present as a number (spec: number | null).
-        assert_eq!(result.get("ttl").and_then(|v| v.as_u64()), Some(900));
+        // ttl present as a number (spec: number | null), in MILLISECONDS —
+        // converted from the daemon descriptor's seconds at this boundary.
+        assert_eq!(result.get("ttl").and_then(|v| v.as_u64()), Some(900_000));
     }
 
     /// A `gone` `task-get` state maps to `-32602`, never a flat descriptor.
