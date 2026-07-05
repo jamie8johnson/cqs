@@ -50,3 +50,31 @@ fn security_md_documents_mcp_http_surface() {
         "SECURITY.md must document the MCP-HTTP token/auth requirement"
     );
 }
+
+/// The MCP Tasks surface (Phase 3b) is a load-bearing security disclosure: a
+/// `taskId` is a bearer capability with NO per-task ACL under the shared token,
+/// and the blocking `tasks/result` runs on an isolated budget. These claims must
+/// stay documented so a future edit can't silently drop the shared-token
+/// limitation the spec directs the receiver to record, or the availability
+/// guarantee that the block can't starve one-shot requests.
+#[test]
+fn security_md_documents_mcp_tasks_surface() {
+    let doc = security_md();
+    let lower = doc.to_ascii_lowercase();
+    assert!(
+        doc.contains("taskId"),
+        "SECURITY.md must document the MCP Tasks `taskId` capability"
+    );
+    assert!(
+        lower.contains("per-task acl"),
+        "SECURITY.md must document the shared-token no-per-task-ACL limitation (D3)"
+    );
+    assert!(
+        doc.contains("taskSupport"),
+        "SECURITY.md must document that only cqs_eval is task-augmentable (taskSupport)"
+    );
+    assert!(
+        doc.contains("-32602"),
+        "SECURITY.md must document that a gone task is -32602, never an HTTP 404"
+    );
+}

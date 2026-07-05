@@ -40,6 +40,14 @@ use base64::Engine as _;
 use crate::cli::json_envelope::ErrorCode;
 
 pub(crate) mod runner;
+/// Daemon-side wire verbs (`eval-task` / `task-get` / `task-result`) the MCP
+/// transport dials over the JSON-args socket path. See [`wire`].
+pub(in crate::cli::batch) mod wire;
+
+// The three task wire-verb command names, surfaced at the module root so the MCP
+// transport (`cli::mcp::tasks`, outside `cli::batch`) dials the SAME strings the
+// daemon intercepts — the `wire` module itself is `pub(in crate::cli::batch)`.
+pub(crate) use wire::{CMD_EVAL_TASK, CMD_TASK_GET, CMD_TASK_RESULT};
 
 /// Max number of tasks (working + retained terminal) held at once. Checked at
 /// admission: the `(N+1)`th augmented call is refused with the opaque

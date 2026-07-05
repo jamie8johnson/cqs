@@ -49,7 +49,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use axum::{
-    body::Bytes,
     extract::{Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{from_fn, from_fn_with_state, Next},
@@ -90,6 +89,19 @@ const MAX_SESSIONS: usize = 4096;
 /// Maximum POST body: a single JSON-RPC message is tiny; 1 MiB is ample and
 /// bounds a hostile client's per-request buffer.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Isolated blocking budget for `tasks/result`: at most this many
+/// block-until-terminal calls run concurrently — a small `K ≪ 256` so a fully
+/// saturated blocking budget can never starve the 256 outermost one-shot request
+/// permits (the block-budget isolation). Single-flight caps running eval tasks to 1, so realistic
+/// demand is a couple of blocks on the one live task; this is generous. A const,
+/// not an env var (matching the daemon-side cap pattern).
+const TASKS_RESULT_BLOCKING_BUDGET: usize = 8;
+
+/// Per-`taskId` fan-out cap: one client cannot mount more than this many
+/// concurrent `tasks/result` blocks on a single task (there is only ever one live
+/// eval task under single-flight). Bounds a fan-out attack on the blocking budget.
+const MAX_BLOCKS_PER_TASK: usize = 2;
 
 /// The in-memory, non-durable session store: `session-id → last-seen`.
 ///
@@ -176,6 +188,13 @@ struct HttpState {
     /// `mutations_enabled() && bind_is_loopback`. When `false`, mutators are
     /// neither listed nor callable (withheld listener-side, before relay).
     mutations_permitted: bool,
+    /// The isolated `tasks/result` blocking budget (a small `K ≪ 256`). A block
+    /// holds one of these permits — NOT one of the outermost 256 — so a saturated
+    /// blocking budget never starves one-shot requests (the block-budget isolation).
+    result_budget: Arc<tokio::sync::Semaphore>,
+    /// Per-`taskId` active-block counts, for the fan-out cap
+    /// ([`MAX_BLOCKS_PER_TASK`]). A poisoned lock is recovered via `into_inner`.
+    result_fanout: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 /// Run the `cqs mcp --http` listener against the daemon serving `cqs_dir`.
@@ -223,6 +242,8 @@ pub fn serve_http(cqs_dir: &Path, bind: &str, port: u16, token_file: Option<&Pat
         token,
         sessions: Arc::new(SessionStore::new()),
         mutations_permitted,
+        result_budget: Arc::new(tokio::sync::Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET)),
+        result_fanout: Arc::new(Mutex::new(HashMap::new())),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
     let app = build_router(state, allowed_hosts);
@@ -396,10 +417,10 @@ fn is_localhost_origin(origin: &str) -> bool {
 /// completes, so a finished request frees its slot for the next one.
 async fn enforce_concurrency_cap(
     State(sem): State<Arc<tokio::sync::Semaphore>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
-    let permit = match sem.try_acquire() {
+    let permit = match Arc::clone(&sem).try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             tracing::warn!("mcp-http: concurrent-request cap saturated — returning 503");
@@ -410,20 +431,53 @@ async fn enforce_concurrency_cap(
                 .into_response();
         }
     };
-    let response = next.run(req).await;
-    drop(permit);
-    response
+    // Hand the OWNED permit to the handler via request extensions instead of
+    // holding it across `next.run`. A normal request extracts it and holds it for
+    // its whole duration (bounding in-flight daemon relays exactly as before), but
+    // a blocking `tasks/result` DROPS it before the ~20-min block so the wait
+    // never pins one of the 256 outermost permits (the block-budget isolation). If the handler never
+    // extracts it (GET/DELETE, an early return), it drops when the request is
+    // dropped — still released after the response, never leaked.
+    //
+    // `Extensions::insert` requires `Clone`, and `OwnedSemaphorePermit` is not, so
+    // it rides an `Arc`. The request is never cloned in this chain, so the Arc has
+    // exactly one strong ref: dropping it releases the permit.
+    req.extensions_mut().insert(std::sync::Arc::new(permit));
+    next.run(req).await
 }
 
 // ─── method handlers ─────────────────────────────────────────────────────────
 
 /// POST `/mcp` — the single JSON-RPC endpoint (no SSE in rung 1).
-async fn handle_post(State(state): State<HttpState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Response {
+    // Take the outermost concurrency permit OUT of the request so this handler
+    // owns its lifetime: a normal request holds it across the daemon round-trip
+    // (bounding in-flight relays), while a blocking `tasks/result` drops it before
+    // the block (the block-budget isolation). `None` only when the cap layer isn't installed (some
+    // unit-test routers) — then there is no permit to manage.
+    let outer_permit = req
+        .extensions_mut()
+        .remove::<std::sync::Arc<tokio::sync::OwnedSemaphorePermit>>();
+    let headers = req.headers().clone();
+
     // Protocol-version gate: present-and-unsupported → 400; absent → assume the
     // backward-compat default (NOT a 400).
     if let Some(resp) = check_protocol_version(&headers) {
         return resp;
     }
+
+    // Buffer the body (bounded by the RequestBodyLimitLayer above; an undeclared
+    // oversized body that slips the Content-Length check surfaces here as a 413).
+    let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request body exceeds the size limit",
+            )
+                .into_response()
+        }
+    };
 
     // A single JSON-RPC message. Reject arrays (batches) with 400.
     let value: Value = match serde_json::from_slice(&body) {
@@ -516,6 +570,15 @@ async fn handle_post(State(state): State<HttpState>, headers: HeaderMap, body: B
                 .into_response()
         }
     };
+    // `tasks/result` blocks until terminal. It runs on the isolated blocking
+    // budget with the outermost permit RELEASED, so the ~20-min wait never pins
+    // one of the 256 one-shot permits (the block-budget isolation). Every other method — an
+    // augmented `tools/call`, `tasks/get`, a normal call — is a quick daemon dial
+    // routed through `route_blocking` while still holding the outer permit.
+    if request.method == "tasks/result" {
+        return serve_blocking_result(&state, outer_permit, request).await;
+    }
+
     // A notification (no id) gets a 202 with no body; a request (id present)
     // gets its JSON-RPC response as application/json.
     let is_notification = request.id.is_none();
@@ -570,6 +633,154 @@ async fn route_blocking(
         Err(e) => {
             tracing::error!(error = %e, "mcp-http: routing task panicked");
             Err((StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response())
+        }
+    }
+}
+
+// ─── tasks/result blocking budget (the block-budget isolation) ─────────────────────────────────
+
+/// RAII per-`taskId` fan-out guard: increments the active-block count on acquire
+/// (refusing past [`MAX_BLOCKS_PER_TASK`]) and decrements it on drop, reclaiming
+/// the map entry at zero so the table never grows unbounded.
+struct FanoutGuard {
+    map: Arc<Mutex<HashMap<String, usize>>>,
+    task_id: String,
+}
+
+impl FanoutGuard {
+    /// Acquire a fan-out slot for `task_id`, or `None` at the per-task cap.
+    fn try_acquire(
+        map: Arc<Mutex<HashMap<String, usize>>>,
+        task_id: String,
+    ) -> Option<FanoutGuard> {
+        {
+            let mut m = map.lock().unwrap_or_else(|p| p.into_inner());
+            let count = m.entry(task_id.clone()).or_insert(0);
+            if *count >= MAX_BLOCKS_PER_TASK {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(FanoutGuard { map, task_id })
+    }
+}
+
+impl Drop for FanoutGuard {
+    fn drop(&mut self) {
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = m.get_mut(&self.task_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                m.remove(&self.task_id);
+            }
+        }
+    }
+}
+
+/// Serve a blocking `tasks/result`: extract the taskId, then run the
+/// budget-isolated block loop with a real daemon poll (each poll a `spawn_blocking`
+/// off the async worker).
+async fn serve_blocking_result(
+    state: &HttpState,
+    outer_permit: Option<std::sync::Arc<tokio::sync::OwnedSemaphorePermit>>,
+    request: JsonRpcRequest,
+) -> Response {
+    let id = request.id.clone();
+    let task_id = match super::tasks::task_id_from_params(&request.params) {
+        Ok(t) => t,
+        Err(()) => return json_response(&super::tasks::task_gone(id), None),
+    };
+
+    let cqs_dir = Arc::clone(&state.cqs_dir);
+    let poll_id = id.clone();
+    let poll_task = task_id.clone();
+    let poll = move || {
+        let cqs_dir = Arc::clone(&cqs_dir);
+        let id = poll_id.clone();
+        let task_id = poll_task.clone();
+        async move {
+            let err_id = id.clone();
+            match tokio::task::spawn_blocking(move || {
+                super::tasks::poll_result_once(&cqs_dir, &id, &task_id)
+            })
+            .await
+            {
+                Ok(step) => step,
+                Err(_) => super::tasks::ResultStep::Done(super::tasks::internal_error(
+                    err_id,
+                    "tasks/result poll worker failed",
+                )),
+            }
+        }
+    };
+
+    let resp = blocking_result_with_poll(
+        outer_permit,
+        Arc::clone(&state.result_budget),
+        Arc::clone(&state.result_fanout),
+        id,
+        task_id,
+        poll,
+    )
+    .await;
+    json_response(&resp, None)
+}
+
+/// The budget-isolated block loop, factored out with an injected `poll` so an
+/// the block-budget isolation test can drive it deterministically without a live daemon: acquire
+/// the fan-out + blocking-budget guards, RELEASE the outermost permit, then poll
+/// to terminal (or the anti-wedge backstop).
+async fn blocking_result_with_poll<P, Fut>(
+    outer_permit: Option<std::sync::Arc<tokio::sync::OwnedSemaphorePermit>>,
+    budget: Arc<tokio::sync::Semaphore>,
+    fanout: Arc<Mutex<HashMap<String, usize>>>,
+    id: Option<Value>,
+    task_id: String,
+    mut poll: P,
+) -> JsonRpcResponse
+where
+    P: FnMut() -> Fut,
+    Fut: std::future::Future<Output = super::tasks::ResultStep>,
+{
+    // Per-taskId fan-out cap: one client can't mount many blocks on the one task.
+    let _fanout = match FanoutGuard::try_acquire(fanout, task_id) {
+        Some(g) => g,
+        None => {
+            return super::tasks::retryable_busy(
+                id,
+                "too many concurrent tasks/result blocks for this task; poll tasks/get instead",
+            )
+        }
+    };
+    // Isolated blocking budget (K ≪ 256): bounds concurrent blocks so they can
+    // never starve the outermost one-shot permits.
+    let _budget = match budget.try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return super::tasks::retryable_busy(
+                id,
+                "tasks/result blocking budget saturated; poll tasks/get instead",
+            )
+        }
+    };
+    // the block-budget isolation: release the outermost permit BEFORE the block. The wait now holds
+    // only the tiny budget permit above — ZERO of the 256 one-shot permits — so
+    // one-shot requests keep being served while blocks are outstanding.
+    drop(outer_permit);
+
+    let start = Instant::now();
+    loop {
+        match poll().await {
+            super::tasks::ResultStep::Done(resp) => return resp,
+            super::tasks::ResultStep::Pending => {
+                if start.elapsed() > super::tasks::MAX_BLOCK_DURATION {
+                    tracing::warn!(
+                        "mcp-http tasks/result: block backstop tripped (task never terminalized)"
+                    );
+                    return super::tasks::block_backstop_error(id);
+                }
+                tokio::time::sleep(super::tasks::INTERNAL_POLL_INTERVAL).await;
+            }
         }
     }
 }
@@ -763,6 +974,8 @@ mod tests {
             token: AuthToken::try_from_string(TEST_TOKEN).expect("valid test token"),
             sessions: Arc::new(SessionStore::new()),
             mutations_permitted,
+            result_budget: Arc::new(tokio::sync::Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET)),
+            result_fanout: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1574,6 +1787,244 @@ mod tests {
             resp2.status(),
             StatusCode::OK,
             "permit must be released after the first response completes"
+        );
+    }
+
+    // ── tasks surface ─────────────────────────────────────────────────
+
+    /// the block-budget isolation (the load-bearing guard): a blocking `tasks/result` must NOT hold
+    /// one of the outermost one-shot permits for the duration of the block. With a
+    /// size-1 outer cap held (as the middleware would), a block that is in
+    /// progress releases that permit — so a one-shot request can still acquire it.
+    /// Mirrors the style of `concurrency_cap_saturated_503s_before_auth`, driven
+    /// through the real `blocking_result_with_poll` stack with an injected poll.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tasks_result_block_releases_outer_permit_rt_dos_2() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Size-1 outer cap, its sole permit held (the middleware's owned permit).
+        let outer = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = Arc::clone(&outer).try_acquire_owned().expect("hold outer");
+        let outer_permit = Some(Arc::new(held));
+        assert_eq!(outer.available_permits(), 0, "outer starts saturated");
+
+        let budget = Arc::new(tokio::sync::Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET));
+        let fanout = Arc::new(Mutex::new(HashMap::new()));
+
+        // The poll stays Pending until released, then terminates the block.
+        let release = Arc::new(AtomicBool::new(false));
+        let poll_release = Arc::clone(&release);
+        let poll = move || {
+            let release = Arc::clone(&poll_release);
+            async move {
+                if release.load(Ordering::SeqCst) {
+                    super::super::tasks::ResultStep::Done(super::super::tasks::task_gone(Some(
+                        Value::from(1),
+                    )))
+                } else {
+                    super::super::tasks::ResultStep::Pending
+                }
+            }
+        };
+
+        let handle = tokio::spawn(blocking_result_with_poll(
+            outer_permit,
+            Arc::clone(&budget),
+            Arc::clone(&fanout),
+            Some(Value::from(1)),
+            "tid".to_string(),
+            poll,
+        ));
+
+        // Let the block acquire its budget, RELEASE the outer permit, and enter
+        // the poll loop (its first poll returns Pending, then it sleeps).
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        // The load-bearing assertion: the outermost permit is free DURING the
+        // block, so a one-shot request would get it (no 503).
+        assert_eq!(
+            outer.available_permits(),
+            1,
+            "a blocking tasks/result must release the outermost permit (the block-budget isolation)"
+        );
+        // The block holds exactly one budget permit.
+        assert_eq!(
+            budget.available_permits(),
+            TASKS_RESULT_BLOCKING_BUDGET - 1,
+            "the block holds one isolated budget permit, not an outer permit"
+        );
+
+        // Terminate the block; the budget permit releases afterward.
+        release.store(true, Ordering::SeqCst);
+        let _ = handle.await.expect("block joins");
+        assert_eq!(
+            budget.available_permits(),
+            TASKS_RESULT_BLOCKING_BUDGET,
+            "the budget permit is released after the block ends"
+        );
+    }
+
+    /// Per-`taskId` fan-out cap: at most `MAX_BLOCKS_PER_TASK` concurrent blocks
+    /// on one task; a further block on the SAME task is refused, while a DIFFERENT
+    /// task is independent, and dropping a guard frees a slot.
+    #[test]
+    fn fanout_guard_caps_blocks_per_task() {
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        let g1 = FanoutGuard::try_acquire(Arc::clone(&map), "t".to_string());
+        let g2 = FanoutGuard::try_acquire(Arc::clone(&map), "t".to_string());
+        assert!(g1.is_some() && g2.is_some(), "up to the cap acquires");
+        assert!(
+            FanoutGuard::try_acquire(Arc::clone(&map), "t".to_string()).is_none(),
+            "a block past the per-task cap is refused"
+        );
+        assert!(
+            FanoutGuard::try_acquire(Arc::clone(&map), "other".to_string()).is_some(),
+            "a different task is independent of the cap"
+        );
+        drop(g1);
+        assert!(
+            FanoutGuard::try_acquire(Arc::clone(&map), "t".to_string()).is_some(),
+            "dropping a guard frees a per-task slot"
+        );
+    }
+
+    /// The blocking budget saturating returns a retryable JSON-RPC error (not a
+    /// 503, not a hang) so a client falls back to `tasks/get` polling.
+    #[tokio::test]
+    async fn tasks_result_budget_saturated_is_retryable_error() {
+        let outer_permit = None; // no outer cap in this unit
+        let budget = Arc::new(tokio::sync::Semaphore::new(0)); // pre-drained
+        let fanout = Arc::new(Mutex::new(HashMap::new()));
+        let poll = || async { super::super::tasks::ResultStep::Pending };
+        let resp = blocking_result_with_poll(
+            outer_permit,
+            budget,
+            fanout,
+            Some(Value::from(1)),
+            "tid".to_string(),
+            poll,
+        )
+        .await;
+        let err = resp.error.expect("budget saturation is an error");
+        assert_eq!(err.code, super::super::lifecycle::INTERNAL_ERROR);
+        assert_eq!(
+            err.data
+                .as_ref()
+                .and_then(|d| d.get("retryable"))
+                .and_then(|b| b.as_bool()),
+            Some(true),
+            "the reject must be marked retryable"
+        );
+    }
+
+    /// `tasks/result` requires a session (non-initialize): missing header → 400,
+    /// unknown session → 404 (never an HTTP 404 from a gone task — that is
+    /// `-32602`; the 404 here is strictly session-expiry).
+    #[tokio::test]
+    async fn tasks_result_without_session_is_400() {
+        let router = test_router(true);
+        let resp = send(
+            &router,
+            Req::post(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tasks/result","params":{"taskId":"x"}}"#,
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn tasks_result_unknown_session_is_404() {
+        let router = test_router(true);
+        let resp = send(
+            &router,
+            Req::post(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tasks/result","params":{"taskId":"x"}}"#,
+            )
+            .session("never-issued-session"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A `tasks/result` / `tasks/get` with a missing `taskId` is `-32602`
+    /// (task-gone code), never an HTTP 404.
+    #[tokio::test]
+    async fn tasks_result_missing_task_id_is_minus_32602() {
+        let router = test_router(true);
+        let sid = init_session(&router).await;
+        let resp = send(
+            &router,
+            Req::post(r#"{"jsonrpc":"2.0","id":1,"method":"tasks/result","params":{}}"#)
+                .session(&sid),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(
+            body.get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i64()),
+            Some(-32602),
+            "missing taskId must be -32602 (never HTTP 404): {body}"
+        );
+    }
+
+    /// `tasks/get` with a taskId but no daemon relays a clean JSON-RPC error in
+    /// the body (never a 500), and the outer permit is not leaked (a subsequent
+    /// request under a size-1 cap still succeeds).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tasks_result_daemon_absent_does_not_leak_permit() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let router = test_router_with_sem(sem);
+        let sid = init_session(&router).await;
+        // Daemon absent (nonexistent cqs_dir): the block's first poll fails and
+        // returns immediately as a body-level error, not a hang or a 500.
+        let resp = send(
+            &router,
+            Req::post(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tasks/result","params":{"taskId":"tid"}}"#,
+            )
+            .session(&sid),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert!(
+            body.get("error").is_some(),
+            "daemon-absent tasks/result is a clean JSON-RPC error: {body}"
+        );
+        // The permit was released: another request under the size-1 cap succeeds.
+        let resp2 = send(&router, Req::post(INIT_BODY)).await;
+        assert_eq!(
+            resp2.status(),
+            StatusCode::OK,
+            "tasks/result must not leak the outer permit"
+        );
+    }
+
+    /// Augmenting a non-eval tool with a `task` field is `-32601` (only cqs_eval
+    /// is task-augmentable).
+    #[tokio::test]
+    async fn augmenting_non_eval_tool_is_minus_32601() {
+        let router = test_router(true);
+        let sid = init_session(&router).await;
+        let resp = send(
+            &router,
+            Req::post(
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cqs_search","arguments":{"query":"x"},"task":{}}}"#,
+            )
+            .session(&sid),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(
+            body.get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i64()),
+            Some(-32601),
+            "augmenting a non-eval tool must be -32601: {body}"
         );
     }
 

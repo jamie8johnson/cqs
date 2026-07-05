@@ -782,12 +782,28 @@ pub fn list_with(include_mutations: bool) -> Value {
     serde_json::json!({ "tools": tools })
 }
 
+/// The MCP Tasks `execution.taskSupport` for a command, keyed by the bare daemon
+/// command (derived, not stored on the row — the same pattern as `inputSchema` /
+/// `outputSchema`). `cqs_eval` alone is `"optional"` (task-augmentable while its
+/// non-augmented one-shot path stays intact); every other tool is
+/// default-forbidden and returns `None` (no `execution` block rendered).
+///
+/// `"optional"` (not `"required"`) is load-bearing: `"required"` would force a
+/// MUST `-32601` on a normal, non-augmented `cqs_eval` call — a backward-compat
+/// break for task-unaware clients.
+fn task_support(command: &str) -> Option<&'static str> {
+    match command {
+        "eval" => Some("optional"),
+        _ => None,
+    }
+}
+
 /// Render a tool slice into the `tools/list` array shape. Called once per
 /// snapshot inside the `LazyLock` initializers below.
 fn render_tools(defs: &[ToolDef]) -> Vec<Value> {
     defs.iter()
         .map(|t| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": command_input_schema(t.command),
@@ -799,7 +815,17 @@ fn render_tools(defs: &[ToolDef]) -> Vec<Value> {
                 // daemon's path/overlay gates + the §2 opt-in flag are the real
                 // boundary). Read tools carry the read-quartet; mutators differ.
                 "annotations": t.annotations.to_json()
-            })
+            });
+            // MCP Tasks: advertise `execution.taskSupport` only for the one
+            // task-augmentable tool (`cqs_eval`); omit the block entirely for
+            // every default-forbidden tool.
+            if let (Some(support), Some(obj)) = (task_support(t.command), entry.as_object_mut()) {
+                obj.insert(
+                    "execution".to_string(),
+                    serde_json::json!({ "taskSupport": support }),
+                );
+            }
+            entry
         })
         .collect()
 }
@@ -1350,7 +1376,11 @@ fn tool_error_result(code: &str, message: String) -> Value {
 /// #5; D4c). `output` is the slim envelope: `{data, (opt)_meta}` on success or
 /// `{error:{code,message}, (opt)_meta}` on a handler error riding under
 /// `status:"ok"`.
-fn classify_output(output: &Value) -> Value {
+///
+/// Exposed to `cli::mcp::tasks` so a `tasks/result` terminal read shapes its
+/// verbatim `CallToolResult` exactly as a synchronous `cqs_eval` `tools/call`
+/// would — the non-task and task paths produce byte-identical result bodies.
+pub(in crate::cli::mcp) fn classify_output(output: &Value) -> Value {
     use cqs::daemon_translate::{classify_slim_envelope, SlimEnvelope};
 
     match classify_slim_envelope(output) {

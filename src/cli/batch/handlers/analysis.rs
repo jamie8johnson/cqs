@@ -336,9 +336,8 @@ pub(in crate::cli::batch) fn dispatch_eval(
 /// retained-cap-full (the store is saturated) — so the reject is never a
 /// store-state oracle distinguishing "eval running now" from "store full of
 /// terminal results". Byte-identical code + message.
-// Wired to production by the MCP transport lane (built next); exercised by the
-// task tests here in the meantime.
-#[allow(dead_code)]
+// The single opaque reject the MCP `eval-task` admission surfaces (dialed via
+// `tasks::wire`), byte-identical for both at-cap conditions.
 fn eval_task_unavailable() -> anyhow::Error {
     crate::cli::json_envelope::ClientFacingError::new(
         crate::cli::json_envelope::ErrorCode::Unavailable,
@@ -364,9 +363,8 @@ fn eval_task_unavailable() -> anyhow::Error {
 /// substrate epoch) → byte-capped fixture read → authoritative cap-check + entry
 /// insert → spawn. The worker owns a publish-on-drop handle, so a spawn failure
 /// after the insert self-heals the orphan to `failed`.
-// Wired to production by the MCP transport lane (built next); exercised by the
-// task tests here in the meantime.
-#[allow(dead_code)]
+///
+/// Dialed in production by the MCP `eval-task` wire verb (`tasks::wire`).
 pub(in crate::cli::batch) fn dispatch_eval_task(
     ctx: &BatchView,
     args: &crate::cli::commands::EvalArgs,
