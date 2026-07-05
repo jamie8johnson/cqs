@@ -222,21 +222,59 @@ pub(crate) fn post_filter_count(set: &QuerySet, category_filter: Option<&str>) -
 }
 
 /// Per-category aggregate. R@1/5/20 are fractions in [0.0, 1.0].
+///
+/// Three metric families over the same N queries:
+///   - `r_at_*` — PRIMARY: the `gold_chunk` `(origin, name)` ranks in top-K.
+///     The headline number; unchanged by the gold_set/file-level addition.
+///   - `goldset_r_at_*` — GOLD-SET: ANY member of `{gold_chunk} ∪ gold_set`
+///     ranks (falls back to `gold_chunk` alone when `gold_set` is absent, so
+///     it equals `r_at_*` for a query with no set). `goldset ≥ primary`.
+///   - `file_r_at_*` — FILE-LEVEL: any top-K result shares the gold's `origin`
+///     FILE (name-agnostic). The usefulness upper-band; `file ≥ primary`.
+///
+/// The two additive families carry `#[serde(default)]` so a baseline saved
+/// before they existed still loads (reads as 0.0).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct CategoryStats {
     pub n: usize,
     pub r_at_1: f64,
     pub r_at_5: f64,
     pub r_at_20: f64,
+    #[serde(default)]
+    pub goldset_r_at_1: f64,
+    #[serde(default)]
+    pub goldset_r_at_5: f64,
+    #[serde(default)]
+    pub goldset_r_at_20: f64,
+    #[serde(default)]
+    pub file_r_at_1: f64,
+    #[serde(default)]
+    pub file_r_at_5: f64,
+    #[serde(default)]
+    pub file_r_at_20: f64,
 }
 
-/// Top-level aggregate.
+/// Top-level aggregate. Same three metric families as [`CategoryStats`] —
+/// primary (`r_at_*`), gold-set (`goldset_r_at_*`), file-level
+/// (`file_r_at_*`) — over all scored queries.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct Overall {
     pub n: usize,
     pub r_at_1: f64,
     pub r_at_5: f64,
     pub r_at_20: f64,
+    #[serde(default)]
+    pub goldset_r_at_1: f64,
+    #[serde(default)]
+    pub goldset_r_at_5: f64,
+    #[serde(default)]
+    pub goldset_r_at_20: f64,
+    #[serde(default)]
+    pub file_r_at_1: f64,
+    #[serde(default)]
+    pub file_r_at_5: f64,
+    #[serde(default)]
+    pub file_r_at_20: f64,
 }
 
 /// Full eval output. Same shape for `--json` stdout, `--save` file, and the
@@ -273,10 +311,104 @@ pub(crate) struct EvalOutput {
     pub freshness: Option<EvalFreshness>,
 }
 
-/// Per-query rank tracker. `None` = gold not found in top `limit`.
+/// Per-query rank tracker across the three metric families. Each rank is
+/// 1-indexed; `None` = that family's target was not found in the top `limit`.
 struct QueryHit {
     category: String,
-    rank: Option<usize>, // 1-indexed; None = miss
+    ranks: RankTriple,
+}
+
+/// The three per-query ranks a single scored query produces. Each is the
+/// 1-indexed position of the first matching result, or `None` for a miss in
+/// the top `limit`.
+///
+/// Invariants (by construction in [`score_ranks`]): a primary match is also a
+/// gold-set match (the primary is always in the scored union) AND a file match
+/// (same `(origin, name)` ⇒ same file), so `goldset ≤ primary` and
+/// `file ≤ primary` whenever `primary` is `Some`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct RankTriple {
+    /// PRIMARY — first result matching the `gold_chunk` `(origin, name)`.
+    primary: Option<usize>,
+    /// GOLD-SET — first result matching ANY member of `{gold_chunk} ∪ gold_set`
+    /// on `(origin, name)`. Equals `primary` when `gold_set` is absent.
+    goldset: Option<usize>,
+    /// FILE-LEVEL — first result whose file == the gold's `origin` (name-agnostic).
+    file: Option<usize>,
+}
+
+/// The gold targets for one query: the primary `gold_chunk` plus the optional
+/// multi-gold `gold_set`. Bundled so [`search_for_rank`] takes a single gold
+/// argument (keeping it under clippy's arity bound) and so the primary/set pair
+/// travels together.
+struct GoldTargets<'a> {
+    primary: &'a GoldChunk,
+    set: Option<&'a [cqs::eval::schema::GoldSetMember]>,
+}
+
+/// The single line-agnostic gold match predicate: a result identifies a gold
+/// key iff its (already normalized) file == the gold `origin` AND its name ==
+/// the gold `name`.
+///
+/// The ONE copy of the `(origin, name)` logic — primary scoring and every
+/// `gold_set` member route through it, and file-level scoring reuses its
+/// `origin` half (a bare file comparison). `line_start` is deliberately not
+/// part of the key (see [`search_for_rank`] for the drift rationale).
+fn gold_key_matches(
+    result_file: &str,
+    result_name: &str,
+    gold_origin: &str,
+    gold_name: &str,
+) -> bool {
+    result_file == gold_origin && result_name == gold_name
+}
+
+/// Score an ordered result list into the three per-query ranks.
+///
+/// `results` is the ranked list as `(normalized_file, chunk_name)`, index 0 ==
+/// rank 1. `gold` is the primary; `gold_set` the optional multi-gold set (its
+/// members need not include the primary — the primary is always folded into the
+/// scored union, so `gold_set = None` reduces gold-set scoring to `gold` alone).
+///
+/// Single pass, first-match-wins per family (results are in rank order, so the
+/// first match is the minimum rank — the most generous "did search surface
+/// this" reading R@K asks for).
+fn score_ranks(
+    results: &[(String, String)],
+    gold: &GoldChunk,
+    gold_set: Option<&[cqs::eval::schema::GoldSetMember]>,
+) -> RankTriple {
+    let mut out = RankTriple::default();
+    for (i, (result_file, result_name)) in results.iter().enumerate() {
+        let rank = i + 1;
+        // Origin half — shared by file-level and the (origin, name) predicate.
+        let file_matches = result_file == &gold.origin;
+        if out.file.is_none() && file_matches {
+            out.file = Some(rank);
+        }
+        // Primary: the full (origin, name) key against gold_chunk.
+        if out.primary.is_none()
+            && gold_key_matches(result_file, result_name, &gold.origin, &gold.name)
+        {
+            out.primary = Some(rank);
+        }
+        // Gold-set: the same key against the union {gold_chunk} ∪ gold_set. The
+        // primary is always a valid target, so it is checked first; folding it
+        // in guarantees `goldset ≤ primary` and makes an absent gold_set score
+        // identically to gold_chunk alone.
+        if out.goldset.is_none() {
+            let hits_union = gold_key_matches(result_file, result_name, &gold.origin, &gold.name)
+                || gold_set.is_some_and(|members| {
+                    members
+                        .iter()
+                        .any(|m| gold_key_matches(result_file, result_name, &m.origin, &m.name))
+                });
+            if hits_union {
+                out.goldset = Some(rank);
+            }
+        }
+    }
+    out
 }
 
 /// Read the index model name from the store, degrading to `"unknown"` on a
@@ -395,12 +527,16 @@ pub(crate) fn eval_core(
             .clone()
             .unwrap_or_else(|| "uncategorized".to_string());
 
-        let rank = match search_for_rank(
+        let targets = GoldTargets {
+            primary: gold,
+            set: q.gold_set.as_deref(),
+        };
+        let ranks = match search_for_rank(
             ctx,
             embedder,
             index_ref,
             &q.query,
-            gold,
+            &targets,
             params.limit,
             reranker_ref,
         ) {
@@ -411,11 +547,13 @@ pub(crate) fn eval_core(
                     error = %e,
                     "Search failed for query, scoring as miss"
                 );
-                None
+                // A search failure is a miss for ALL three families, not just
+                // the primary — an all-`None` triple.
+                RankTriple::default()
             }
         };
 
-        hits.push(QueryHit { category, rank });
+        hits.push(QueryHit { category, ranks });
 
         // Iteration end for a scored query: the search has FINISHED, so advance
         // `done` here (not before the search) — a `tasks/get` mid-search then
@@ -446,6 +584,91 @@ pub(crate) fn eval_core(
     ))
 }
 
+/// Running hit counts for one bucket (a category or the whole set), across all
+/// three metric families. Each `*_1/5/20` is the number of queries whose family
+/// rank was ≤ the corresponding K. `n` is the bucket's query count.
+///
+/// The K thresholds (1/5/20) are fixed and identical for every family — the
+/// `limit` knob caps retrieval, not the R@K cut points.
+#[derive(Debug, Default, Clone, Copy)]
+struct HitAccum {
+    n: usize,
+    p1: usize,
+    p5: usize,
+    p20: usize,
+    g1: usize,
+    g5: usize,
+    g20: usize,
+    f1: usize,
+    f5: usize,
+    f20: usize,
+}
+
+impl HitAccum {
+    /// Fold one query's three ranks into the running counts.
+    fn add(&mut self, ranks: &RankTriple) {
+        self.n += 1;
+        Self::bump(ranks.primary, &mut self.p1, &mut self.p5, &mut self.p20);
+        Self::bump(ranks.goldset, &mut self.g1, &mut self.g5, &mut self.g20);
+        Self::bump(ranks.file, &mut self.f1, &mut self.f5, &mut self.f20);
+    }
+
+    /// Add a single family's rank into its 1/5/20 counters. A `None` (miss)
+    /// contributes to none; a `Some(r)` contributes to every K it is ≤.
+    fn bump(rank: Option<usize>, c1: &mut usize, c5: &mut usize, c20: &mut usize) {
+        if let Some(r) = rank {
+            if r <= 1 {
+                *c1 += 1;
+            }
+            if r <= 5 {
+                *c5 += 1;
+            }
+            if r <= 20 {
+                *c20 += 1;
+            }
+        }
+    }
+
+    /// This bucket's count as a fraction of `n` (0.0 when `n == 0`).
+    fn frac(&self, hits: usize) -> f64 {
+        if self.n > 0 {
+            hits as f64 / self.n as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn into_category_stats(self) -> CategoryStats {
+        CategoryStats {
+            n: self.n,
+            r_at_1: self.frac(self.p1),
+            r_at_5: self.frac(self.p5),
+            r_at_20: self.frac(self.p20),
+            goldset_r_at_1: self.frac(self.g1),
+            goldset_r_at_5: self.frac(self.g5),
+            goldset_r_at_20: self.frac(self.g20),
+            file_r_at_1: self.frac(self.f1),
+            file_r_at_5: self.frac(self.f5),
+            file_r_at_20: self.frac(self.f20),
+        }
+    }
+
+    fn into_overall(self) -> Overall {
+        Overall {
+            n: self.n,
+            r_at_1: self.frac(self.p1),
+            r_at_5: self.frac(self.p5),
+            r_at_20: self.frac(self.p20),
+            goldset_r_at_1: self.frac(self.g1),
+            goldset_r_at_5: self.frac(self.g5),
+            goldset_r_at_20: self.frac(self.g20),
+            file_r_at_1: self.frac(self.f1),
+            file_r_at_5: self.frac(self.f5),
+            file_r_at_20: self.frac(self.f20),
+        }
+    }
+}
+
 /// Aggregate per-query hits into the final [`EvalOutput`]. Shared by the empty
 /// and non-empty paths so both produce the same shape; the empty path passes a
 /// zero elapsed so its output is deterministic.
@@ -463,61 +686,22 @@ fn assemble_output(
         0.0
     };
 
-    // Aggregate by category.
-    let mut by_cat: BTreeMap<String, (usize, usize, usize, usize)> = BTreeMap::new();
-    let (mut all_n, mut all_h1, mut all_h5, mut all_h20) = (0usize, 0usize, 0usize, 0usize);
+    // Aggregate by category, accumulating all three metric families side by
+    // side over the same N. `all` is the top-level accumulator.
+    let mut by_cat: BTreeMap<String, HitAccum> = BTreeMap::new();
+    let mut all = HitAccum::default();
     for h in hits {
-        let entry = by_cat.entry(h.category.clone()).or_insert((0, 0, 0, 0));
-        entry.0 += 1;
-        all_n += 1;
-        if let Some(r) = h.rank {
-            if r <= 1 {
-                entry.1 += 1;
-                all_h1 += 1;
-            }
-            if r <= 5 {
-                entry.2 += 1;
-                all_h5 += 1;
-            }
-            if r <= 20 {
-                entry.3 += 1;
-                all_h20 += 1;
-            }
-        }
+        let entry = by_cat.entry(h.category.clone()).or_default();
+        entry.add(&h.ranks);
+        all.add(&h.ranks);
     }
 
     let by_category: BTreeMap<String, CategoryStats> = by_cat
         .into_iter()
-        .map(|(cat, (n, h1, h5, h20))| {
-            let n_f = n as f64;
-            let stats = CategoryStats {
-                n,
-                r_at_1: if n > 0 { h1 as f64 / n_f } else { 0.0 },
-                r_at_5: if n > 0 { h5 as f64 / n_f } else { 0.0 },
-                r_at_20: if n > 0 { h20 as f64 / n_f } else { 0.0 },
-            };
-            (cat, stats)
-        })
+        .map(|(cat, acc)| (cat, acc.into_category_stats()))
         .collect();
 
-    let overall = Overall {
-        n: all_n,
-        r_at_1: if all_n > 0 {
-            all_h1 as f64 / all_n as f64
-        } else {
-            0.0
-        },
-        r_at_5: if all_n > 0 {
-            all_h5 as f64 / all_n as f64
-        } else {
-            0.0
-        },
-        r_at_20: if all_n > 0 {
-            all_h20 as f64 / all_n as f64
-        } else {
-            0.0
-        },
-    };
+    let overall = all.into_overall();
 
     EvalOutput {
         query_count: scored,
@@ -536,8 +720,9 @@ fn assemble_output(
     }
 }
 
-/// Issue one search and return the 1-indexed rank of the gold chunk
-/// (or `None` if it doesn't appear in the top `limit`).
+/// Issue one search and return the three per-query ranks (primary / gold-set /
+/// file-level) as a [`RankTriple`]; each is `None` if that family's target
+/// doesn't appear in the top `limit`.
 ///
 /// Mirrors the production search path (`cmd_query` in
 /// `src/cli/commands/search/query.rs`) so eval scores reflect actual
@@ -551,10 +736,10 @@ fn search_for_rank(
     embedder: &cqs::Embedder,
     index: Option<&dyn cqs::index::VectorIndex>,
     query: &str,
-    gold: &GoldChunk,
+    gold: &GoldTargets<'_>,
     limit: usize,
     reranker: Option<&dyn cqs::Reranker>,
-) -> Result<Option<usize>> {
+) -> Result<RankTriple> {
     let store = ctx.store();
     let query_embedding = embedder.embed_query(query)?;
 
@@ -660,8 +845,8 @@ fn search_for_rank(
         stage1_results
     };
 
-    // Find gold rank (1-indexed). Match on (file == origin) AND
-    // (name == gold.name).
+    // Score the three families off the ranked list. Match on (file == origin)
+    // AND (name == gold.name) for primary/gold-set; origin-only for file-level.
     //
     // We deliberately *don't* check `line_start`. The fixture's line numbers
     // are frozen at the moment it was generated/refreshed, but every audit
@@ -678,15 +863,14 @@ fn search_for_rank(
     // of the same section), the first ranked match wins — that's the most
     // generous interpretation of "did search find this," which is what
     // R@K is asking.
-    let target_file = gold.origin.as_str();
-    for (i, r) in results.iter().enumerate() {
-        let UnifiedResult::Code(sr) = r;
-        let file_str = cqs::normalize_path(&sr.chunk.file);
-        if file_str == target_file && sr.chunk.name == gold.name {
-            return Ok(Some(i + 1));
-        }
-    }
-    Ok(None)
+    let rows: Vec<(String, String)> = results
+        .iter()
+        .map(|r| {
+            let UnifiedResult::Code(sr) = r;
+            (cqs::normalize_path(&sr.chunk.file), sr.chunk.name.clone())
+        })
+        .collect();
+    Ok(score_ranks(&rows, gold.primary, gold.set))
 }
 
 #[cfg(test)]
@@ -890,5 +1074,223 @@ mod tests {
         // Positive control: the fields that SHOULD be present are.
         assert!(obj.contains_key("query_count"));
         assert!(obj.contains_key("category_filter"));
+    }
+
+    // ── gold_set + file-level scoring (score_ranks / aggregation) ─────────
+    // These drive the pure scoring seam on a controllable result list — no
+    // embedder, no vector index, no live store. `score_ranks` is the single
+    // place the three families are computed; `assemble_output` folds ranks
+    // into the metric families. Together they pin the honest-scoring contract.
+
+    /// Build a `GoldChunk` with a throwaway `line_start` (matching is
+    /// line-agnostic, so the value never matters).
+    fn gold(name: &str, origin: &str) -> GoldChunk {
+        GoldChunk {
+            name: name.to_string(),
+            origin: origin.to_string(),
+            line_start: 0,
+            id: None,
+            line_end: None,
+            chunk_type: None,
+            language: None,
+        }
+    }
+
+    /// A `gold_set` member (only the `(origin, name)` key is load-bearing).
+    fn member(name: &str, origin: &str) -> cqs::eval::schema::GoldSetMember {
+        cqs::eval::schema::GoldSetMember {
+            name: name.to_string(),
+            origin: origin.to_string(),
+            line_start: None,
+        }
+    }
+
+    /// `(file, name)` rows in rank order (index 0 == rank 1).
+    fn rows(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(f, n)| (f.to_string(), n.to_string()))
+            .collect()
+    }
+
+    /// BACK-COMPAT PIN: with NO `gold_set`, the gold-set rank is EXACTLY the
+    /// primary rank — a pre-`gold_set` fixture scores identically. Pinned for
+    /// both a hit and a miss (both fall back to `gold_chunk` alone).
+    #[test]
+    fn score_ranks_without_gold_set_equals_primary() {
+        // Hit at rank 1.
+        let hit = score_ranks(
+            &rows(&[("src/a.rs", "foo"), ("src/b.rs", "bar")]),
+            &gold("foo", "src/a.rs"),
+            None,
+        );
+        assert_eq!(hit.primary, Some(1));
+        assert_eq!(
+            hit.goldset, hit.primary,
+            "no gold_set ⇒ gold-set rank must equal primary rank exactly"
+        );
+
+        // Miss: gold absent from the list.
+        let miss = score_ranks(
+            &rows(&[("src/x.rs", "zzz"), ("src/y.rs", "qqq")]),
+            &gold("foo", "src/a.rs"),
+            None,
+        );
+        assert_eq!(miss.primary, None);
+        assert_eq!(
+            miss.goldset, miss.primary,
+            "no gold_set ⇒ a primary miss is a gold-set miss too"
+        );
+    }
+
+    /// GOLD-SET WIN: the primary gold ranks past K but a set member ranks
+    /// within it → a gold-set hit that is NOT a primary hit (the +pp case).
+    /// The set member lives in a DIFFERENT file than the gold origin, so this
+    /// isolates gold-set scoring from file-level scoring.
+    #[test]
+    fn score_ranks_gold_set_member_hits_where_primary_misses() {
+        // rank1 noise; rank2 = a gold_set member (different file); rank7 = the
+        // primary (foo in src/a.rs).
+        let result_rows = rows(&[
+            ("src/n.rs", "noise"),
+            ("src/z.rs", "member2"),
+            ("src/f.rs", "fill3"),
+            ("src/f.rs", "fill4"),
+            ("src/f.rs", "fill5"),
+            ("src/f.rs", "fill6"),
+            ("src/a.rs", "foo"),
+        ]);
+        let triple = score_ranks(
+            &result_rows,
+            &gold("foo", "src/a.rs"),
+            Some(&[member("member2", "src/z.rs")]),
+        );
+        assert_eq!(triple.primary, Some(7), "primary is the far-down foo");
+        assert_eq!(
+            triple.goldset,
+            Some(2),
+            "gold-set catches the rank-2 member"
+        );
+        assert_eq!(
+            triple.file,
+            Some(7),
+            "file-level's first src/a.rs result is the primary at rank 7"
+        );
+
+        // The @K semantics via the aggregator: at K=5 primary misses, gold-set
+        // hits; at K=20 both hit.
+        let out = assemble_from(&[("cat".to_string(), triple)]);
+        assert_eq!(out.overall.r_at_5, 0.0, "primary R@5 is a miss");
+        assert_eq!(out.overall.goldset_r_at_5, 1.0, "gold-set R@5 is a hit");
+        assert_eq!(out.overall.file_r_at_5, 0.0, "file-level R@5 is a miss");
+        assert_eq!(out.overall.r_at_20, 1.0, "primary R@20 catches rank 7");
+        assert_eq!(out.overall.goldset_r_at_20, 1.0);
+        assert_eq!(out.overall.file_r_at_20, 1.0);
+    }
+
+    /// FILE-LEVEL REFRAME: the gold FUNCTION is never retrieved, but a
+    /// same-file sibling ranks → a file hit that is NOT a function (primary or
+    /// gold-set) hit. `gold_set` is absent, so gold-set tracks primary (both
+    /// miss).
+    #[test]
+    fn score_ranks_file_level_hits_on_same_file_sibling() {
+        let triple = score_ranks(
+            &rows(&[("src/a.rs", "sibling"), ("src/b.rs", "other")]),
+            &gold("foo", "src/a.rs"),
+            None,
+        );
+        assert_eq!(
+            triple.primary, None,
+            "the gold function foo was not retrieved"
+        );
+        assert_eq!(
+            triple.goldset, None,
+            "no gold_set ⇒ gold-set misses with primary"
+        );
+        assert_eq!(
+            triple.file,
+            Some(1),
+            "the same-file sibling makes this a file-level hit"
+        );
+
+        let out = assemble_from(&[("cat".to_string(), triple)]);
+        assert_eq!(out.overall.r_at_5, 0.0, "function-exact R@5 is a miss");
+        assert_eq!(out.overall.file_r_at_5, 1.0, "file-level R@5 is a hit");
+    }
+
+    /// `by_category` carries all three metric families, distinct per category.
+    /// One category's query is a primary hit; the other's is a file-only hit —
+    /// so the two categories' family numbers diverge, proving each family is
+    /// tracked independently per bucket.
+    #[test]
+    fn assemble_output_by_category_carries_all_three_families() {
+        let out = assemble_from(&[
+            // A clean primary hit at rank 1: all three families hit@1.
+            (
+                "exact".to_string(),
+                RankTriple {
+                    primary: Some(1),
+                    goldset: Some(1),
+                    file: Some(1),
+                },
+            ),
+            // A file-only hit: primary/gold-set miss, file hits@1.
+            (
+                "reframe".to_string(),
+                RankTriple {
+                    primary: None,
+                    goldset: None,
+                    file: Some(1),
+                },
+            ),
+        ]);
+
+        let exact = out
+            .by_category
+            .get("exact")
+            .expect("exact category present");
+        assert_eq!(
+            (exact.r_at_1, exact.goldset_r_at_1, exact.file_r_at_1),
+            (1.0, 1.0, 1.0)
+        );
+
+        let reframe = out
+            .by_category
+            .get("reframe")
+            .expect("reframe category present");
+        assert_eq!(
+            (reframe.r_at_1, reframe.goldset_r_at_1, reframe.file_r_at_1),
+            (0.0, 0.0, 1.0),
+            "primary/gold-set miss but file-level hits for the reframe query"
+        );
+
+        // Overall blends the two: primary/gold-set 1/2, file-level 2/2.
+        assert_eq!(out.overall.r_at_1, 0.5);
+        assert_eq!(out.overall.goldset_r_at_1, 0.5);
+        assert_eq!(out.overall.file_r_at_1, 1.0);
+    }
+
+    /// Test-only bridge: fold `(category, RankTriple)` rows into an
+    /// `EvalOutput` through the real `assemble_output`, so the aggregation
+    /// tests exercise the production folding path (not a re-implementation).
+    fn assemble_from(rows: &[(String, RankTriple)]) -> EvalOutput {
+        let hits: Vec<QueryHit> = rows
+            .iter()
+            .map(|(category, ranks)| QueryHit {
+                category: category.clone(),
+                ranks: *ranks,
+            })
+            .collect();
+        let params = EvalCoreParams {
+            query_file_label: "test.json".to_string(),
+            category_filter: None,
+            limit: 20,
+            reranker: RerankerMode::None,
+            substrate: IndexSubstrate::FreshBuilt,
+            freshness: None,
+            cancel: None,
+            progress: None,
+        };
+        assemble_output(&hits, 0, 0.0, "model".to_string(), &params)
     }
 }
