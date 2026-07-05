@@ -1,5 +1,6 @@
-//! `cqs mcp --http` — the Streamable HTTP MCP transport listener (Phase 3a,
-//! rung P3a-1: listener + sessions + auth + Origin/Host + plain-JSON, NO SSE).
+//! `cqs mcp --http` — the Streamable HTTP MCP transport listener (Phase 3a:
+//! listener + sessions + auth + Origin/Host + plain-JSON POST, plus the P3a-2 GET
+//! SSE progress stream).
 //!
 //! A network security surface. Design fixed by the four-adversary panel in
 //! `docs/plans/2026-07-03-mcp-phase3-decisions.md` (3a-D1/D2/D3). Key posture:
@@ -30,11 +31,18 @@
 //!   crypto-random visible-ASCII. An unknown/expired session → 404 (client
 //!   re-inits). Bearer auth gates POST/GET/DELETE uniformly, so an
 //!   unauthenticated DELETE cannot tear down a victim session.
-//! - **Protocol floor (3a-D3, no-SSE subset).** Single endpoint; a POST body is a
-//!   SINGLE JSON-RPC message (arrays → 400); a POSTed notification/response →
-//!   202 no body; a POSTed request → `application/json`; GET → 405 (SSE is
-//!   P3a-2); an invalid `MCP-Protocol-Version` → 400, absent → assume
-//!   `2025-03-26` (not 400).
+//! - **Protocol floor (3a-D3).** Single endpoint; a POST body is a SINGLE
+//!   JSON-RPC message (arrays → 400); a POSTed notification/response → 202 no
+//!   body; a POSTed request → `application/json`; an invalid
+//!   `MCP-Protocol-Version` → 400, absent → assume `2025-03-26` (not 400).
+//! - **SSE progress stream (P3a-2, D1/D3/D4).** A GET with `Accept:
+//!   text/event-stream` on a live session opens a notifications-only SSE stream
+//!   (`notifications/progress` + an optional terminal `notifications/tasks/status`
+//!   + keep-alive comments); a non-SSE GET keeps the 405 floor. The stream carries
+//!   no JSON-RPC responses and no server→client requests. It rides a dedicated
+//!   16-stream budget (invisible to the 256 one-shot permits), transfers its
+//!   permit on takeover, and ends on the teed graceful-shutdown signal. Progress
+//!   is monotone-per-token (a session-scoped high-water gate).
 //!
 //! The whole module is `#[cfg(all(feature = "mcp-http", unix))]` — it relays to
 //! the unix daemon socket, so it has no meaning off-unix. A non-unix or
@@ -52,12 +60,16 @@ use axum::{
     extract::{Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{from_fn, from_fn_with_state, Next},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::post,
     Router,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::bridge::route_with;
 use super::lifecycle::{
@@ -103,15 +115,206 @@ const TASKS_RESULT_BLOCKING_BUDGET: usize = 8;
 /// eval task under single-flight). Bounds a fan-out attack on the blocking budget.
 const MAX_BLOCKS_PER_TASK: usize = 2;
 
-/// The in-memory, non-durable session store: `session-id → last-seen`.
+/// Cap on concurrently-live SSE progress streams (P3a-2, D4). A dedicated budget
+/// separate from the 256 one-shot request permits: an SSE stream is starvation-
+/// safe and invisible to the outer cap (the cap permit is released before the
+/// stream body is polled), so it needs its own bound so a steered client cannot
+/// open unbounded long-lived streams. A const, not an env var (matching the
+/// blocking-budget cap pattern).
+const MAX_SSE_STREAMS: usize = 16;
+
+/// SSE keep-alive comment cadence. Also the WSL localhost idle-drop mitigation
+/// for a long-lived stream that emits no progress frame for a while (degraded /
+/// status-only ticks). A keep-alive is an SSE comment — it carries no `id:` and
+/// no event type.
+const SSE_KEEPALIVE_SECS: u64 = 15;
+
+/// Transport-side poll cadence for a live SSE stream: dial `task-get` about once
+/// a second, diff the descriptor's progress, emit through the high-water gate.
+/// Doubles as the dial-failure backoff (a failed poll retries on the next tick).
+const SSE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Bound on a session's `(taskId, progressToken)` watch list: a defensive cap so
+/// a steered client cannot accumulate an unbounded third per-session table by
+/// spamming augmented `tools/call`s. The oldest entry is evicted past the bound;
+/// under single-flight only one task is ever live at a time.
+const MAX_WATCH_ENTRIES_PER_SESSION: usize = 64;
+
+/// A `(taskId, progressToken)` watch entry for the SSE progress stream, plus the
+/// per-token high-water: the greatest `done` ever EMITTED for this token on this
+/// session. The stream emits a `notifications/progress` frame only for a strictly
+/// greater `done`, so progress is monotone-per-token across reconnect/takeover
+/// (the spec's MUST-increase). Debug-redacted: the taskId is a bearer capability
+/// and the token is client-controlled.
+struct WatchEntry {
+    task_id: String,
+    progress_token: Value,
+    high_water: Option<u64>,
+}
+
+impl std::fmt::Debug for WatchEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchEntry")
+            .field("task_id", &"redacted")
+            .field("progress_token", &"redacted")
+            .field("high_water", &self.high_water)
+            .finish()
+    }
+}
+
+/// The single live SSE stream a session may hold. The `permit` (one of the
+/// [`MAX_SSE_STREAMS`]) lives HERE, not in the stream task, so a takeover can
+/// TRANSFER it old→new under the session lock without a second acquire; it is
+/// released when the stream ends (the [`StreamGuard`] clears this slot, dropping
+/// the permit). `cancel` ends the current stream — a takeover or DELETE notifies
+/// it, and the stream's `select!` wakes and returns.
+struct LiveStream {
+    permit: OwnedSemaphorePermit,
+    cancel: Arc<Notify>,
+}
+
+/// Per-session state (P3a-2): last-seen for idle expiry, the single live-stream
+/// slot, and the bounded progress watch list. Held behind an `Arc` so a live SSE
+/// stream keeps its state alive even after the session is lazily evicted from the
+/// store — the stream continues against its own `Arc`; the next request bearing
+/// the evicted id gets 404. Debug-redacted: the watch list holds taskId handles.
+struct SessionState {
+    last_seen: Mutex<Instant>,
+    stream: Mutex<Option<LiveStream>>,
+    watch: Mutex<Vec<WatchEntry>>,
+}
+
+impl std::fmt::Debug for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never lock (a `?state` in a trace must not deadlock) and never render
+        // the watch contents (taskId capabilities).
+        f.debug_struct("SessionState")
+            .field("watch", &"redacted")
+            .finish()
+    }
+}
+
+impl SessionState {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_seen: Mutex::new(now),
+            stream: Mutex::new(None),
+            watch: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn is_expired(&self, now: Instant, ttl: Duration) -> bool {
+        let last = *self.last_seen.lock().unwrap_or_else(|p| p.into_inner());
+        now.duration_since(last) >= ttl
+    }
+
+    fn touch_now(&self, now: Instant) {
+        *self.last_seen.lock().unwrap_or_else(|p| p.into_inner()) = now;
+    }
+
+    /// Register (or refresh) a watch entry, deduped by taskId and bounded by
+    /// [`MAX_WATCH_ENTRIES_PER_SESSION`] (oldest evicted past the bound).
+    fn record_watch(&self, task_id: &str, token: Value) {
+        let mut w = self.watch.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(e) = w.iter_mut().find(|e| e.task_id == task_id) {
+            e.progress_token = token;
+            return;
+        }
+        if w.len() >= MAX_WATCH_ENTRIES_PER_SESSION {
+            w.remove(0);
+        }
+        w.push(WatchEntry {
+            task_id: task_id.to_string(),
+            progress_token: token,
+            high_water: None,
+        });
+    }
+
+    /// The most-recently-registered watch entry (taskId, token, high-water) — the
+    /// task a fresh stream watches. Under single-flight at most one task is live,
+    /// and the newest entry is the one the client just augmented.
+    fn latest_watch(&self) -> Option<(String, Value, Option<u64>)> {
+        let w = self.watch.lock().unwrap_or_else(|p| p.into_inner());
+        w.last()
+            .map(|e| (e.task_id.clone(), e.progress_token.clone(), e.high_water))
+    }
+
+    /// Raise the per-token high-water after a progress frame is emitted.
+    fn advance_high_water(&self, task_id: &str, done: u64) {
+        let mut w = self.watch.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(e) = w.iter_mut().find(|e| e.task_id == task_id) {
+            e.high_water = Some(done);
+        }
+    }
+
+    /// Prune a watch entry at terminal / gone. A reconnect afterward sees no
+    /// entry (keep-alive only) and the client re-syncs the terminal via task-get.
+    fn prune_watch(&self, task_id: &str) {
+        let mut w = self.watch.lock().unwrap_or_else(|p| p.into_inner());
+        w.retain(|e| e.task_id != task_id);
+    }
+
+    /// Acquire or TRANSFER the SSE stream permit for a new connection, returning
+    /// the new stream's cancel handle — or `None` at the stream budget cap. A
+    /// FIRST stream for the session draws a permit from `budget`; a second GET
+    /// while a stream is live TRANSFERS that permit old→new under this lock (never
+    /// a second `try_acquire`) and cancels the old stream. This keeps a session to
+    /// one permit and lets a crash-reconnect at cap take over its own zombie.
+    fn take_stream_slot(&self, budget: &Arc<Semaphore>) -> Option<Arc<Notify>> {
+        let mut slot = self.stream.lock().unwrap_or_else(|p| p.into_inner());
+        let cancel = Arc::new(Notify::new());
+        let permit = match slot.take() {
+            Some(old) => {
+                old.cancel.notify_one();
+                old.permit
+            }
+            None => Arc::clone(budget).try_acquire_owned().ok()?,
+        };
+        *slot = Some(LiveStream {
+            permit,
+            cancel: Arc::clone(&cancel),
+        });
+        Some(cancel)
+    }
+
+    /// Clear the stream slot IFF it still holds `cancel`'s stream (the
+    /// [`StreamGuard`] cleanup path). A takeover already installed a newer stream,
+    /// so a superseded stream's guard leaves the slot — the permit was transferred,
+    /// not double-freed.
+    fn clear_stream_if(&self, cancel: &Arc<Notify>) {
+        let mut slot = self.stream.lock().unwrap_or_else(|p| p.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|l| Arc::ptr_eq(&l.cancel, cancel))
+        {
+            *slot = None;
+        }
+    }
+
+    /// Cancel the live stream (explicit DELETE teardown). Idle expiry does NOT
+    /// call this — a lazily-evicted session leaves its stream running.
+    fn cancel_stream(&self) {
+        let slot = self.stream.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(live) = slot.as_ref() {
+            live.cancel.notify_one();
+        }
+    }
+
+    #[cfg(test)]
+    fn watch_len(&self) -> usize {
+        self.watch.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+/// The in-memory, non-durable session store: `session-id → Arc<SessionState>`.
 ///
-/// Server-issued ids only. Lazy expiry on access (no background sweeper for
-/// rung 1): [`SessionStore::touch`] removes an expired entry and reports it
-/// gone, and [`SessionStore::create`] evicts all expired entries before the cap
-/// check. A poisoned mutex is recovered via `into_inner` so one panicked
-/// request can't wedge the whole listener.
+/// Server-issued ids only. Lazy expiry on access (no background sweeper):
+/// [`SessionStore::touch_get`] drops an expired entry and reports it gone, and
+/// [`SessionStore::create`] evicts all expired entries before the cap check. A
+/// poisoned mutex is recovered via `into_inner` so one panicked request can't
+/// wedge the whole listener.
 struct SessionStore {
-    inner: Mutex<HashMap<String, Instant>>,
+    inner: Mutex<HashMap<String, Arc<SessionState>>>,
     ttl: Duration,
     cap: usize,
 }
@@ -130,37 +333,70 @@ impl SessionStore {
     fn create(&self) -> Option<String> {
         let now = Instant::now();
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        map.retain(|_, last| now.duration_since(*last) < self.ttl);
+        // Idle-expiry eviction. A live SSE stream holds its OWN `Arc<SessionState>`,
+        // so evicting the map entry here does not stop the stream — it runs until
+        // its connection closes, and the next request on the evicted id 404s. This
+        // is deliberate: a silent poll-emit never touches `last_seen` (touch-per-
+        // emit would defeat idle expiry, a self-DoS concern), so a live stream CAN
+        // be evicted under itself. The `Arc` bounds the lifetime, so this is not a
+        // leak; eviction never cancels a stream (only explicit DELETE does).
+        map.retain(|_, st| !st.is_expired(now, self.ttl));
         if map.len() >= self.cap {
             return None;
         }
         let id = new_session_id();
-        map.insert(id.clone(), now);
+        map.insert(id.clone(), Arc::new(SessionState::new(now)));
         Some(id)
     }
 
-    /// Touch a session: `true` if it exists and is unexpired (its last-seen is
-    /// refreshed); `false` if unknown or expired (an expired entry is removed).
+    /// Touch a session: `true` if it exists and is unexpired; `false` otherwise.
     fn touch(&self, id: &str) -> bool {
+        self.touch_get(id).is_some()
+    }
+
+    /// Touch a session and return its shared state: `Some` if it exists and is
+    /// unexpired (its last-seen is refreshed); `None` if unknown or expired (an
+    /// expired entry is dropped from the map). See [`SessionStore::create`] for why
+    /// dropping the map entry does not cancel a live stream on that session.
+    fn touch_get(&self, id: &str) -> Option<Arc<SessionState>> {
         let now = Instant::now();
         let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         match map.get(id) {
-            Some(last) if now.duration_since(*last) < self.ttl => {
-                map.insert(id.to_string(), now);
-                true
+            Some(st) if !st.is_expired(now, self.ttl) => {
+                st.touch_now(now);
+                Some(Arc::clone(st))
             }
+            // Lazy idle expiry: drop the map entry (the next request 404s); a live
+            // stream keeps its own `Arc` and runs on — expiry never cancels it.
             Some(_) => {
                 map.remove(id);
-                false
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Remove a session; `true` if it was present. Used by DELETE teardown, which
+    /// ALSO cancels any live stream (distinct from idle expiry, which leaves it).
+    fn remove(&self, id: &str) -> bool {
+        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        match map.remove(id) {
+            Some(st) => {
+                st.cancel_stream();
+                true
             }
             None => false,
         }
     }
 
-    /// Remove a session; `true` if it was present. Used by DELETE teardown.
-    fn remove(&self, id: &str) -> bool {
-        let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        map.remove(id).is_some()
+    /// Record a `(taskId ← progressToken)` watch entry on a live session (a no-op
+    /// if the session is gone). Called from `handle_post` for an augmented
+    /// `tools/call` that carries a client `progressToken`.
+    fn record_watch(&self, id: &str, task_id: &str, token: Value) {
+        let map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(st) = map.get(id) {
+            st.record_watch(task_id, token);
+        }
     }
 }
 
@@ -195,6 +431,15 @@ struct HttpState {
     /// Per-`taskId` active-block counts, for the fan-out cap
     /// ([`MAX_BLOCKS_PER_TASK`]). A poisoned lock is recovered via `into_inner`.
     result_fanout: Arc<Mutex<HashMap<String, usize>>>,
+    /// The dedicated SSE stream budget ([`MAX_SSE_STREAMS`]). A first stream for a
+    /// session draws a permit; a takeover transfers it (never a second acquire).
+    sse_budget: Arc<Semaphore>,
+    /// Broadcast shutdown tee: `serve_http` fires `send(true)` when the shipped
+    /// `shutdown_signal()` resolves, and every live SSE stream `select!`s on a
+    /// `subscribe()`d receiver so graceful shutdown does not hang on an open
+    /// stream. Held as an `Arc<Sender>` (never cloned per layer) so the channel
+    /// stays open for the listener's lifetime.
+    shutdown: Arc<watch::Sender<bool>>,
 }
 
 /// Run the `cqs mcp --http` listener against the daemon serving `cqs_dir`.
@@ -237,13 +482,22 @@ pub fn serve_http(cqs_dir: &Path, bind: &str, port: u16, token_file: Option<&Pat
     // transport-blind, so a non-loopback bind narrows the surface here.
     let mutations_permitted = super::mutations_enabled() && is_loopback;
 
+    // Shutdown tee: a watch channel every SSE stream subscribes to. `serve_http`
+    // fires `send(true)` when `shutdown_signal()` resolves (below), so a graceful
+    // shutdown ends every open stream instead of hanging on one. The `Sender` is
+    // held in the state `Arc` (never cloned per layer) so the channel outlives the
+    // per-connection receivers.
+    let shutdown_tx = Arc::new(watch::channel(false).0);
+
     let state = HttpState {
         cqs_dir: Arc::new(cqs_dir.to_path_buf()),
         token,
         sessions: Arc::new(SessionStore::new()),
         mutations_permitted,
-        result_budget: Arc::new(tokio::sync::Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET)),
+        result_budget: Arc::new(Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET)),
         result_fanout: Arc::new(Mutex::new(HashMap::new())),
+        sse_budget: Arc::new(Semaphore::new(MAX_SSE_STREAMS)),
+        shutdown: Arc::clone(&shutdown_tx),
     };
     let allowed_hosts = allowed_host_set(&bind_addr);
     let app = build_router(state, allowed_hosts);
@@ -261,10 +515,19 @@ pub fn serve_http(cqs_dir: &Path, bind: &str, port: u16, token_file: Option<&Pat
         tracing::info!(
             addr = %actual,
             mutations = mutations_permitted,
-            "cqs mcp --http listening (Streamable HTTP transport, no SSE); press Ctrl-C to stop"
+            "cqs mcp --http listening (Streamable HTTP transport, SSE progress stream on GET); press Ctrl-C to stop"
         );
+        // Tee the shipped signal into the watch BEFORE it reaches axum: the same
+        // future drives `with_graceful_shutdown` AND wakes every live SSE stream.
+        let shutdown_fut = {
+            let tx = Arc::clone(&shutdown_tx);
+            async move {
+                shutdown_signal().await;
+                let _ = tx.send(true);
+            }
+        };
         axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown_fut)
             .await
             .context("MCP HTTP listener failed")?;
         tracing::info!("cqs mcp --http shut down cleanly");
@@ -300,6 +563,12 @@ fn build_router_with_sem(
     allowed_hosts: AllowedHosts,
     conn_sem: Arc<tokio::sync::Semaphore>,
 ) -> Router {
+    // NO compression layer on this router (unlike `cqs serve`): a `CompressionLayer`
+    // buffers the response body to compress it, which would defeat the incremental
+    // flush an SSE stream depends on (each progress frame must reach the client
+    // immediately, not sit in a compressor's buffer). The GET SSE handler also sets
+    // `X-Accel-Buffering: no` for the same reason at any reverse proxy. Keep this
+    // router compression-free.
     Router::new()
         .route(
             "/mcp",
@@ -579,6 +848,14 @@ async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Respon
         return serve_blocking_result(&state, outer_permit, request).await;
     }
 
+    // Progress bookkeeping (P3a-2): an augmented `tools/call` carrying a client
+    // `progressToken` registers a `(taskId ← progressToken)` watch entry so a live
+    // SSE stream on this session can emit `notifications/progress`. Capture the
+    // token BEFORE `request` is moved into the relay; record the (taskId, token)
+    // pair AFTER a successful admission yields the taskId. No token → no entry →
+    // no frames for that task (the spec MUST: only reference provided tokens).
+    let progress_token = augmented_progress_token(&request);
+
     // A notification (no id) gets a 202 with no body; a request (id present)
     // gets its JSON-RPC response as application/json.
     let is_notification = request.id.is_none();
@@ -586,6 +863,17 @@ async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Respon
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(token) = progress_token {
+        if let Some(task_id) = response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("task"))
+            .and_then(|t| t.get("taskId"))
+            .and_then(|v| v.as_str())
+        {
+            state.sessions.record_watch(&session_id, task_id, token);
+        }
+    }
     if is_notification {
         StatusCode::ACCEPTED.into_response()
     } else {
@@ -593,13 +881,337 @@ async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Respon
     }
 }
 
-/// GET `/mcp` — SSE arrives in P3a-2; until then GET opens no stream → 405.
-async fn handle_get() -> Response {
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        "GET (SSE) is not supported in this build; POST a JSON-RPC message to this endpoint",
-    )
-        .into_response()
+/// GET `/mcp` — open the SSE progress stream (P3a-2), or preserve the 405 floor
+/// for a non-SSE GET.
+///
+/// The flip gate mirrors POST's security layers plus SSE-specific checks:
+/// `Accept: text/event-stream` (else 405) · protocol-version (invalid → 400,
+/// absent → the negotiated default) · a live session (missing header → 400,
+/// unknown/expired → 404). Origin / Host / auth are router-wide layers that
+/// already run on GET, so they need no handler code (they get GET-shaped tests).
+/// The per-session SSE budget is drawn (or transferred on takeover) under the
+/// session lock; at cap → 503.
+async fn handle_get(State(state): State<HttpState>, mut req: Request) -> Response {
+    // The SSE stream body is long-lived; it MUST NOT pin one of the 256 outermost
+    // one-shot permits (that would let a client starve the request budget by
+    // opening streams). Extract and drop the cap permit here, mirroring
+    // `serve_blocking_result`'s explicit release. (It would drop with `req` at the
+    // end of this fn anyway — the response body does not carry request extensions
+    // — but the explicit drop pins the invariant against a future change.)
+    let outer_permit = req
+        .extensions_mut()
+        .remove::<std::sync::Arc<OwnedSemaphorePermit>>();
+    drop(outer_permit);
+
+    let headers = req.headers().clone();
+
+    // Non-SSE Accept keeps the shipped 405: this endpoint opens a stream only on
+    // an explicit `text/event-stream` Accept; a plain GET is still not-allowed, so
+    // a non-SSE client is not misled into treating GET as a data endpoint.
+    if !accepts_event_stream(&headers) {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            "GET without `Accept: text/event-stream` opens no stream; POST a JSON-RPC message, \
+             or GET with that Accept for the SSE progress stream",
+        )
+            .into_response();
+    }
+
+    // Protocol-version gate (the shipped `check_protocol_version` is POST-only;
+    // the GET flip MUST run it): present-and-invalid → 400; absent → the default.
+    if let Some(resp) = check_protocol_version(&headers) {
+        return resp;
+    }
+
+    // A live session is required (never `initialize` on GET). Missing header →
+    // 400; present-but-unknown/expired → 404. Mirrors the POST split.
+    let session_id = match headers.get(SESSION_HEADER).and_then(|v| v.to_str().ok()) {
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "missing MCP-Session-Id header (initialize first)",
+            )
+                .into_response()
+        }
+        Some(id) => id.to_string(),
+    };
+    let session = match state.sessions.touch_get(&session_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                "unknown or expired MCP session; re-initialize",
+            )
+                .into_response()
+        }
+    };
+
+    // Draw (or take over) the per-session SSE stream slot. First stream draws from
+    // the 16-stream budget; a takeover transfers the existing permit and cancels
+    // the old stream. At cap (a first stream with the budget drained) → 503.
+    let cancel = match session.take_stream_slot(&state.sse_budget) {
+        Some(c) => c,
+        None => {
+            tracing::warn!("mcp-http: SSE stream budget saturated — returning 503");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SSE stream budget saturated; retry shortly",
+            )
+                .into_response();
+        }
+    };
+
+    // Build the poll-and-emit stream. The guard releases the permit on stream end
+    // (disconnect / terminal / takeover / shutdown) by clearing the slot iff it is
+    // still ours; the poll dials `task-get` on a blocking thread each tick.
+    let guard = StreamGuard {
+        session: Arc::clone(&session),
+        cancel: Arc::clone(&cancel),
+    };
+    let shutdown_rx = state.shutdown.subscribe();
+    let poll = {
+        let cqs_dir = Arc::clone(&state.cqs_dir);
+        move |task_id: String| {
+            let cqs_dir = Arc::clone(&cqs_dir);
+            async move {
+                match tokio::task::spawn_blocking(move || {
+                    super::tasks::poll_progress_once(&cqs_dir, &task_id)
+                })
+                .await
+                {
+                    Ok(step) => step,
+                    // A poll-worker panic is transient — retry on the next tick.
+                    Err(_) => super::tasks::ProgressStep::DialFailed,
+                }
+            }
+        }
+    };
+    let stream = build_sse_stream(session, cancel, shutdown_rx, SSE_POLL_INTERVAL, guard, poll);
+
+    let sse = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(SSE_KEEPALIVE_SECS)));
+    let mut resp = sse.into_response();
+    // Defeat proxy response buffering so each progress frame flushes immediately.
+    resp.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    resp
+}
+
+/// Whether the request explicitly accepts the SSE media type. Requires a literal
+/// `text/event-stream` media-range token (a bare `*/*` or `text/html` does NOT
+/// open a stream — that keeps the 405 floor for non-SSE clients).
+fn accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .any(|part| part.split(';').next().map(str::trim) == Some("text/event-stream"))
+        })
+}
+
+/// Extract a client `progressToken` from an augmented `tools/call` request, for
+/// the session watch bookkeeping. Returns `None` for a non-augmented call, a
+/// non-`tools/call` method, or an absent/ill-typed token. The MCP progress token
+/// is a string OR an integer (`params._meta.progressToken`), carried VERBATIM.
+fn augmented_progress_token(request: &JsonRpcRequest) -> Option<Value> {
+    if request.method != "tools/call" || !super::tasks::is_augmented(&request.params) {
+        return None;
+    }
+    request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("_meta"))
+        .and_then(|m| m.get("progressToken"))
+        .filter(|t| t.is_string() || t.is_number())
+        .cloned()
+}
+
+// ─── SSE progress stream (P3a-2) ─────────────────────────────────────────────
+
+/// RAII cleanup for a live SSE stream: on drop (client disconnect, terminal,
+/// takeover, or shutdown) it clears the session's stream slot IFF the slot still
+/// holds THIS stream's cancel handle, releasing the [`MAX_SSE_STREAMS`] permit.
+/// A superseded (taken-over) stream leaves the slot to its successor — the permit
+/// was transferred under the session lock, so it is never double-freed. Moved
+/// into the stream's state, so it drops exactly when the stream body drops.
+struct StreamGuard {
+    session: Arc<SessionState>,
+    cancel: Arc<Notify>,
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        self.session.clear_stream_if(&self.cancel);
+    }
+}
+
+/// Build the per-connection SSE event stream: an `unfold` poll loop, generic over
+/// an injected `poll` so a test can drive it deterministically without a live
+/// daemon (mirrors `blocking_result_with_poll`).
+///
+/// Each tick it consults the session's newest watch entry, polls it, and applies
+/// the per-token high-water gate: a progress frame is emitted ONLY for a strictly
+/// greater `done` while the task is `working` (a status-only tick emits nothing),
+/// so progress is monotone-per-token across reconnect/takeover. At terminal it
+/// emits the optional `notifications/tasks/status` frame (a spec MAY) and ends —
+/// NO progress frame is emitted at terminal (progress only while working). An
+/// authoritative `Gone` ends the stream with no frame; a dial failure keeps the
+/// stream alive and retries. An empty / degraded (no `{done,total}`) watch is
+/// keep-alive-only — NEVER a synthesized value. Cancel (takeover/DELETE) and the
+/// shutdown watch both end the stream.
+fn build_sse_stream<P, Fut>(
+    session: Arc<SessionState>,
+    cancel: Arc<Notify>,
+    shutdown: watch::Receiver<bool>,
+    interval: Duration,
+    guard: StreamGuard,
+    poll: P,
+) -> impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static
+where
+    P: FnMut(String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = super::tasks::ProgressStep> + Send,
+{
+    struct LoopState<P> {
+        session: Arc<SessionState>,
+        cancel: Arc<Notify>,
+        shutdown: watch::Receiver<bool>,
+        interval: Duration,
+        poll: P,
+        // Dropped when the stream ends; releases the SSE permit.
+        _guard: StreamGuard,
+        // First tick polls immediately (the reconnect/open snapshot); later ticks
+        // wait `interval` (and race cancel/shutdown).
+        first: bool,
+        // Set after the optional terminal frame is yielded, so the next unfold
+        // step ends the stream.
+        ending: bool,
+    }
+
+    let state = LoopState {
+        session,
+        cancel,
+        shutdown,
+        interval,
+        poll,
+        _guard: guard,
+        first: true,
+        ending: false,
+    };
+
+    futures_util::stream::unfold(state, |mut st| async move {
+        if st.ending {
+            return None;
+        }
+        loop {
+            if !st.first {
+                let cancel = Arc::clone(&st.cancel);
+                let sleep = tokio::time::sleep(st.interval);
+                tokio::select! {
+                    biased;
+                    _ = cancel.notified() => return None,
+                    _ = st.shutdown.changed() => return None,
+                    _ = sleep => {}
+                }
+            }
+            st.first = false;
+            // A shutdown that fired before this stream subscribed (already-true
+            // value) is caught here, since `changed()` above only sees NEW sends.
+            if *st.shutdown.borrow() {
+                return None;
+            }
+
+            let (task_id, token, high_water) = match st.session.latest_watch() {
+                Some(w) => w,
+                // No watched task yet (stream opened before the augmented call, or
+                // no progressToken) → keep-alive: loop and re-check next tick.
+                None => continue,
+            };
+
+            match (st.poll)(task_id.clone()).await {
+                super::tasks::ProgressStep::Found {
+                    progress,
+                    terminal,
+                    descriptor,
+                } => {
+                    if terminal {
+                        // Progress frames only while working; convey terminal via
+                        // the optional `tasks/status` frame (or task-get), then end.
+                        st.session.prune_watch(&task_id);
+                        if let Some(ev) = tasks_status_event(&descriptor) {
+                            st.ending = true;
+                            return Some((Ok(ev), st));
+                        }
+                        return None;
+                    }
+                    if let Some((done, total)) = progress {
+                        // High-water gate: emit only a strictly-greater `done`.
+                        if done > high_water.unwrap_or(0) {
+                            st.session.advance_high_water(&task_id, done);
+                            if let Some(ev) = progress_event(&token, done, total, &task_id) {
+                                return Some((Ok(ev), st));
+                            }
+                        }
+                        // No advance (status-only) → nothing; keep-alive, loop.
+                    }
+                    // Degraded (no `{done,total}`) → keep-alive only, loop.
+                }
+                // Authoritative gone (GC'd / daemon restarted): drop the token and
+                // close the stream — never a fabricated terminal frame.
+                super::tasks::ProgressStep::Gone => {
+                    st.session.prune_watch(&task_id);
+                    return None;
+                }
+                // Transient dial failure: keep the stream alive, retry next tick.
+                super::tasks::ProgressStep::DialFailed => {}
+            }
+        }
+    })
+}
+
+/// Build a `notifications/progress` SSE event: the verbatim client `progressToken`
+/// (string or integer), `progress`/`total`, and the `related-task` `_meta` (a spec
+/// MUST on task-associated notifications). Default event type, no `id:` line.
+fn progress_event(token: &Value, done: u64, total: u64, task_id: &str) -> Option<Event> {
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+            "progressToken": token,
+            "progress": done,
+            "total": total,
+            "_meta": super::tasks::related_task_meta(task_id),
+        }
+    });
+    Event::default().json_data(frame).ok()
+}
+
+/// Build the optional terminal `notifications/tasks/status` SSE event from the
+/// flat daemon descriptor: the Task shape (`taskId`/`status`/`createdAt`/
+/// `lastUpdatedAt`/`ttl`), with `ttl` converted seconds→milliseconds (the spec
+/// wire unit). The transport-only `progress` / `pollInterval` / `_meta` keys are
+/// dropped; the frame SHOULD-NOT carry `related-task` `_meta` (the taskId is in
+/// params). A pure MAY — no monotonicity constraint.
+fn tasks_status_event(descriptor: &Value) -> Option<Event> {
+    let mut task = descriptor.clone();
+    if !task.is_object() {
+        return None;
+    }
+    super::tasks::descriptor_ttl_secs_to_ms(&mut task);
+    if let Some(obj) = task.as_object_mut() {
+        obj.remove("progress");
+        obj.remove("pollInterval");
+        obj.remove("_meta");
+    }
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/tasks/status",
+        "params": task,
+    });
+    Event::default().json_data(frame).ok()
 }
 
 /// DELETE `/mcp` — explicit session teardown. Auth is enforced by the layer, so
@@ -969,6 +1581,12 @@ mod tests {
     }
 
     fn test_state(mutations_permitted: bool) -> HttpState {
+        test_state_with_sse_budget(mutations_permitted, MAX_SSE_STREAMS)
+    }
+
+    /// A test state with an explicit SSE stream budget, so a cap test can drive
+    /// takeover / 503-at-cap deterministically with a size-1 budget.
+    fn test_state_with_sse_budget(mutations_permitted: bool, sse_budget: usize) -> HttpState {
         HttpState {
             cqs_dir: Arc::new(PathBuf::from("/nonexistent-cqs-test-dir/.cqs")),
             token: AuthToken::try_from_string(TEST_TOKEN).expect("valid test token"),
@@ -976,6 +1594,11 @@ mod tests {
             mutations_permitted,
             result_budget: Arc::new(tokio::sync::Semaphore::new(TASKS_RESULT_BLOCKING_BUDGET)),
             result_fanout: Arc::new(Mutex::new(HashMap::new())),
+            sse_budget: Arc::new(Semaphore::new(sse_budget)),
+            // The shutdown tee. The `Sender` is held in the state `Arc` for the
+            // test's lifetime, so a stream's `subscribe()`d receiver stays open;
+            // a test fires `state.shutdown.send(true)` to exercise the real path.
+            shutdown: Arc::new(watch::channel(false).0),
         }
     }
 
@@ -996,6 +1619,7 @@ mod tests {
         origin: Option<String>,
         protocol: Option<String>,
         host: Option<String>,
+        accept: Option<String>,
     }
 
     impl Req {
@@ -1041,6 +1665,14 @@ mod tests {
             self.host = Some(h.to_string());
             self
         }
+        fn accept(mut self, a: &str) -> Self {
+            self.accept = Some(a.to_string());
+            self
+        }
+        /// A GET that accepts the SSE media type (the stream-open Accept).
+        fn get_sse() -> Self {
+            Self::get().accept("text/event-stream")
+        }
         fn build(self) -> HttpRequest<Body> {
             let host = self
                 .host
@@ -1060,6 +1692,9 @@ mod tests {
             }
             if let Some(p) = self.protocol {
                 b = b.header(PROTOCOL_VERSION_HEADER, p);
+            }
+            if let Some(a) = self.accept {
+                b = b.header(header::ACCEPT, a);
             }
             b.body(Body::from(self.body)).expect("build request")
         }
@@ -1151,10 +1786,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_returns_405_no_sse_yet() {
+    async fn get_without_sse_accept_returns_405() {
+        // A GET with no Accept (or a non-SSE Accept) opens no stream → the 405
+        // floor is preserved; only an explicit `text/event-stream` flips to SSE.
         let router = test_router(true);
         let resp = send(&router, Req::get()).await;
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let resp = send(&router, Req::get().accept("application/json")).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "a non-SSE Accept must still 405"
+        );
     }
 
     #[tokio::test]
@@ -2041,5 +2684,634 @@ mod tests {
         assert!(!is_localhost_origin("http://notlocalhost"));
         assert!(!is_localhost_origin("null"));
         assert!(!is_localhost_origin("https://example.com"));
+    }
+
+    // ── SSE progress stream (P3a-2) ───────────────────────────────────
+
+    use super::super::tasks::ProgressStep;
+    use futures_util::StreamExt as _;
+    use serde_json::json;
+
+    /// A `found` + `working` step at the given progress.
+    fn working(done: u64, total: u64) -> ProgressStep {
+        ProgressStep::Found {
+            progress: Some((done, total)),
+            terminal: false,
+            descriptor: json!({
+                "taskId": "tid", "status": "working",
+                "createdAt": "t0", "lastUpdatedAt": "t1", "ttl": 900,
+                "progress": { "done": done, "total": total }
+            }),
+        }
+    }
+
+    /// A terminal (`completed`) step; the descriptor is the flat daemon Task the
+    /// optional `tasks/status` frame is shaped from (`ttl` in SECONDS on the wire).
+    fn completed() -> ProgressStep {
+        ProgressStep::Found {
+            progress: Some((5, 5)),
+            terminal: true,
+            descriptor: json!({
+                "taskId": "tid", "status": "completed",
+                "createdAt": "t0", "lastUpdatedAt": "t2", "ttl": 900
+            }),
+        }
+    }
+
+    /// A degraded `found` step: NO `{done,total}` (a pre-PR1 / counter-less
+    /// daemon) → keep-alive only, never a synthesized value.
+    fn degraded() -> ProgressStep {
+        ProgressStep::Found {
+            progress: None,
+            terminal: false,
+            descriptor: json!({ "taskId": "tid", "status": "working" }),
+        }
+    }
+
+    type BoxStep = std::pin::Pin<Box<dyn std::future::Future<Output = ProgressStep> + Send>>;
+
+    /// A poll yielding a scripted queue of steps, then `Gone` when drained.
+    fn scripted(steps: Vec<ProgressStep>) -> impl FnMut(String) -> BoxStep {
+        let q = Arc::new(Mutex::new(std::collections::VecDeque::from(steps)));
+        move |_task_id| {
+            let q = Arc::clone(&q);
+            Box::pin(async move {
+                q.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .pop_front()
+                    .unwrap_or(ProgressStep::Gone)
+            })
+        }
+    }
+
+    /// A poll yielding `make()` forever (keep-alive / shutdown / cancel tests where
+    /// the stream must not self-terminate).
+    fn repeat(make: fn() -> ProgressStep) -> impl FnMut(String) -> BoxStep {
+        move |_task_id| Box::pin(async move { make() })
+    }
+
+    fn session_with_watch(task_id: &str, token: Value) -> Arc<SessionState> {
+        let s = Arc::new(SessionState::new(Instant::now()));
+        s.record_watch(task_id, token);
+        s
+    }
+
+    /// Drive an SSE stream to completion and return the parsed `data:` frames.
+    async fn drain_frames<S>(stream: S) -> Vec<Value>
+    where
+        S: futures_util::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
+    {
+        let resp = Sse::new(stream).into_response();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("collect sse body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        text.lines()
+            .filter_map(|l| l.strip_prefix("data:").map(str::trim))
+            .filter(|s| !s.is_empty())
+            .map(|s| serde_json::from_str::<Value>(s).expect("json data line"))
+            .collect()
+    }
+
+    /// Build a stream over `session` with a scripted poll, a live SSE budget, a
+    /// held-open shutdown sender, and a zero poll interval (deterministic + fast).
+    fn build_test_stream<P, Fut>(
+        session: Arc<SessionState>,
+        poll: P,
+    ) -> (
+        impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
+        watch::Sender<bool>,
+    )
+    where
+        P: FnMut(String) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ProgressStep> + Send,
+    {
+        let (tx, _rx0) = watch::channel(false);
+        let rx = tx.subscribe();
+        let budget = Arc::new(Semaphore::new(16));
+        let cancel = session
+            .take_stream_slot(&budget)
+            .expect("first slot acquires");
+        let guard = StreamGuard {
+            session: Arc::clone(&session),
+            cancel: Arc::clone(&cancel),
+        };
+        let stream = build_sse_stream(session, cancel, rx, Duration::ZERO, guard, poll);
+        (stream, tx)
+    }
+
+    fn progress_dones(frames: &[Value]) -> Vec<u64> {
+        frames
+            .iter()
+            .filter(|f| f["method"] == "notifications/progress")
+            .map(|f| f["params"]["progress"].as_u64().expect("progress u64"))
+            .collect()
+    }
+
+    /// Monotone-per-token high-water gate: a poll observing 3, 3, 5 emits progress
+    /// frames for 3 and 5 only (the middle status-only 3 emits NOTHING).
+    #[tokio::test]
+    async fn sse_progress_high_water_gate_3_3_5() {
+        let session = session_with_watch("tid", Value::from("tok-1"));
+        let (stream, _tx) = build_test_stream(
+            Arc::clone(&session),
+            scripted(vec![
+                working(3, 10),
+                working(3, 10),
+                working(5, 10),
+                completed(),
+            ]),
+        );
+        let frames = drain_frames(stream).await;
+        assert_eq!(
+            progress_dones(&frames),
+            vec![3, 5],
+            "gate emits 3 then 5, never the middle status-only 3: {frames:?}"
+        );
+        // First progress frame carries total + verbatim token + related-task _meta.
+        let p0 = &frames[0];
+        assert_eq!(p0["params"]["total"].as_u64(), Some(10));
+        assert_eq!(p0["params"]["progressToken"], Value::from("tok-1"));
+        assert_eq!(
+            p0["params"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"],
+            Value::from("tid")
+        );
+    }
+
+    /// Terminal ordering: exactly one progress frame (done=5), then ONE terminal
+    /// `tasks/status` frame, then the stream ends — zero progress frames at/after
+    /// terminal. Also pins the integer progressToken carried verbatim.
+    #[tokio::test]
+    async fn sse_terminal_emits_status_not_progress() {
+        let session = session_with_watch("tid", Value::from(7));
+        let (stream, _tx) = build_test_stream(
+            Arc::clone(&session),
+            scripted(vec![working(5, 5), completed()]),
+        );
+        let frames = drain_frames(stream).await;
+        assert_eq!(
+            frames.len(),
+            2,
+            "progress(5) then tasks/status only: {frames:?}"
+        );
+        assert_eq!(frames[0]["method"], "notifications/progress");
+        assert_eq!(frames[0]["params"]["progress"].as_u64(), Some(5));
+        assert_eq!(
+            frames[0]["params"]["progressToken"],
+            Value::from(7),
+            "integer progressToken carried verbatim"
+        );
+        assert_eq!(frames[1]["method"], "notifications/tasks/status");
+        assert_eq!(frames[1]["params"]["taskId"], Value::from("tid"));
+        assert_eq!(frames[1]["params"]["status"], Value::from("completed"));
+        // ttl converted secs→ms at the boundary; no progress / related-task _meta.
+        assert_eq!(frames[1]["params"]["ttl"].as_u64(), Some(900_000));
+        assert!(
+            frames[1]["params"]["_meta"].is_null(),
+            "tasks/status SHOULD-NOT carry related-task _meta"
+        );
+        assert!(frames[1]["params"]["progress"].is_null());
+        assert!(
+            session.latest_watch().is_none(),
+            "the watch entry is pruned at terminal"
+        );
+    }
+
+    /// Reconnect: a fresh stream re-observing an already-seen `done` (5) emits
+    /// nothing (the session-scoped high-water persists across the disconnect); only
+    /// the advance to 7 emits.
+    #[tokio::test]
+    async fn sse_reconnect_high_water_suppresses_seen_done() {
+        let session = session_with_watch("tid", Value::from("tok"));
+        // Stream 1: emit done=5, then DISCONNECT (drop) — the entry is NOT pruned.
+        {
+            let (stream, _tx) =
+                build_test_stream(Arc::clone(&session), scripted(vec![working(5, 10)]));
+            let mut s = std::pin::pin!(stream);
+            assert!(s.next().await.is_some(), "stream 1 emits its first frame");
+        }
+        assert_eq!(
+            session.latest_watch().map(|w| w.2),
+            Some(Some(5)),
+            "the high-water persists across the disconnect"
+        );
+        // Stream 2 (reconnect): a re-observed 5 is suppressed; only 7 emits.
+        let (stream2, _tx2) = build_test_stream(
+            Arc::clone(&session),
+            scripted(vec![working(5, 10), working(7, 10), completed()]),
+        );
+        let frames = drain_frames(stream2).await;
+        assert_eq!(
+            progress_dones(&frames),
+            vec![7],
+            "reconnect re-emits nothing already seen (5), only the advance to 7: {frames:?}"
+        );
+    }
+
+    /// Degraded mode: a descriptor with no `{done,total}` never synthesizes a
+    /// progress frame — keep-alive only, then the terminal frame.
+    #[tokio::test]
+    async fn sse_degraded_descriptor_emits_no_progress() {
+        let session = session_with_watch("tid", Value::from("tok"));
+        let (stream, _tx) = build_test_stream(
+            Arc::clone(&session),
+            scripted(vec![degraded(), degraded(), completed()]),
+        );
+        let frames = drain_frames(stream).await;
+        assert!(
+            progress_dones(&frames).is_empty(),
+            "a counter-less descriptor must NEVER synthesize progress: {frames:?}"
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["method"], "notifications/tasks/status");
+    }
+
+    /// Daemon-restart rule: an authoritative `Gone` closes the stream with NO
+    /// frame (never a fabricated terminal), and prunes the watch entry.
+    #[tokio::test]
+    async fn sse_gone_closes_stream_no_frame() {
+        let session = session_with_watch("tid", Value::from("tok"));
+        let (stream, _tx) =
+            build_test_stream(Arc::clone(&session), scripted(vec![ProgressStep::Gone]));
+        let frames = drain_frames(stream).await;
+        assert!(
+            frames.is_empty(),
+            "authoritative Gone closes with no frame: {frames:?}"
+        );
+        assert!(
+            session.latest_watch().is_none(),
+            "Gone prunes the watch entry"
+        );
+    }
+
+    /// Daemon-restart rule: a transient dial failure RETRIES (does not close) — a
+    /// later progress + terminal still arrive.
+    #[tokio::test]
+    async fn sse_dial_failure_retries_not_closes() {
+        let session = session_with_watch("tid", Value::from("tok"));
+        let (stream, _tx) = build_test_stream(
+            Arc::clone(&session),
+            scripted(vec![ProgressStep::DialFailed, working(3, 10), completed()]),
+        );
+        let frames = drain_frames(stream).await;
+        assert_eq!(
+            progress_dones(&frames),
+            vec![3],
+            "a dial failure retries; the later progress still emits: {frames:?}"
+        );
+        assert_eq!(
+            frames.last().unwrap()["method"],
+            "notifications/tasks/status"
+        );
+    }
+
+    /// The stream ends on the TEED shutdown signal (the real watch the listener
+    /// feeds from `shutdown_signal()`), not a hang — driven through the actual
+    /// `select!` path, not the watch in isolation.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sse_stream_ends_on_teed_shutdown() {
+        let session = session_with_watch("tid", Value::from("tok"));
+        let (tx, _rx0) = watch::channel(false);
+        let rx = tx.subscribe();
+        let budget = Arc::new(Semaphore::new(1));
+        let cancel = session.take_stream_slot(&budget).expect("slot");
+        let guard = StreamGuard {
+            session: Arc::clone(&session),
+            cancel: Arc::clone(&cancel),
+        };
+        // A poll that never emits (done=0) so the stream ends ONLY via shutdown.
+        let stream = build_sse_stream(
+            session,
+            cancel,
+            rx,
+            Duration::from_millis(5),
+            guard,
+            repeat(|| working(0, 10)),
+        );
+        let mut s = std::pin::pin!(stream);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(true);
+        });
+        let ended = tokio::time::timeout(Duration::from_secs(2), s.next()).await;
+        assert!(ended.is_ok(), "shutdown must end the stream, not hang");
+        assert!(
+            ended.unwrap().is_none(),
+            "the stream ends (None) on the teed shutdown signal"
+        );
+    }
+
+    /// An empty watch list (no progressToken on the augmented call, or the stream
+    /// opened before any call) is keep-alive only: the poll is NEVER consulted, so
+    /// no frame is ever emitted; the stream ends only on shutdown.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sse_no_watch_entry_is_keepalive_only() {
+        let session = Arc::new(SessionState::new(Instant::now())); // NO watch entry
+        let (tx, _rx0) = watch::channel(false);
+        let rx = tx.subscribe();
+        let budget = Arc::new(Semaphore::new(1));
+        let cancel = session.take_stream_slot(&budget).expect("slot");
+        let guard = StreamGuard {
+            session: Arc::clone(&session),
+            cancel: Arc::clone(&cancel),
+        };
+        // If ever consulted this poll WOULD emit (done=9); the empty watch means it
+        // is not, proving no-watch ⇒ no frame.
+        let stream = build_sse_stream(
+            session,
+            cancel,
+            rx,
+            Duration::from_millis(5),
+            guard,
+            repeat(|| working(9, 10)),
+        );
+        let mut s = std::pin::pin!(stream);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = tx.send(true);
+        });
+        let first = tokio::time::timeout(Duration::from_secs(2), s.next())
+            .await
+            .expect("no hang");
+        assert!(
+            first.is_none(),
+            "an empty watch list is keep-alive only — no frame, ends at shutdown"
+        );
+    }
+
+    /// `augmented_progress_token` extracts a string OR integer token from an
+    /// augmented `tools/call`, and NONE otherwise (no token ⇒ no watch ⇒ no frames).
+    #[test]
+    fn augmented_progress_token_extraction() {
+        let mk = |b: Value| -> JsonRpcRequest { serde_json::from_value(b).expect("req") };
+        let string_tok = mk(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"cqs_eval","task":{},"_meta":{"progressToken":"tok-1"}}}));
+        assert_eq!(
+            augmented_progress_token(&string_tok),
+            Some(Value::from("tok-1"))
+        );
+        let int_tok = mk(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"cqs_eval","task":{},"_meta":{"progressToken":42}}}));
+        assert_eq!(augmented_progress_token(&int_tok), Some(Value::from(42)));
+        // Augmented but no token → None (no frames for that task).
+        let no_meta = mk(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"cqs_eval","task":{}}}));
+        assert_eq!(augmented_progress_token(&no_meta), None);
+        // A token on a NON-augmented call → None (not a task).
+        let not_aug = mk(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"cqs_search","_meta":{"progressToken":"t"}}}));
+        assert_eq!(augmented_progress_token(&not_aug), None);
+        // A token on a non tools/call method → None.
+        let wrong_method = mk(json!({"jsonrpc":"2.0","id":1,"method":"tasks/get",
+            "params":{"_meta":{"progressToken":"t"}}}));
+        assert_eq!(augmented_progress_token(&wrong_method), None);
+    }
+
+    /// The watch list is deduped by taskId and bounded.
+    #[test]
+    fn watch_list_deduped_and_bounded() {
+        let s = SessionState::new(Instant::now());
+        s.record_watch("a", Value::from("t1"));
+        s.record_watch("a", Value::from("t2")); // dedupe → refresh token
+        assert_eq!(s.watch_len(), 1, "same taskId dedupes");
+        assert_eq!(
+            s.latest_watch().map(|w| w.1),
+            Some(Value::from("t2")),
+            "the token is refreshed on re-register"
+        );
+        for i in 0..MAX_WATCH_ENTRIES_PER_SESSION + 5 {
+            s.record_watch(&format!("k{i}"), Value::from(i as u64));
+        }
+        assert!(
+            s.watch_len() <= MAX_WATCH_ENTRIES_PER_SESSION,
+            "the watch list stays bounded"
+        );
+        assert_eq!(
+            s.latest_watch().map(|w| w.0),
+            Some(format!("k{}", MAX_WATCH_ENTRIES_PER_SESSION + 4)),
+            "the newest entry is the latest"
+        );
+    }
+
+    /// Permit handover: a takeover TRANSFERS the existing permit old→new under the
+    /// session lock (no second acquire), and the superseded stream's guard does not
+    /// release the transferred permit — only the live stream's guard does.
+    #[test]
+    fn take_stream_slot_transfers_permit_on_takeover() {
+        let s = SessionState::new(Instant::now());
+        let budget = Arc::new(Semaphore::new(1));
+        let c1 = s.take_stream_slot(&budget).expect("first acquires");
+        assert_eq!(
+            budget.available_permits(),
+            0,
+            "first stream drains the budget"
+        );
+        let c2 = s
+            .take_stream_slot(&budget)
+            .expect("takeover succeeds even at cap");
+        assert_eq!(
+            budget.available_permits(),
+            0,
+            "takeover did NOT acquire a second permit"
+        );
+        assert!(!Arc::ptr_eq(&c1, &c2), "a fresh cancel handle per stream");
+        // The superseded (c1) guard must NOT release the transferred permit.
+        s.clear_stream_if(&c1);
+        assert_eq!(
+            budget.available_permits(),
+            0,
+            "the superseded guard leaves the transferred permit to the live stream"
+        );
+        // The live (c2) guard releases it.
+        s.clear_stream_if(&c2);
+        assert_eq!(
+            budget.available_permits(),
+            1,
+            "the live guard releases the permit"
+        );
+    }
+
+    /// A FIRST stream on a different session at cap gets `None` (→ 503) — one
+    /// session cannot hold N permits and a stranger cannot exceed the budget.
+    #[test]
+    fn take_stream_slot_at_cap_different_session_is_none() {
+        let budget = Arc::new(Semaphore::new(1));
+        let a = SessionState::new(Instant::now());
+        let b = SessionState::new(Instant::now());
+        let _c = a
+            .take_stream_slot(&budget)
+            .expect("a acquires the sole permit");
+        assert!(
+            b.take_stream_slot(&budget).is_none(),
+            "a different session at cap gets None (→ 503)"
+        );
+    }
+
+    /// Idle expiry evicts the session from the map (the next request 404s) but does
+    /// NOT cancel a live stream — the stream's Arc keeps its state alive (the
+    /// deliberate anti-abuse choice; poll-emit never touches last_seen).
+    #[test]
+    fn idle_expiry_evicts_without_cancelling_stream() {
+        let store = SessionStore::new();
+        let id = store.create().expect("create");
+        let st = store.touch_get(&id).expect("live");
+        let budget = Arc::new(Semaphore::new(1));
+        let cancel = st.take_stream_slot(&budget).expect("slot");
+        // Force expiry: rewrite last_seen well past the 1h TTL.
+        st.touch_now(Instant::now() - Duration::from_secs(60 * 60 * 2));
+        assert!(
+            store.touch_get(&id).is_none(),
+            "an expired session 404s on the next request (map entry dropped)"
+        );
+        assert_eq!(
+            budget.available_permits(),
+            0,
+            "idle expiry must NOT cancel a live stream (its permit is untouched)"
+        );
+        // The stream's own guard still reclaims the permit on its end.
+        st.clear_stream_if(&cancel);
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    /// Explicit DELETE, unlike idle expiry, cancels a live stream (notifies its
+    /// cancel handle).
+    #[tokio::test]
+    async fn delete_cancels_live_stream() {
+        let store = SessionStore::new();
+        let id = store.create().expect("create");
+        let st = store.touch_get(&id).expect("live");
+        let budget = Arc::new(Semaphore::new(1));
+        let cancel = st.take_stream_slot(&budget).expect("slot");
+        // A waiter parked on the cancel handle, as the stream's select! would be.
+        let waiter = {
+            let c = Arc::clone(&cancel);
+            tokio::spawn(async move { c.notified().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(store.remove(&id), "DELETE removes the session");
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("DELETE must cancel the live stream")
+            .expect("waiter joins");
+    }
+
+    // ── GET SSE flip: HTTP-shape mirrors through the full layer stack ──
+
+    /// A GET with `Accept: text/event-stream` on a live session opens the stream:
+    /// 200 with the SSE content-type and `X-Accel-Buffering: no`. No protocol
+    /// header (absent assumes the default, not 400).
+    #[tokio::test]
+    async fn get_sse_opens_stream_200_with_headers() {
+        let router = test_router(true);
+        let sid = init_session(&router).await;
+        let resp = send(&router, Req::get_sse().session(&sid)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .contains("text/event-stream"),
+            "SSE response must carry the text/event-stream content-type"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-accel-buffering")
+                .and_then(|v| v.to_str().ok()),
+            Some("no"),
+            "SSE response must disable proxy buffering"
+        );
+        drop(resp);
+    }
+
+    #[tokio::test]
+    async fn get_sse_missing_session_is_400() {
+        let router = test_router(true);
+        let resp = send(&router, Req::get_sse()).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_sse_unknown_session_is_404() {
+        let router = test_router(true);
+        let resp = send(&router, Req::get_sse().session("never-issued-session")).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_sse_invalid_protocol_is_400() {
+        // The protocol-version gate now runs on GET (POST-only before P3a-2).
+        let router = test_router(true);
+        let sid = init_session(&router).await;
+        let resp = send(&router, Req::get_sse().session(&sid).protocol("1999-01-01")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_sse_invalid_origin_is_403() {
+        // The Origin layer runs router-wide, so it rejects a bad Origin on GET too
+        // (no handler code — a GET-shaped test of the existing layer).
+        let router = test_router(true);
+        let resp = send(&router, Req::get_sse().origin("http://evil.example.com")).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_sse_disallowed_host_is_400() {
+        // The Host allowlist is router-wide too: a DNS-rebinding Host on GET is
+        // rejected exactly as on POST (a GET-shaped test of the existing layer).
+        let router = test_router(true);
+        let resp = send(&router, Req::get_sse().host("evil.example.com")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// An open SSE stream must NOT pin one of the outermost 256 one-shot permits:
+    /// under a size-1 outer cap, a POST still succeeds while the SSE response is
+    /// held open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sse_stream_does_not_hold_outer_permit() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let router = test_router_with_sem(sem);
+        let sid = init_session(&router).await;
+        let get_resp = send(&router, Req::get_sse().session(&sid)).await;
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        // Hold the SSE response (body open) and POST under the size-1 cap.
+        let post_resp = send(&router, Req::post(INIT_BODY)).await;
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::OK,
+            "an open SSE stream must not hold an outer 256-cap permit"
+        );
+        drop(get_resp);
+    }
+
+    /// Stream budget: a takeover on the same session succeeds even at cap (permit
+    /// handover), while a DIFFERENT session at cap gets 503.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_sse_takeover_succeeds_other_session_503s_at_cap() {
+        let router = build_router(
+            test_state_with_sse_budget(true, 1),
+            allowed_host_set(&test_addr()),
+        );
+        let sid_a = init_session(&router).await;
+        let sid_b = init_session(&router).await;
+        // A opens the sole stream (budget=1 now drained). Hold the response.
+        let a1 = send(&router, Req::get_sse().session(&sid_a)).await;
+        assert_eq!(a1.status(), StatusCode::OK);
+        // A DIFFERENT session at cap → 503.
+        let b = send(&router, Req::get_sse().session(&sid_b)).await;
+        assert_eq!(
+            b.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a second session at cap must 503"
+        );
+        // The SAME session reconnects → takeover transfers the permit → 200.
+        let a2 = send(&router, Req::get_sse().session(&sid_a)).await;
+        assert_eq!(
+            a2.status(),
+            StatusCode::OK,
+            "a reconnect on the same session takes over its own permit, never 503"
+        );
+        drop((a1, a2, b));
     }
 }
