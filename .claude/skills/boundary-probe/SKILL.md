@@ -1,14 +1,14 @@
 ---
-name: red-team
-description: Adversarial security audit of cqs — fans out red-team-auditor agents across 6 categories (RT-INJ/RT-FS/RT-RES/RT-DATA/RT-RELAY/RT-EXFIL), attacker mindset, run-the-attack PoC + regression guard.
+name: boundary-probe
+description: Trust-boundary security audit of cqs — fans out unbiddable-auditor agents across 6 categories (RT-INJ/RT-FS/RT-RES/RT-DATA/RT-RELAY/RT-EXFIL), attacker mindset, run-the-attack PoC + regression guard.
 disable-model-invocation: true
 ---
 
 # Red Team Audit
 
-Adversarial security audit — attacker mindset, attacks RUN against the local binary, every finding pinned as a regression guard.
+Trust-boundary security audit — attacker mindset, attacks RUN against the local binary, every finding pinned as a regression guard.
 
-This skill is the orchestrator. **The contract — threat model, two attack vectors, method, finding format, rules, the cqs-tools block — lives in `.claude/agents/red-team-auditor.md`.** Each spawned agent IS a `red-team-auditor`; its prompt carries only the category scope below. Do not re-embed the contract here (it drifts — the old inlined threat model went stale against SECURITY.md).
+This skill is the orchestrator. **The contract — threat model, two attack vectors, method, finding format, rules, the cqs-tools block — lives in `.claude/agents/unbiddable-auditor.md`.** Each spawned agent IS an `unbiddable-auditor`; its prompt carries only the category scope below. Do not re-embed the contract here (it drifts — the old inlined threat model went stale against SECURITY.md).
 
 ## Arguments
 
@@ -22,8 +22,8 @@ This skill is the orchestrator. **The contract — threat model, two attack vect
 3. **Enable audit mode**: `cqs audit-mode on --expires 4h` (no `-q` on this subcommand).
 
 ### Execution
-4. **Create team**: `red-team`.
-5. **Spawn one `red-team-auditor` (subagent_type: red-team-auditor, model opus) per category.** Each prompt carries ONLY: the category's scope/key-question/targets/files below, the prior-findings skip-list, and "append findings to `docs/audit-findings.md` under `## Red Team`." Everything else is in the def.
+4. **Create team**: `boundary-probe`.
+5. **Spawn one `unbiddable-auditor` (subagent_type: unbiddable-auditor, model opus) per category.** Each prompt carries ONLY: the category's scope/key-question/targets/files below, the prior-findings skip-list, and "append findings to `docs/audit-findings.md` under `## Trust-Boundary`." Everything else is in the def.
 6. A category lead may fan out per-PoC verifiers (the def grants `Agent`).
 
 ### Cleanup
@@ -43,18 +43,18 @@ This skill is the orchestrator. **The contract — threat model, two attack vect
 **Targets:** completeness of the canonicalize+starts_with guard across ALL file-reading paths (incl. the worktree-overlay build's `--overlay-root` reindex), `convert --output` escape, reference-index path construction (`../` escaping the refs dir), function-name-as-path-component, stale index entries serving wrong content.
 **Files:** `src/cli/commands/io/read.rs`, `src/project.rs`, `src/convert/`, `src/store/mod.rs`, `src/worktree_overlay.rs`, `src/cli/batch/handlers/`.
 
-### RT-RES — Adversarial Robustness (security angle only)
+### RT-RES — Robustness (security angle only)
 **Key question:** can a crafted-but-valid input crash/hang/OOM the daemon as a denial channel? **Cede** generic malformed-input robustness to property-auditor and concurrency hangs to interleaving-auditor — keep the *attacker-reachable resource-exhaustion* angle.
 **Targets:** pipeline fan-out bomb, BFS depth bomb, token-budget extremes, query-length OOM (100KB → tokenizer), batch-session unbounded memory, watch event storm. Bare `unwrap()/expect()` only where attacker input reaches it.
 **Files:** `src/cli/batch/`, `src/gather.rs`, `src/impact/`, `src/hnsw/`, `src/cli/watch/`, `src/embedder/`.
 
 ### RT-DATA — Silent Corruption (security angle only)
-**Key question:** can attacker-influenced input leave the index inconsistent / serve wrong results without error? **Cede** concurrent-race corruption to interleaving-auditor and migration atomicity to legacy-state-auditor — keep the *adversarial-input-driven* corruption.
+**Key question:** can attacker-influenced input leave the index inconsistent / serve wrong results without error? **Cede** concurrent-race corruption to interleaving-auditor and migration atomicity to legacy-state-auditor — keep the *crafted-input-driven* corruption.
 **Targets:** embedding-dimension confusion via a crafted model id, NaN/ordering injection breaking sort, batch cache staleness reachable by input, HNSW/SQLite desync via attacker-triggered delete/gc.
 **Files:** `src/store/`, `src/hnsw/`, `src/note.rs`, `src/index.rs`, `src/embedder/`.
 
 ### RT-RELAY — Indirect Injection via Indexed Content (the agent-consumer axis)
-**Key question:** can adversarial content already in the corpus (a contributor's comment, an upstream dependency, a `cqs ref add` source, a developer note, an LLM summary) manipulate the consuming agent? This is SECURITY.md's longest section and the reason the trust-signal suite exists.
+**Key question:** can crafted content already in the corpus (a contributor's comment, an upstream dependency, a `cqs ref add` source, a developer note, an LLM summary) manipulate the consuming agent? This is SECURITY.md's longest section and the reason the trust-signal suite exists.
 **Targets:** indirect prompt-injection payloads surviving the relay without `injection_flags` firing or `CQS_TRUST_DELIMITERS` wrapping; forging a trust signal (`trust_level: user-code` on vendored/ref content, fake `note_boost`, mislabelled `edge_kind`); `validate_summary` bypass on the LLM-summary path; making `suggest`/`dead` recommend a harmful action (e.g. deleting live code) to an agent that acts on it; ranked-result poisoning that blends untrusted content as trusted.
 **Files:** `src/vendored.rs`, `src/cli/json_envelope.rs`, `src/llm/validation.rs`, `src/store/notes.rs`, `src/search/` (RRF blending + rank_signals), `src/cli/batch/handlers/search.rs`, `src/note.rs`.
 
