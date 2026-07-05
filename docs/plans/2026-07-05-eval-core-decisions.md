@@ -11,7 +11,7 @@ Ground truth (independently verified): the per-embed serialization point is `Emb
 1. Parse/validate flags; run the freshness gate exactly as today (`wait_for_fresh` socket dial — same semantics, same env opt-outs, on every invocation; D4-v1's "gate inverts daemon-side" is dead for the CLI surface).
 2. Explicitly try the daemon path via `daemon_json_args_request(cqs_dir, "eval", wire_args)` with the eval budget (below).
 3. Outcome handling is HONEST, never silent:
-   - Daemon answered → use its report (`_meta.index_substrate: "resident"`).
+   - Daemon answered → use its report (`index_substrate: "resident"`).
    - Daemon absent, or busy-rejected BEFORE booking → print an explicit one-line notice ("daemon unavailable — running CLI-side on a fresh-built index") and run the local cold path (`substrate: "fresh-built"`). An explicit substrate switch is acceptable; a silent one is the lie.
    - Daemon BOOKED the job but the response was lost (read expiry past the eval budget) → HARD ERROR telling the operator the daemon is still running the eval; do NOT rerun inline. The double-GPU/second-ORT-session rerun is the trap; `daemon_booked` machinery (dispatch.rs:857-876) is the discriminator.
 4. `--save`/`--baseline`/`--tolerance` are pure post-processing of whichever report returned — they never influence routing (v1-D3's routing dependence would have made "the flag that saves a baseline change the number saved": resident scores bare, fresh-built scores with `--save` → phantom cross-substrate regressions).
@@ -51,7 +51,7 @@ Wire path: read_core-style guard (canonicalize + starts_with served root + unifo
 
 - `dispatch == serialize(core)` parity on the empty-fixture case (embedder-free, exit codes are adapter-only so the core returns data) — REQUIRES the core's resource bundle to be lazy/injectable; if `eval_core` demanded a constructed `&Embedder` up front, shape-parity is unwritable in unit scope. The lazy-bundle is a build requirement, not a nicety.
 - json-args == argv parity per the house pattern; wire-cannot-save guard; traversal-rejection test; MCP name-map pin.
-- **`_meta.index_substrate: "resident" | "fresh-built"` on every eval output, all surfaces.** Score-parity across substrates is explicitly NOT a contract (HNSW reconstruction nondeterminism); the marker is what makes the recall-gate discipline coherent post-lift.
+- **`index_substrate: "resident" | "fresh-built"` on every eval output, all surfaces** (a top-level `EvalOutput` field, NOT `_meta` — it must survive the `--save`/`--baseline` round-trip so the recall-gate same-substrate comparison can read it back). Score-parity across substrates is explicitly NOT a contract (HNSW reconstruction nondeterminism); the marker is what makes the recall-gate discipline coherent post-lift.
 - `.claude/skills/recall-gate/SKILL.md` updated in the same PR: gate runs pin their substrate (either `CQS_NO_DAEMON=1` for fresh-built-always, or assert the marker is uniform across compared runs). Bare `cqs eval` lines would otherwise measure different substrates depending on daemon liveness.
 
 ## Pre-existing residuals surfaced by the attack (NOT this lane — filed as an issue)

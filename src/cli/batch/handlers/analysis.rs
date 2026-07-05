@@ -481,6 +481,7 @@ pub(in crate::cli::batch) fn dispatch_ci(
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod parity_tests {
+    use super::EVAL_IN_FLIGHT;
     use crate::cli::batch::create_test_context;
     use cqs::embedder::Embedding;
     use cqs::parser::{Chunk, ChunkType, Language};
@@ -848,6 +849,50 @@ mod parity_tests {
         assert_eq!(
             dispatched, core_val,
             "dispatch_eval must equal eval_core on the empty fixture"
+        );
+    }
+
+    /// A second `dispatch_eval` while an eval is in flight surfaces the typed
+    /// retryable `Unavailable` code (not a plain error, which MCP clients could
+    /// not key off) — and does so BEFORE touching the view (the fixture here is
+    /// never read). Drives the real handler with the slot pre-held, closing the
+    /// gap the direct-guard tests leave (they never exercise dispatch_eval's
+    /// busy arm). Serial so it owns the single-flight slot.
+    #[test]
+    #[serial_test::serial(eval_single_flight)]
+    fn dispatch_eval_busy_returns_typed_unavailable() {
+        use std::sync::atomic::Ordering;
+        let (_dir, ctx) = seed_minimal_ctx();
+        let view = ctx.build_view(None);
+        // A fixture that does NOT exist — proving the busy reject fires before
+        // any read (a real read would fail with the opaque fixture error, not
+        // Unavailable).
+        let args = crate::cli::commands::EvalArgs {
+            query_file: view.root.join("never_read.json"),
+            limit: 20,
+            category: None,
+            reranker: crate::cli::args::RerankerMode::None,
+        };
+
+        // Pre-hold the slot: the handler's own try_acquire must lose.
+        let held = super::EvalSlotGuard::try_acquire().expect("test holds the slot");
+        assert!(EVAL_IN_FLIGHT.load(Ordering::SeqCst), "slot held");
+
+        let err = super::dispatch_eval(&view, &args).expect_err("busy eval must reject");
+        let cfe = err
+            .downcast_ref::<crate::cli::json_envelope::ClientFacingError>()
+            .expect("busy reject must be a typed ClientFacingError");
+        assert_eq!(
+            cfe.code,
+            crate::cli::json_envelope::ErrorCode::Unavailable,
+            "the busy reject must carry the retryable `unavailable` code, got {:?}",
+            cfe.code
+        );
+
+        drop(held);
+        assert!(
+            !EVAL_IN_FLIGHT.load(Ordering::SeqCst),
+            "slot freed after the test releases it"
         );
     }
 

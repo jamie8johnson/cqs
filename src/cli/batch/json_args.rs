@@ -533,7 +533,15 @@ pub(crate) fn build_batch_cmd(command: &str, arguments: &serde_json::Value) -> R
         // `--force`). `dispatch_eval` owns the in-root path guard + single-flight
         // cap, and the JSON OUTPUT is the separate `EvalOutput`.
         "eval" => {
+            reject_eval_cli_only_keys(arguments)?;
             let c: EvalCore = parse_core(command, arguments)?;
+            if c.limit == 0 {
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    "limit must be at least 1".to_string(),
+                )
+                .into());
+            }
             BatchCmd::Eval { args: c }
         }
         // ─── MCP Phase 2a: the gated notes-mutation channel ────────────────────
@@ -613,6 +621,39 @@ fn require_mutations_enabled(command: &str) -> Result<()> {
             ),
         )
         .into());
+    }
+    Ok(())
+}
+
+/// Reject a wire `eval` frame that carries a CLI-adapter-only key
+/// (`save`/`baseline`/`tolerance`/`no_require_fresh`/`require_fresh_secs`).
+/// These are absent from the wire `EvalCore`, so serde would silently drop
+/// them — but a client sending `save` would believe a baseline was written
+/// when the daemon never can. An explicit `invalid_input` reject names the
+/// offending key so the failure is honest instead of silent. (The security
+/// property — no daemon-side save, no routing influence — already holds by
+/// absence; this only closes the silent-success gap.)
+fn reject_eval_cli_only_keys(arguments: &serde_json::Value) -> Result<()> {
+    const CLI_ONLY: &[&str] = &[
+        "save",
+        "baseline",
+        "tolerance",
+        "no_require_fresh",
+        "require_fresh_secs",
+    ];
+    if let Some(obj) = arguments.as_object() {
+        for key in CLI_ONLY {
+            if obj.contains_key(*key) {
+                return Err(crate::cli::json_envelope::ClientFacingError::new(
+                    crate::cli::json_envelope::ErrorCode::InvalidInput,
+                    format!(
+                        "'{key}' is a CLI-only eval flag and cannot be set over the wire \
+                         (baseline comparison and result-saving are local post-processing)"
+                    ),
+                )
+                .into());
+            }
+        }
     }
     Ok(())
 }
@@ -1409,34 +1450,63 @@ mod tests {
     }
 
     /// The wire `eval` core CANNOT carry `--save` / `--baseline` / `--tolerance`
-    /// — those are CLI-adapter post-processing, withheld by ABSENCE from the wire
-    /// struct. A smuggled key is silently ignored (the core drops off-schema
-    /// fields), so the built command exposes only the four wire knobs and there
-    /// is no way to make the daemon save a baseline (which would let a routing
-    /// flag change the number saved — the substrate-lie the design forecloses).
+    /// — those are CLI-adapter post-processing. Rather than silently drop a
+    /// smuggled key (which would let a client believe a baseline was written
+    /// when the daemon never can), the arm rejects it with `invalid_input`
+    /// naming the offending key. The security property (no daemon-side save, no
+    /// routing influence) holds by absence regardless; this pins the HONEST
+    /// failure over the silent one.
     #[test]
-    fn eval_wire_cannot_save_baseline_or_tolerance() {
-        let cmd = build_batch_cmd(
-            "eval",
-            &json!({
-                "query_file": "evals/q.json",
-                "save": "baseline.json",
-                "baseline": "old.json",
-                "tolerance": 5.0,
-            }),
-        )
-        .expect("eval must build, ignoring the CLI-only keys");
+    fn eval_wire_rejects_save_baseline_or_tolerance() {
+        for key in ["save", "baseline", "tolerance"] {
+            let mut obj = serde_json::Map::new();
+            obj.insert("query_file".into(), json!("evals/q.json"));
+            obj.insert(
+                key.into(),
+                if key == "tolerance" {
+                    json!(5.0)
+                } else {
+                    json!("x.json")
+                },
+            );
+            let err = build_batch_cmd("eval", &serde_json::Value::Object(obj))
+                .expect_err(&format!("eval must reject the CLI-only key '{key}'"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains(key) && msg.contains("CLI-only"),
+                "reject message must name the offending key '{key}': {msg}"
+            );
+        }
+    }
+
+    /// A bare wire `eval` frame (only the four wire knobs) still builds — the
+    /// reject is scoped to the CLI-only keys, not the whole surface.
+    #[test]
+    fn eval_wire_bare_frame_builds() {
+        let cmd = build_batch_cmd("eval", &json!({ "query_file": "evals/q.json" }))
+            .expect("a clean wire frame must build");
         match cmd {
             BatchCmd::Eval { args } => {
                 assert_eq!(args.query_file, std::path::PathBuf::from("evals/q.json"));
-                // The four wire knobs are all that exist; the smuggled keys were
-                // dropped (defaults applied), so no baseline/save can ride the wire.
                 assert_eq!(args.limit, 20);
                 assert!(args.category.is_none());
                 assert_eq!(args.reranker, crate::cli::args::RerankerMode::None);
             }
             other => panic!("expected BatchCmd::Eval, got {other:?}"),
         }
+    }
+
+    /// A wire `eval` frame with `limit: 0` is rejected daemon-side, matching the
+    /// CLI's pre-dial `--limit must be at least 1` guard — validation parity, so
+    /// the daemon surface can't be handed an all-zeros report from a zero limit.
+    #[test]
+    fn eval_wire_rejects_zero_limit() {
+        let err = build_batch_cmd("eval", &json!({ "query_file": "evals/q.json", "limit": 0 }))
+            .expect_err("eval must reject limit 0 over the wire");
+        assert!(
+            err.to_string().contains("limit must be at least 1"),
+            "unexpected error: {err}"
+        );
     }
 
     /// `eval` requires `query_file`: an empty wire object is rejected (missing
