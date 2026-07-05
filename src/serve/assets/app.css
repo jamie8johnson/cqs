@@ -301,3 +301,35 @@ main {
 .rk-net { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .rk-total td { border-top: 1px solid #3a4870; border-bottom: none; font-weight: 700; color: #e8edf5; padding-top: 4px; }
 .rk-total td:first-child { color: #9aa6bf; }
+
+/* ── Impact enrichment legend (the "what breaks" overlay on the callers tree) ──
+   Floats over the hierarchy canvas (appended into #cy, which is
+   position:relative), same pattern as .mech-panel. Reads the colour key +
+   blast-radius counts; the colours themselves live on the nodes. */
+.impact-legend {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(20, 26, 38, 0.94);
+  color: #d8dee9;
+  border: 1px solid #2a3550;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  z-index: 20;
+  pointer-events: none;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+.impact-legend-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; color: #fff; }
+.impact-legend .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.impact-legend-meta { margin-top: 4px; color: #9aa6bf; }
+.impact-legend-warn { margin-top: 4px; color: #ffb454; }

@@ -25,6 +25,14 @@
       .replace(/'/g, "&#039;");
   }
 
+  // Composite key matching an impact-endpoint entry (which carries no chunk id)
+  // to a hierarchy node: both sides expose (file, name). A newline can appear in
+  // neither a source path nor a symbol name, so it is a collision-free separator
+  // — and unlike a raw control byte it keeps the file plain text.
+  function impactKey(file, name) {
+    return `${file}\n${name}`;
+  }
+
   const TYPE_COLORS = {
     function: "#4a86e8",
     method: "#3d78d8",
@@ -61,6 +69,15 @@
     rootId: null,
     direction: "callees",
     depth: 5,
+    // Impact enrichment state (populated only when the router activates this
+    // module as the `impact` view). `impactCallers` / `impactTests` are
+    // `impactKey(file, name)` keys the render loop matches against each node.
+    impactMode: false,
+    impactCallers: new Set(),
+    impactTests: new Set(),
+    impactTypeImpacted: 0,
+    impactDegraded: false,
+    impactUnavailable: null,
 
     async init(container, options) {
       this.container = container;
@@ -93,15 +110,21 @@
     /// bfs_depth on each node) or null on missing root / HTTP failure.
     async loadData(context) {
       const url = context.url;
+      // Impact reuses this renderer with the "what breaks" enrichment. It is
+      // inherently a callers tree, so the direction is forced regardless of URL.
+      this.impactMode = context.view === "impact";
       const root = url.searchParams.get("root");
       if (!root) {
+        const label = this.impactMode ? "impact" : "hierarchy";
         this.container.innerHTML =
-          '<div class="error" style="margin:24px">hierarchy view requires <code>?root=&lt;chunk_id&gt;</code> in the URL. ' +
-          'Click a node in the 2D or 3D view, then use "view as hierarchy" in the sidebar.</div>';
+          `<div class="error" style="margin:24px">${label} view requires <code>?root=&lt;chunk_id&gt;</code> in the URL. ` +
+          'Click a node in the 2D or 3D view, then use the sidebar action.</div>';
         return null;
       }
       this.rootId = root;
-      this.direction = url.searchParams.get("direction") || "callees";
+      this.direction = this.impactMode
+        ? "callers"
+        : url.searchParams.get("direction") || "callees";
       this.depth = parseInt(url.searchParams.get("depth") || "5", 10);
       if (!Number.isFinite(this.depth) || this.depth < 1) this.depth = 5;
       if (this.depth > 10) this.depth = 10;
@@ -111,6 +134,7 @@
         depth: String(this.depth),
       });
       const apiUrl = `/api/hierarchy/${encodeURIComponent(root)}?${params}`;
+      let hierarchy;
       try {
         const resp = await fetch(apiUrl);
         if (!resp.ok) {
@@ -118,10 +142,50 @@
           this.container.innerHTML = `<div class="error" style="margin:24px">hierarchy HTTP ${resp.status}: ${escapeHtml(body.slice(0, 200))}</div>`;
           return null;
         }
-        return await resp.json();
+        hierarchy = await resp.json();
       } catch (e) {
         this.container.innerHTML = `<div class="error" style="margin:24px">hierarchy fetch error: ${escapeHtml(e.message)}</div>`;
         return null;
+      }
+
+      // Layer the impact sets on top of the tree. A failure here degrades to a
+      // plain callers tree (impactUnavailable recorded), never a hard error —
+      // the BFS subgraph is still worth rendering.
+      if (this.impactMode) {
+        await this.loadImpact(root);
+      }
+      return hierarchy;
+    },
+
+    /// Fetch `/api/impact/{root}` and build the `impactKey(file, name)` key sets
+    /// the render loop matches against nodes: `impactCallers` (direct +
+    /// transitive, the red set) and `impactTests` (the affected-tests union, the
+    /// yellow set), plus the type-impacted count and degraded flag for the legend.
+    async loadImpact(root) {
+      this.impactCallers = new Set();
+      this.impactTests = new Set();
+      this.impactTypeImpacted = 0;
+      this.impactDegraded = false;
+      this.impactUnavailable = null;
+      const params = new URLSearchParams({ depth: String(this.depth) });
+      const apiUrl = `/api/impact/${encodeURIComponent(root)}?${params}`;
+      try {
+        const resp = await fetch(apiUrl);
+        if (!resp.ok) {
+          this.impactUnavailable = `impact HTTP ${resp.status}`;
+          return;
+        }
+        const data = await resp.json();
+        for (const c of data.callers || [])
+          this.impactCallers.add(impactKey(c.file, c.name));
+        for (const c of data.transitive_callers || [])
+          this.impactCallers.add(impactKey(c.file, c.name));
+        for (const t of data.affected_tests || [])
+          this.impactTests.add(impactKey(t.file, t.name));
+        this.impactTypeImpacted = (data.type_impacted || []).length;
+        this.impactDegraded = !!data.degraded;
+      } catch (e) {
+        this.impactUnavailable = e.message;
       }
     },
 
@@ -164,6 +228,14 @@
           if (this.selected === n.id) return "#fc0";
           if (this.highlighted.has(n.id)) return "#ff8c00";
           if (n.id === this.rootId) return "#fff";
+          if (this.impactMode) {
+            // "What breaks": affected tests (yellow) take precedence over
+            // callers (red) since a test caller is also a caller. Keyed by
+            // (file, name) — the impact endpoint carries no chunk id.
+            const k = impactKey(n.file, n.name);
+            if (this.impactTests.has(k)) return "#ffd23f";
+            if (this.impactCallers.has(k)) return "#ff3b30";
+          }
           if (n.dead) return "#c33";
           return nodeColor(n.kind);
         })
@@ -211,6 +283,42 @@
           console.warn("hierarchy: cameraPosition failed", e);
         }
       });
+
+      if (this.impactMode) this.renderImpactLegend();
+    },
+
+    /// Float a colour legend + blast-radius summary over the callers tree in
+    /// impact mode. Appended into the container (position:relative, like the
+    /// cluster mech-panel) so it overlays the canvas; cleared by dispose /
+    /// container reset on the next activation. `type_impacted` functions have no
+    /// place in the callers tree (they don't call the target), so their count is
+    /// reported here rather than coloured on a node.
+    renderImpactLegend() {
+      if (!this.container) return;
+      const legend = document.createElement("div");
+      legend.className = "impact-legend";
+      const row = (color, label) =>
+        `<div><span class="dot" style="background:${color}"></span>${escapeHtml(label)}</div>`;
+      // Red count excludes test callers: they colour yellow (tests take
+      // precedence in nodeColor), so counting them as red would double-count.
+      let redCount = 0;
+      for (const k of this.impactCallers) {
+        if (!this.impactTests.has(k)) redCount += 1;
+      }
+      let html =
+        '<div class="impact-legend-title">what breaks</div>' +
+        row("#fff", "target") +
+        row("#ff3b30", `transitive callers (${redCount})`) +
+        row("#ffd23f", `affected tests (${this.impactTests.size})`) +
+        `<div class="impact-legend-meta">type-impacted: ${this.impactTypeImpacted}</div>`;
+      if (this.impactUnavailable) {
+        html += `<div class="impact-legend-warn">impact overlay unavailable: ${escapeHtml(this.impactUnavailable)}</div>`;
+      } else if (this.impactDegraded) {
+        html +=
+          '<div class="impact-legend-warn">⚠ analysis degraded — sections may be incomplete</div>';
+      }
+      legend.innerHTML = html;
+      this.container.appendChild(legend);
     },
 
     onSearchHighlight(matchedIds) {
@@ -288,6 +396,12 @@
       this.selected = null;
       this.nodeIndex = new Map();
       this.rootId = null;
+      this.impactMode = false;
+      this.impactCallers = new Set();
+      this.impactTests = new Set();
+      this.impactTypeImpacted = 0;
+      this.impactDegraded = false;
+      this.impactUnavailable = null;
       if (this.container) {
         this.container.innerHTML = "";
       }
