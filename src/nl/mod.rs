@@ -598,6 +598,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let nl = generate_nl_description_with_seq_len(&chunk, 512);
@@ -635,6 +636,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let nl = generate_nl_description_with_seq_len(&chunk, 512);
@@ -675,6 +677,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 
@@ -728,6 +731,7 @@ mod tests {
             window_idx: None,
             parent_type_name: Some("CircuitBreaker".to_string()),
             parser_version: 0,
+            is_test: false,
         };
         let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(
@@ -758,6 +762,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let nl = generate_nl_description_with_seq_len(&chunk, 512);
         // Compact: no "A method named" prefix, just tokenized name
@@ -790,6 +795,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let nl = generate_nl_description_with_seq_len(&chunk, 512);
         assert!(nl.contains("standalone"));
@@ -815,6 +821,7 @@ mod tests {
             window_idx: None,
             parent_type_name: Some("CircuitBreaker".to_string()),
             parser_version: 0,
+            is_test: false,
         };
         let nl = generate_nl_with_template_and_seq_len(&chunk, NlTemplate::DocFirst, 512);
         // DocFirst returns early: doc + name only, no parent type context
@@ -870,6 +877,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 

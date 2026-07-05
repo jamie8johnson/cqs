@@ -1097,6 +1097,7 @@ fn test_check_origins_stale_across_batch_boundary() {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // First half stores a divergent old mtime (stale); second half

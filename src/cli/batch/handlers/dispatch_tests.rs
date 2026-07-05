@@ -71,6 +71,7 @@ fn make_chunk(
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 
@@ -547,6 +548,7 @@ fn make_chunk_lang(id: &str, file: &str, name: &str, lang: Language) -> Chunk {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 

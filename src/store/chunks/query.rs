@@ -676,7 +676,7 @@ impl<Mode> Store<Mode> {
         let _span = tracing::debug_span!("chunks_paged", after_rowid, limit).entered();
         self.rt.block_on(async {
             // rowid appended AFTER the pinned ChunkRow columns so the
-            // ordinal contract for `ChunkRow::from_row` (0..15) holds.
+            // ordinal contract for `ChunkRow::from_row` (0..16) holds.
             let sql = format!(
                 "SELECT {cols}, rowid FROM chunks WHERE rowid > ?1 \
                  ORDER BY rowid ASC LIMIT ?2",
@@ -692,7 +692,7 @@ impl<Mode> Store<Mode> {
             let chunks: Vec<ChunkSummary> = rows
                 .iter()
                 .map(|row| {
-                    let rowid: i64 = row.get(16);
+                    let rowid: i64 = row.get(17);
                     if rowid > max_rowid {
                         max_rowid = rowid;
                     }

@@ -95,6 +95,7 @@ fn legacy_md_row(origin: &str, id: &str, name: &str, line_start: u32, byte_start
         parent_type_name: None,
         // The defining fact: this row was written by parser version 8.
         parser_version: 8,
+        is_test: false,
     }
 }
 

@@ -223,6 +223,7 @@ fn seed_chunk(name: &str, file: &str, hash: &str) -> Chunk {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 

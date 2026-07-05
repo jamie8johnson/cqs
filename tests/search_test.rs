@@ -68,6 +68,7 @@ fn chunk_with_path(name: &str, file: &str, lang: Language) -> cqs::Chunk {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 
@@ -873,6 +874,7 @@ fn chunk_with_real_id(name: &str, file: &str, byte_start: u32, lang: Language) -
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 

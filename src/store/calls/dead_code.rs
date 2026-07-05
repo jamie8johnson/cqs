@@ -1242,6 +1242,7 @@ mod tests {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
         }
@@ -1291,6 +1292,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&css_rule, &emb, Some(1)).unwrap();
 
@@ -1334,6 +1336,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&md_func, &emb, Some(1)).unwrap();
 
@@ -1374,6 +1377,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&func_chunk, &emb, Some(12345)).unwrap();
 
@@ -1395,6 +1399,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunk(&method_chunk, &emb, Some(12345))
@@ -1458,6 +1463,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunk(&elixir_macro, &emb, Some(12345))
@@ -1508,6 +1514,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunk(&recursive_macro, &emb, Some(12345))
@@ -1554,6 +1561,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&macro_def, &emb, Some(12345)).unwrap();
 
@@ -1576,6 +1584,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
 
@@ -1620,6 +1629,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&macro_lower, &emb, Some(12345)).unwrap();
 
@@ -1642,6 +1652,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
 
@@ -1695,6 +1706,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunk(&macro_with_underscore, &emb, Some(12345))
@@ -1720,6 +1732,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store.upsert_chunk(&caller, &emb, Some(12345)).unwrap();
 
@@ -1762,6 +1775,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 

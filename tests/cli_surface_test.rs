@@ -340,6 +340,7 @@ fn seed_review_store(dir: &std::path::Path) {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     };
 
@@ -603,6 +604,7 @@ fn seed_session_project(dir: &std::path::Path) {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     };
 

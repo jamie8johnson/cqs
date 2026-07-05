@@ -605,6 +605,7 @@ mod tests {
             parent_id: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let mut emb_vec = vec![0.0_f32; EMBEDDING_DIM];
         emb_vec[0] = 1.0;

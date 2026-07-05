@@ -1042,6 +1042,7 @@ mod output_schema_tests {
             parent_id: Some("parent-id".to_string()), // → has_parent: true
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         };
         let mut sr = SearchResult::new(summary, 0.87);

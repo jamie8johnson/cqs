@@ -710,6 +710,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 
@@ -1189,6 +1190,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(),
+            is_test: false,
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
 
@@ -1323,6 +1325,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: stale_version,
+            is_test: false,
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
 
@@ -1420,6 +1423,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: stale_version,
+            is_test: false,
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
         let disk_fp = FileFingerprint::read_disk(
@@ -1675,6 +1679,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(),
+            is_test: false,
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
         let divergent_fp = cqs::store::FileFingerprint {
@@ -1771,6 +1776,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(),
+            is_test: false,
         };
         let emb = cqs::Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
         let divergent_fp = cqs::store::FileFingerprint {

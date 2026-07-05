@@ -92,6 +92,7 @@ fn seed_doc_store(doc_payload: &str) -> TempDir {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     };
     let emb = dummy_embedding();
     store.upsert_chunk(&chunk, &emb, Some(1)).expect("upsert");

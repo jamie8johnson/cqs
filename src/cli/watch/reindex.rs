@@ -1065,6 +1065,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: version,
+            is_test: false,
         };
         let emb = Embedding::new(vec![0.5; cqs::EMBEDDING_DIM]);
         store

@@ -429,6 +429,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }];
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", None);
@@ -493,6 +494,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
@@ -545,6 +547,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                is_test: false,
                 vendored: false,
             },
             crate::store::ChunkSummary {
@@ -563,6 +566,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                is_test: false,
                 vendored: false,
             },
             crate::store::ChunkSummary {
@@ -581,6 +585,7 @@ mod tests {
                 content_hash: String::new(),
                 window_idx: None,
                 parser_version: 0,
+                is_test: false,
                 vendored: false,
             },
         ];
@@ -661,6 +666,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }];
 
@@ -761,6 +767,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
@@ -804,6 +811,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }
     }

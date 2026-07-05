@@ -75,6 +75,9 @@ struct ChunkFields<'a> {
 
 /// Build a markdown Chunk with common fields pre-filled.
 fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
+    // Markdown has no `#[test]` / `#[cfg(test)]` grammar; the flag rides only
+    // the registry path/name patterns (e.g. a doc under a `/tests/` dir).
+    let is_test = crate::is_test_chunk(&fields.name, &fields.path.to_string_lossy());
     Chunk {
         id: fields.id,
         file: fields.path.to_path_buf(),
@@ -96,6 +99,7 @@ fn make_markdown_chunk(fields: ChunkFields<'_>) -> Chunk {
         window_idx: None,
         parent_type_name: None,
         parser_version: super::chunk::PARSER_VERSION,
+        is_test,
     }
 }
 

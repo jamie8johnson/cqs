@@ -340,8 +340,8 @@ pub(super) async fn batch_insert_chunks(
     needs_embedding: bool,
 ) -> Result<(), StoreError> {
     use crate::store::helpers::sql::max_rows_per_statement;
-    // 24 binds per row (canonical_hash comes after needs_embedding).
-    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(24);
+    // 25 binds per row (is_test comes after canonical_hash).
+    const CHUNK_INSERT_BATCH: usize = max_rows_per_statement(25);
     debug_assert_eq!(
         chunks.len(),
         vendored_per_chunk.len(),
@@ -356,7 +356,7 @@ pub(super) async fn batch_insert_chunks(
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored, needs_embedding, canonical_hash)",
+            "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, embedding_base, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name, parser_version, vendored, needs_embedding, canonical_hash, is_test)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -421,7 +421,12 @@ pub(super) async fn batch_insert_chunks(
                     None::<&str>
                 } else {
                     Some(chunk.canonical_hash.as_str())
-                });
+                })
+                // v33: parse-time test-code flag. Decided in `extract_chunk`
+                // from the AST (#[test] / #[cfg(test)] attributes are
+                // prev-sibling nodes outside the chunk body) and the registry
+                // path/name patterns; read at rank time by CQS_TESTCODE_DEMOTE.
+                .push_bind(if chunk.is_test { 1_i64 } else { 0_i64 });
         });
         // ON CONFLICT upsert preserves enrichment_hash and enrichment_version.
         //
@@ -462,13 +467,15 @@ pub(super) async fn batch_insert_chunks(
              vendored=excluded.vendored, \
              needs_embedding=excluded.needs_embedding, \
              canonical_hash=excluded.canonical_hash, \
+             is_test=excluded.is_test, \
              umap_x=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_x END, \
              umap_y=CASE WHEN chunks.content_hash != excluded.content_hash \
                          THEN NULL ELSE chunks.umap_y END \
              WHERE chunks.content_hash != excluded.content_hash \
                 OR chunks.parser_version != excluded.parser_version \
-                OR chunks.vendored != excluded.vendored",
+                OR chunks.vendored != excluded.vendored \
+                OR chunks.is_test != excluded.is_test",
         );
         qb.build().execute(&mut **tx).await?;
     }

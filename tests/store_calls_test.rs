@@ -1045,6 +1045,7 @@ fn method_chunk(
         window_idx: None,
         parent_type_name: parent_type.map(String::from),
         parser_version: 0,
+        is_test: false,
     }
 }
 

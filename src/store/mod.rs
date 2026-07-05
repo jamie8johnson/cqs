@@ -2256,6 +2256,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let mut v = vec![0.0f32; writer.dim()];
         if !v.is_empty() {
@@ -2526,6 +2527,7 @@ mod tests {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             // A unit-vector embedding of the store's configured dim.
             let mut v = vec![0.0f32; store.dim()];

@@ -185,7 +185,13 @@ pub(crate) fn bm25_ordering_expr() -> String {
 ///   exclusion, so a candidate stored there would read as a false caller. This
 ///   table is callee-name-keyed and never joined by a graph query. Empty on
 ///   migrate; no PARSER_VERSION bump (nothing emits rows yet).
-pub const CURRENT_SCHEMA_VERSION: i32 = 32;
+/// - v33: chunks.is_test INTEGER NOT NULL DEFAULT 0 — parse-time test-code flag
+///   (#[test]-family attribute, #[cfg(test)] / #[cfg(all(test, …))] gate, or the
+///   canonical is_test_chunk registry patterns). Read at rank time by
+///   CQS_TESTCODE_DEMOTE so it sees #[cfg(test)]-in-src/ chunks whose attribute
+///   text is outside the chunk body. Pre-v33 rows default 0 until the
+///   PARSER_VERSION 17→18 bump re-parses them and populates the real flag.
+pub const CURRENT_SCHEMA_VERSION: i32 = 33;
 
 /// Default model name for metadata checks (used by test-only `check_model_version`).
 /// Canonical definition is `embedder::DEFAULT_MODEL_REPO`.

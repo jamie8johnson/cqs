@@ -100,6 +100,9 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                         window_idx: Some(window_idx),
                         parent_type_name: chunk.parent_type_name.clone(),
                         parser_version: chunk.parser_version,
+                        // A window of a test chunk is still test code — inherit
+                        // the parent's parse-time flag rather than re-deriving.
+                        is_test: chunk.is_test,
                     });
                 }
             }

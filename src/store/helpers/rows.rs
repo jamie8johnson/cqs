@@ -11,22 +11,22 @@
 ///   0 id, 1 origin, 2 language, 3 chunk_type, 4 name, 5 signature,
 ///   6 content, 7 doc, 8 line_start, 9 line_end, 10 content_hash,
 ///   11 window_idx, 12 parent_id, 13 parent_type_name,
-///   14 parser_version, 15 vendored
+///   14 parser_version, 15 vendored, 16 is_test
 ///
 /// SELECTs that need additional columns (rowid, embedding, target_type_name)
-/// must append them AFTER the 16 pinned columns so the ChunkRow ordinals
-/// stay stable.
+/// must append them AFTER the 17 pinned columns so the ChunkRow ordinals
+/// stay stable — appended columns are read by ordinal 17+.
 pub(crate) const CHUNK_ROW_SELECT_COLUMNS: &str =
     "id, origin, language, chunk_type, name, signature, content, doc, \
      line_start, line_end, content_hash, window_idx, parent_id, parent_type_name, \
-     parser_version, vendored";
+     parser_version, vendored, is_test";
 
 /// `c.`-prefixed variant of [`CHUNK_ROW_SELECT_COLUMNS`] for joins where
 /// `chunks` is aliased as `c`. Same ordinal contract.
 pub(crate) const CHUNK_ROW_SELECT_COLUMNS_PREFIXED: &str =
     "c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, \
      c.line_start, c.line_end, c.content_hash, c.window_idx, c.parent_id, c.parent_type_name, \
-     c.parser_version, c.vendored";
+     c.parser_version, c.vendored, c.is_test";
 
 /// Clamp i64 to valid u32 line number range (1-indexed)
 ///
@@ -91,15 +91,19 @@ pub(crate) struct ChunkRow {
     /// `try_get` so SELECTs that omit the column still construct a valid row
     /// (defaults to false).
     pub vendored: bool,
+    /// Parse-time test-code flag (`chunks.is_test`, v33). `try_get` so a SELECT
+    /// that omits the column still constructs a valid row (defaults to false);
+    /// read at rank time by the `CQS_TESTCODE_DEMOTE` knob.
+    pub is_test: bool,
 }
 
 impl ChunkRow {
     /// Construct from a SQLite row whose SELECT list begins with the pinned
-    /// 16 columns from [`CHUNK_ROW_SELECT_COLUMNS`] (or its prefixed sibling).
+    /// 17 columns from [`CHUNK_ROW_SELECT_COLUMNS`] (or its prefixed sibling).
     /// Reads via ordinal access — no column-name strcmp scan per row.
     ///
     /// SELECTs may append additional columns (rowid, embedding,
-    /// target_type_name) AFTER ordinal 15; those are read by their named
+    /// target_type_name) AFTER ordinal 16; those are read by their named
     /// callers, not here.
     pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
         use sqlx::Row;
@@ -126,6 +130,11 @@ impl ChunkRow {
                 let v: i64 = row.get(15);
                 v != 0
             },
+            // `try_get` so a SELECT that predates the pinned-column update (or
+            // deliberately omits is_test) still hydrates, defaulting to
+            // not-test. All standard SELECTs use CHUNK_ROW_SELECT_COLUMNS, which
+            // carries it at ordinal 16.
+            is_test: row.try_get::<i64, _>(16).map(|v| v != 0).unwrap_or(false),
         }
     }
 
@@ -154,6 +163,10 @@ impl ChunkRow {
             parser_version: 0,
             vendored: row
                 .try_get::<i64, _>("vendored")
+                .map(|v| v != 0)
+                .unwrap_or(false),
+            is_test: row
+                .try_get::<i64, _>("is_test")
                 .map(|v| v != 0)
                 .unwrap_or(false),
         }
@@ -185,6 +198,7 @@ impl ChunkRow {
             parent_type_name: None,
             parser_version: 0,
             vendored: false,
+            is_test: false,
         }
     }
 }

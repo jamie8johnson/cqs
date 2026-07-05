@@ -550,6 +550,7 @@ mod output_tests {
             parent_id: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }
     }
