@@ -107,10 +107,13 @@ def run_batch(queries: list[dict], k: int = K_TOP) -> list[dict]:
 
             try:
                 out = json.loads(line)
-                if "error" in out:
+                if isinstance(out.get("error"), (str, dict)):
                     results.append({"query": q["query"], "error": out["error"]})
                     continue
-                results.append(out)
+                # Batch lines are enveloped since the json_envelope work:
+                # the search payload (results/query/total) lives under "data".
+                # Unwrap when present; fall through for pre-envelope output.
+                results.append(out.get("data", out))
             except json.JSONDecodeError as e:
                 results.append({"query": q["query"], "error": f"parse: {e}"})
 
@@ -320,7 +323,7 @@ def main():
     lines.append(f"# R@5 Failure-Mode Audit — v3 {args.split}")
     lines.append("")
     lines.append(f"**Run:** {time.strftime('%Y-%m-%d %H:%M:%S')}  ")
-    lines.append(f"**Config:** v1.27.0 shipping (cross_language α=0.10, BGE-large, no centroid classifier)")
+    lines.append("**Config:** current shipping config (hybrid RRF, per-category α, `--splade` leg on; see `cqs --version`)")
     lines.append(f"**Queries:** {n} (loaded from `{src.name}`)")
     lines.append("")
     lines.append("## Top-line")

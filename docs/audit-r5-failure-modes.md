@@ -1,16 +1,16 @@
 # R@5 Failure-Mode Audit — v3 test
 
-**Run:** 2026-04-17 03:25:33  
-**Config:** v1.27.0 shipping (cross_language α=0.10, BGE-large, no centroid classifier)
+**Run:** 2026-07-05 08:48:05  
+**Config:** current shipping config (hybrid RRF, per-category α, `--splade` leg on; see `cqs --version`)
 **Queries:** 109 (loaded from `v3_test.v2.json`)
 
 ## Top-line
 
 | Metric | strict % | permissive % | Δ |
 |---|---|---|---|
-| R@1  | 41.3% (45) | 41.3% (45) | +0.0pp |
-| R@5  | 63.3% (69) | 63.3% (69) | +0.0pp |
-| R@20 | 80.7% (88) | 80.7% (88) | +0.0pp |
+| R@1  | 9.2% (10) | 47.7% (52) | +38.5pp |
+| R@5  | 19.3% (21) | 72.5% (79) | +53.2pp |
+| R@20 | 24.8% (27) | 85.3% (93) | +60.6pp |
 
 - **Strict** = exact `(origin, name, line_start)` match — what `cqs eval` reports.
 - **Permissive** = also accept `(basename(origin), name, line_start)` and `name`-only matches. The gap reveals stale gold paths (worktree carve-outs, doc-to-code rename).
@@ -19,11 +19,12 @@
 
 | match_kind | N |
 |---|---|
-| `strict` | 88 |
-| `none` | 21 |
+| `name` | 66 |
+| `strict` | 27 |
+| `none` | 16 |
 
-The strict R@5 → R@20 gap is **17.4pp**. 
-This audit decomposes the 19 queries that landed in rank [6, 20].
+The strict R@5 → R@20 gap is **5.5pp**. 
+This audit decomposes the 14 queries that landed in rank [6, 20].
 
 ### Baseline drift note
 
@@ -38,12 +39,11 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
 
 | Mode | N | % of near-misses |
 |---|---|---|
-| `near_dup_crowding` | 12 | 63.2% |
-| `wrong_abstraction_top_too_big` | 7 | 36.8% |
-| `wrong_abstraction_top_too_small` | 4 | 21.1% |
-| `truncated_gold` | 3 | 15.8% |
-| `unexplained` | 2 | 10.5% |
-| `eval_artifact_docs` | 1 | 5.3% |
+| `near_dup_crowding` | 10 | 71.4% |
+| `unexplained` | 4 | 28.6% |
+| `wrong_abstraction_top_too_small` | 2 | 14.3% |
+| `eval_artifact_docs` | 2 | 14.3% |
+| `truncated_gold` | 1 | 7.1% |
 
 ### Mode definitions
 
@@ -58,225 +58,170 @@ Each near-miss query is tagged with one or more failure modes. Counts overlap.
 
 ## Per-category breakdown
 
-| Category | N | `eval_artifact_docs` | `near_dup_crowding` | `truncated_gold` | `unexplained` | `wrong_abstraction_top_too_big` | `wrong_abstraction_top_too_small` |
-|---|---|---|---|---|---|---|---|
-| behavioral_search | 3 | 1 | 1 | 0 | 0 | 0 | 1 |
-| conceptual_search | 3 | 0 | 1 | 0 | 1 | 1 | 0 |
-| cross_language | 4 | 0 | 2 | 0 | 0 | 2 | 0 |
-| multi_step | 8 | 0 | 4 | 1 | 0 | 3 | 0 |
-| negation | 5 | 0 | 2 | 0 | 1 | 1 | 1 |
-| type_filtered | 6 | 0 | 2 | 2 | 0 | 0 | 2 |
+| Category | N | `eval_artifact_docs` | `near_dup_crowding` | `truncated_gold` | `unexplained` | `wrong_abstraction_top_too_small` |
+|---|---|---|---|---|---|---|
+| behavioral_search | 4 | 1 | 2 | 0 | 1 | 0 |
+| conceptual_search | 1 | 0 | 1 | 0 | 0 | 0 |
+| cross_language | 3 | 0 | 2 | 0 | 1 | 0 |
+| negation | 5 | 0 | 3 | 0 | 1 | 1 |
+| structural_search | 2 | 0 | 1 | 1 | 0 | 0 |
+| type_filtered | 4 | 1 | 1 | 0 | 1 | 1 |
 
 ## Near-miss queries (rank 6-20)
 
-### `[rank 6]` `multi_step` — classify function AND async definition OR query argument
+### `[rank 6]` `cross_language` — how to define a table with a composite primary key in SQL vs MongoDB
 
-- **Gold:** `classify` in `evals/llm_client.py` (L157-220, `method`, `python`)
+- **Gold:** `sparse_vectors` in `src/schema.sql` (L175-181, `struct`, `sql`)
 - **Failure modes:** `near_dup_crowding`
 - **Top-5:**
-  1. `classify_query` in `src/search/router.rs` (L524-666) score=0.845
-  2. `bench_classify_query_throughput` in `src/search/router.rs` (L1449-1503) score=0.818
-  3. `classify_query` in `docs/plans/adaptive-retrieval.md` (L120-120) score=0.772
-  4. `classify` in `src/search/router.rs` (L1000-1029) score=0.768
-  5. `resolve_splade_alpha` in `src/search/router.rs` (L413-519) score=0.755
+  1. `metadata` in `src/schema.sql` (L66-69) score=0.463
+  2. `metadata` in `docs/DESIGN_SPEC_27k_tokens.md` (L937-940) score=0.461
+  3. `type_edges` in `src/schema.sql` (L206-213) score=0.457
+  4. `notes` in `src/schema.sql` (L219-235) score=0.424
+  5. `sql_table_with_blank_separated_comment_keeps_doc_none` in `src/parser/chunk.rs` (L2540-2560) score=0.423
 
-### `[rank 6]` `multi_step` — functions that search for H1 headings AND return a stripped title string
+### `[rank 6]` `negation` — table definition for chunks that is not a view
 
-- **Gold:** `extract_document_title` in `scripts/clean_md.py` (L20-27, `function`, `python`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `HEADING_TAGS_VUE` in `src/language/languages.rs` (L7729-7729) score=0.850
-  2. `HEADING_TAGS_SVELTE` in `src/language/languages.rs` (L6773-6773) score=0.839
-  3. `HEADING_TAGS_RAZOR` in `src/language/languages.rs` (L5647-5647) score=0.802
-  4. `extract_doc_title` in `src/convert/cleaning.rs` (L142-152) score=0.764
-  5. `extract_text_content_razor` in `src/language/languages.rs` (L5601-5628) score=0.722
-
-### `[rank 6]` `type_filtered` — method implementations on the Store struct
-
-- **Gold:** `Store` in `src/store/search.rs` (L37-218, `impl`, `rust`)
-- **Failure modes:** `wrong_abstraction_top_too_small`
-- **Top-5:**
-  1. `LANG_RUST` in `src/language/languages.rs` (L6127-6286) score=0.823
-  2. `fmt` in `src/store/calls/cross_project.rs` (L26-31) score=0.808
-  3. `DeadFunction` in `src/store/calls/mod.rs` (L29-34) score=0.793
-  4. `search_by_name` in `src/store/search.rs` (L86-149) score=0.779
-  5. `TRAIT_IMPL_RE` in `src/store/calls/mod.rs` (L121-122) score=0.769
-
-### `[rank 7]` `conceptual_search` — schema for tracking function call graph
-
-- **Gold:** `function_calls` in `src/schema.sql` (L78-85, `struct`, `sql`)
-- **Failure modes:** `unexplained`
-- **Top-5:**
-  1. `CallContext` in `src/nl/mod.rs` (L32-37) score=0.860
-  2. `FunctionCallStats` in `src/store/calls/mod.rs` (L110-117) score=0.831
-  3. `CallStats` in `src/store/calls/mod.rs` (L101-106) score=0.804
-  4. `type_edges` in `src/schema.sql` (L95-102) score=0.801
-  5. `find_hotspots` in `src/impact/hints.rs` (L258-272) score=0.794
-
-### `[rank 7]` `multi_step` — table named notes AND columns with NOT NULL constraint
-
-- **Gold:** `notes` in `src/schema.sql` (L108-118, `struct`, `sql`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `parse_notes_str` in `src/note.rs` (L325-348) score=0.802
-  2. `NoteFile` in `src/note.rs` (L54-57) score=0.797
-  3. `parse_notes` in `src/note.rs` (L129-192) score=0.796
-  4. `NoteError` in `src/note.rs` (L24-37) score=0.793
-  5. `rewrite_notes_file` in `src/note.rs` (L198-318) score=0.784
-
-### `[rank 7]` `type_filtered` — impl blocks for ModelConfig
-
-- **Gold:** `ModelConfig` in `src/embedder/models.rs` (L147-383, `impl`, `rust`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_small`
-- **Top-5:**
-  1. `model_config` in `src/embedder/mod.rs` (L340-342) score=0.843
-  2. `ensure_model` in `src/embedder/mod.rs` (L897-967) score=0.792
-  3. `Cli` in `src/cli/definitions.rs` (L269-290) score=0.787
-  4. `Embedder` in `src/embedder/mod.rs` (L257-894) score=0.770
-  5. `model_config` in `src/cli/definitions.rs` (L285-289) score=0.751
-
-### `[rank 8]` `behavioral_search` — parse function signatures
-
-- **Gold:** `extract_signature` in `src/parser/chunk.rs` (L135-167, `function`, `rust`)
+- **Gold:** `chunks` in `src/schema.sql` (L41-71, `struct`, `sql`)
 - **Failure modes:** `near_dup_crowding`
 - **Top-5:**
-  1. `SignatureStyle` in `src/language/mod.rs` (L432-444) score=0.929
-  2. `extract_return_powershell` in `src/language/languages.rs` (L4971-4974) score=0.836
-  3. `extract_return_scala` in `src/language/languages.rs` (L6328-6350) score=0.831
-  4. `extract_return_javascript` in `src/language/languages.rs` (L3213-3217) score=0.828
-  5. `extract_return_solidity` in `src/language/languages.rs` (L6407-6424) score=0.826
+  1. `schema_sql_chunks_every_create_table` in `src/parser/chunk.rs` (L1195-1230) score=0.593
+  2. `sql_tables_around_error_recovery_all_chunk` in `src/parser/chunk.rs` (L1240-1271) score=0.563
+  3. `sql_table_with_blank_separated_comment_keeps_doc_none` in `src/parser/chunk.rs` (L2540-2560) score=0.547
+  4. `ChunkClass` in `src/language/mod.rs` (L784-792) score=0.543
+  5. `ChunkType` in `src/language/mod.rs` (L794-892) score=0.537
 
-### `[rank 8]` `negation` — markdown cleaning utility that is not a library
+### `[rank 6]` `type_filtered` — methods for onboarding commands
 
-- **Gold:** `main` in `scripts/clean_md.py` (L349-393, `function`, `python`)
+- **Gold:** `cmd_onboard` in `src/cli/commands/search/onboard.rs` (L8-141, `function`, `rust`)
 - **Failure modes:** `unexplained`
 - **Top-5:**
-  1. `definition_markdown` in `src/language/languages.rs` (L4246-4248) score=0.852
-  2. `LANG_MARKDOWN` in `src/language/languages.rs` (L4167-4244) score=0.794
-  3. `pdf_to_markdown` in `src/convert/pdf.rs` (L13-47) score=0.677
-  4. `clean_markdown_file` in `scripts/clean_md.py` (L257-319) score=0.619
-  5. `clean_markdown` in `src/convert/cleaning.rs` (L109-139) score=0.615
+  1. `dispatch_onboard` in `src/cli/batch/handlers/info.rs` (L212-238) score=0.593
+  2. `Commands` in `src/cli/definitions.rs` (L407-1111) score=0.569
+  3. `Commands` in `src/cli/definitions.rs` (L1118-1284) score=0.567
+  4. `cmd_onboard_dispatch` in `src/cli/commands/dispatch_shims.rs` (L597-615) score=0.558
+  5. `build_batch_cmd` in `src/cli/batch/json_args.rs` (L243-603) score=0.556
 
-### `[rank 8]` `type_filtered` — delegate and event handler type definitions
+### `[rank 7]` `cross_language` — how to implement a multi-part string hash in Python vs Go
 
-- **Gold:** `StructuralMatcherFn` in `src/language/mod.rs` (L191-191, `typealias`, `rust`)
+- **Gold:** `_hash` in `evals/llm_client.py` (L103-108, `function`, `python`)
+- **Failure modes:** `near_dup_crowding`
+- **Top-5:**
+  1. `python_hash_comment_does_not_change_canonical_hash` in `src/parser/chunk.rs` (L1419-1423) score=0.640
+  2. `python_code_change_does_change_canonical_hash` in `src/parser/chunk.rs` (L1426-1430) score=0.625
+  3. `canonical_hash_fallback` in `src/parser/chunk.rs` (L179-183) score=0.577
+  4. `hash_file` in `src/hnsw/persist.rs` (L211-228) score=0.521
+  5. `_hash` in `evals/claude_client.py` (L47-52) score=0.512
+
+### `[rank 8]` `conceptual_search` — composite primary key table definition
+
+- **Gold:** `llm_summaries` in `src/schema.sql` (L208-215, `struct`, `sql`)
+- **Failure modes:** `near_dup_crowding`
+- **Top-5:**
+  1. `metadata` in `docs/DESIGN_SPEC_27k_tokens.md` (L937-940) score=0.408
+  2. `type_edges` in `src/schema.sql` (L206-213) score=0.394
+  3. `metadata` in `src/schema.sql` (L66-69) score=0.380
+  4. `file_registry` in `src/schema.sql` (L139-145) score=0.374
+  5. `sparse_vectors` in `src/schema.sql` (L252-258) score=0.372
+
+### `[rank 8]` `negation` — LLMClient validate method that is not synchronous
+
+- **Gold:** `LLMClient` in `evals/llm_client.py` (L111-286, `class`, `python`)
+- **Failure modes:** `near_dup_crowding`
+- **Top-5:**
+  1. `LlmClient` in `src/llm/mod.rs` (L629-656) score=0.697
+  2. `LlmClient` in `src/llm/batch.rs` (L26-367) score=0.696
+  3. `LlmClient` in `src/llm/prompts.rs` (L189-326) score=0.688
+  4. `LlmClient` in `src/llm/batch.rs` (L369-435) score=0.677
+  5. `LlmClient` in `src/llm/mod.rs` (L623-627) score=0.632
+
+### `[rank 8]` `structural_search` — enum variants for different kinds of code chunks
+
+- **Gold:** `CODE_KINDS` in `evals/generate_from_chunks.py` (L51-52, `constant`, `python`)
 - **Failure modes:** `near_dup_crowding`, `truncated_gold`
 - **Top-5:**
-  1. `post_process_swift_swift` in `src/language/languages.rs` (L7020-7095) score=0.683
-  2. `Language` in `src/language/mod.rs` (L1003-1057) score=0.676
-  3. `extract_method_receiver_type` in `src/parser/chunk.rs` (L330-343) score=0.673
-  4. `LANG_FSHARP` in `src/language/languages.rs` (L1593-1710) score=0.662
-  5. `LANG_RUST` in `src/language/languages.rs` (L6127-6286) score=0.662
+  1. `ChunkType` in `docs/DESIGN_SPEC_27k_tokens.md` (L177-181) score=0.871
+  2. `ChunkClass` in `src/language/mod.rs` (L784-792) score=0.869
+  3. `ChunkType` in `src/language/mod.rs` (L794-892) score=0.740
+  4. `code_types` in `src/language/mod.rs` (L859-861) score=0.732
+  5. `define_chunk_types` in `src/language/mod.rs` (L553-699) score=0.718
 
-### `[rank 9]` `cross_language` — SQL equivalent of a TypeScript interface for a code chunk table
-
-- **Gold:** `chunks` in `src/schema.sql` (L22-45, `struct`, `sql`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `ChunkType` in `src/language/mod.rs` (L676-751) score=1.117
-  2. `LANG_VUE` in `src/language/languages.rs` (L7852-7949) score=0.979
-  3. `type_edges` in `src/schema.sql` (L95-102) score=0.959
-  4. `LANG_TYPESCRIPT` in `src/language/languages.rs` (L7334-7442) score=0.852
-  5. `post_process_zig_zig` in `src/language/languages.rs` (L8091-8146) score=0.812
-
-### `[rank 9]` `multi_step` — functions that build a query set AND take an existing path
-
-- **Gold:** `build_query_set` in `evals/generate_queries.py` (L270-316, `function`, `python`)
-- **Failure modes:** `near_dup_crowding`
-- **Top-5:**
-  1. `QUERIES_DIR` in `evals/alpha_sweep_v3.py` (L44-44) score=0.744
-  2. `QUERIES_DIR` in `evals/audit_r5_failure_modes.py` (L39-39) score=0.744
-  3. `QUERIES_DIR` in `evals/build_pools.py` (L28-28) score=0.744
-  4. `QUERIES_DIR` in `evals/build_reranker_train.py` (L27-27) score=0.744
-  5. `QUERIES_DIR` in `evals/centroid_classifier.py` (L29-29) score=0.744
-
-### `[rank 9]` `negation` — audit mode that forces direct code examination without cached notes
-
-- **Gold:** `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L373-383, `method`, `rust`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `audit_state` in `src/cli/batch/mod.rs` (L865-868) score=0.753
-  2. `invalidate_mutable_caches` in `src/cli/batch/mod.rs` (L384-427) score=0.720
-  3. `notes` in `src/cli/batch/mod.rs` (L871-894) score=0.709
-  4. `suggest_notes` in `src/suggest.rs` (L41-77) score=0.678
-  5. `cached_notes_summaries` in `src/store/metadata.rs` (L261-284) score=0.630
-
-### `[rank 10]` `behavioral_search` — how does train_pairs extract NL description and code pairs for embedding fine-tuning
+### `[rank 9]` `behavioral_search` — how does train_pairs extract NL description and code pairs for embedding fine-tuning
 
 - **Gold:** `load_pairs` in `docs/superpowers/plans/2026-03-20-code-reranker.md` (L43-92, `function`, `python`)
-- **Failure modes:** `eval_artifact_docs`, `wrong_abstraction_top_too_small`
+- **Failure modes:** `eval_artifact_docs`, `near_dup_crowding`
 - **Top-5:**
-  1. `TrainPair` in `src/cli/commands/train/train_pairs.rs` (L14-20) score=0.813
-  2. `embed_batch` in `src/embedder/mod.rs` (L751-893) score=0.800
-  3. `extract_return_nl` in `src/nl/mod.rs` (L433-435) score=0.796
-  4. `generate_nl_with_call_context_and_summary` in `src/nl/mod.rs` (L65-154) score=0.791
-  5. `make_hidden` in `src/embedder/mod.rs` (L1219-1225) score=0.788
+  1. `build_nl_description` in `src/cli/commands/train/train_pairs.rs` (L23-50) score=0.545
+  2. `TrainPair` in `src/cli/commands/train/train_pairs.rs` (L14-20) score=0.542
+  3. `extract_params_nl` in `src/nl/mod.rs` (L387-428) score=0.488
+  4. `build_nl_without_doc` in `src/cli/commands/train/train_pairs.rs` (L203-208) score=0.486
+  5. `cmd_train_pairs` in `src/cli/commands/train/train_pairs.rs` (L82-165) score=0.483
 
-### `[rank 10]` `type_filtered` — struct definitions in src/cli/commands/infra
+### `[rank 10]` `behavioral_search` — evict old entries from the global embedding cache by size limit
 
-- **Gold:** `BatchInput` in `src/cli/batch/commands.rs` (L25-28, `struct`, `rust`)
-- **Failure modes:** `truncated_gold`
+- **Gold:** `evict` in `src/cache/query_cache.rs` (L114-192, `method`, `rust`)
+- **Failure modes:** `near_dup_crowding`
 - **Top-5:**
-  1. `Cli` in `src/cli/definitions.rs` (L136-267) score=0.822
-  2. `ModelListEntry` in `src/cli/commands/infra/model.rs` (L88-93) score=0.778
-  3. `Wrapper` in `src/cli/commands/eval/mod.rs` (L219-222) score=0.768
-  4. `EnvVar` in `src/cli/commands/infra/doctor.rs` (L446-449) score=0.767
-  5. `Wrapper` in `src/cli/commands/eval/mod.rs` (L202-205) score=0.764
+  1. `EmbeddingCache` in `src/cache/embedding_cache.rs` (L26-789) score=0.728
+  2. `evict_embeddings_cache_with_runtime` in `src/cli/batch/mod.rs` (L333-401) score=0.658
+  3. `embedding_cache_evict_lock_is_process_global` in `src/cache/embedding_cache.rs` (L2155-2167) score=0.656
+  4. `EmbeddingCache` in `src/cache/embedding_cache.rs` (L15-24) score=0.603
+  5. `evict` in `src/cache/embedding_cache.rs` (L438-519) score=0.581
 
-### `[rank 11]` `conceptual_search` — composite primary key table definition
+### `[rank 10]` `type_filtered` — method implementations on the Store struct
 
-- **Gold:** `llm_summaries` in `src/schema.sql` (L167-174, `struct`, `sql`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
+- **Gold:** `Store` in `docs/DESIGN_SPEC_27k_tokens.md` (L979-1035, `impl`, `rust`)
+- **Failure modes:** `eval_artifact_docs`, `near_dup_crowding`, `wrong_abstraction_top_too_small`
 - **Top-5:**
-  1. `migrate_v15_to_v16` in `src/store/migrations.rs` (L353-384) score=0.753
-  2. `migrate_v16_to_v17` in `src/store/migrations.rs` (L392-417) score=0.711
-  3. `llm_summaries_v2` in `docs/superpowers/specs/2026-03-19-improve-docs-design.md` (L38-45) score=0.697
-  4. `metadata` in `src/schema.sql` (L17-20) score=0.677
-  5. `migrate_v12_to_v13` in `src/store/migrations.rs` (L281-295) score=0.664
+  1. `Store` in `src/cli/pipeline/chunkloss_interleaving_model.rs` (L155-158) score=0.740
+  2. `Store` in `src/cli/batch/tasks/publication_interleaving_model.rs` (L166-168) score=0.738
+  3. `Store` in `docs/DESIGN_SPEC_27k_tokens.md` (L928-930) score=0.695
+  4. `advance_store` in `src/hnsw/persist.rs` (L2997-3023) score=0.592
+  5. `Store` in `docs/AUDIT_2026-01-31.md` (L115-122) score=0.588
 
-### `[rank 11]` `cross_language` — how to define a table with foreign key constraints in SQLite vs PostgreSQL
+### `[rank 13]` `negation` — load vectors from directory not using a database
 
-- **Gold:** `type_edges` in `src/schema.sql` (L95-102, `struct`, `sql`)
-- **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `migrate_v15_to_v16` in `src/store/migrations.rs` (L353-384) score=0.747
-  2. `CandidateRow` in `src/store/helpers/rows.rs` (L27-40) score=0.730
-  3. `migrate_v10_to_v11` in `src/store/migrations.rs` (L234-257) score=0.728
-  4. `migrate_v11_to_v12` in `src/store/migrations.rs` (L263-272) score=0.719
-  5. `migrate_v16_to_v17` in `src/store/migrations.rs` (L392-417) score=0.715
-
-### `[rank 13]` `multi_step` — structs that have a project String AND flatten CallerInfo
-
-- **Gold:** `CrossProjectCaller` in `src/store/calls/cross_project.rs` (L36-41, `struct`, `rust`)
-- **Failure modes:** `wrong_abstraction_top_too_big`
-- **Top-5:**
-  1. `CallersArgs` in `src/cli/args.rs` (L281-292) score=0.755
-  2. `CallersArgs` in `src/cli/args.rs` (L253-259) score=0.749
-  3. `CrossProjectContext` in `src/store/calls/cross_project.rs` (L64-68) score=0.748
-  4. `post_process_solidity_solidity` in `src/language/languages.rs` (L6512-6530) score=0.716
-  5. `post_process_cpp_cpp` in `src/language/languages.rs` (L273-306) score=0.715
-
-### `[rank 14]` `negation` — training data generator that is not for non-git repositories
-
-- **Gold:** `generate_training_data` in `src/train_data/mod.rs` (L96-367, `function`, `rust`)
+- **Gold:** `load_with_dim` in `src/hnsw/persist.rs` (L686-954, `method`, `rust`)
 - **Failure modes:** `near_dup_crowding`, `wrong_abstraction_top_too_small`
 - **Top-5:**
-  1. `git_log_rejects_non_repo` in `src/train_data/git.rs` (L535-542) score=0.799
-  2. `validate_git_repo_rejects_non_repo` in `src/train_data/git.rs` (L500-514) score=0.786
-  3. `git_log` in `src/train_data/git.rs` (L65-126) score=0.765
-  4. `validate_git_repo` in `src/train_data/git.rs` (L25-46) score=0.763
-  5. `Embedder` in `src/embedder/mod.rs` (L217-249) score=0.745
+  1. `load_vectors` in `examples/exp_level_scale.rs` (L134-144) score=0.617
+  2. `count_vectors` in `src/hnsw/persist.rs` (L1394-1477) score=0.592
+  3. `try_load_base_with_ef` in `src/hnsw/persist.rs` (L1498-1504) score=0.583
+  4. `try_load_with_ef` in `src/hnsw/persist.rs` (L1484-1490) score=0.577
+  5. `try_load_named` in `src/hnsw/persist.rs` (L1507-1545) score=0.548
 
-### `[rank 16]` `multi_step` — virtual table using fts5 AND tokenize unicode61
+### `[rank 15]` `cross_language` — SQL equivalent of a TypeScript interface for a code chunk table
 
-- **Gold:** `notes_fts` in `src/schema.sql` (L123-127, `struct`, `sql`)
-- **Failure modes:** `truncated_gold`
+- **Gold:** `chunks` in `src/schema.sql` (L41-71, `struct`, `sql`)
+- **Failure modes:** `unexplained`
 - **Top-5:**
-  1. `extract_name_fallback_with_unicode_before_keyword` in `src/parser/chunk.rs` (L986-990) score=0.681
-  2. `TYPE_HINT_TABLE` in `src/search/router.rs` (L850-855) score=0.678
-  3. `v` in `src/daemon_translate.rs` (L157-159) score=0.666
-  4. `v` in `src/daemon_translate.rs` (L292-294) score=0.666
-  5. `extract_name_fallback` in `src/parser/chunk.rs` (L228-254) score=0.642
+  1. `ChunkType` in `src/language/mod.rs` (L794-892) score=0.706
+  2. `type_edges` in `src/schema.sql` (L206-213) score=0.702
+  3. `schema_sql_chunks_every_create_table` in `src/parser/chunk.rs` (L1195-1230) score=0.647
+  4. `sql_tables_around_error_recovery_all_chunk` in `src/parser/chunk.rs` (L1240-1271) score=0.623
+  5. `ChunkType` in `docs/DESIGN_SPEC_27k_tokens.md` (L177-181) score=0.621
+
+### `[rank 16]` `negation` — load HNSW index from disk not build from scratch
+
+- **Gold:** `try_load_with_ef` in `src/hnsw/persist.rs` (L1068-1074, `method`, `rust`)
+- **Failure modes:** `unexplained`
+- **Top-5:**
+  1. `HnswIndex` in `src/hnsw/build.rs` (L8-283) score=0.711
+  2. `HnswIndex` in `src/hnsw/persist.rs` (L682-1546) score=0.697
+  3. `build_hnsw_index_owned_round_trips_through_disk` in `docs/audit-fix-scratch-v1.33.0/p2-b.md` (L2414-2422) score=0.693
+  4. `build_hnsw_index_owned_round_trips_through_disk` in `docs/audit-fix-prompts-v1.30.0.md` (L5798-5806) score=0.677
+  5. `build_hnsw_index` in `src/cli/commands/index/build.rs` (L1511-1517) score=0.669
+
+### `[rank 18]` `behavioral_search` — retry with exponential backoff
+
+- **Gold:** `record_failure` in `src/cli/watch/rebuild.rs` (L136-145, `method`, `rust`)
+- **Failure modes:** `unexplained`
+- **Top-5:**
+  1. `backoff_after_failure_delays_retry` in `src/cli/watch/tests.rs` (L155-164) score=0.517
+  2. `backoff_initial_state_allows_retry` in `src/cli/watch/tests.rs` (L149-152) score=0.508
+  3. `retry_with_backoff` in `tests/fixtures/eval_python.py` (L11-21) score=0.507
+  4. `DEFAULT_RETRY_BACKOFFS_MS` in `src/llm/local.rs` (L51-51) score=0.482
+  5. `RetryWithBackoff` in `tests/fixtures/eval_go.go` (L18-32) score=0.450
 
 ## Strategy implications
 
@@ -284,18 +229,17 @@ Each lever's *expected R@5 lift on v3 test* is a back-of-envelope ceiling — as
 
 | Mode | Near-misses | R@5 ceiling if fully solved | Lever |
 |---|---|---|---|
-| `near_dup_crowding` | 12/109 | +11.0pp | MMR re-rank on top-K pool (λ≈0.5-0.7). Cheap, no model change. |
-| `wrong_abstraction_top_too_big` | 7/109 | +6.4pp | Chunk-type aware boost when query intent demands detail (e.g. `extract_*` queries → leaf functions). |
-| `wrong_abstraction_top_too_small` | 4/109 | +3.7pp | Boost orchestrators when query verbs/nouns suggest top-down (e.g. 'workflow', 'pipeline'). |
-| `truncated_gold` | 3/109 | +2.8pp | Chunker fix: pad short chunks with leading docstring/comment block. Schema-level lift. |
-| `unexplained` | 2/109 | +1.8pp | Reranker V2 (Phase 2 in flight) — catches lexical mismatch via cross-encoder. |
-| `eval_artifact_docs` | 1/109 | +0.9pp | Eval-data fix or re-judging: gold-in-docs is often a superseded plan target. Check if production code with same name exists; if so, swap gold. |
+| `near_dup_crowding` | 10/109 | +9.2pp | MMR re-rank on top-K pool (λ≈0.5-0.7). Cheap, no model change. |
+| `unexplained` | 4/109 | +3.7pp | Reranker V2 (Phase 2 in flight) — catches lexical mismatch via cross-encoder. |
+| `wrong_abstraction_top_too_small` | 2/109 | +1.8pp | Boost orchestrators when query verbs/nouns suggest top-down (e.g. 'workflow', 'pipeline'). |
+| `eval_artifact_docs` | 2/109 | +1.8pp | Eval-data fix or re-judging: gold-in-docs is often a superseded plan target. Check if production code with same name exists; if so, swap gold. |
+| `truncated_gold` | 1/109 | +0.9pp | Chunker fix: pad short chunks with leading docstring/comment block. Schema-level lift. |
 
 **Recommended ordering** (by effort/impact):
 
-1. **Eval-data hygiene first** (1 queries). Re-baselining without fixing eval artifacts means we're chasing noise.
-2. **MMR for `near_dup_crowding`** (12 queries — biggest single mode). 1-2 day implementation, no model change. Sanity-check on v3 dev before merging.
-3. **Reranker V2 for `unexplained`** (2 queries). Already in flight (Phase 2 corpus build). Wait for trained model.
-4. **Chunker tuning for `truncated_gold`** (3 queries). Bigger lift; gated on training-data signal that it's worth a reindex.
+1. **Eval-data hygiene first** (2 queries). Re-baselining without fixing eval artifacts means we're chasing noise.
+2. **MMR for `near_dup_crowding`** (10 queries — biggest single mode). 1-2 day implementation, no model change. Sanity-check on v3 dev before merging.
+3. **Reranker V2 for `unexplained`** (4 queries). Already in flight (Phase 2 corpus build). Wait for trained model.
+4. **Chunker tuning for `truncated_gold`** (1 queries). Bigger lift; gated on training-data signal that it's worth a reindex.
 5. **Skip `classifier_misroute` standalone work**. Centroid pilot proved this lever is harder than it looks (−4.6pp). Better lift comes from removing the router entirely once Reranker V2 lands.
 
