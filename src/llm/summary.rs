@@ -87,7 +87,9 @@ pub fn llm_summary_pass(
         batch_items.push(super::provider::BatchSubmitItem {
             custom_id: ec.content_hash.clone(),
             content: prompt,
-            context: ec.chunk_type.clone(),
+            // Summary batches submit as `BatchKind::Prebuilt`: the full prompt
+            // is already baked into `content`, so no per-item context is read.
+            context: super::provider::PromptContext::Prebuilt,
             language: ec.language.clone(),
         });
     }

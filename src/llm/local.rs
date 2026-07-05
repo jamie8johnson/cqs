@@ -498,7 +498,7 @@ impl LocalProvider {
         auth_failures: &Mutex<usize>,
         auth_attempts: &Mutex<usize>,
     ) -> Result<Option<String>, LlmError> {
-        let prompt = prompt_builder(&item.content, &item.context, &item.language);
+        let prompt = prompt_builder(&item.content, item.context.payload(), &item.language);
         let body = serde_json::json!({
             "model": self.model,
             "max_tokens": max_tokens,
@@ -845,7 +845,7 @@ mod tests {
             .map(|i| BatchSubmitItem {
                 custom_id: format!("hash_{}", i),
                 content: format!("fn foo_{}() {{}}", i),
-                context: "function".to_string(),
+                context: crate::llm::provider::PromptContext::Prebuilt,
                 language: "rust".to_string(),
             })
             .collect()
