@@ -51,7 +51,7 @@ use tempfile::TempDir;
 
 /// The just-built binary under test — spawned as both the daemon and the
 /// listener so the seam under test is production wiring, not a harness stand-in.
-const CQS_BIN: &str = env!("CARGO_BIN_EXE_cqs");
+const EXE_PATH: &str = env!("CARGO_BIN_EXE_cqs");
 
 /// A fixed bearer token supplied to the listener via `CQS_MCP_HTTP_TOKEN` and
 /// presented on every request. The listener's auth is unconditional; a mismatch
@@ -88,7 +88,7 @@ fn make_project() -> (TempDir, PathBuf) {
 /// index build cold-loads the embedder, so its failure is the model-absent
 /// signal a spawned-binary test cannot observe from inside the child.
 fn init_and_index(root: &Path) -> bool {
-    let init = Command::new(CQS_BIN)
+    let init = Command::new(EXE_PATH)
         .args(["init"])
         .current_dir(root)
         .stdout(Stdio::null())
@@ -97,7 +97,7 @@ fn init_and_index(root: &Path) -> bool {
         .expect("spawn cqs init");
     assert!(init.success(), "cqs init must succeed");
 
-    let index = Command::new(CQS_BIN)
+    let index = Command::new(EXE_PATH)
         .args(["index"])
         .current_dir(root)
         .stdout(Stdio::null())
@@ -133,7 +133,7 @@ struct DaemonHarness {
 
 impl DaemonHarness {
     fn spawn(root: &Path, socket_dir: &Path) -> Self {
-        let child = Command::new(CQS_BIN)
+        let child = Command::new(EXE_PATH)
             .args(["watch", "--serve"])
             .current_dir(root)
             .env("XDG_RUNTIME_DIR", socket_dir)
@@ -188,7 +188,7 @@ struct ListenerHarness {
 
 impl ListenerHarness {
     fn spawn(root: &Path, socket_dir: &Path) -> Self {
-        let mut child = Command::new(CQS_BIN)
+        let mut child = Command::new(EXE_PATH)
             .args(["mcp", "--http", "0", "--bind", "127.0.0.1"])
             .current_dir(root)
             .env("XDG_RUNTIME_DIR", socket_dir)
