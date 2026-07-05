@@ -72,13 +72,28 @@ pub(in crate::cli::batch) fn dispatch_task_verb(
 /// daemon-socket surface; the MCP transport converts to the spec's
 /// milliseconds at its boundary (`descriptor_ttl_secs_to_ms`).
 fn descriptor_json(d: &TaskDescriptor) -> Value {
-    json!({
+    let mut v = json!({
         "taskId": d.task_id,
         "status": d.status.as_wire(),
         "createdAt": d.created_at,
         "lastUpdatedAt": d.last_updated_at,
         "ttl": d.ttl_secs,
-    })
+    });
+    // Additive `{done, total}` progress (D2). Skip-if-none: a counter-less or
+    // cross-version descriptor emits NO `progress` key rather than a `null` —
+    // the transport reads it skip-if-absent, and a `null` would be a distinct,
+    // wrong wire shape. `as_object_mut` is fence-safe (no panic): the `json!`
+    // literal above is always an object, and the `if let` degrades to a no-op
+    // in the impossible non-object case.
+    if let Some(p) = d.progress {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "progress".to_string(),
+                json!({ "done": p.done, "total": p.total }),
+            );
+        }
+    }
+    v
 }
 
 /// `eval-task`: parse the eval core knobs + the resolved `ttl_secs`, then admit
@@ -214,6 +229,30 @@ mod tests {
         let d = store.describe(&entry);
         let v = descriptor_json(&d);
         assert_eq!(v.get("ttl").and_then(|t| t.as_u64()), Some(900));
+    }
+
+    /// The wire `task-get` descriptor MUST carry the `{done, total}` progress
+    /// (design D2, line 35) — the whole point of PR1 is a poller observing it.
+    /// A store-produced descriptor always has `Some` progress; the admission
+    /// path stamps `total` = M before the entry is pollable.
+    #[test]
+    fn descriptor_json_carries_stamped_progress() {
+        let store = TaskStore::new();
+        let entry = store.new_entry(0, Some(900));
+        entry.stamp_progress_total(5);
+        let d = store.describe(&entry);
+        let v = descriptor_json(&d);
+        let p = v.get("progress").expect("progress key present on the wire");
+        assert_eq!(
+            p.get("total").and_then(|t| t.as_u64()),
+            Some(5),
+            "total = M"
+        );
+        assert_eq!(
+            p.get("done").and_then(|t| t.as_u64()),
+            Some(0),
+            "done starts at 0 before the worker runs"
+        );
     }
 
     #[test]
