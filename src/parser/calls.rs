@@ -3664,9 +3664,9 @@ fn install() {
     /// with a 1 MiB stack** — small enough that the UNFIXED recursive walk
     /// overflows it (aborting the test binary, a red failure), large enough that
     /// the depth-capped walk completes and the thread joins cleanly. They are the
-    /// `calls.rs` siblings of `chunk.rs`'s `deep_tree_stack_safety` module
-    /// (which guards the already-iterative `collect_comment_ranges` /
-    /// `find_type_identifier_recursive`).
+    /// `calls.rs` siblings of `chunk.rs`'s `deep_tree_stack_safety` module (which
+    /// guards the already-iterative `collect_comment_ranges`) and the language
+    /// module's `go_receiver_tests` (which guards `find_type_identifier_recursive`).
     mod deep_walk_stack_safety {
         use super::*;
 

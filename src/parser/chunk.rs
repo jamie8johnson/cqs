@@ -1084,7 +1084,7 @@ fn infer_chunk_type(
 
     // Check if the node itself is a method kind (e.g., Go's "method_declaration")
     if def.method_node_kinds.contains(&node.kind()) {
-        let parent_type = extract_method_receiver_type(node, language, source);
+        let parent_type = def.receiver_type_extractor.and_then(|ex| ex(node, source));
         return (ChunkType::Method, parent_type);
     }
 
@@ -1136,46 +1136,6 @@ fn extract_container_type_name(
         n.child_by_field_name("name")
             .map(|name| source[name.byte_range()].to_string())
     })
-}
-
-/// Extract receiver type from a Go method_declaration.
-/// Go methods: `func (r *Server) Handle()` → "Server"
-fn extract_method_receiver_type(
-    node: tree_sitter::Node,
-    language: Language,
-    source: &str,
-) -> Option<String> {
-    if language != Language::Go {
-        return None;
-    }
-    // method_declaration → receiver (parameter_list) → parameter_declaration → type
-    let receiver = node.child_by_field_name("receiver")?;
-    let first_param = receiver.named_child(0)?;
-    // type_identifier may be nested in pointer_type
-    find_type_identifier_recursive(first_param, source)
-}
-
-/// Find the first `type_identifier` node (pre-order) and return its text.
-/// Used for Go where the type may be wrapped in `pointer_type`.
-///
-/// Iterative (explicit work stack) rather than recursive for the same
-/// stack-safety reason as [`collect_comment_ranges`]: a deeply-nested parse
-/// tree must not overflow a rayon worker stack. Children are pushed in reverse
-/// so the first child is popped first, preserving the original pre-order
-/// (depth-first, leftmost) search that returns the shallowest-leftmost match.
-fn find_type_identifier_recursive(node: tree_sitter::Node, source: &str) -> Option<String> {
-    let mut stack: Vec<tree_sitter::Node> = vec![node];
-    while let Some(n) = stack.pop() {
-        if n.kind() == "type_identifier" {
-            return Some(source[n.byte_range()].to_string());
-        }
-        let mut cursor = n.walk();
-        let children: Vec<tree_sitter::Node> = n.children(&mut cursor).collect();
-        for child in children.into_iter().rev() {
-            stack.push(child);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -2316,6 +2276,37 @@ func (p Point) Distance() float64 { return 0.0 }
             let method = chunks.iter().find(|c| c.name == "Distance").unwrap();
             assert_eq!(method.chunk_type, ChunkType::Method);
             assert_eq!(method.parent_type_name.as_deref(), Some("Point"));
+        }
+
+        /// Pins today's behavior: Ruby's `singleton_method` matches
+        /// `method_node_kinds` and yields a `Method` with no parent type, because
+        /// Ruby sets no `receiver_type_extractor`. A follow-up container-recovery
+        /// lane will change indexed data by giving the method its enclosing class;
+        /// this guard makes that flip visible rather than silent.
+        #[test]
+        fn test_ruby_singleton_method_has_no_parent_type() {
+            let content = "class Foo\n  def self.bar\n  end\nend\n";
+            let file = write_temp_file(content, "rb");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "bar").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name, None);
+        }
+
+        /// Same pin for Structured Text: a `method_definition` matches
+        /// `method_node_kinds` and yields a `Method` with no parent type (no
+        /// `receiver_type_extractor` on the ST def). Guards the same forthcoming
+        /// container-recovery flip.
+        #[test]
+        fn test_structured_text_method_has_no_parent_type() {
+            let content = "CLASS Foo\nMETHOD bar\nEND_METHOD\nEND_CLASS\n";
+            let file = write_temp_file(content, "st");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "bar").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name, None);
         }
 
         #[test]
@@ -3554,41 +3545,6 @@ CREATE TABLE accounts (
                 !ranges.is_empty(),
                 "the trailing comment range should be collected"
             );
-        }
-
-        #[test]
-        fn find_type_identifier_no_overflow_on_deep_tree() {
-            // Same deep-paren tree, no type_identifier present: the walker must
-            // exhaust the whole tree iteratively and return None without
-            // overflowing.
-            let depth = 50_000;
-            let mut src = String::with_capacity(depth * 2 + 16);
-            src.push_str("x = ");
-            for _ in 0..depth {
-                src.push('(');
-            }
-            src.push('1');
-            for _ in 0..depth {
-                src.push(')');
-            }
-            src.push('\n');
-
-            let tree = parse_raw(&src, Language::Python);
-            let root = tree.root_node();
-            // No type_identifier in a Python expression tree → exhaustive walk.
-            let found = find_type_identifier_recursive(root, &src);
-            assert!(found.is_none());
-        }
-
-        #[test]
-        fn find_type_identifier_returns_shallowest_leftmost() {
-            // Pre-order semantics preserved after the iterative rewrite: a Go
-            // pointer receiver `(r *Server)` yields the inner type_identifier.
-            let src = "package p\nfunc (r *Server) Handle() {}\n";
-            let tree = parse_raw(src, Language::Go);
-            // Walk down to the receiver parameter type and confirm extraction.
-            let name = find_type_identifier_recursive(tree.root_node(), src);
-            assert_eq!(name.as_deref(), Some("Server"));
         }
     }
 }
