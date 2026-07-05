@@ -573,6 +573,15 @@ mod tests {
         "src/cli/batch/tasks/mod.rs",
         "src/cli/batch/tasks/runner.rs",
         "src/cli/batch/tasks/wire.rs",
+        // The eval-worker closure the Tasks runner drives for up to ~20 min per
+        // task. The worker's failed-state contract is publish-on-drop, which
+        // does NOT run under `panic = "abort"`, so a panic anywhere here aborts
+        // the daemon instead of marking the task failed — these must stay
+        // panic-free like the rest of the path.
+        "src/cli/commands/eval/runner.rs",
+        "src/cli/commands/search/search_ctx.rs",
+        "src/cli/limits.rs",
+        "src/cli/json_envelope.rs",
     ];
 
     /// Source substrings that introduce a bare panic source — a request that
@@ -609,14 +618,14 @@ mod tests {
     /// `thread_local!`, a fn, a struct, a `Drop` impl, an inline `if`) through
     /// production code. A "first `#[cfg(test)]` splits prod from test"
     /// heuristic would miss-classify every line after view.rs's first inline
-    /// helper. So instead: when a line is exactly `#[cfg(test)]`, skip forward
+    /// helper. So instead: when a line is a `#[cfg(test)]` gate, skip forward
     /// to the first `{` and on to its matching `}`, dropping that whole item.
     fn production_lines(src: &str) -> Vec<(usize, &str)> {
         let lines: Vec<&str> = src.lines().collect();
         let mut out = Vec::new();
         let mut i = 0;
         while i < lines.len() {
-            if lines[i].trim() == "#[cfg(test)]" {
+            if is_cfg_test_attr(lines[i]) {
                 // Advance to the attributed item's first brace, then to the
                 // brace that closes it. Anything in between is test code.
                 let mut depth: i32 = 0;
@@ -647,6 +656,183 @@ mod tests {
         out
     }
 
+    /// True when `line` is a `#[cfg(...)]` attribute whose item compiles ONLY
+    /// in test builds — the bare `#[cfg(test)]` or the composed
+    /// `#[cfg(all(test, ...))]` (e.g. cagra.rs's
+    /// `#[cfg(all(test, feature = "cuda-index"))]`). `all(...)` with `test` as a
+    /// direct member requires `test = true`, so the whole item is test code.
+    ///
+    /// `any(test, ...)` and `not(test)` do NOT gate on test — those items still
+    /// compile in production builds — so they are left in the production scan.
+    /// Matching only the exact `#[cfg(test)]` token would misread a composed
+    /// gate as production and flag every panic token in the test body.
+    fn is_cfg_test_attr(line: &str) -> bool {
+        let Some(inner) = line
+            .trim()
+            .strip_prefix("#[cfg(")
+            .and_then(|s| s.strip_suffix(")]"))
+        else {
+            return false;
+        };
+        let inner = inner.trim();
+        if inner == "test" {
+            return true;
+        }
+        if let Some(args) = inner.strip_prefix("all(").and_then(|s| s.strip_suffix(')')) {
+            return split_top_level(args).iter().any(|a| a.trim() == "test");
+        }
+        false
+    }
+
+    /// Split `s` on top-level commas — commas nested inside parens/brackets or
+    /// string literals do not split. Used to read the direct members of an
+    /// `all( ... )` cfg predicate.
+    fn split_top_level(s: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut depth: i32 = 0;
+        let mut in_str = false;
+        let mut escaped = false;
+        let mut start = 0;
+        for (idx, ch) in s.char_indices() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_str = true,
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(&s[start..idx]);
+                    start = idx + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&s[start..]);
+        parts
+    }
+
+    /// Drop comment content from the production lines so a panic-token
+    /// substring inside a comment can't false-trip the scan. Handles line
+    /// comments (`//`, including `///` / `//!` doc comments) and block comments
+    /// (`/* */`, including multi-line blocks, whose open state carries across
+    /// lines). String and char literals are respected: a `//` or `/*` inside a
+    /// string is not a comment start, so code preceding an end-of-line comment
+    /// survives and a real token is never lost to a truncation. Line numbers
+    /// are preserved so offender messages stay accurate.
+    fn strip_comments(lines: &[(usize, &str)]) -> Vec<(usize, String)> {
+        let mut out = Vec::with_capacity(lines.len());
+        let mut in_block = false;
+        for &(lineno, text) in lines {
+            let (code, still_in_block) = strip_line_comments(text, in_block);
+            in_block = still_in_block;
+            out.push((lineno, code));
+        }
+        out
+    }
+
+    /// Remove comment content from a single line, given whether a block comment
+    /// was already open coming in; returns the code-only text and whether a
+    /// block comment is still open leaving this line. A char literal holds at
+    /// most one char, so it can never contain a `//` or `/*` sequence — the
+    /// only reason to track it is so a quote-valued literal like `'"'` does not
+    /// open a phantom string. Lifetimes (`&'a str`) are distinguished from char
+    /// literals by the absence of a closing quote at the expected offset.
+    fn strip_line_comments(line: &str, mut in_block: bool) -> (String, bool) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut code = String::with_capacity(line.len());
+        let mut in_str = false;
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if in_block {
+                if c == '*' && chars.get(i + 1) == Some(&'/') {
+                    in_block = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if in_str {
+                code.push(c);
+                if c == '\\' {
+                    if let Some(&n) = chars.get(i + 1) {
+                        code.push(n);
+                        i += 2;
+                        continue;
+                    }
+                } else if c == '"' {
+                    in_str = false;
+                }
+                i += 1;
+                continue;
+            }
+            match c {
+                '"' => {
+                    in_str = true;
+                    code.push(c);
+                    i += 1;
+                }
+                '/' if chars.get(i + 1) == Some(&'/') => break,
+                '/' if chars.get(i + 1) == Some(&'*') => {
+                    in_block = true;
+                    i += 2;
+                }
+                '\'' => {
+                    // Char literal is `'x'` or `'\x'`; a lifetime has no closing
+                    // quote at that offset. Copy a genuine literal verbatim so
+                    // its interior quote never toggles string state.
+                    let lit_end = if chars.get(i + 1) == Some(&'\\') {
+                        i + 3
+                    } else {
+                        i + 2
+                    };
+                    if chars.get(lit_end) == Some(&'\'') {
+                        for &lc in &chars[i..=lit_end] {
+                            code.push(lc);
+                        }
+                        i = lit_end + 1;
+                    } else {
+                        code.push(c);
+                        i += 1;
+                    }
+                }
+                _ => {
+                    code.push(c);
+                    i += 1;
+                }
+            }
+        }
+        (code, in_block)
+    }
+
+    /// Scan one source file's production lines for bare panic sources, applying
+    /// the `#[cfg(test)]` strip, the comment strip, and the `view.rs` expect
+    /// allowlist. Returned strings are `rel:line  \`tok\` in \`code\``.
+    fn scan_for_panic_tokens(rel: &str, src: &str) -> Vec<String> {
+        let mut offenders = Vec::new();
+        let prod = production_lines(src);
+        for (lineno, code) in strip_comments(&prod) {
+            if VIEW_EXPECT_ALLOWLIST.iter().any(|a| code.contains(a)) {
+                continue;
+            }
+            for tok in PANIC_TOKENS {
+                if code.contains(tok) {
+                    offenders.push(format!("{rel}:{lineno}  `{tok}` in `{}`", code.trim()));
+                }
+            }
+        }
+        offenders
+    }
+
     /// Regression fence for the daemon request path: production code on the
     /// path a wire request travels must carry zero bare panic sources, so a
     /// future handler that adds one turns this RED instead of shipping a
@@ -662,16 +848,7 @@ mod tests {
             let path = std::path::Path::new(manifest_dir).join(rel);
             let src = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            for (lineno, line) in production_lines(&src) {
-                if VIEW_EXPECT_ALLOWLIST.iter().any(|a| line.contains(a)) {
-                    continue;
-                }
-                for tok in PANIC_TOKENS {
-                    if line.contains(tok) {
-                        offenders.push(format!("{rel}:{lineno}  `{tok}` in `{}`", line.trim()));
-                    }
-                }
-            }
+            offenders.extend(scan_for_panic_tokens(rel, &src));
         }
 
         assert!(
@@ -681,6 +858,93 @@ mod tests {
              Replace with `?`/error return, or (if a genuine same-lock local \
              invariant) add it to the allowlist with a one-line proof:\n  {}",
             offenders.join("\n  ")
+        );
+    }
+
+    // A composed `#[cfg(all(test, feature = "..."))]` mod compiles only in test
+    // builds, so its body — panic tokens and all — is test code the scan must
+    // strip. Matching only the exact `#[cfg(test)]` token would read the gate
+    // as production and flag every token inside.
+    #[test]
+    fn composed_cfg_test_mod_is_stripped() {
+        let src = "\
+pub fn live() -> i32 { 1 }
+
+#[cfg(all(test, feature = \"cuda-index\"))]
+mod cagra_tests {
+    #[test]
+    fn t() {
+        let x: i32 = \"7\".parse().unwrap();
+        assert_eq!(x, 7);
+        panic!(\"only reached in a failing test\");
+    }
+}
+";
+        assert!(
+            scan_for_panic_tokens("fixture.rs", src).is_empty(),
+            "a composed cfg(test) gate must strip its whole body from the scan"
+        );
+    }
+
+    // A panic-token substring inside a comment (line, doc, or block) is prose,
+    // not a panic source, and must not trip the scan.
+    #[test]
+    fn comment_only_panic_tokens_are_skipped() {
+        let src = "\
+pub fn live() -> i32 {
+    // returns None rather than call .unwrap() on the missing key
+    /// doc: never panic!() here
+    let x = compute(); /* was .expect(\"old\") before the refactor */
+    x
+}
+";
+        assert!(
+            scan_for_panic_tokens("fixture.rs", src).is_empty(),
+            "panic tokens inside comments must be skipped"
+        );
+    }
+
+    // A real production panic token must still be caught — the two fixes strip
+    // MORE (test bodies, comments), they must not blind the scan to live code.
+    #[test]
+    fn real_production_panic_token_is_caught() {
+        let src = "\
+pub fn live(key: &str) -> i32 {
+    let v = lookup(key).unwrap();
+    v
+}
+";
+        let offenders = scan_for_panic_tokens("fixture.rs", src);
+        assert_eq!(offenders.len(), 1, "the live `.unwrap()` must be flagged");
+        assert!(
+            offenders[0].contains(".unwrap()") && offenders[0].contains("fixture.rs:2"),
+            "offender must name the token and line: {}",
+            offenders[0]
+        );
+    }
+
+    // Code preceding an end-of-line comment survives the strip, and a `//`
+    // inside a string literal is not a comment — a real token after it is still
+    // seen (no truncation-induced false negative).
+    #[test]
+    fn code_before_comment_and_slashes_in_strings_are_preserved() {
+        let with_trailing = "    let v = m.get(k).unwrap(); // safe: inserted above\n";
+        assert_eq!(
+            scan_for_panic_tokens(
+                "fixture.rs",
+                &(String::from("pub fn f() {\n") + with_trailing + "}\n")
+            )
+            .len(),
+            1,
+            "a token in code before a trailing comment must still be caught"
+        );
+
+        let url_then_token =
+            "pub fn f() {\n    let _u = \"http://x//y\"; let v = q().unwrap();\n}\n";
+        assert_eq!(
+            scan_for_panic_tokens("fixture.rs", url_then_token).len(),
+            1,
+            "`//` inside a string must not truncate the line and hide a real token"
         );
     }
 }
