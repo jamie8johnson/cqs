@@ -332,6 +332,12 @@ pub struct LanguageDef {
     /// For C++ out-of-class methods: `void MyClass::method()` → Some("MyClass").
     /// Called in `infer_chunk_type` before parent-walking.
     pub extract_qualified_method: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
+    /// Override for extracting the receiver/parent type when the node itself is a
+    /// `method_node_kinds` match. Called in `infer_chunk_type` on that match, so it
+    /// only runs for languages whose methods are their own top-level node kind.
+    /// For Go methods: `func (r *Server) Handle()` → Some("Server").
+    /// `None` = the match yields a method with no parent type.
+    pub receiver_type_extractor: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
     /// Optional post-processing of extracted chunks.
     /// Called after basic extraction. Can override name, chunk_type, etc.
     /// Return `false` to discard the chunk entirely.

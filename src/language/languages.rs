@@ -41,6 +41,7 @@ const DEFAULTS: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: None,
     extract_qualified_method: None,
+    receiver_type_extractor: None,
     post_process_chunk: None,
     test_markers: &[],
     endpoint_markers: &[],
@@ -2155,6 +2156,39 @@ fn post_process_go_go(
     true
 }
 
+/// Extract the receiver type from a Go `method_declaration`.
+/// Go methods: `func (r *Server) Handle()` → "Server".
+fn go_receiver_type(node: tree_sitter::Node, source: &str) -> Option<String> {
+    // method_declaration → receiver (parameter_list) → parameter_declaration → type
+    let receiver = node.child_by_field_name("receiver")?;
+    let first_param = receiver.named_child(0)?;
+    // type_identifier may be nested in pointer_type
+    find_type_identifier_recursive(first_param, source)
+}
+
+/// Find the first `type_identifier` node (pre-order) and return its text.
+/// Used for Go where the type may be wrapped in `pointer_type`.
+///
+/// Iterative (explicit work stack) rather than recursive for stack safety: a
+/// deeply-nested parse tree must not overflow a rayon worker stack. Children are
+/// pushed in reverse so the first child is popped first, preserving the original
+/// pre-order (depth-first, leftmost) search that returns the shallowest-leftmost
+/// match.
+fn find_type_identifier_recursive(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let mut stack: Vec<tree_sitter::Node> = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "type_identifier" {
+            return Some(source[n.byte_range()].to_string());
+        }
+        let mut cursor = n.walk();
+        let children: Vec<tree_sitter::Node> = n.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    None
+}
+
 static LANG_GO: LanguageDef = LanguageDef {
     name: "go",
     grammar: Some(|| tree_sitter_go::LANGUAGE.into()),
@@ -2163,6 +2197,7 @@ static LANG_GO: LanguageDef = LanguageDef {
     call_query: Some(include_str!("queries/go.calls.scm")),
     doc_nodes: &["comment"],
     method_node_kinds: &["method_declaration"],
+    receiver_type_extractor: Some(go_receiver_type),
     stopwords: &[
         "func",
         "var",
@@ -8657,4 +8692,57 @@ static LANG_ASPX: LanguageDef = LanguageDef {
 
 pub fn definition_aspx() -> &'static LanguageDef {
     &LANG_ASPX
+}
+
+#[cfg(test)]
+mod go_receiver_tests {
+    use super::find_type_identifier_recursive;
+    use crate::language::Language;
+
+    /// Parse `source` with `lang`'s grammar and return its tree, keeping the
+    /// source alive alongside so the caller can borrow node text.
+    fn parse_raw(source: &str, lang: Language) -> tree_sitter::Tree {
+        let grammar = lang.try_grammar().expect("grammar available");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar).expect("set language");
+        parser.parse(source, None).expect("parse succeeds")
+    }
+
+    /// Stack-safety: `find_type_identifier_recursive` is iterative so a
+    /// pathologically deep parse tree (minified code, thousands of nested parens)
+    /// exhausts without overflowing a (2 MiB) rayon worker stack and SIGSEGV-ing
+    /// the indexer.
+    #[test]
+    fn find_type_identifier_no_overflow_on_deep_tree() {
+        // Deep-paren tree, no type_identifier present: the walker must exhaust the
+        // whole tree iteratively and return None without overflowing.
+        let depth = 50_000;
+        let mut src = String::with_capacity(depth * 2 + 16);
+        src.push_str("x = ");
+        for _ in 0..depth {
+            src.push('(');
+        }
+        src.push('1');
+        for _ in 0..depth {
+            src.push(')');
+        }
+        src.push('\n');
+
+        let tree = parse_raw(&src, Language::Python);
+        let root = tree.root_node();
+        // No type_identifier in a Python expression tree → exhaustive walk.
+        let found = find_type_identifier_recursive(root, &src);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_type_identifier_returns_shallowest_leftmost() {
+        // Pre-order semantics: a Go pointer receiver `(r *Server)` yields the inner
+        // type_identifier.
+        let src = "package p\nfunc (r *Server) Handle() {}\n";
+        let tree = parse_raw(src, Language::Go);
+        // Walk down to the receiver parameter type and confirm extraction.
+        let name = find_type_identifier_recursive(tree.root_node(), src);
+        assert_eq!(name.as_deref(), Some("Server"));
+    }
 }
