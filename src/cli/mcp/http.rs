@@ -239,12 +239,25 @@ impl SessionState {
             .map(|e| (e.task_id.clone(), e.progress_token.clone(), e.high_water))
     }
 
-    /// Raise the per-token high-water after a progress frame is emitted.
-    fn advance_high_water(&self, task_id: &str, done: u64) {
+    /// Compare-and-set the per-token high-water in ONE locked step: raise it to
+    /// `done` and return `true` iff `done` strictly exceeds the stored value;
+    /// otherwise leave it and return `false`. The gate reads and advances under the
+    /// same lock so a takeover cannot regress the high-water — an old stream whose
+    /// stale poll returns a LOWER `done` after the new stream already advanced
+    /// fails the CAS (returns `false`, stored value untouched), so it neither
+    /// emits a lower frame to the live client nor lets the new stream re-emit an
+    /// already-seen value. (A late lower frame on the SUPERSEDED connection before
+    /// its cancel is observed is acceptable — that connection is per-connection
+    /// monotone and dying; the CAS kills the cross-takeover regression + duplicate.)
+    fn try_advance_high_water(&self, task_id: &str, done: u64) -> bool {
         let mut w = self.watch.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = w.iter_mut().find(|e| e.task_id == task_id) {
-            e.high_water = Some(done);
+            if done > e.high_water.unwrap_or(0) {
+                e.high_water = Some(done);
+                return true;
+            }
         }
+        false
     }
 
     /// Prune a watch entry at terminal / gone. A reconnect afterward sees no
@@ -1124,8 +1137,11 @@ where
                 return None;
             }
 
-            let (task_id, token, high_water) = match st.session.latest_watch() {
-                Some(w) => w,
+            let (task_id, token) = match st.session.latest_watch() {
+                // The stored high-water is not read here: the gate compare-and-sets
+                // it under the watch lock (`try_advance_high_water`) so a takeover
+                // can't regress it off a stale read.
+                Some((task_id, token, _high_water)) => (task_id, token),
                 // No watched task yet (stream opened before the augmented call, or
                 // no progressToken) → keep-alive: loop and re-check next tick.
                 None => continue,
@@ -1148,9 +1164,12 @@ where
                         return None;
                     }
                     if let Some((done, total)) = progress {
-                        // High-water gate: emit only a strictly-greater `done`.
-                        if done > high_water.unwrap_or(0) {
-                            st.session.advance_high_water(&task_id, done);
+                        // High-water gate (compare-and-set under the watch lock):
+                        // emit only a strictly-greater `done`. `done == 0` never
+                        // advances past the `unwrap_or(0)` floor — deliberate: a
+                        // zero-progress frame carries nothing, so the client first
+                        // learns `total` at the first `done >= 1` frame.
+                        if st.session.try_advance_high_water(&task_id, done) {
                             if let Some(ev) = progress_event(&token, done, total, &task_id) {
                                 return Some((Ok(ev), st));
                             }
@@ -3093,6 +3112,37 @@ mod tests {
         );
     }
 
+    /// The high-water compare-and-set is monotone: a strictly-greater `done`
+    /// advances and returns true; a lower OR equal `done` returns false and does
+    /// NOT regress the stored value. This is the cross-takeover guard — a stale
+    /// lower poll from a superseded stream can never roll the high-water back (and
+    /// so can never let the live stream re-emit an already-seen value).
+    #[test]
+    fn high_water_cas_is_monotone() {
+        let s = SessionState::new(Instant::now());
+        s.record_watch("tid", Value::from("tok"));
+        assert!(s.try_advance_high_water("tid", 4), "0→4 advances");
+        assert_eq!(s.latest_watch().map(|w| w.2), Some(Some(4)));
+        // A stale lower advance (the takeover race) is refused and does not regress.
+        assert!(!s.try_advance_high_water("tid", 3), "4→3 is refused");
+        assert_eq!(
+            s.latest_watch().map(|w| w.2),
+            Some(Some(4)),
+            "a refused lower advance must NOT regress the high-water"
+        );
+        // An equal advance is also refused (strictly-greater only).
+        assert!(!s.try_advance_high_water("tid", 4), "4→4 is refused");
+        assert_eq!(s.latest_watch().map(|w| w.2), Some(Some(4)));
+        // A higher advance still works.
+        assert!(s.try_advance_high_water("tid", 7), "4→7 advances");
+        assert_eq!(s.latest_watch().map(|w| w.2), Some(Some(7)));
+        // done == 0 never advances past the floor (deliberate: no zero frame).
+        let s2 = SessionState::new(Instant::now());
+        s2.record_watch("tid", Value::from("tok"));
+        assert!(!s2.try_advance_high_water("tid", 0), "done=0 never emits");
+        assert_eq!(s2.latest_watch().map(|w| w.2), Some(None));
+    }
+
     /// Permit handover: a takeover TRANSFERS the existing permit old→new under the
     /// session lock (no second acquire), and the superseded stream's guard does not
     /// release the transferred permit — only the live stream's guard does.
@@ -3305,6 +3355,15 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "a second session at cap must 503"
         );
+        // A saturated SSE budget is separate from the one-shot request path: a POST
+        // still succeeds while every stream slot is taken (streams-at-cap must not
+        // block one-shot requests for serve / CLI / other consumers).
+        let post = send(&router, Req::post(INIT_BODY)).await;
+        assert_eq!(
+            post.status(),
+            StatusCode::OK,
+            "a saturated SSE budget must not block one-shot POSTs"
+        );
         // The SAME session reconnects → takeover transfers the permit → 200.
         let a2 = send(&router, Req::get_sse().session(&sid_a)).await;
         assert_eq!(
@@ -3313,5 +3372,32 @@ mod tests {
             "a reconnect on the same session takes over its own permit, never 503"
         );
         drop((a1, a2, b));
+    }
+
+    /// F3: the router-level shutdown seam — a stream opened through the FULL router
+    /// (its handler subscribes to `state.shutdown`) ends when the teed sender fires,
+    /// so graceful shutdown never hangs on an open stream.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_sse_router_stream_ends_on_shutdown_send() {
+        let state = test_state(true);
+        // The SAME sender the handler subscribes to (serve_http feeds it from
+        // shutdown_signal()).
+        let shutdown = Arc::clone(&state.shutdown);
+        let router = build_router(state, allowed_host_set(&test_addr()));
+        let sid = init_session(&router).await;
+        let resp = send(&router, Req::get_sse().session(&sid)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Fire the teed shutdown; the open stream must end (its body completes).
+        let _ = shutdown.send(true);
+        let body = tokio::time::timeout(
+            Duration::from_secs(5),
+            axum::body::to_bytes(resp.into_body(), usize::MAX),
+        )
+        .await;
+        assert!(
+            body.is_ok(),
+            "the SSE body must end on the teed shutdown signal, not hang"
+        );
+        assert!(body.unwrap().is_ok(), "body collection succeeds");
     }
 }
