@@ -279,9 +279,12 @@ pub(super) fn spawn_daemon_thread(
                     let ctx_clone = Arc::clone(&ctx);
                     let in_flight_clone = Arc::clone(&in_flight);
                     // Spawn a fresh thread per accepted connection so
-                    // read/parse/write I/O happens in parallel. Only
-                    // the dispatch itself is serialized via the
-                    // BatchContext mutex inside handle_socket_client.
+                    // read/parse/write I/O happens in parallel. The
+                    // BatchContext mutex is held only for the microseconds
+                    // it takes to check out a BatchView; dispatch itself
+                    // runs unlocked against that view, so long-running
+                    // handlers (a multi-minute eval) overlap with other
+                    // clients instead of serializing behind one lock.
                     // Platform-default stack: a 256 KiB pin was tried and
                     // crashed the daemon — the dispatch path (command cores,
                     // audit-state load, serde) overflows small stacks. The

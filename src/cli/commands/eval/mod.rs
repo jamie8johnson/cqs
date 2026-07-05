@@ -294,8 +294,12 @@ fn obtain_report(ctx: &CommandContext<'_, ReadOnly>, args: &EvalCmdArgs) -> Resu
                 );
             }
             EvalDial::RunLocal { reason } => {
+                // "did not return a usable report" rather than "unavailable":
+                // this arm also covers replies the daemon DID send (malformed,
+                // oversized, error envelope), not just absence.
                 eprintln!(
-                    "[eval] daemon unavailable ({reason}) — running CLI-side on a fresh-built index"
+                    "[eval] daemon did not return a usable report ({reason}) — \
+                     running CLI-side on a fresh-built index"
                 );
             }
         }
@@ -427,15 +431,26 @@ fn dial_daemon_eval(cqs_dir: &Path, wire_args: &serde_json::Value) -> EvalDial {
 /// Map a daemon RPC error onto the honest eval outcome. Only a read-budget
 /// expiry (`Timeout`) is booked-but-lost — the daemon read the request and is
 /// still running the eval, so rerunning inline would double up on the GPU.
-/// Every other error is a pre-booking failure (no socket, connect/write failed,
-/// a socket-level reject), safe to recompute locally.
+/// Every other variant is safe to recompute locally: the daemon either never
+/// booked the run (no socket, connect/write failed, a socket-level reject) or
+/// already finished it (malformed/oversized/error reply — a sequential
+/// recompute, not a concurrent double-run).
+///
+/// The match is deliberately exhaustive with no catch-all: a future
+/// `DaemonRpcError` variant must be consciously classified here, because
+/// defaulting an unconsidered variant to the rerun side is the fail-unsafe
+/// direction (a silent double-run if that variant ever means "booked").
 #[cfg(unix)]
 fn classify_dial_error(e: cqs::daemon_translate::DaemonRpcError) -> EvalDial {
     use cqs::daemon_translate::DaemonRpcError;
     match e {
         DaemonRpcError::Timeout(msg) => EvalDial::BookedButLost(msg),
-        other => EvalDial::RunLocal {
-            reason: other.to_string(),
+        e @ (DaemonRpcError::SocketMissing(_)
+        | DaemonRpcError::Transport(_)
+        | DaemonRpcError::BadResponse(_)
+        | DaemonRpcError::DaemonError(_)
+        | DaemonRpcError::ResponseTooLarge(_)) => EvalDial::RunLocal {
+            reason: e.to_string(),
         },
     }
 }
