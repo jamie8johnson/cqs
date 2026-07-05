@@ -53,7 +53,7 @@ mod publication_interleaving_model;
 /// Multi-threaded stress harness for the real TaskStore (the integration
 /// schedules loom can't bound: `HashMap` map lock, `std::thread` workers,
 /// get/result reads racing publishes + the GC sweep). Test-only; a fast default
-/// iteration count keeps the normal suite quick, `CQS_STRESS_ITERS` cranks it.
+/// iteration count keeps the normal suite quick, `CQS_TEST_STRESS_ITERS` cranks it.
 #[cfg(test)]
 mod stress;
 

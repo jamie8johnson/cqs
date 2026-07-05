@@ -10,13 +10,13 @@
 //! the proof; this catches an integration regression a narrow model would miss.
 //!
 //! Every run prints its seed; a failure is reproducible by exporting
-//! `CQS_STRESS_SEED=<n>` (and the thread/iteration knobs). The default iteration
+//! `CQS_TEST_STRESS_SEED=<n>` (and the thread/iteration knobs). The default iteration
 //! count is small so the normal `cargo test` isn't slowed; crank it with
-//! `CQS_STRESS_ITERS`.
+//! `CQS_TEST_STRESS_ITERS`.
 //!
 //! Knobs:
-//! - `CQS_STRESS_ITERS` — admissions per worker thread (default 400).
-//! - `CQS_STRESS_SEED`  — base RNG seed (default: entropy; always printed).
+//! - `CQS_TEST_STRESS_ITERS` — admissions per worker thread (default 400).
+//! - `CQS_TEST_STRESS_SEED`  — base RNG seed (default: entropy; always printed).
 //!
 //! Invariants checked (a violation records the schedule + fails at quiesce):
 //! - **Cap (RT-DOS-3a):** the map length NEVER exceeds
@@ -376,12 +376,12 @@ mod tests {
 
     /// Cap + publication + write-once + freshness, under contended admit / read /
     /// sweep. Default iteration count is modest so the normal suite isn't slowed;
-    /// `CQS_STRESS_ITERS` cranks it. On failure the seed reproduces the schedule.
+    /// `CQS_TEST_STRESS_ITERS` cranks it. On failure the seed reproduces the schedule.
     #[test]
     fn taskstore_concurrent_invariants_hold() {
-        let iters = env_u64("CQS_STRESS_ITERS", 400);
+        let iters = env_u64("CQS_TEST_STRESS_ITERS", 400);
         let base_seed = env_u64(
-            "CQS_STRESS_SEED",
+            "CQS_TEST_STRESS_SEED",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
@@ -390,7 +390,7 @@ mod tests {
         // 4 admitters hammering try_admit past the 32-cap, 6 readers, 1 sweeper.
         println!(
             "taskstore_concurrent_invariants_hold: seed={base_seed} iters={iters} \
-             (reproduce with CQS_STRESS_SEED={base_seed} CQS_STRESS_ITERS={iters})"
+             (reproduce with CQS_TEST_STRESS_SEED={base_seed} CQS_TEST_STRESS_ITERS={iters})"
         );
         let violations = run_stress(4, 6, iters, base_seed);
         assert!(
@@ -405,8 +405,8 @@ mod tests {
     /// pinning the cap bound specifically. Cheap by default.
     #[test]
     fn taskstore_cap_holds_under_admission_storm() {
-        let iters = env_u64("CQS_STRESS_ITERS", 300);
-        let base_seed = env_u64("CQS_STRESS_SEED", 0xC0FF_EE00);
+        let iters = env_u64("CQS_TEST_STRESS_ITERS", 300);
+        let base_seed = env_u64("CQS_TEST_STRESS_SEED", 0xC0FF_EE00);
         println!("taskstore_cap_holds_under_admission_storm: seed={base_seed} iters={iters}");
         // 8 admitters, 2 readers, 1 sweeper — maximal admit contention.
         let violations = run_stress(8, 2, iters, base_seed);
