@@ -70,8 +70,12 @@ jobs:
         # `slow-tests` is a pure cfg gate (no optional deps), so adding it here
         # costs one extra cfg compile of the test crates and closes the
         # structural blind spot where the `#![cfg(feature = "slow-tests")]`
-        # corpus was never linted under `-D warnings` (#2154).
-        run: cargo clippy --all-targets --features slow-tests -- -D warnings
+        # corpus was never linted under `-D warnings` (#2154). `mcp-http` rides
+        # the (default) `serve` deps — no new crates — and only flips the
+        # `#[cfg(feature = "mcp-http")]` listener + its `all(unix, "mcp-http",
+        # "slow-tests")` e2e test into the linted set, which would otherwise
+        # never see `-D warnings` at PR time.
+        run: cargo clippy --all-targets --features slow-tests,mcp-http -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest

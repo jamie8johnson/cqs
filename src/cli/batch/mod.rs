@@ -768,6 +768,43 @@ mod tests {
         assert_eq!(r["surface"], "mcp", "JSON-args entry point tags `mcp`");
     }
 
+    /// The daemon-side task wire verbs return their RAW payload; the SINGLE
+    /// `{"data": …}` envelope is `write_json_line`'s job, and the MCP transport
+    /// reads exactly `output.data`. A verb that pre-wraps its own payload would
+    /// double-nest the state under `output.data.data`, invisible to the
+    /// transport dial — a framing defect no unit test on the shaping helpers can
+    /// see because they never compose through the real dispatch. Pins the single
+    /// wrap at PR time (no model / daemon: an unknown taskId reads the empty
+    /// TaskStore to a `gone` state).
+    #[test]
+    fn task_verb_output_is_singly_wrapped_for_the_transport() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+        let view = ctx.build_view(None);
+
+        let mut out = Vec::new();
+        dispatch_via_view_json(
+            &view,
+            "task-get",
+            &serde_json::json!({ "taskId": "no-such-task" }),
+            &mut out,
+        );
+
+        let env: serde_json::Value = serde_json::from_slice(&out).expect("verb output is JSON");
+        let data = env
+            .get("data")
+            .expect("single `data` envelope from write_json_line");
+        assert_eq!(
+            data.get("state").and_then(|s| s.as_str()),
+            Some("gone"),
+            "the verb payload must sit DIRECTLY under `data` (output.data.state): {env}"
+        );
+        assert!(
+            data.get("data").is_none(),
+            "verb payload must NOT be double-wrapped — output.data.data is invisible to the dial: {env}"
+        );
+    }
+
     /// A reference-config fingerprint mismatch forces a rebuild even though
     /// the cell is populated and the epoch is unchanged. Simulated by seating
     /// a context with a deliberately wrong fingerprint and confirming the next
