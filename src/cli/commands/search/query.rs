@@ -132,6 +132,13 @@ pub(crate) struct QueryArgs {
     /// (`cmd_query`) uses to detect overlay-eligibility for the honest-degradation
     /// warn + `_meta.worktree_overlay = "skipped-no-daemon"`.
     pub overlay: bool,
+    /// Populate the per-result mini-impact hints (`caller_count` / `test_count`)
+    /// so one `search` replaces `search` + `impact`. On by default for JSON
+    /// consumers; the CLI flips it off via `--no-hints` and the text surface
+    /// drops the fields regardless. The population is a post-pass over the FINAL
+    /// result set (`assemble_output`) that only sets fields on callable hits — a
+    /// side channel that never changes scores or order.
+    pub include_hints: bool,
 }
 
 impl Default for QueryArgs {
@@ -168,6 +175,10 @@ impl Default for QueryArgs {
             record_rank_signals: true,
             // Overlay off by default; opt-in via `--overlay` / env.
             overlay: false,
+            // Mini-impact hints on by default — JSON consumers get caller/test
+            // counts unless they opt out with `--no-hints`; the cost is the
+            // (batched, reachability-cached) post-pass over the final results.
+            include_hints: true,
         }
     }
 }
@@ -345,6 +356,13 @@ impl QueryArgs {
             // resolved once here at the adapter boundary like `force_base_index`.
             // `overlay_eligible` is the caller's `overlay_root(cwd, root).is_some()`.
             overlay: resolve_overlay_active(cli.overlay, cli.no_overlay, overlay_eligible),
+            // On unless `--no-hints`, AND only under `--json`: the text surface
+            // never renders the counts, so a text search must not pay the cold
+            // call-graph + reachability load to compute them. `include_hints`
+            // therefore tracks the output format (like `json_overhead`), not just
+            // the knob. The daemon surface is always JSON, so its adapter gates
+            // on `!no_hints` alone.
+            include_hints: !cli.no_hints && cli.json,
         }
     }
 
@@ -1388,7 +1406,7 @@ fn assemble_output(
     // Token-budget packing. The per-result JSON overhead is resolved by the
     // adapter into `args.json_overhead` (the CLI's format-dependent estimate),
     // so packing keeps the exact same survivors as before the core split.
-    let (results, token_info) = if let Some(budget) = args.tokens {
+    let (mut results, token_info) = if let Some(budget) = args.tokens {
         // Lazy embedder: the name-only path may not have built one yet.
         let embedder = ctx.embedder()?;
         crate::cli::commands::token_pack_results(
@@ -1404,6 +1422,14 @@ fn assemble_output(
         (results, None)
     };
 
+    // Mini-impact hints: caller_count + test_count on each callable result, so
+    // one `search` replaces search + impact. Runs over the FINAL (already
+    // token-packed) set, so a dropped result never pays for a hint. Machine-only
+    // and default-on for JSON; a side channel that never reorders or rescores.
+    if args.include_hints {
+        populate_usage_hints(store, &mut results);
+    }
+
     let parents = if args.expand_parent {
         resolve_parent_context(&results, store, root)
     } else {
@@ -1416,6 +1442,109 @@ fn assemble_output(
         parents,
         token_info,
     })
+}
+
+/// Attach the per-result mini-impact hints (`caller_count` / `test_count`) to
+/// the callable results in place — the population site for the composite-search
+/// feature (`search` returns the counts `impact` would, in one call).
+///
+/// Kind gate (plan §4): only `ChunkType::is_callable()` chunks carry the fields.
+/// A callable chunk with zero real callers / zero reaching tests gets `Some(0)`
+/// (0 is the highest-value signal — dead-ish / untested); a non-callable chunk
+/// (Struct / Trait / Section / ConfigKey / markdown) is left `None` (absent),
+/// because it has no call-graph identity to count against.
+///
+/// Batch-only (plan §2 — no N+1): one grouped `get_caller_counts_batch` (served
+/// by `idx_fcalls_callee`) plus the Store-cached forward-BFS reachability map.
+/// `caller_count` is read straight from the `doc_reference`-excluded batch (a
+/// callee absent from the GROUP BY has zero real callers → 0), NOT from
+/// `compute_hints_batch`'s `graph.reverse` fallback, which would recount a prose
+/// mention and contradict the "a doc reference is not a caller" semantic.
+/// `test_count` comes from `compute_hints_batch` so it shares scout/impact's
+/// exact forward-BFS code path (plan §3 — never a divergent count).
+///
+/// A store error at any batch step degrades gracefully: the hints are omitted
+/// (fields stay `None`) with a `warn`, never a hard failure of the search.
+/// Order and scores are untouched — a pure side channel.
+fn populate_usage_hints<Mode>(store: &Store<Mode>, results: &mut [UnifiedResult]) {
+    let _span = tracing::info_span!("populate_usage_hints", results = results.len()).entered();
+
+    // Callable names only (a name may repeat across results; the batch tolerates
+    // duplicates). Owned so the `&str` batch view below doesn't borrow `results`
+    // across the later `iter_mut`. Empty ⇒ nothing callable in this result set,
+    // so skip every graph/BFS load entirely (the markdown-/struct-only fast path).
+    let callable_names: Vec<String> = results
+        .iter()
+        .filter_map(|r| {
+            let UnifiedResult::Code(sr) = r;
+            sr.chunk
+                .chunk_type
+                .is_callable()
+                .then(|| sr.chunk.name.clone())
+        })
+        .collect();
+    if callable_names.is_empty() {
+        return;
+    }
+    let name_refs: Vec<&str> = callable_names.iter().map(|s| s.as_str()).collect();
+
+    let caller_counts = match store.get_caller_counts_batch(&name_refs) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "usage hints: caller counts unavailable — omitting counts");
+            return;
+        }
+    };
+    let graph = match store.get_call_graph() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "usage hints: call graph unavailable — omitting counts");
+            return;
+        }
+    };
+    let test_chunks = match store.find_test_chunks() {
+        Ok(tc) => tc,
+        Err(e) => {
+            tracing::warn!(error = %e, "usage hints: test chunks unavailable — omitting counts");
+            return;
+        }
+    };
+    let reachability = match store.get_test_reachability() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "usage hints: reachability unavailable — omitting counts");
+            return;
+        }
+    };
+
+    // `compute_hints_batch` supplies BOTH counts on scout/impact's shared code
+    // path: `test_count` from the reachability map, and `caller_count` from the
+    // doc_reference-excluded batch map (its `graph.real_caller_count` fallback
+    // keeps a doc-only callee at 0, so this cannot diverge from scout).
+    let hints = cqs::compute_hints_batch(
+        &graph,
+        &test_chunks,
+        &name_refs,
+        &caller_counts,
+        Some(&reachability),
+    );
+    let hints_by_name: std::collections::HashMap<&str, &cqs::FunctionHints> =
+        name_refs.iter().copied().zip(hints.iter()).collect();
+
+    for r in results.iter_mut() {
+        let UnifiedResult::Code(sr) = r;
+        if !sr.chunk.chunk_type.is_callable() {
+            continue;
+        }
+        if let Some(h) = hints_by_name.get(sr.chunk.name.as_str()) {
+            sr.caller_count = Some(h.caller_count as u32);
+            sr.test_count = Some(h.test_count as u32);
+        } else {
+            // Callable but not in the batch (no result-name match) — 0/0.
+            sr.caller_count = Some(0);
+            sr.test_count = Some(0);
+        }
+    }
 }
 
 /// Render a [`QueryOutput`] for the CLI: staleness warning, empty-result exit,
@@ -2548,6 +2677,11 @@ mod tests {
     /// surface and the CLI surface have to agree on omitted-field behavior.
     /// Parses a real minimal CLI invocation so a changed clap default breaks
     /// this test instead of silently diverging from the wire default.
+    ///
+    /// The two FORMAT-dependent fields diverge from the wire default on a
+    /// text (non-`--json`) parse: `json_overhead` (0 for text) and
+    /// `include_hints` (off for text — the mini-impact counts text never
+    /// renders). The wire/MCP default for both is the `--json` value.
     #[test]
     fn query_args_default_matches_clap_defaults() {
         use clap::Parser;
@@ -2555,6 +2689,9 @@ mod tests {
         let from_clap = QueryArgs::from_cli(&cli, false);
         let expected = QueryArgs {
             query: "q".to_string(),
+            // Text parse gates the hint post-pass off (format-dependent, like
+            // json_overhead); the wire/MCP default is on.
+            include_hints: false,
             ..QueryArgs::default()
         };
         assert_eq!(
@@ -3482,6 +3619,191 @@ mod tests {
                 Some("overlay_target"),
                 "the cross-encoder's top hit must lead the reranked output; \
                  got {got:?}"
+            );
+        }
+    }
+
+    // ─── Mini-impact usage hints (caller_count / test_count) ────────────────
+    //
+    // Directly exercises `populate_usage_hints` (the assemble_output post-pass)
+    // against a seeded in-memory store, pinning the kind gate, the
+    // `doc_reference` caller exclusion, and the ranking-inertness contract
+    // without a full SearchCtx.
+    mod usage_hints {
+        use super::super::populate_usage_hints;
+        use cqs::parser::{CallEdgeKind, CallSite, Chunk, ChunkType, FunctionCalls, Language};
+        use cqs::store::{ChunkSummary, ModelInfo, SearchResult, Store, UnifiedResult};
+        use std::path::{Path, PathBuf};
+
+        fn unit_emb() -> cqs::Embedding {
+            let mut v = vec![0.0_f32; cqs::EMBEDDING_DIM];
+            v[0] = 1.0;
+            cqs::Embedding::new(v)
+        }
+
+        /// One chunk row for the store's `chunks` table (only `test_target` needs
+        /// to be present — it must be discoverable by `find_test_chunks`).
+        fn store_chunk(id: &str, file: &str, name: &str, ctype: ChunkType) -> Chunk {
+            Chunk {
+                id: id.to_string(),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: ctype,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 2,
+                byte_start: 0,
+                content_hash: blake3::hash(id.as_bytes()).to_hex().to_string(),
+                canonical_hash: String::new(),
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+                parser_version: 0,
+                is_test: false,
+            }
+        }
+
+        /// Seeded store: `target` is called by `caller_a` (Call) and by
+        /// `test_target` (Call, a discovered test) → 2 real callers, 1 reaching
+        /// test. `doc_only_fn`'s ONLY inbound edge is a `DocReference` (prose, not
+        /// a caller). `orphan` has no edges.
+        fn seeded_store() -> Store {
+            let mut store = Store::open_memory().expect("open_memory");
+            store.init(&ModelInfo::default()).expect("init store");
+            store.set_dim(cqs::EMBEDDING_DIM);
+            // Only the test node must live in `chunks` for find_test_chunks.
+            store
+                .upsert_chunks_batch(
+                    &[(
+                        store_chunk("src/t.rs:1:tt", "src/t.rs", "test_target", ChunkType::Test),
+                        unit_emb(),
+                    )],
+                    Some(0),
+                )
+                .expect("seed test chunk");
+            let calls = vec![
+                FunctionCalls {
+                    name: "caller_a".to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "target".to_string(),
+                        line_number: 2,
+                        kind: CallEdgeKind::Call,
+                    }],
+                },
+                FunctionCalls {
+                    name: "test_target".to_string(),
+                    line_start: 10,
+                    calls: vec![CallSite {
+                        callee_name: "target".to_string(),
+                        line_number: 11,
+                        kind: CallEdgeKind::Call,
+                    }],
+                },
+                FunctionCalls {
+                    name: "doc_mentioner".to_string(),
+                    line_start: 20,
+                    calls: vec![CallSite {
+                        callee_name: "doc_only_fn".to_string(),
+                        line_number: 21,
+                        kind: CallEdgeKind::DocReference,
+                    }],
+                },
+            ];
+            store
+                .upsert_function_calls(Path::new("src/graph.rs"), &calls)
+                .expect("seed call graph");
+            store
+        }
+
+        /// A code result carrying a chunk of the given `name` / `ctype` at `score`.
+        fn result(name: &str, ctype: ChunkType, score: f32) -> UnifiedResult {
+            let summary = ChunkSummary {
+                id: format!("res:{name}"),
+                file: PathBuf::from(format!("src/{name}.rs")),
+                language: Language::Rust,
+                chunk_type: ctype,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 2,
+                parent_id: None,
+                parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
+                parser_version: 0,
+                vendored: false,
+                is_test: false,
+            };
+            UnifiedResult::Code(SearchResult::new(summary, score))
+        }
+
+        fn counts(r: &UnifiedResult) -> (Option<u32>, Option<u32>) {
+            let UnifiedResult::Code(sr) = r;
+            (sr.caller_count, sr.test_count)
+        }
+
+        #[test]
+        fn callable_gets_counts_noncallable_stays_none() {
+            let store = seeded_store();
+            let mut results = vec![
+                result("target", ChunkType::Function, 0.9),
+                result("readme", ChunkType::Section, 0.8), // non-callable
+                result("orphan", ChunkType::Function, 0.7),
+            ];
+            populate_usage_hints(&store, &mut results);
+
+            // target: 2 real callers (caller_a + test_target), 1 reaching test.
+            assert_eq!(counts(&results[0]), (Some(2), Some(1)));
+            // A markdown Section carries NEITHER key (no call-graph identity).
+            assert_eq!(counts(&results[1]), (None, None));
+            // A callable with zero callers/tests is Some(0) — the dead-ish signal.
+            assert_eq!(counts(&results[2]), (Some(0), Some(0)));
+        }
+
+        #[test]
+        fn doc_reference_only_callee_counts_zero() {
+            let store = seeded_store();
+            let mut results = vec![result("doc_only_fn", ChunkType::Function, 0.5)];
+            populate_usage_hints(&store, &mut results);
+            // The sole inbound edge is a doc_reference → a prose mention is not a
+            // caller, so caller_count is 0, not 1.
+            assert_eq!(counts(&results[0]), (Some(0), Some(0)));
+        }
+
+        #[test]
+        fn post_pass_is_rank_inert() {
+            let store = seeded_store();
+            let inputs = [
+                ("target", ChunkType::Function, 0.9_f32),
+                ("readme", ChunkType::Section, 0.8),
+                ("orphan", ChunkType::Function, 0.55),
+            ];
+            let mut results: Vec<UnifiedResult> =
+                inputs.iter().map(|(n, t, s)| result(n, *t, *s)).collect();
+            let before: Vec<(String, f32)> = results
+                .iter()
+                .map(|r| {
+                    let UnifiedResult::Code(sr) = r;
+                    (sr.chunk.name.clone(), sr.score)
+                })
+                .collect();
+            populate_usage_hints(&store, &mut results);
+            let after: Vec<(String, f32)> = results
+                .iter()
+                .map(|r| {
+                    let UnifiedResult::Code(sr) = r;
+                    (sr.chunk.name.clone(), sr.score)
+                })
+                .collect();
+            assert_eq!(
+                before, after,
+                "the hint post-pass must not reorder or rescore results"
             );
         }
     }

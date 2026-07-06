@@ -711,6 +711,8 @@ fn search_args_from_core(c: QueryArgs, overlay: OverlayArgs) -> SearchArgs {
         // The core's `record_rank_signals` is the inverse of the CLI flag; the
         // daemon adapter recomputes it as `!no_rank_signals`, so map it back.
         no_rank_signals: !c.record_rank_signals,
+        // Same inverse mapping for the mini-impact hints knob.
+        no_hints: !c.include_hints,
         overlay,
     }
 }

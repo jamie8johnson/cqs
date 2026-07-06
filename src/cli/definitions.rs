@@ -308,6 +308,13 @@ pub struct Cli {
     #[arg(long)]
     pub no_rank_signals: bool,
 
+    /// Suppress the per-result mini-impact hints (`caller_count` / `test_count`)
+    /// in JSON output. On by default so one `search` replaces search + impact;
+    /// pass `--no-hints` to skip the caller/test-count post-pass (saves tokens
+    /// on tight-budget calls). The text surface never emits them.
+    #[arg(long)]
+    pub no_hints: bool,
+
     /// Overlay the worktree's uncommitted/committed delta on top of the parent
     /// index so results reflect this checkout's edits, not main's. Default-on
     /// when run from a worktree; off in the main checkout. Tri-state env

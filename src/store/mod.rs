@@ -366,6 +366,14 @@ pub struct Store<Mode = ReadWrite> {
     call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     test_chunks_cache: std::sync::OnceLock<std::sync::Arc<Vec<ChunkSummary>>>,
     chunk_type_map_cache: std::sync::OnceLock<std::sync::Arc<ChunkTypeMap>>,
+    /// Cached forward-BFS test-reachability map (`function_name -> count of
+    /// tests that transitively reach it`), the shared basis for every command's
+    /// `test_count` (search hints / scout / impact). Same write-once,
+    /// no-invalidation contract as `call_graph_cache` / `test_chunks_cache`
+    /// (which it composes): a warm daemon pays the BFS once per Store
+    /// generation. `clear_caches(&mut self)` swaps in a fresh `OnceLock`.
+    test_reachability_cache:
+        std::sync::OnceLock<std::sync::Arc<std::collections::HashMap<std::sync::Arc<str>, usize>>>,
     /// Write-coalescing queue for streamed `llm_summaries` inserts.
     ///
     /// Built unconditionally so the field is uniform across `Mode`s, but
@@ -1139,6 +1147,7 @@ impl Store<ReadWrite> {
             call_graph_cache: std::sync::OnceLock::new(),
             test_chunks_cache: std::sync::OnceLock::new(),
             chunk_type_map_cache: std::sync::OnceLock::new(),
+            test_reachability_cache: std::sync::OnceLock::new(),
             summary_queue,
             vendored_prefixes: std::sync::OnceLock::new(),
             _mode: PhantomData,
@@ -1571,6 +1580,7 @@ fn open_with_config_impl<Mode>(
         call_graph_cache: std::sync::OnceLock::new(),
         test_chunks_cache: std::sync::OnceLock::new(),
         chunk_type_map_cache: std::sync::OnceLock::new(),
+        test_reachability_cache: std::sync::OnceLock::new(),
         summary_queue,
         vendored_prefixes: std::sync::OnceLock::new(),
         _mode: PhantomData,
@@ -1721,6 +1731,7 @@ impl<Mode> Store<Mode> {
         self.call_graph_cache = std::sync::OnceLock::new();
         self.test_chunks_cache = std::sync::OnceLock::new();
         self.chunk_type_map_cache = std::sync::OnceLock::new();
+        self.test_reachability_cache = std::sync::OnceLock::new();
         tracing::debug!("Store caches cleared");
     }
 

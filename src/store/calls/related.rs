@@ -16,8 +16,23 @@ impl<Mode> Store<Mode> {
         group_column: &str,
         count_expr: &str,
         names: &[&str],
+        exclude_doc_reference: bool,
     ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
         let mut result = std::collections::HashMap::new();
+
+        // A `doc_reference` edge is a prose mention, not a caller
+        // (`CallEdgeKind::is_real_caller` is the complement of `DocReference`),
+        // so the caller-count path filters it out. The literal is sourced from
+        // the enum (single source) rather than hardcoded, and the constant is
+        // never user input, so it stays safe to interpolate.
+        let doc_ref_filter = if exclude_doc_reference {
+            format!(
+                " AND edge_kind != '{}'",
+                crate::parser::CallEdgeKind::DocReference.as_str()
+            )
+        } else {
+            String::new()
+        };
 
         // `max_rows_per_statement(1)` returns ~32466 (one bind per row) at the
         // SQLite variable limit.
@@ -26,7 +41,7 @@ impl<Mode> Store<Mode> {
         for batch in names.chunks(batch_size) {
             let placeholders = super::super::helpers::make_placeholders(batch.len());
             let sql = format!(
-                "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",
+                "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}){doc_ref_filter} GROUP BY {group_column}",
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
             for name in batch {
@@ -44,8 +59,12 @@ impl<Mode> Store<Mode> {
     }
 
     /// Caller counts for multiple functions in one query.
-    /// Returns how many callers each function has. Functions not in the call graph
-    /// won't appear in the result map (caller count is implicitly 0).
+    /// Returns how many REAL callers each function has — `doc_reference` edges
+    /// (prose mentions, not invocations) are excluded, so a callee whose only
+    /// inbound edge is a doc mention counts 0 and won't appear in the map.
+    /// Functions with no real callers likewise won't appear (caller count is
+    /// implicitly 0). This is the one shared caller-count semantic: scout, brief,
+    /// context, and search's mini-impact hints all read through here.
     pub fn get_caller_counts_batch(
         &self,
         names: &[&str],
@@ -55,8 +74,13 @@ impl<Mode> Store<Mode> {
             return Ok(std::collections::HashMap::new());
         }
 
-        self.rt
-            .block_on(self.batch_count_query("callee_name", "callee_name", "COUNT(*)", names))
+        self.rt.block_on(self.batch_count_query(
+            "callee_name",
+            "callee_name",
+            "COUNT(*)",
+            names,
+            true,
+        ))
     }
 
     /// Callee counts for multiple functions in one query.
@@ -71,11 +95,14 @@ impl<Mode> Store<Mode> {
             return Ok(std::collections::HashMap::new());
         }
 
+        // Callee counts keep every edge kind (the spec scopes the doc_reference
+        // exclusion to the caller-count semantic only): `false`.
         self.rt.block_on(self.batch_count_query(
             "caller_name",
             "caller_name",
             "COUNT(DISTINCT callee_name)",
             names,
+            false,
         ))
     }
 
@@ -307,6 +334,60 @@ mod tests {
             .get_callee_counts_batch(&["nonexistent_func"])
             .unwrap();
         assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_get_caller_counts_batch_excludes_doc_reference() {
+        let (store, _dir) = setup_store();
+        // `mentioned` is invoked once (a real Call from `real_caller`) and
+        // mentioned once in prose (a DocReference from `doc_only`). `doc_target`
+        // is ONLY ever mentioned in prose — no real caller.
+        let calls = vec![
+            crate::parser::FunctionCalls {
+                name: "real_caller".to_string(),
+                line_start: 1,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "mentioned".to_string(),
+                    line_number: 2,
+                    kind: crate::parser::CallEdgeKind::Call,
+                }],
+            },
+            crate::parser::FunctionCalls {
+                name: "doc_only".to_string(),
+                line_start: 10,
+                calls: vec![
+                    crate::parser::CallSite {
+                        callee_name: "mentioned".to_string(),
+                        line_number: 11,
+                        kind: crate::parser::CallEdgeKind::DocReference,
+                    },
+                    crate::parser::CallSite {
+                        callee_name: "doc_target".to_string(),
+                        line_number: 12,
+                        kind: crate::parser::CallEdgeKind::DocReference,
+                    },
+                ],
+            },
+        ];
+        store
+            .upsert_function_calls(Path::new("src/doc.rs"), &calls)
+            .unwrap();
+
+        let counts = store
+            .get_caller_counts_batch(&["mentioned", "doc_target"])
+            .unwrap();
+        // `mentioned` has one real caller (Call) and one doc mention → count 1.
+        assert_eq!(
+            counts.get("mentioned").copied().unwrap_or(0),
+            1,
+            "doc_reference caller must not be counted; only the real Call edge"
+        );
+        // `doc_target`'s only inbound edge is a doc_reference → absent (0).
+        assert_eq!(
+            counts.get("doc_target").copied().unwrap_or(0),
+            0,
+            "a callee whose only edge is doc_reference must count 0"
+        );
     }
 
     // ===== find_shared_callers / find_shared_callees tests =====

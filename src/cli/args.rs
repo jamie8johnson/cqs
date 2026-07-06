@@ -287,6 +287,12 @@ pub(crate) struct SearchArgs {
     #[arg(long)]
     pub no_rank_signals: bool,
 
+    /// Suppress the per-result mini-impact hints (`caller_count` / `test_count`)
+    /// in JSON output (default-on; one `search` replaces search + impact). The
+    /// text surface never emits them.
+    #[arg(long)]
+    pub no_hints: bool,
+
     /// Shared worktree-overlay tri-state (`--overlay` / `--no-overlay` /
     /// hidden `--overlay-root`) via [`OverlayArgs`] flatten — the same struct
     /// the seed-overlaid graph commands carry, so the surfaces can't diverge.

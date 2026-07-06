@@ -398,4 +398,27 @@ mod tests {
         let s0 = arr[0]["score"].as_f64().unwrap();
         assert!((s0 - 0.95).abs() < 1e-4);
     }
+
+    /// `similar` shares the search-result schema + serializer but never runs the
+    /// hint post-pass (that lives in `assemble_output`, off `similar`'s path), so
+    /// its results carry the mini-impact fields cleanly ABSENT (skip-when-None) —
+    /// not `null`, not `0`. Guards the shared schema declaring `caller_count` /
+    /// `test_count` as OPTIONAL against this surface.
+    #[test]
+    fn similar_output_omits_usage_counts() {
+        let matches = SimilarMatches {
+            target: "my_target".to_string(),
+            results: vec![make_search_result("alpha", 0.95, None)],
+        };
+        let output = serde_json::to_value(build_similar_output(&matches)).unwrap();
+        let item = &output["results"][0];
+        assert!(
+            item.get("caller_count").is_none(),
+            "similar must omit caller_count (None), got: {item}"
+        );
+        assert!(
+            item.get("test_count").is_none(),
+            "similar must omit test_count (None), got: {item}"
+        );
+    }
 }

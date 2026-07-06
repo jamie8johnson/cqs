@@ -1136,6 +1136,8 @@ mod output_tests {
             ),
             score: 0.9,
             rank_signals: vec![],
+            caller_count: None,
+            test_count: None,
         };
         // Neighbor B: identical malicious body, but NOT relayed (id absent from
         // the fit set) — must NOT be scanned (no phantom flag on un-emitted body).
@@ -1149,6 +1151,8 @@ mod output_tests {
             ),
             score: 0.5,
             rank_signals: vec![],
+            caller_count: None,
+            test_count: None,
         };
         let mut fit: HashSet<String> = HashSet::new();
         fit.insert("src/lib.rs:10:b".to_string()); // only neighbor A fits
