@@ -78,3 +78,32 @@ fn security_md_documents_mcp_tasks_surface() {
         "SECURITY.md must document that a gone task is -32602, never an HTTP 404"
     );
 }
+
+/// The GET/SSE progress stream (P3a-2) is a new inbound surface: GET no longer
+/// unconditionally 405s, so the retired "no SSE in this build" claim must never
+/// reappear, and the stream posture (notifications-only, router-wide Origin/Host/
+/// auth on GET, the shared-token watch capability) must stay documented so a
+/// future edit cannot silently drop the disclosure or reintroduce the false floor.
+#[test]
+fn security_md_documents_sse_progress_stream() {
+    let doc = security_md();
+    let lower = doc.to_ascii_lowercase();
+    assert!(
+        !doc.contains("no SSE in this build"),
+        "SECURITY.md reintroduced the retired \"no SSE in this build\" claim — a GET with \
+         Accept: text/event-stream now opens a real SSE stream"
+    );
+    assert!(
+        doc.contains("text/event-stream") || lower.contains("sse progress stream"),
+        "SECURITY.md must document the GET SSE progress stream surface"
+    );
+    assert!(
+        doc.contains("notifications/progress"),
+        "SECURITY.md must document that the stream is notifications-only (progress frames)"
+    );
+    assert!(
+        lower.contains("progresstoken"),
+        "SECURITY.md must document that a taskId + progressToken holder can watch progress \
+         under the shared token (no per-task ACL)"
+    );
+}

@@ -129,6 +129,10 @@ tower-http = { version = "0.7", features = ["trace", "compression-gzip", "limit"
 # Both are feature-gated under `serve` (see [features] below).
 subtle = { version = "2", optional = true }
 base64 = { version = "0.22", optional = true }
+# SSE server-push on the MCP HTTP transport (P3a-2): `stream::unfold` builds the
+# per-connection progress stream and `StreamExt` drives it in tests. Gated under
+# `mcp-http` so it never enters a default or `serve`-only build.
+futures-util = { version = "0.3", optional = true }
 
 # Storage (sqlx async SQLite)
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
@@ -320,7 +324,7 @@ serve = ["dep:axum", "dep:tower", "dep:tower-http", "dep:subtle", "dep:base64"]
 # so pulling `serve` is what makes those primitives compile. The listener
 # itself relays to the unix daemon socket, so its module is additionally
 # `#[cfg(unix)]`-gated (a non-unix build gets a clean "not supported" stub).
-mcp-http = ["serve"]
+mcp-http = ["serve", "dep:futures-util"]
 
 # Slow integration tests excluded from PR-time CI. Two reasons a binary
 # lands here:

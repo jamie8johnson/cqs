@@ -340,6 +340,8 @@ echo 'search "error handling" | callers | test-map' | cqs batch
 
 **Async tasks (MCP Tasks, `2025-11-25`)**: the long-running `cqs_eval` harness can run as a task on either transport — augment its `tools/call` with a `task:{ttl?}` field to get a `taskId` back immediately, then `tasks/get` (cheap, non-blocking, `pollInterval`-guided — the recommended path) or `tasks/result` (blocks until the run finishes). Only `cqs_eval` is task-augmentable (`taskSupport:"optional"`); a moved-index result carries a `_meta` freshness marker so the recall-gate refuses a stale-substrate verdict.
 
+**SSE progress (HTTP transport)**: on the HTTP listener, a `GET` with `Accept: text/event-stream` opens a notifications-only Server-Sent Events stream that pushes `notifications/progress` (and an optional terminal `notifications/tasks/status`) for a `cqs_eval` task the client augmented with a `progressToken` — so a client watches a run's `{done,total}` live instead of polling `tasks/get`. Origin / Host / bearer-auth gate the `GET` exactly as they do `POST`; a non-SSE `GET` still returns `405`. Progress push is HTTP-only (the stdio bridge stays poll-only). See SECURITY.md for the stream's trust posture.
+
 ```bash
 # Start the daemon (if not already running)
 cqs watch --serve
