@@ -448,7 +448,7 @@ Open items removed from ROADMAP.md when the evidence base closed them (user-appr
 
 - [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being production default. Spec: `docs/plans/adaptive-retrieval.md`.
 
-  **Verdict:** superseded — the stated dependency (SPLADE-Code as production default) never materialized; rank_signals (#1847) shipped the per-hit "why", and `cqs trace` is the designed successor.
+  **Verdict:** superseded — the stated dependency (SPLADE-Code as production default) never materialized; rank_signals (#1847) shipped the per-hit "why", and the query-trace command (`cqs why`, design doc 2026-07-06) is the designed successor.
 
 ### Agent adoption
 

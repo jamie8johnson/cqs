@@ -38,7 +38,7 @@ v1.x release history, shipped/closed roadmap items, and experiment post-mortems:
 **Agent adoption:**
 - [ ] **Slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + pointer to `cqs --help`. Measure with telemetry before/after.
 - [ ] **Composite search results** — `cqs search` returns mini-impact (caller + test counts) alongside each result. One call instead of search + impact. *(In flight 2026-07-06 — implementation lane running.)*
-- [ ] **`cqs trace "query"`** — show every routing decision: classifier → category → strategy → α → SPLADE top-K → dense top-K → RRF fusion → final ranking. Today understanding why a query ranked X requires `RUST_LOG=debug` + log grepping. Bigger lift; design separately. The agent-facing version of "explain my retrieval". *(Design doc in progress, 2026-07-06.)*
+- [ ] **`cqs why "query"`** (né `cqs trace "query"` — the trace name is taken by the graph command) — show every routing decision: classifier → category → strategy → α → legs → fusion → finalize → final ranking. Today this requires `RUST_LOG=debug` + log grepping, and several decisions (RRF internals, boost mutations, drop counts, centroid declines) are invisible at any log level. The agent-facing version of "explain my retrieval". *(Design locked 2026-07-06: `docs/plans/2026-07-06-cqs-why-query-trace-design.md` — same-execution side-channel capture riding the search-legs core; per-token SPLADE attribution deferred to v2.)*
 
 ### Cross-Project Architecture
 
