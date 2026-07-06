@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 32); // v32: candidate_edges side-table (call-graph candidates that must not surface as callers)
+    assert_eq!(stats.schema_version, 33); // v33: chunks.is_test parse-time flag
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 
@@ -138,7 +138,9 @@ fn test_delete_by_origin() {
         .unwrap();
 
     // Delete chunks from test.rs
-    let deleted = store.delete_by_origin(&PathBuf::from("test.rs")).unwrap();
+    let deleted = store
+        .delete_by_origin(&PathBuf::from("src/lib.rs"))
+        .unwrap();
     assert_eq!(deleted, 1);
 
     // Only chunk2 should remain
@@ -149,7 +151,9 @@ fn test_delete_by_origin() {
     assert_eq!(results[0].chunk.name, "fn2");
 
     // Deleting again should return 0
-    let deleted_again = store.delete_by_origin(&PathBuf::from("test.rs")).unwrap();
+    let deleted_again = store
+        .delete_by_origin(&PathBuf::from("src/lib.rs"))
+        .unwrap();
     assert_eq!(deleted_again, 0);
 }
 
@@ -173,7 +177,7 @@ fn test_prune_missing() {
     // Prune with only test.rs existing. Use a nonexistent temp path as
     // `root` — neither test.rs nor other.rs live on disk, so the filesystem
     // fallback in `origin_exists` resolves to false for anything not in the set.
-    let existing: HashSet<PathBuf> = vec![PathBuf::from("test.rs")].into_iter().collect();
+    let existing: HashSet<PathBuf> = vec![PathBuf::from("src/lib.rs")].into_iter().collect();
     let fake_root = std::env::temp_dir().join("cqs-prune-missing-test-root-nonexistent");
     let pruned = store.prune_missing(&existing, &fake_root).unwrap();
 
@@ -319,7 +323,7 @@ fn test_fts_search() {
     );
     assert!(results
         .iter()
-        .any(|id| id.contains("parseConfigFile") || id.starts_with("test.rs")));
+        .any(|id| id.contains("parseConfigFile") || id.starts_with("src/lib.rs")));
 
     // FTS search for "parse file" should also find parseConfigFile (normalized)
     let results = store.search_fts("parse file", 5).unwrap();
@@ -796,7 +800,7 @@ fn test_get_call_graph() {
         },
     ];
     store
-        .upsert_function_calls(&PathBuf::from("test.rs"), &function_calls)
+        .upsert_function_calls(&PathBuf::from("src/lib.rs"), &function_calls)
         .unwrap();
 
     // Get call graph
@@ -859,7 +863,7 @@ fn test_all_chunk_identities() {
 
     // Find chunk1 identity
     let id1 = identities.iter().find(|i| i.name == "fn1").unwrap();
-    assert_eq!(id1.file.to_string_lossy(), "test.rs");
+    assert_eq!(id1.file.to_string_lossy(), "src/lib.rs");
     assert_eq!(id1.language, Language::Rust);
     assert_eq!(id1.line_start, 1);
 
@@ -1097,6 +1101,7 @@ fn test_check_origins_stale_across_batch_boundary() {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // First half stores a divergent old mtime (stale); second half
@@ -1178,7 +1183,7 @@ fn test_open_readonly_on_initialized_store() {
     let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
     let stats = ro.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
-    assert_eq!(stats.schema_version, 32);
+    assert_eq!(stats.schema_version, 33);
     assert_eq!(stats.model_name, cqs::embedder::DEFAULT_MODEL_REPO);
 }
 

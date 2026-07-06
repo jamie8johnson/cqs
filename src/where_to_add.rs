@@ -914,11 +914,14 @@ mod tests {
     use crate::parser::ChunkType;
 
     /// Build a `ChunkSummary` for a function chunk, with default test
-    /// values for file path, lines, and the optional fields.
+    /// values for file path, lines, and the optional fields. The path is a
+    /// neutral production file — NOT `test.rs`, which the registry classifies
+    /// as test code (so `detect_naming_convention` would skip every chunk and
+    /// these naming-detection assertions would read the empty-count default).
     fn make_chunk(name: &str, sig: &str, content: &str, lang: Language) -> ChunkSummary {
         ChunkSummary {
             id: format!("id-{name}"),
-            file: PathBuf::from("src/test.rs"),
+            file: PathBuf::from("src/module.rs"),
             language: lang,
             chunk_type: ChunkType::Function,
             name: name.to_string(),
@@ -932,6 +935,7 @@ mod tests {
             content_hash: String::new(),
             window_idx: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }
     }

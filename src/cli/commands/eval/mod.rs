@@ -702,18 +702,39 @@ fn print_text_report(report: &EvalOutput) {
 /// exact format without capturing process stdout. Caller is responsible for
 /// the empty-fixture guard — this writer assumes the report is publishable
 /// (`overall.n > 0`).
+///
+/// Emits three metric families per bucket — `primary` (the headline
+/// `gold_chunk` number, unchanged), `gold-set` (any `{gold_chunk} ∪ gold_set`
+/// member ranks), and `file-level` (any same-`origin`-file result ranks) — so
+/// a reader sees the multi-gold and usefulness-upper-band numbers alongside the
+/// primary without opening the JSON.
 fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalOutput) -> std::io::Result<()> {
     writeln!(
         w,
         "=== eval results: {} (N={}) ===",
         report.query_file, report.overall.n
     )?;
+    let o = &report.overall;
     writeln!(
         w,
-        "OVERALL: R@1={}  R@5={}  R@20={}",
-        pct(report.overall.r_at_1),
-        pct(report.overall.r_at_5),
-        pct(report.overall.r_at_20)
+        "OVERALL primary   : R@1={}  R@5={}  R@20={}",
+        pct(o.r_at_1),
+        pct(o.r_at_5),
+        pct(o.r_at_20)
+    )?;
+    writeln!(
+        w,
+        "OVERALL gold-set  : R@1={}  R@5={}  R@20={}",
+        pct(o.goldset_r_at_1),
+        pct(o.goldset_r_at_5),
+        pct(o.goldset_r_at_20)
+    )?;
+    writeln!(
+        w,
+        "OVERALL file-level: R@1={}  R@5={}  R@20={}",
+        pct(o.file_r_at_1),
+        pct(o.file_r_at_5),
+        pct(o.file_r_at_20)
     )?;
     if report.skipped > 0 {
         writeln!(w, "(skipped {} queries with no gold_chunk)", report.skipped)?;
@@ -723,19 +744,38 @@ fn write_text_report<W: std::io::Write>(w: &mut W, report: &EvalOutput) -> std::
     if !report.by_category.is_empty() {
         writeln!(
             w,
-            "{:<24} {:>5} {:>7} {:>7} {:>7}",
-            "category", "N", "R@1", "R@5", "R@20"
+            "{:<24} {:<11} {:>5} {:>7} {:>7} {:>7}",
+            "category", "metric", "N", "R@1", "R@5", "R@20"
         )?;
         for (cat, stats) in &report.by_category {
-            writeln!(
-                w,
-                "{:<24} {:>5} {:>7} {:>7} {:>7}",
-                cat,
-                stats.n,
-                pct(stats.r_at_1),
-                pct(stats.r_at_5),
-                pct(stats.r_at_20),
-            )?;
+            // One row per family so a downstream parser reads the label
+            // explicitly; the `N` column repeats (same query count per family).
+            for (label, r1, r5, r20) in [
+                ("primary", stats.r_at_1, stats.r_at_5, stats.r_at_20),
+                (
+                    "gold-set",
+                    stats.goldset_r_at_1,
+                    stats.goldset_r_at_5,
+                    stats.goldset_r_at_20,
+                ),
+                (
+                    "file-level",
+                    stats.file_r_at_1,
+                    stats.file_r_at_5,
+                    stats.file_r_at_20,
+                ),
+            ] {
+                writeln!(
+                    w,
+                    "{:<24} {:<11} {:>5} {:>7} {:>7} {:>7}",
+                    cat,
+                    label,
+                    stats.n,
+                    pct(r1),
+                    pct(r5),
+                    pct(r20),
+                )?;
+            }
         }
         writeln!(w)?;
     }
@@ -1031,6 +1071,14 @@ mod tests {
                 r_at_1: 0.5,
                 r_at_5: 1.0,
                 r_at_20: 1.0,
+                // Gold-set matches primary here; file-level is the distinct
+                // upper-band row (R@1 higher than primary's 50%).
+                goldset_r_at_1: 0.5,
+                goldset_r_at_5: 1.0,
+                goldset_r_at_20: 1.0,
+                file_r_at_1: 1.0,
+                file_r_at_5: 1.0,
+                file_r_at_20: 1.0,
             },
         );
 
@@ -1044,6 +1092,12 @@ mod tests {
                 r_at_1: 0.5,
                 r_at_5: 1.0,
                 r_at_20: 1.0,
+                goldset_r_at_1: 0.5,
+                goldset_r_at_5: 1.0,
+                goldset_r_at_20: 1.0,
+                file_r_at_1: 1.0,
+                file_r_at_5: 1.0,
+                file_r_at_20: 1.0,
             },
             by_category,
             index_model: "BAAI/bge-large-en-v1.5".to_string(),
@@ -1064,24 +1118,44 @@ mod tests {
             out.contains("=== eval results: fixture.json (N=2) ==="),
             "header row missing or reformatted: {out}"
         );
-        // OVERALL line — pct() formats with leading space and one decimal.
+        // The three OVERALL family rows — pct() formats with leading space and
+        // one decimal. Primary stays the headline; gold-set and file-level are
+        // the additive rows, each clearly labeled.
         assert!(
-            out.contains("OVERALL: R@1= 50.0%  R@5=100.0%  R@20=100.0%"),
-            "OVERALL line missing or reformatted: {out}"
+            out.contains("OVERALL primary   : R@1= 50.0%  R@5=100.0%  R@20=100.0%"),
+            "OVERALL primary line missing or reformatted: {out}"
         );
-        // Per-category table header row.
+        assert!(
+            out.contains("OVERALL gold-set  : R@1= 50.0%  R@5=100.0%  R@20=100.0%"),
+            "OVERALL gold-set line missing or reformatted: {out}"
+        );
+        assert!(
+            out.contains("OVERALL file-level: R@1=100.0%  R@5=100.0%  R@20=100.0%"),
+            "OVERALL file-level line missing or reformatted: {out}"
+        );
+        // Per-category table header row (now carries a `metric` family column).
         assert!(
             out.contains("category"),
             "category column header missing: {out}"
         );
+        assert!(
+            out.contains("metric"),
+            "metric family column header missing: {out}"
+        );
         assert!(out.contains("R@1"), "R@1 column header missing: {out}");
         assert!(out.contains("R@5"), "R@5 column header missing: {out}");
         assert!(out.contains("R@20"), "R@20 column header missing: {out}");
-        // Category row.
+        // Category rows — one per family, each labeled.
         assert!(
             out.contains("structural_search"),
             "category row missing: {out}"
         );
+        for label in ["primary", "gold-set", "file-level"] {
+            assert!(
+                out.contains(label),
+                "category family row {label:?} missing: {out}"
+            );
+        }
         // Footer with elapsed + qps + model.
         assert!(
             out.contains("(eval took 1.5s, 1.3 queries/sec, model=BAAI/bge-large-en-v1.5)"),

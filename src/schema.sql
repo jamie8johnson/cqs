@@ -1,4 +1,12 @@
--- cq index schema v32 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29+v30+v31+v32 columns annotated inline below)
+-- cq index schema v33 (see src/store/helpers/mod.rs::CURRENT_SCHEMA_VERSION; v22+v23+v24+v25+v26+v27+v28+v29+v30+v31+v32+v33 columns annotated inline below)
+-- v33: chunks.is_test INTEGER NOT NULL DEFAULT 0 — parse-time test-code flag.
+--      Set when a Rust item carries a #[test]-family attribute, when it or any
+--      ancestor is gated by #[cfg(test)] / #[cfg(all(test, …))], or when the
+--      canonical is_test_chunk path/name registry patterns match (all
+--      languages). Rank time reads this stored flag (CQS_TESTCODE_DEMOTE) so it
+--      can see #[cfg(test)]-in-src/ chunks whose attribute text is outside the
+--      chunk body. Pre-v33 rows default 0 until the PARSER_VERSION-17→18 bump
+--      re-parses them and populates the real flag.
 -- v32: candidate_edges side-table (file, callee_name, ref_line, candidate_kind)
 --      for low-confidence call-graph candidates that must NOT surface as
 --      callers. SEPARATE table, not a function_calls.edge_kind value — the graph
@@ -98,7 +106,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     source_content_hash BLOB,                 -- v23: BLAKE3 hash of file bytes for reconcile fingerprint (#1219); nullable on pre-migration rows
     vendored INTEGER NOT NULL DEFAULT 0,      -- v24: 1 if origin matches a vendored-path prefix at index time (#1221); search emits trust_level="vendored-code" for these
     needs_embedding INTEGER NOT NULL DEFAULT 0, -- v27: 1 when chunk was written without a real embedding (#1452 first-pass-skip); cleared by enrichment_pass
-    canonical_hash TEXT                       -- v28: blake3 of comment-/whitespace-normalized content; embedding-reuse cache key so comment-only edits reuse the prior embedding. Nullable: NULL = not computed (clean cache miss)
+    canonical_hash TEXT,                      -- v28: blake3 of comment-/whitespace-normalized content; embedding-reuse cache key so comment-only edits reuse the prior embedding. Nullable: NULL = not computed (clean cache miss)
+    is_test INTEGER NOT NULL DEFAULT 0        -- v33: parse-time test-code flag (#[test]/#[cfg(test)]/registry patterns). Read at rank time by CQS_TESTCODE_DEMOTE; pre-v33 rows default 0 until the PARSER_VERSION 17→18 bump re-parses them
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_needs_embedding

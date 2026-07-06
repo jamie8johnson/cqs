@@ -235,6 +235,9 @@ fn parse_st_regions(
                     window_idx: None,
                     parent_type_name: region.program_name.clone(),
                     parser_version: super::chunk::PARSER_VERSION,
+                    // ST has no `#[test]` / `#[cfg(test)]` grammar; the flag
+                    // rides only the registry path/name patterns here.
+                    is_test: crate::is_test_chunk(name, &path.to_string_lossy()),
                 });
             }
         }
@@ -315,6 +318,10 @@ fn extract_st_chunk(
     let region_byte_start: u32 = node.byte_range().start.try_into().unwrap_or(u32::MAX);
     let byte_start = region.byte_offset.saturating_add(region_byte_start);
 
+    // ST has no `#[test]` / `#[cfg(test)]` grammar; the flag rides only the
+    // registry path/name patterns here.
+    let is_test = crate::is_test_chunk(&mutable_name, &file_path.to_string_lossy());
+
     Ok(Chunk {
         id: super::chunk::chunk_id(
             &file_path.display().to_string(),
@@ -338,6 +345,7 @@ fn extract_st_chunk(
         window_idx: None,
         parent_type_name: region.program_name.clone(),
         parser_version: super::chunk::PARSER_VERSION,
+        is_test,
     })
 }
 

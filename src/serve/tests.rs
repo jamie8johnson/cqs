@@ -177,6 +177,7 @@ fn populated_fixture(n_chunks: usize, with_umap: bool) -> Fixture {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             // Unit-vector embedding of the store's dim — content doesn't
             // matter for these tests, only that upsert succeeds.
@@ -295,6 +296,7 @@ fn single_chunk_fixture(content: &str, vendored: bool) -> (Fixture, String) {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let mut v = vec![0.0f32; dim];
         if !v.is_empty() {
@@ -2645,6 +2647,7 @@ fn eval_gold_fixture(chunks: &[(&str, &str)], eval_json: &str) -> (Fixture, Temp
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             let mut v = vec![0.0f32; dim];
             if !v.is_empty() {
@@ -2872,6 +2875,7 @@ fn impact_fixture() -> (Fixture, String) {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             let mut v = vec![0.0f32; dim];
             if !v.is_empty() {

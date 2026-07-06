@@ -1814,6 +1814,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         // Distinct unit-ish vectors per chunk so the HNSW builder has
         // something non-degenerate to insert.

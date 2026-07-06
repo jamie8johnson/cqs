@@ -1901,3 +1901,34 @@ mentions = [
     "src/parser/chunk.rs",
     "eval",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Mutation-verifying an uncommitted guard test: NEVER git-checkout the file to undo the mutation — it wipes the uncommitted fix+test along with it (restored to last commit). Apply the mutation as a reversible patch (python string-replace both ways, or git stash push/pop), verify the test fails, then un-apply. Bit during the EX-4 overlay nit fix; redone from context."
+mentions = ["src/search/router.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "tests/env_var_docs.rs scans ALL of src/ AND tests/ for CQS_* literals and FAILS CI unless each has a README env-var row. Test-only knobs are EXEMPT via the CQS_TEST_* prefix convention (also CQS_SPLADE_ALPHA_* variants, REMOVED_VARS allowlist). A new test-harness knob must be named CQS_TEST_* or it trips the guard. GOTCHA: a targeted 'cargo test --bin cqs <module>' does NOT run this integration test, so the failure only surfaces in CI (env-docs sibling of the windows-check CI-only-guard trap)."
+mentions = [
+    "tests/env_var_docs.rs",
+    "env-var",
+    "CI",
+]
+
+[[note]]
+sentiment = 0.0
+text = "enforce_concurrency_cap in src/cli/mcp/http.rs releases its 256-permit when next.run().await returns the Response OBJECT — for a streaming SSE body that is AFTER headers, BEFORE the body ends. So an SSE stream holds NO outermost permit (starvation-safe) but is also INVISIBLE to the 256-cap (unbounded without a dedicated budget). P3a-2 SSE must add its own Semaphore(MAX_SSE_STREAMS) or N streams starve nothing yet accumulate freely. Confirmed by 3 P3a-2 reviewers against the code."
+mentions = [
+    "src/cli/mcp/http.rs",
+    "enforce_concurrency_cap",
+    "SSE",
+]
+
+[[note]]
+sentiment = -0.5
+text = "A lane's claimed 'full --tests sweep passed' must be verified by TOTAL COUNT against the known baseline (~5270 as of v33): the #2249 lane reported 4211 passed while store_test (deterministically red) never ran — a pass-count far below baseline means test binaries were silently skipped. Also: a struct-field fan-out (new Chunk field) is only fully compile-visible under --all-targets with ALL features (slow-tests gated 4 E0063 stragglers past both the lane's cuda-index sweep AND its clippy)."
+mentions = [
+    "tests/store_test.rs",
+    "CI",
+]

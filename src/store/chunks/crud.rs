@@ -2774,6 +2774,76 @@ mod tests {
         );
     }
 
+    /// End-to-end `is_test` wiring: a parse-time test-flagged chunk in a
+    /// `src/` file upserts with `is_test = 1`, hydrates back as
+    /// `ChunkSummary { is_test: true, .. }` through the same SELECT the search
+    /// path uses, and is then demoted by `apply_testcode_demote` — the full
+    /// chain the R@5 self-corpus crowder needs (parse-flag → store column →
+    /// hydrate → rank consumer). Proves the flag is not silently dropped at any
+    /// hop. A production sibling in the same file stays `is_test = false` and is
+    /// untouched by the demotion.
+    #[test]
+    fn test_upsert_round_trips_is_test_flag_and_demotes() {
+        use crate::search::scoring::apply_testcode_demote;
+        use crate::store::helpers::SearchResult;
+        use crate::store::ChunkSummary;
+        let (store, _dir) = setup_store();
+
+        // A cfg-test-in-src chunk: path + name both look production, so only
+        // the stored parse-time flag marks it test.
+        let mut c_test = make_chunk("schema_sql_chunks", "src/parser/chunk.rs");
+        c_test.is_test = true;
+        let c_prod = make_chunk("parse_schema", "src/parser/chunk.rs");
+
+        store
+            .upsert_chunks_batch(
+                &[
+                    (c_test.clone(), mock_embedding(1.0)),
+                    (c_prod.clone(), mock_embedding(1.0)),
+                ],
+                Some(100),
+            )
+            .expect("upsert");
+
+        let map: std::collections::HashMap<String, ChunkSummary> = store
+            .rt
+            .block_on(async {
+                store
+                    .fetch_chunks_by_ids_async(&[c_test.id.as_str(), c_prod.id.as_str()])
+                    .await
+            })
+            .expect("fetch")
+            .into_iter()
+            .map(|(id, row)| (id, ChunkSummary::from(row)))
+            .collect();
+
+        let test_summary = map.get(&c_test.id).expect("test chunk round-trips");
+        let prod_summary = map.get(&c_prod.id).expect("prod chunk round-trips");
+        assert!(
+            test_summary.is_test,
+            "parse-time is_test=1 must survive upsert+SELECT (the column is bound and read at ordinal 16)"
+        );
+        assert!(
+            !prod_summary.is_test,
+            "a production sibling in the same file stays is_test=0"
+        );
+
+        // The rank consumer reads the hydrated flag: on a non-test query at
+        // factor 0.5 the test chunk is demoted, the production sibling is not.
+        let mut results = vec![
+            SearchResult::new(prod_summary.clone(), 0.9),
+            SearchResult::new(test_summary.clone(), 0.9),
+        ];
+        let demoted = apply_testcode_demote(&mut results, 0.5, false);
+        assert!(demoted, "the round-tripped test chunk must be demoted");
+        assert_eq!(results[0].score, 0.9, "production sibling untouched");
+        assert!(
+            (results[1].score - 0.45).abs() < 1e-6,
+            "test chunk demoted 0.9 * 0.5 = 0.45, got {}",
+            results[1].score
+        );
+    }
+
     /// An empty prefix list (operator opt-out via
     /// `[index].vendored_paths = []` in `.cqs.toml`) disables vendored
     /// detection — even chunks under `vendor/` are stored with

@@ -1430,6 +1430,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         };
         SearchResult::new(chunk, 0.0)
@@ -1726,6 +1727,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         };
         SearchResult::new(chunk, 0.0)

@@ -82,6 +82,13 @@ pub struct ChunkSummary {
     /// SELECT omits the column.
     #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
     pub vendored: bool,
+    /// Parse-time test-code flag (`chunks.is_test`, v33). Read at rank time by
+    /// the `CQS_TESTCODE_DEMOTE` knob (`search::scoring::testcode`) so the
+    /// demotion sees `#[cfg(test)]`-in-`src/` chunks whose attribute text is
+    /// outside the chunk body. Defaults to false when the loading SELECT omits
+    /// the column.
+    #[serde(default, skip_serializing_if = "crate::serde_helpers::is_false")]
+    pub is_test: bool,
 }
 
 #[inline]
@@ -117,6 +124,8 @@ impl From<&ChunkSummary> for Chunk {
             // when the source row was loaded by a SELECT that omitted
             // `parser_version`, in which case the next reindex will rewrite it.
             parser_version: cs.parser_version,
+            // Preserve the parse-time test flag on round-trip.
+            is_test: cs.is_test,
         }
     }
 }
@@ -156,6 +165,7 @@ impl From<ChunkRow> for ChunkSummary {
             parent_type_name: row.parent_type_name,
             parser_version: row.parser_version,
             vendored: row.vendored,
+            is_test: row.is_test,
         }
     }
 }
@@ -842,6 +852,7 @@ mod tests {
             window_idx: None,
             parser_version: 0,
             vendored: false,
+            is_test: false,
         }
     }
 
@@ -905,6 +916,7 @@ mod tests {
                 window_idx: None,
                 parser_version: 0,
                 vendored: false,
+                is_test: false,
             },
             0.9375,
         )

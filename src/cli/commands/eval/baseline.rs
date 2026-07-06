@@ -361,6 +361,16 @@ mod tests {
                     r_at_1: *r1,
                     r_at_5: *r5,
                     r_at_20: *r20,
+                    // The diff gates on the primary family; the additive
+                    // families mirror it here so the fixture stays self-consistent
+                    // (goldset ≥ primary, file ≥ primary) without affecting the
+                    // primary-only regression assertions these tests make.
+                    goldset_r_at_1: *r1,
+                    goldset_r_at_5: *r5,
+                    goldset_r_at_20: *r20,
+                    file_r_at_1: *r1,
+                    file_r_at_5: *r5,
+                    file_r_at_20: *r20,
                 },
             );
         }
@@ -374,6 +384,12 @@ mod tests {
                 r_at_1: overall.0,
                 r_at_5: overall.1,
                 r_at_20: overall.2,
+                goldset_r_at_1: overall.0,
+                goldset_r_at_5: overall.1,
+                goldset_r_at_20: overall.2,
+                file_r_at_1: overall.0,
+                file_r_at_5: overall.1,
+                file_r_at_20: overall.2,
             },
             by_category,
             index_model: model.to_string(),
@@ -434,6 +450,70 @@ mod tests {
             "drop == tolerance should NOT regress, got: {:?}",
             diff.regressions
         );
+    }
+
+    /// The additive metric families survive a `--save` → `--baseline`
+    /// round-trip: distinct goldset/file values written to disk load back
+    /// unchanged (they ride the same serde surface as the primary numbers).
+    #[test]
+    fn test_gold_set_and_file_fields_round_trip_through_save() {
+        let mut r = make_report(
+            (0.40, 0.60, 0.80),
+            &[("cat_a", 0.50, 0.70, 0.90)],
+            "1.30.1",
+            "gemma",
+        );
+        // Give the additive families distinct values so a drop/rename would show.
+        r.overall.goldset_r_at_5 = 0.66;
+        r.overall.file_r_at_5 = 0.95;
+        if let Some(c) = r.by_category.get_mut("cat_a") {
+            c.goldset_r_at_5 = 0.77;
+            c.file_r_at_5 = 0.99;
+        }
+
+        let tmp = save_to_tmp(&r);
+        let raw = std::fs::read_to_string(tmp.path()).unwrap();
+        let loaded: EvalOutput = serde_json::from_str(&raw).expect("saved report must load");
+        assert_eq!(loaded.overall.goldset_r_at_5, 0.66);
+        assert_eq!(loaded.overall.file_r_at_5, 0.95);
+        assert_eq!(loaded.by_category["cat_a"].goldset_r_at_5, 0.77);
+        assert_eq!(loaded.by_category["cat_a"].file_r_at_5, 0.99);
+    }
+
+    /// A baseline saved BEFORE the additive families existed (its JSON omits
+    /// `goldset_*` / `file_*`) still loads — the new fields default to 0.0 —
+    /// so `--baseline` against a pre-`gold_set` baseline keeps working.
+    #[test]
+    fn test_old_baseline_without_new_fields_loads_with_defaults() {
+        // A minimal pre-gold_set EvalOutput JSON: overall + one category carry
+        // only the primary r_at_* fields.
+        let legacy = serde_json::json!({
+            "query_count": 1,
+            "skipped": 0,
+            "elapsed_secs": 1.0,
+            "queries_per_sec": 1.0,
+            "overall": { "n": 1, "r_at_1": 0.4, "r_at_5": 0.6, "r_at_20": 0.8 },
+            "by_category": {
+                "cat_a": { "n": 1, "r_at_1": 0.5, "r_at_5": 0.7, "r_at_20": 0.9 }
+            },
+            "index_model": "gemma",
+            "cqs_version": "1.29.0",
+            "query_file": "old.json",
+            "limit": 20
+        });
+        let loaded: EvalOutput =
+            serde_json::from_value(legacy).expect("legacy baseline must still deserialize");
+        assert_eq!(loaded.overall.r_at_5, 0.6, "primary field preserved");
+        assert_eq!(
+            loaded.overall.goldset_r_at_5, 0.0,
+            "absent goldset field defaults to 0.0"
+        );
+        assert_eq!(
+            loaded.overall.file_r_at_5, 0.0,
+            "absent file field defaults to 0.0"
+        );
+        assert_eq!(loaded.by_category["cat_a"].goldset_r_at_1, 0.0);
+        assert_eq!(loaded.by_category["cat_a"].file_r_at_20, 0.0);
     }
 
     /// `format_delta` rounds to one decimal and uses ± for ~zero.

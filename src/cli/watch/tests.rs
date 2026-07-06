@@ -3068,6 +3068,7 @@ fn make_gc_test_chunk(file: &Path, name: &str, line_start: u32) -> cqs::parser::
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 

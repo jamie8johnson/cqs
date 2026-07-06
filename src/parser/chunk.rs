@@ -93,7 +93,15 @@ use super::Parser;
 /// byte-identical Ruby/ST file re-parsed under v17 gains `parent_type_name` on
 /// those method chunks where it was `None` before, so a refresh is required
 /// even when the file's bytes are unchanged.
-pub const PARSER_VERSION: u32 = 17;
+/// 18: every chunk now carries a parse-time `is_test` flag
+/// ([`Chunk::is_test`], persisted in the v33 `chunks.is_test` column). A Rust
+/// item is flagged test when it carries a `#[test]`-family attribute, when it
+/// or any ancestor is gated by `#[cfg(test)]` / `#[cfg(all(test, …))]`, or when
+/// the canonical `is_test_chunk` registry patterns match (all languages get the
+/// registry layer). A byte-identical file re-parsed under v18 populates the new
+/// flag it did not carry under v17, so a refresh is required even when the
+/// file's bytes are unchanged.
+pub const PARSER_VERSION: u32 = 18;
 
 /// Build the canonical chunk id from its identifying coordinates.
 ///
@@ -314,6 +322,163 @@ fn collect_comment_ranges<'a>(
     }
 }
 
+/// Whether a freshly-parsed chunk is test code — the parse-time single source
+/// of truth persisted in `chunks.is_test`.
+///
+/// Layered (any layer true ⇒ test):
+/// - **Rust AST**: the item, or any ancestor, carries a `#[test]`-family
+///   attribute or a `#[cfg(test)]` / `#[cfg(all(test, …))]` gate — see
+///   [`rust_node_is_test`]. This is the layer that catches the
+///   `#[cfg(test)]`-in-`src/` case rank time cannot: the attribute text is a
+///   prev-sibling node OUTSIDE the chunk's byte range, so it is invisible to
+///   any content sniff.
+/// - **Registry (all languages)**: the canonical [`crate::is_test_chunk`]
+///   path/name patterns (`%/tests/%`, `%_test.rs`, `%/tests.rs` / `%/test.rs`,
+///   the `test_`/`_test` name conventions). The AST layer is Rust-only in this
+///   pass; every other language relies on the registry patterns.
+fn compute_is_test(
+    node: tree_sitter::Node,
+    source: &str,
+    language: Language,
+    name: &str,
+    file: &str,
+) -> bool {
+    (language == Language::Rust && rust_node_is_test(node, source))
+        || crate::is_test_chunk(name, file)
+}
+
+/// Rust-only AST test detection: walk `node` and every ancestor, returning true
+/// as soon as one carries a `#[test]`-family attribute or a `#[cfg(test)]` /
+/// `#[cfg(all(test, …))]` gate.
+///
+/// The ancestor walk is load-bearing: a `fn` inside `#[cfg(test)] mod tests {}`
+/// has the gate on the `mod_item` (the attribute is a prev-sibling of the mod,
+/// not of the fn), so only walking up to the mod finds it.
+fn rust_node_is_test(node: tree_sitter::Node, source: &str) -> bool {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if node_has_test_attr(n, source) {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// Whether any `attribute_item` immediately preceding `node` is a `#[test]`-
+/// family attribute or a `#[cfg(test)]`-family gate.
+///
+/// In tree-sitter-rust the attributes decorating an item are its prev-siblings
+/// (outside the item's byte range), chaining as consecutive `attribute_item`
+/// nodes. Doc/line comments may interleave between the attributes and the item,
+/// so comment siblings are skipped; the first non-attribute, non-comment
+/// sibling ends the scan.
+fn node_has_test_attr(node: tree_sitter::Node, source: &str) -> bool {
+    let mut sib = node.prev_sibling();
+    while let Some(s) = sib {
+        match s.kind() {
+            "attribute_item" => {
+                if let Some(text) = source.get(s.byte_range()) {
+                    if attr_text_is_test_family(text) || attr_text_is_cfg_test(text) {
+                        return true;
+                    }
+                }
+            }
+            k if k.contains("comment") => {}
+            _ => break,
+        }
+        sib = s.prev_sibling();
+    }
+    false
+}
+
+/// Whether an outer-attribute source string is a `#[test]`-family attribute:
+/// its path's terminal segment is `test` (`#[test]`, `#[tokio::test]`,
+/// `#[tokio::test(flavor = "multi_thread")]`). The `test_case` / `rstest`
+/// families do not appear in this repo and are intentionally out of scope —
+/// their terminal segment is not `test`.
+fn attr_text_is_test_family(attr_text: &str) -> bool {
+    let Some(inner) = attr_text
+        .trim()
+        .strip_prefix("#[")
+        .and_then(|s| s.strip_suffix(']'))
+    else {
+        return false;
+    };
+    // Path is everything before the first `(` (arguments). Terminal `::` segment.
+    let path = inner.split('(').next().unwrap_or(inner).trim();
+    let terminal = path.rsplit("::").next().unwrap_or(path).trim();
+    terminal == "test"
+}
+
+/// Whether an outer-attribute source string is a `#[cfg(test)]`-family gate —
+/// the bare `#[cfg(test)]` or the composed `#[cfg(all(test, …))]`. Mirrors the
+/// semantics of `is_cfg_test_attr` in `cli/watch/socket.rs`: `all(test, …)`
+/// gates on `test` (the whole item is test-only), while `any(test, …)` and
+/// `not(test)` do NOT (those items still compile in production builds).
+fn attr_text_is_cfg_test(attr_text: &str) -> bool {
+    let Some(inner) = attr_text
+        .trim()
+        .strip_prefix("#[")
+        .and_then(|s| s.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let Some(args) = inner
+        .trim()
+        .strip_prefix("cfg(")
+        .and_then(|s| s.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let args = args.trim();
+    if args == "test" {
+        return true;
+    }
+    if let Some(all_args) = args.strip_prefix("all(").and_then(|s| s.strip_suffix(')')) {
+        return split_top_level_commas(all_args)
+            .into_iter()
+            .any(|a| a.trim() == "test");
+    }
+    false
+}
+
+/// Split `s` on top-level commas — commas nested inside parens/brackets or
+/// string literals do not split. Reads the direct members of an `all( … )` cfg
+/// predicate so `all(test, feature = "x")` yields `test` as one member. Mirrors
+/// `split_top_level` in `cli/watch/socket.rs`.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut start = 0;
+    for (idx, ch) in s.char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&s[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
 impl Parser {
     /// Extracts a code chunk from a source file using Tree-sitter query matches.
     /// # Arguments
@@ -450,6 +615,12 @@ impl Parser {
         // force a needless re-embed.
         let canonical = canonical_hash_spanning(node, body_node, &content);
 
+        // Parse-time test-code flag. `node` is the captured definition; its
+        // preceding `#[test]` / `#[cfg(test)]` attributes are prev-sibling nodes
+        // OUTSIDE `content`, so this AST walk is the only place they are
+        // reachable. Registry path/name patterns cover every language.
+        let is_test = compute_is_test(node, source, language, &name, &path.to_string_lossy());
+
         Ok(Chunk {
             id,
             file: path.to_path_buf(),
@@ -468,6 +639,7 @@ impl Parser {
             window_idx: None,
             parent_type_name,
             parser_version: PARSER_VERSION,
+            is_test,
         })
     }
 }
@@ -3613,6 +3785,163 @@ CREATE TABLE accounts (
                 !ranges.is_empty(),
                 "the trailing comment range should be collected"
             );
+        }
+    }
+
+    /// Parse-time `is_test` flag: the R@5-crowder cases the old rank-time
+    /// path/name sniff could not see (a `#[cfg(test)]` fn in a `src/` file).
+    mod is_test_flag {
+        use super::super::*;
+        use std::collections::HashMap;
+        use std::path::Path;
+
+        /// Parse `source` as Rust at `path` and map each chunk name to its
+        /// `is_test` flag. Panics on a duplicate name so a fixture with two
+        /// same-named chunks fails loudly instead of silently overwriting.
+        fn is_test_by_name(source: &str, path: &str) -> HashMap<String, bool> {
+            let parser = Parser::new().unwrap();
+            let chunks = parser
+                .parse_source(source, Language::Rust, Path::new(path))
+                .unwrap();
+            let mut map = HashMap::new();
+            for c in chunks {
+                assert!(
+                    map.insert(c.name.clone(), c.is_test).is_none(),
+                    "duplicate chunk name in fixture: {}",
+                    c.name
+                );
+            }
+            map
+        }
+
+        /// The audit's exact case plus every attribute/gate shape: a
+        /// `#[cfg(test)] mod tests { fn foo }` member and a bare `#[test]` fn
+        /// carry `is_test`, a production sibling in the SAME `src/` file does
+        /// not. All at a `src/` path AND with names that carry NO registry
+        /// name pattern (no `test_` / `_test` / `_test_`), so the flag can only
+        /// come from the Rust AST layer — this isolates it from the registry.
+        #[test]
+        fn rust_ast_attribute_and_cfg_test_shapes() {
+            let source = r#"
+pub fn production_fn() {}
+
+#[test]
+fn plain_attr_fn() {}
+
+#[tokio::test]
+async fn async_attr_fn() {}
+
+#[cfg(test)]
+fn cfg_gated_fn() {}
+
+#[cfg(test)]
+mod inner_tests {
+    pub fn helper_in_mod() {}
+
+    #[test]
+    fn nested_case_fn() {}
+}
+
+#[cfg(all(test, feature = "cuda-index"))]
+mod composed_tests {
+    pub fn helper_in_composed() {}
+}
+
+#[cfg(any(test, feature = "x"))]
+mod any_mod {
+    pub fn helper_in_any() {}
+}
+
+#[cfg(not(test))]
+fn not_gated_fn() {}
+"#;
+            let m = is_test_by_name(source, "src/parser/chunk.rs");
+
+            // Production code: not test.
+            assert_eq!(m.get("production_fn"), Some(&false));
+            // (a) #[test]-family attributes.
+            assert_eq!(m.get("plain_attr_fn"), Some(&true));
+            assert_eq!(m.get("async_attr_fn"), Some(&true));
+            // (b) #[cfg(test)] gate, on the item and via a mod ancestor.
+            assert_eq!(m.get("cfg_gated_fn"), Some(&true));
+            assert_eq!(m.get("helper_in_mod"), Some(&true));
+            assert_eq!(m.get("nested_case_fn"), Some(&true));
+            // Composed all(test, …) gates on test.
+            assert_eq!(m.get("helper_in_composed"), Some(&true));
+            // any(test, …) and not(test) do NOT gate — still production.
+            assert_eq!(m.get("helper_in_any"), Some(&false));
+            assert_eq!(m.get("not_gated_fn"), Some(&false));
+        }
+
+        /// (c)+(d) registry path patterns, exercised through the parse-time
+        /// flag on non-attributed production-looking code.
+        #[test]
+        fn registry_path_patterns_flag_test_files() {
+            let src = "pub fn run() {}\n";
+
+            // (d) `tests.rs` / `test.rs` FILENAME — the newly-covered A/B shape.
+            assert_eq!(
+                is_test_by_name(src, "src/serve/tests.rs").get("run"),
+                Some(&true),
+                "a same-file tests.rs module must flag as test"
+            );
+            assert_eq!(
+                is_test_by_name(src, "src/serve/test.rs").get("run"),
+                Some(&true)
+            );
+            // (c) `/tests/` directory segment.
+            assert_eq!(
+                is_test_by_name(src, "src/foo/tests/helpers.rs").get("run"),
+                Some(&true)
+            );
+            // `_test.rs` suffix.
+            assert_eq!(
+                is_test_by_name(src, "src/foo_test.rs").get("run"),
+                Some(&true)
+            );
+
+            // Substring traps must NOT match: the `/tests.rs` / `/test.rs`
+            // anchor requires a leading `/`, so `contest.rs` / `latest.rs` /
+            // `manifest.rs` stay production.
+            for trap in ["src/contest.rs", "src/latest.rs", "src/manifest.rs"] {
+                assert_eq!(
+                    is_test_by_name(src, trap).get("run"),
+                    Some(&false),
+                    "{trap} must not read as a test file"
+                );
+            }
+        }
+
+        // ===== attribute-string predicate units (no parse) =====
+
+        #[test]
+        fn test_family_predicate() {
+            assert!(attr_text_is_test_family("#[test]"));
+            assert!(attr_text_is_test_family("#[tokio::test]"));
+            assert!(attr_text_is_test_family(
+                "#[tokio::test(flavor = \"multi_thread\")]"
+            ));
+            // Not test-family:
+            assert!(!attr_text_is_test_family("#[cfg(test)]"));
+            assert!(!attr_text_is_test_family("#[derive(Debug)]"));
+            assert!(!attr_text_is_test_family("#[allow(clippy::all)]"));
+            // `test_case` terminal segment is not `test` (out of scope shape).
+            assert!(!attr_text_is_test_family("#[test_case(1)]"));
+        }
+
+        #[test]
+        fn cfg_test_predicate() {
+            assert!(attr_text_is_cfg_test("#[cfg(test)]"));
+            assert!(attr_text_is_cfg_test("#[cfg(all(test, unix))]"));
+            assert!(attr_text_is_cfg_test(
+                "#[cfg(all(test, feature = \"cuda-index\"))]"
+            ));
+            assert!(attr_text_is_cfg_test("#[cfg(all(feature = \"x\", test))]"));
+            // any(test, …) / not(test) do NOT gate on test.
+            assert!(!attr_text_is_cfg_test("#[cfg(any(test, unix))]"));
+            assert!(!attr_text_is_cfg_test("#[cfg(not(test))]"));
+            assert!(!attr_text_is_cfg_test("#[cfg(feature = \"test\")]"));
+            assert!(!attr_text_is_cfg_test("#[test]"));
         }
     }
 }

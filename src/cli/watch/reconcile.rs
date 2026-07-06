@@ -647,6 +647,7 @@ mod tests {
                     window_idx: None,
                     parent_type_name: None,
                     parser_version: 0,
+                    is_test: false,
                 },
                 placeholder_embedding(i as f32),
             ));
@@ -746,6 +747,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);
@@ -912,6 +914,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);
@@ -992,6 +995,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);
@@ -1079,6 +1083,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);
@@ -1161,6 +1166,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);
@@ -1288,6 +1294,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: cqs::parser_version(), // current — exercise fingerprint path, not drift
+            is_test: false,
         };
 
         let store = open_store(&cqs_dir);

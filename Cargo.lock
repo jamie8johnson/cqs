@@ -824,6 +824,7 @@ dependencies = [
  "dirs",
  "dunce",
  "fast_html2md",
+ "futures-util",
  "globset",
  "half",
  "hf-hub",

@@ -1022,6 +1022,7 @@ mod tests {
                     window_idx: None,
                     parent_type_name: None,
                     parser_version: 0,
+                    is_test: false,
                 };
                 // Pad/truncate the synthetic embedding to the store dim so the
                 // wire bytes match what `embedding_batches` expects.

@@ -1,11 +1,11 @@
 //! Frozen-artifact guard: the FULL schema migration chain from the OLDEST
-//! migratable version (v10) to current (v32), run against a hand-built v10 DB.
+//! migratable version (v10) to current (v33), run against a hand-built v10 DB.
 //!
 //! # The version boundary
 //!
 //! Every fresh-state fixture is born at the current schema. The existing
 //! migration tests each exercise ONE step (or at most a 3-step v12→v14 chain)
-//! against a minimal per-step setup helper. NONE runs the complete v10→v32
+//! against a minimal per-step setup helper. NONE runs the complete v10→v33
 //! chain against a faithfully-seeded oldest DB. That chain crosses every
 //! destructive in-place TABLE REBUILD — v15→v16 (llm_summaries composite PK),
 //! v18→v19 (sparse_vectors FK), v28→v29 (notes CHECK + clamp) — plus the recent
@@ -30,11 +30,11 @@
 //!   - `type_edges`, `sparse_vectors`, `llm_summaries`, `file_registry`,
 //!     `candidate_edges` all ABSENT (created by later migrations).
 //!
-//! The current code can never emit this DB: it always writes schema 32.
+//! The current code can never emit this DB: it always writes the current schema.
 //!
 //! # What it asserts (current code reads/migrates the old shape correctly)
 //!
-//!   (1) `Store::open` runs the whole v10→v32 chain without error and stamps 32.
+//!   (1) `Store::open` runs the whole v10→v33 chain without error and stamps 33.
 //!   (2) Every v10 chunk row SURVIVES the chain (no silent loss across the
 //!       three destructive rebuilds). `chunk_count` and the rows match.
 //!   (3) The off-grid note (-0.8) is CLAMPED to the nearest legal discrete
@@ -261,7 +261,7 @@ fn build_v10_artifact(db_path: &Path) {
     });
 }
 
-/// GUARD: the full v10→v32 chain reads/migrates the frozen v10 artifact
+/// GUARD: the full v10→v33 chain reads/migrates the frozen v10 artifact
 /// correctly through the real `Store::open` path (which auto-migrates).
 ///
 /// Calibration (RED proof): mutate the v28→v29 clamp in
@@ -279,17 +279,19 @@ fn v10_full_chain_migrates_and_reads_legacy_shapes() {
     build_v10_artifact(&db_path);
 
     // (1) Open through the real path — this runs check_and_migrate_schema, i.e.
-    // the entire v10→v32 chain. A mis-migration surfaces as an Err here.
-    let store = Store::open(&db_path).expect("Store::open must migrate v10 → v32 without error");
+    // the entire v10→current chain. A mis-migration surfaces as an Err here.
+    let store =
+        Store::open(&db_path).expect("Store::open must migrate v10 → current without error");
 
-    // schema_version is stamped 32. (Probe the file directly; Store is open
-    // read-write but we re-read via a separate read-only connection.)
+    // schema_version is stamped at the current version. (Probe the file
+    // directly; Store is open read-write but we re-read via a separate
+    // read-only connection.)
     let sv = query_scalar_string(
         &db_path,
         "SELECT value FROM metadata WHERE key = 'schema_version'".to_string(),
     )
     .expect("schema_version row must exist after migrate");
-    assert_eq!(sv, "32", "full chain must stamp schema_version = 32");
+    assert_eq!(sv, "33", "full chain must stamp schema_version = 33");
 
     // (2) Every v10 chunk row survived all three destructive rebuilds.
     let count = store.chunk_count().expect("chunk_count after migrate");
@@ -304,6 +306,13 @@ fn v10_full_chain_migrates_and_reads_legacy_shapes() {
     assert!(
         names.contains("foo") && names.contains("bar"),
         "both legacy chunk rows must be queryable after migrate; got {names:?}"
+    );
+    // The v32→v33 `is_test` ADD COLUMN backfills the `0` default on every
+    // pre-existing row — a v10 chunk migrated all the way to v33 reads as
+    // not-test until a reindex re-parses it (the legacy-state guarantee).
+    assert!(
+        chunks.iter().all(|c| !c.is_test),
+        "migrated legacy chunks must default to is_test = false pre-reparse"
     );
 
     // (3) The off-grid note (-0.8) is clamped to the nearest legal value (-1.0)
@@ -350,7 +359,7 @@ fn v10_full_chain_creates_all_later_tables() {
     let db_path = tmp.path().join("index.db");
     build_v10_artifact(&db_path);
 
-    let _store = Store::open(&db_path).expect("Store::open must migrate v10 → v32");
+    let _store = Store::open(&db_path).expect("Store::open must migrate v10 → v33");
 
     for table in [
         "type_edges",      // v10→v11
@@ -366,7 +375,7 @@ fn v10_full_chain_creates_all_later_tables() {
         assert_eq!(
             found.as_deref(),
             Some(table),
-            "table {table} must exist after the full v10→v32 chain"
+            "table {table} must exist after the full v10→v33 chain"
         );
     }
 }

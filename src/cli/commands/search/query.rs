@@ -2102,6 +2102,7 @@ mod tests {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             };
             {
                 let s = Store::open(&db).expect("open ref store");
@@ -2275,6 +2276,7 @@ mod tests {
                 parent_id: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
                 vendored: false,
             };
             UnifiedResult::Code(cqs::store::SearchResult::new(summary, score))
@@ -2726,6 +2728,7 @@ mod tests {
                 parent_id: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
                 vendored: false,
             };
             SearchResult::new(summary, score)
@@ -2761,6 +2764,7 @@ mod tests {
                     window_idx: None,
                     parent_type_name: None,
                     parser_version: 0,
+                    is_test: false,
                 };
                 store
                     .upsert_chunks_batch(&[(chunk, one_hot(*slot))], Some(0))
@@ -2821,6 +2825,7 @@ mod tests {
                     window_idx: None,
                     parent_type_name: None,
                     parser_version: 0,
+                    is_test: false,
                 };
                 store
                     .upsert_chunks_batch(&[(chunk, emb.clone())], Some(0))

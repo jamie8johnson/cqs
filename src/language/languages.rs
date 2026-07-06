@@ -6474,7 +6474,15 @@ static LANG_RUST: LanguageDef = LanguageDef {
     post_process_chunk: Some(post_process_rust_rust as PostProcessChunkFn),
     test_markers: &["#[test]", "#[cfg(test)]"],
     endpoint_markers: &[],
-    test_path_patterns: &["%/tests/%", "%\\_test.rs"],
+    // `%/tests.rs` / `%/test.rs`: a Rust submodule-test FILE (the `mod tests;`
+    // → `tests.rs` convention, e.g. `src/serve/tests.rs`). The prior patterns
+    // only matched a `/tests/` DIRECTORY segment, so a same-file `tests.rs`
+    // module read as production. Anchored on the leading `/` so substring traps
+    // (`contest.rs`, `latest.rs`) do not match. In the registry (not only the
+    // parse-time flag) so every `is_test_chunk` consumer — chunk_importance,
+    // scout/impact filtering, the dead-code SQL filter — agrees on one
+    // definition of "test file".
+    test_path_patterns: &["%/tests/%", "%\\_test.rs", "%/tests.rs", "%/test.rs"],
     entry_point_names: &["main"],
     trait_method_names: &[
         // std::fmt

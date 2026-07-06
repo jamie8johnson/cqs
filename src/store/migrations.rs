@@ -402,6 +402,7 @@ const MIGRATIONS: &[(i32, i32, MigrationFn)] = &[
     (29, 30, |c| Box::pin(migrate_v29_to_v30(c))),
     (30, 31, |c| Box::pin(migrate_v30_to_v31(c))),
     (31, 32, |c| Box::pin(migrate_v31_to_v32(c))),
+    (32, 33, |c| Box::pin(migrate_v32_to_v33(c))),
 ];
 
 /// Run a single migration step
@@ -1299,6 +1300,37 @@ async fn migrate_v31_to_v32(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// v32 → v33: add `chunks.is_test` (INTEGER NOT NULL DEFAULT 0).
+///
+/// The parse-time test-code flag. Set when a Rust item carries a `#[test]`-
+/// family attribute, when the item or any ancestor is gated by `#[cfg(test)]` /
+/// `#[cfg(all(test, …))]`, or when the canonical `is_test_chunk` path/name
+/// registry patterns match. Read at rank time by `CQS_TESTCODE_DEMOTE`
+/// (`search::scoring::testcode`) so the demotion sees `#[cfg(test)]`-in-`src/`
+/// chunks whose attribute text lives OUTSIDE the chunk body and is therefore
+/// invisible to any content sniff.
+///
+/// Additive `ALTER TABLE ADD COLUMN`; pre-v33 rows read the `0` default (not
+/// test) until the PARSER_VERSION bump (17→18) makes every chunk stale and a
+/// plain reindex re-parses it, populating the real flag (no `--force` needed).
+/// A stale-flag `0` on a genuine test chunk only under-demotes until reindex —
+/// it never mis-hides a production chunk.
+async fn migrate_v32_to_v33(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    let _span = tracing::info_span!("migrate_v32_to_v33").entered();
+
+    sqlx::query("ALTER TABLE chunks ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Migrated to v33: chunks.is_test column (default 0). Pre-v33 rows read 0 \
+         until the PARSER_VERSION bump (17→18) makes them stale and a plain \
+         reindex re-parses them to populate the parse-time test-code flag \
+         (no --force needed)."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1331,7 +1363,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 32);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 33);
     }
 
     #[test]
@@ -4990,6 +5022,146 @@ mod tests {
             assert_eq!(
                 fresh_idx, mig_idx,
                 "fresh vs migrated candidate_edges index set must match"
+            );
+        });
+    }
+
+    /// Build a minimal v32 schema: metadata + a v32-shaped `chunks` table
+    /// WITHOUT the `is_test` column, stamped at version 32. Only the columns the
+    /// v32→v33 step touches matter (it just `ALTER TABLE chunks ADD COLUMN`), so
+    /// the table carries a bare `id`/`name` shape a pre-migration row can use.
+    async fn setup_v32_schema(db_path: &std::path::Path) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Pre-v33 chunks: no is_test column.
+        sqlx::query("CREATE TABLE chunks (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '32')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// v32 → v33 adds `chunks.is_test` with a `0` default. A pre-existing row
+    /// (inserted before the migration, when the column did not exist) must read
+    /// back `is_test = 0` — the legacy-state guarantee that an old DB's chunks
+    /// are treated as not-test until the PARSER_VERSION bump re-parses them — and
+    /// a fresh insert can carry `is_test = 1`.
+    #[test]
+    fn test_migrate_v32_to_v33_adds_is_test_column() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = setup_v32_schema(&db_path).await;
+
+            // Insert a pre-migration row (no is_test column yet).
+            sqlx::query("INSERT INTO chunks (id, name) VALUES ('src/a.rs:1:x', 'foo')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let pool = migrate(pool, &db_path, 32, 33).await.unwrap();
+
+            // Pre-migration row defaults to 0 (not test).
+            let (is_test,): (i64,) =
+                sqlx::query_as("SELECT is_test FROM chunks WHERE id = 'src/a.rs:1:x'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                is_test, 0,
+                "pre-v33 chunk row must default to is_test = 0 until reindex"
+            );
+
+            // A fresh insert can carry is_test = 1.
+            sqlx::query("INSERT INTO chunks (id, name, is_test) VALUES ('src/b.rs:1:y', 'bar', 1)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (is_test2,): (i64,) =
+                sqlx::query_as("SELECT is_test FROM chunks WHERE id = 'src/b.rs:1:y'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(is_test2, 1);
+        });
+    }
+
+    /// Fresh-create (schema.sql) and migrated (v32 → v33) must both carry the
+    /// `chunks.is_test` column. The headline `test_fresh_init_equals_full_migration_from_v10`
+    /// covers full-shape parity structurally; this names the exact new surface.
+    #[test]
+    fn test_v33_fresh_create_matches_migrated_shape() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Fresh: apply schema.sql and read the chunks DDL.
+            let fresh = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(":memory:")
+                        .foreign_keys(true),
+                )
+                .await
+                .unwrap();
+            for stmt in crate::store::split_sql_statements(include_str!("../schema.sql")) {
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(sqlx::AssertSqlSafe(stmt.as_str()))
+                    .execute(&fresh)
+                    .await
+                    .unwrap();
+            }
+            let (fresh_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks'",
+            )
+            .fetch_one(&fresh)
+            .await
+            .unwrap();
+            assert!(
+                fresh_sql.contains("is_test"),
+                "fresh chunks must carry is_test, got: {fresh_sql}"
+            );
+
+            // Migrated: build v32, migrate to v33, read the same.
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.db");
+            let pool = setup_v32_schema(&db_path).await;
+            let pool = migrate(pool, &db_path, 32, 33).await.unwrap();
+            let (mig_sql,): (String,) = sqlx::query_as(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                mig_sql.contains("is_test"),
+                "migrated chunks must carry is_test, got: {mig_sql}"
             );
         });
     }

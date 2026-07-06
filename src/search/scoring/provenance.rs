@@ -93,6 +93,17 @@ pub(crate) struct RankSignalCtx<'a> {
     /// moving but applied in `finalize_results` after the scoring fold, so it's
     /// recorded here from the caller-computed map rather than reconstructed.
     pub parent_boosts: &'a HashMap<&'a str, f32>,
+    /// Test-code demotion factor (`CQS_TESTCODE_DEMOTE`) applied in
+    /// `finalize_results` step 4b2. `1.0` (the default) means the demotion was
+    /// inert — no `test_demote` signal is recorded. Per-result test-origin is
+    /// read from the chunk's parse-time `is_test` flag — the SAME flag the
+    /// application in [`super::apply_testcode_demote`] reads, so record and
+    /// application never diverge.
+    pub testcode_demote_factor: f32,
+    /// Whether the query was test-seeking. When true the demotion did not run,
+    /// so `test_demote` is never recorded regardless of the factor. Mirrors the
+    /// gate in [`super::apply_testcode_demote`].
+    pub query_is_test_seeking: bool,
 }
 
 /// Caller-supplied half of the provenance inputs: the boost-lookup pieces that
@@ -248,6 +259,21 @@ pub(crate) fn signals_for(result: &SearchResult, ctx: &RankSignalCtx<'_>) -> Vec
         }
     }
 
+    // test_demote: the test-code demotion multiplier (finalize step 4b2).
+    // Recorded only when it actually moved the score: the knob is engaged
+    // (factor < 1.0), the query was not test-seeking, and this chunk is
+    // test-origin. Reads the SAME parse-time `is_test` flag the demotion
+    // applied (`apply_testcode_demote`), so the record faithfully mirrors the
+    // score move — application and provenance can never disagree. Not gated on
+    // `had_dense`: the demotion runs over the final result set (like
+    // parent_boost/type_boost), so it can move an FTS-sole hit.
+    if ctx.testcode_demote_factor < 1.0 && !ctx.query_is_test_seeking && result.chunk.is_test {
+        discriminative.push(RankSignal {
+            signal: "test_demote",
+            value: ctx.testcode_demote_factor,
+        });
+    }
+
     // No discriminative signal fired → record nothing (skip-when-empty on the
     // wire, zero token overhead). When one did, prepend the `dense` rank as
     // context so the consumer can read the boost relative to where the semantic
@@ -291,6 +317,17 @@ mod tests {
             window_idx: None,
             parser_version: 0,
             vendored: false,
+            is_test: false,
+        }
+    }
+
+    /// A test-origin chunk: identical to [`chunk`] but with the parse-time
+    /// `is_test` flag set, so `test_demote` sees it (detection now reads the
+    /// stored flag, not a path/name sniff).
+    fn test_chunk(id: &str, name: &str, chunk_type: ChunkType) -> ChunkSummary {
+        ChunkSummary {
+            is_test: true,
+            ..chunk(id, name, chunk_type)
         }
     }
 
@@ -336,6 +373,10 @@ mod tests {
             is_rrf,
             suppress_note_boost,
             parent_boosts,
+            // Inert demotion defaults: factor 1.0 + not test-seeking → the
+            // `test_demote` signal never fires unless a test overrides these.
+            testcode_demote_factor: 1.0,
+            query_is_test_seeking: false,
         }
     }
 
@@ -562,6 +603,81 @@ mod tests {
         assert!(!signals_for(&r, &ctx_off)
             .iter()
             .any(|s| s.signal == "importance"));
+    }
+
+    #[test]
+    fn test_demote_recorded_for_test_chunk_on_plain_query() {
+        // A test-origin chunk demoted on a non-test-seeking query records
+        // `test_demote` with its multiplier.
+        let note_index = NoteBoost::Borrowed(super::super::NoteBoostIndex::new(&[]));
+        let mut dense = HashMap::new();
+        dense.insert("src/lib.rs:1:test_foo", 2usize);
+        let (fts, sparse, pb) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let base = ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false);
+        let c = RankSignalCtx {
+            testcode_demote_factor: 0.5,
+            query_is_test_seeking: false,
+            ..base
+        };
+        let r = SearchResult::new(
+            test_chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
+            0.9,
+        );
+        let sigs = signals_for(&r, &c);
+        assert!(
+            sigs.iter()
+                .any(|s| s.signal == "test_demote" && (s.value - 0.5).abs() < 1e-6),
+            "expected a test_demote signal; got {sigs:?}"
+        );
+    }
+
+    #[test]
+    fn test_demote_not_recorded_when_inert_or_seeking_or_nontest() {
+        // `RankSignalCtx` is not `Copy`, so a fresh `ctx(...)` is built (shared
+        // borrows of the same maps) for each spread rather than reusing one base.
+        let note_index = NoteBoost::Borrowed(super::super::NoteBoostIndex::new(&[]));
+        let mut dense = HashMap::new();
+        dense.insert("src/lib.rs:1:test_foo", 2usize);
+        dense.insert("src/lib.rs:1:parse", 3usize);
+        let (fts, sparse, pb) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let test_result = SearchResult::new(
+            test_chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
+            0.9,
+        );
+
+        // Inert factor (1.0): no signal.
+        let inert = RankSignalCtx {
+            testcode_demote_factor: 1.0,
+            query_is_test_seeking: false,
+            ..ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false)
+        };
+        assert!(!signals_for(&test_result, &inert)
+            .iter()
+            .any(|s| s.signal == "test_demote"));
+
+        // Test-seeking query: no signal even with an active factor.
+        let seeking = RankSignalCtx {
+            testcode_demote_factor: 0.5,
+            query_is_test_seeking: true,
+            ..ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false)
+        };
+        assert!(!signals_for(&test_result, &seeking)
+            .iter()
+            .any(|s| s.signal == "test_demote"));
+
+        // Non-test chunk: never demoted, so no signal.
+        let active = RankSignalCtx {
+            testcode_demote_factor: 0.5,
+            query_is_test_seeking: false,
+            ..ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false)
+        };
+        let prod_chunk = SearchResult::new(
+            chunk("src/lib.rs:1:parse", "parse", ChunkType::Function),
+            0.9,
+        );
+        assert!(!signals_for(&prod_chunk, &active)
+            .iter()
+            .any(|s| s.signal == "test_demote"));
     }
 
     #[test]

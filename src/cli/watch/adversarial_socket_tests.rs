@@ -506,6 +506,7 @@ fn daemon_stats_happy_path_roundtrip() {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         // Unit embedding — `upsert_chunk` validates dimension against the
         // seeded ModelInfo. Value doesn't matter for the stats path.
@@ -1064,6 +1065,7 @@ fn seed_call_graph_ctx() -> (
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     };
     {

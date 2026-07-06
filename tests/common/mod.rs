@@ -103,13 +103,19 @@ impl std::ops::Deref for TestStore {
     }
 }
 
-/// Create a test chunk with sensible defaults
+/// Create a test chunk with sensible defaults.
+///
+/// The origin is a NEUTRAL production path (`src/lib.rs`), not `test.rs`: the
+/// registry now classifies a `test.rs` / `tests.rs` filename as test code, so a
+/// `test.rs` origin would make every fixture chunk read as a test and drop out
+/// of dead-code / importance / scout analysis. Tests that specifically want a
+/// test-classified chunk set `is_test` or the path explicitly.
 #[allow(dead_code)]
 pub fn test_chunk(name: &str, content: &str) -> Chunk {
     let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
     Chunk {
-        id: format!("test.rs:1:{}", &hash[..8]),
-        file: PathBuf::from("test.rs"),
+        id: format!("src/lib.rs:1:{}", &hash[..8]),
+        file: PathBuf::from("src/lib.rs"),
         language: Language::Rust,
         chunk_type: ChunkType::Function,
         name: name.to_string(),
@@ -125,6 +131,7 @@ pub fn test_chunk(name: &str, content: &str) -> Chunk {
         window_idx: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     }
 }
 
