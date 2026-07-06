@@ -70,8 +70,8 @@ pub(crate) fn create_context_with_runtime(
     // metadata over CQS_EMBEDDING_MODEL / config / default. Without this,
     // running `CQS_EMBEDDING_MODEL=foo` against a `bar`-model index gives
     // silent zero-result queries (the dim mismatch only surfaces as a
-    // tracing::warn! deep in the index backend). See ROADMAP.md "Embedder
-    // swap workflow".
+    // tracing::warn! deep in the index backend). See docs/roadmap-archive.md
+    // "Embedder swap workflow".
     let stored_model = store.stored_model_name();
     let project_config = cqs::config::Config::load(&root);
     let model_config = ModelConfig::resolve_for_query(

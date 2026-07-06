@@ -1449,7 +1449,7 @@ pub fn cmd_watch(
             // the model recorded in the store metadata so a wrong-model
             // CQS_EMBEDDING_MODEL doesn't silently produce zero-result queries
             // (the dim mismatch otherwise only surfaces as a tracing::warn!).
-            // See ROADMAP.md "Embedder swap workflow" for the longer story.
+            // See docs/roadmap-archive.md "Embedder swap workflow" for the longer story.
             let daemon_model_config =
                 resolve_index_aware_model_for_watch(&index_path, &root, cli.model.as_deref())?;
             // Clone the shared runtime handle into the daemon closure so its
