@@ -591,7 +591,7 @@ impl ModelConfig {
     /// embedder for querying it is the one whose dim matches. Honouring a CLI
     /// flag or `CQS_EMBEDDING_MODEL` that points at a different model leads to
     /// the silent "0 results, only a tracing::warn!" failure mode this method
-    /// prevents (see ROADMAP.md "Embedder swap workflow").
+    /// prevents (see docs/roadmap-archive.md "Embedder swap workflow").
     ///
     /// Index time (`cqs index --force`) must keep using [`resolve`] — there
     /// the user's intent is precisely to install a new embedder, and the
