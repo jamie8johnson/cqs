@@ -95,9 +95,10 @@ pub(crate) struct RankSignalCtx<'a> {
     pub parent_boosts: &'a HashMap<&'a str, f32>,
     /// Test-code demotion factor (`CQS_TESTCODE_DEMOTE`) applied in
     /// `finalize_results` step 4b2. `1.0` (the default) means the demotion was
-    /// inert — no `test_demote` signal is recorded. Reconstructed per result via
-    /// [`crate::is_test_chunk`], mirroring the application in
-    /// [`super::apply_testcode_demote`].
+    /// inert — no `test_demote` signal is recorded. Per-result test-origin is
+    /// read from the chunk's parse-time `is_test` flag — the SAME flag the
+    /// application in [`super::apply_testcode_demote`] reads, so record and
+    /// application never diverge.
     pub testcode_demote_factor: f32,
     /// Whether the query was test-seeking. When true the demotion did not run,
     /// so `test_demote` is never recorded regardless of the factor. Mirrors the
@@ -261,14 +262,12 @@ pub(crate) fn signals_for(result: &SearchResult, ctx: &RankSignalCtx<'_>) -> Vec
     // test_demote: the test-code demotion multiplier (finalize step 4b2).
     // Recorded only when it actually moved the score: the knob is engaged
     // (factor < 1.0), the query was not test-seeking, and this chunk is
-    // test-origin. Reconstructed via the canonical `is_test_chunk` — the same
-    // predicate the demotion applied — so the record faithfully mirrors the
-    // score move. Not gated on `had_dense`: the demotion runs over the final
-    // result set (like parent_boost/type_boost), so it can move an FTS-sole hit.
-    if ctx.testcode_demote_factor < 1.0
-        && !ctx.query_is_test_seeking
-        && crate::is_test_chunk(name, file_part)
-    {
+    // test-origin. Reads the SAME parse-time `is_test` flag the demotion
+    // applied (`apply_testcode_demote`), so the record faithfully mirrors the
+    // score move — application and provenance can never disagree. Not gated on
+    // `had_dense`: the demotion runs over the final result set (like
+    // parent_boost/type_boost), so it can move an FTS-sole hit.
+    if ctx.testcode_demote_factor < 1.0 && !ctx.query_is_test_seeking && result.chunk.is_test {
         discriminative.push(RankSignal {
             signal: "test_demote",
             value: ctx.testcode_demote_factor,
@@ -318,6 +317,17 @@ mod tests {
             window_idx: None,
             parser_version: 0,
             vendored: false,
+            is_test: false,
+        }
+    }
+
+    /// A test-origin chunk: identical to [`chunk`] but with the parse-time
+    /// `is_test` flag set, so `test_demote` sees it (detection now reads the
+    /// stored flag, not a path/name sniff).
+    fn test_chunk(id: &str, name: &str, chunk_type: ChunkType) -> ChunkSummary {
+        ChunkSummary {
+            is_test: true,
+            ..chunk(id, name, chunk_type)
         }
     }
 
@@ -610,7 +620,7 @@ mod tests {
             ..base
         };
         let r = SearchResult::new(
-            chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
+            test_chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
             0.9,
         );
         let sigs = signals_for(&r, &c);
@@ -630,8 +640,8 @@ mod tests {
         dense.insert("src/lib.rs:1:test_foo", 2usize);
         dense.insert("src/lib.rs:1:parse", 3usize);
         let (fts, sparse, pb) = (HashMap::new(), HashMap::new(), HashMap::new());
-        let test_chunk = SearchResult::new(
-            chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
+        let test_result = SearchResult::new(
+            test_chunk("src/lib.rs:1:test_foo", "test_foo", ChunkType::Function),
             0.9,
         );
 
@@ -641,7 +651,7 @@ mod tests {
             query_is_test_seeking: false,
             ..ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false)
         };
-        assert!(!signals_for(&test_chunk, &inert)
+        assert!(!signals_for(&test_result, &inert)
             .iter()
             .any(|s| s.signal == "test_demote"));
 
@@ -651,7 +661,7 @@ mod tests {
             query_is_test_seeking: true,
             ..ctx(&note_index, &dense, &fts, &sparse, &pb, None, false, false)
         };
-        assert!(!signals_for(&test_chunk, &seeking)
+        assert!(!signals_for(&test_result, &seeking)
             .iter()
             .any(|s| s.signal == "test_demote"));
 

@@ -138,6 +138,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let embedding = mock_embedding(1.0);
         store.upsert_chunk(&chunk, &embedding, None).unwrap();
@@ -170,6 +171,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunk(&test_chunk, &mock_embedding(2.0), None)

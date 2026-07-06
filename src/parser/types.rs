@@ -86,6 +86,15 @@ pub struct Chunk {
     /// (e.g., `doc` enrichment) so incremental UPSERT can refresh rows whose
     /// `content_hash` is unchanged.
     pub parser_version: u32,
+    /// True if this chunk is test code, decided at parse time (the single
+    /// source of truth; persisted in `chunks.is_test`). Set when a Rust item
+    /// carries a `#[test]`-family attribute, when the item or any ancestor is
+    /// gated by `#[cfg(test)]` / `#[cfg(all(test, …))]`, or when the canonical
+    /// `is_test_chunk` path/name registry patterns match (all languages). Rank
+    /// time reads this stored flag instead of re-deriving from path/name, so it
+    /// sees `#[cfg(test)]`-in-`src/` chunks whose attribute text is outside the
+    /// chunk body. Hydrated-from-DB chunks carry the persisted value.
+    pub is_test: bool,
 }
 
 /// Provenance of a call-graph edge — how the extractor decided this call

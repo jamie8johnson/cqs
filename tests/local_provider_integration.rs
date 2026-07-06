@@ -72,6 +72,7 @@ fn insert_callable_chunk(store: &Store, content_hash: &str, name: &str) {
         parent_id: None,
         parent_type_name: None,
         parser_version: 0,
+        is_test: false,
     };
 
     store.upsert_chunk(&chunk, &embedding, None).unwrap();

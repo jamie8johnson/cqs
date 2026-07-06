@@ -447,6 +447,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 
@@ -554,6 +555,7 @@ mod tests {
             parent_id: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         };
         let hit = KindHit::from(&summary);

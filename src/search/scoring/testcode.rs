@@ -12,10 +12,18 @@
 //! (ordering-stable) to pre-knob output. The default flip to a real demotion
 //! factor happens only after a paired A/B on both eval fixtures, not here.
 //!
-//! Test-origin detection reuses the canonical [`crate::is_test_chunk`]
-//! path+name classifier — the same one `chunk_importance`, scout, and impact
-//! use — so there is one definition of "test file", not a second. The
-//! test-seeking query gate is a small fixed vocabulary ([`TEST_SEEKING_TERMS`]);
+//! Test-origin detection reads the chunk's parse-time [`is_test`] flag
+//! (`chunks.is_test`, decided in the parser as the single source of truth).
+//! This is strictly stronger than the old [`crate::is_test_chunk`] path+name
+//! sniff it replaced: the flag also carries the Rust AST signal (`#[test]` /
+//! `#[cfg(test)]` attributes, which are prev-sibling nodes OUTSIDE the chunk
+//! body and thus invisible to any path/name/content check at rank time), so the
+//! knob finally sees the dominant self-corpus crowder — a `#[cfg(test)]` fn in a
+//! `src/` file. The `test_demote` rank-signal record in `provenance::signals_for`
+//! reads the SAME flag, so application and provenance never diverge.
+//!
+//! [`is_test`]: crate::store::helpers::ChunkSummary::is_test
+//! The test-seeking query gate is a small fixed vocabulary ([`TEST_SEEKING_TERMS`]);
 //! it is deliberately NOT wired into the runtime-extensible classifier vocab in
 //! `search::router` (scope control — this is a fixed floor, not an
 //! operator-tunable list).
@@ -96,8 +104,10 @@ pub(crate) fn testcode_demote_factor() -> f32 {
 /// (ordering-stable) to pre-knob. Multiplicative like the type/parent boosts so
 /// it stays scale-invariant across cosine `[0,1]` and re-ranker scores.
 ///
-/// Test-origin detection is the canonical [`crate::is_test_chunk`] on the
-/// chunk's authoritative `origin` path and name — never a second definition.
+/// Test-origin detection reads the chunk's parse-time `is_test` flag — the
+/// single source of truth decided in the parser — so it sees `#[cfg(test)]`-in-
+/// `src/` chunks whose attribute text is outside the chunk body. The
+/// `test_demote` rank-signal record reads the same flag (they must not diverge).
 pub(crate) fn apply_testcode_demote(
     results: &mut [SearchResult],
     factor: f32,
@@ -118,10 +128,7 @@ pub(crate) fn apply_testcode_demote(
     }
     let mut demoted_any = false;
     for result in results.iter_mut() {
-        if crate::is_test_chunk(
-            result.chunk.name.as_str(),
-            result.chunk.file.to_str().unwrap_or_default(),
-        ) {
+        if result.chunk.is_test {
             result.score *= factor;
             demoted_any = true;
         }
@@ -136,7 +143,11 @@ mod tests {
     use crate::store::helpers::ChunkSummary;
     use std::path::PathBuf;
 
-    fn result(name: &str, file: &str, score: f32) -> SearchResult {
+    /// Build a result with an explicit `is_test` flag. Detection now reads the
+    /// stored parse-time flag, not a path/name sniff, so the tests set it
+    /// directly — the classification itself is exercised in the parser's
+    /// `is_test` tests.
+    fn result(name: &str, file: &str, score: f32, is_test: bool) -> SearchResult {
         SearchResult::new(
             ChunkSummary {
                 id: format!("{file}:1:{name}"),
@@ -155,6 +166,7 @@ mod tests {
                 window_idx: None,
                 parser_version: 0,
                 vendored: false,
+                is_test,
             },
             score,
         )
@@ -219,8 +231,11 @@ mod tests {
     #[test]
     fn demote_multiplies_test_origin_on_plain_query() {
         let mut results = vec![
-            result("parse_config", "src/parser.rs", 0.9),
-            result("test_parse_config", "src/parser.rs", 0.8),
+            result("parse_config", "src/parser.rs", 0.9, false),
+            // A `#[cfg(test)]` fn in a `src/` file: `is_test` is true from the
+            // parse-time flag even though its path/name look production — the
+            // exact case the old path/name sniff could not see.
+            result("schema_sql_chunks", "src/parser/chunk.rs", 0.8, true),
         ];
         let demoted = apply_testcode_demote(&mut results, 0.5, false);
         assert!(demoted, "a test-origin chunk should have been demoted");
@@ -236,9 +251,10 @@ mod tests {
     }
 
     #[test]
-    fn demote_detects_test_by_path() {
-        // Name is not test-shaped, but the file lives under tests/ → test-origin.
-        let mut results = vec![result("helper", "tests/integration.rs", 0.8)];
+    fn demote_reads_stored_is_test_flag() {
+        // Detection is the stored flag, not a path/name sniff: a chunk flagged
+        // `is_test` is demoted regardless of how production its path/name look.
+        let mut results = vec![result("helper", "src/serve/mod.rs", 0.8, true)];
         let demoted = apply_testcode_demote(&mut results, 0.5, false);
         assert!(demoted);
         assert!((results[0].score - 0.4).abs() < 1e-6);
@@ -250,8 +266,8 @@ mod tests {
         // are byte-identical and nothing is reported demoted, so the caller
         // skips the re-sort. This is the "inert when off" contract.
         let before = vec![
-            result("parse_config", "src/parser.rs", 0.9),
-            result("test_parse_config", "src/parser.rs", 0.8),
+            result("parse_config", "src/parser.rs", 0.9, false),
+            result("test_parse_config", "src/parser.rs", 0.8, true),
         ];
         let mut after = before.clone();
         let demoted = apply_testcode_demote(&mut after, 1.0, false);
@@ -272,7 +288,7 @@ mod tests {
         // `partial_cmp(&1.0)` is `None`, not `Some(Less)`), leaving scores
         // untouched. Guards the `partial_cmp` demotion gate against a regression
         // to a bare `factor >= 1.0` (which NaN would fall through).
-        let mut results = vec![result("test_parse_config", "src/parser.rs", 0.8)];
+        let mut results = vec![result("test_parse_config", "src/parser.rs", 0.8, true)];
         let demoted = apply_testcode_demote(&mut results, f32::NAN, false);
         assert!(!demoted, "a NaN factor must not demote");
         assert_eq!(results[0].score, 0.8);
@@ -281,7 +297,7 @@ mod tests {
     #[test]
     fn test_seeking_query_suppresses_demotion() {
         // Even with an active factor, a test-seeking query demotes nothing.
-        let mut results = vec![result("test_parse_config", "src/parser.rs", 0.8)];
+        let mut results = vec![result("test_parse_config", "src/parser.rs", 0.8, true)];
         let demoted = apply_testcode_demote(&mut results, 0.5, true);
         assert!(!demoted, "test-seeking query must suppress demotion");
         assert_eq!(results[0].score, 0.8);
@@ -289,29 +305,19 @@ mod tests {
 
     #[test]
     fn no_test_chunks_reports_no_demotion() {
-        // Active factor, non-test query, but no test-origin chunks → nothing
-        // moves and the caller skips the re-sort.
+        // Active factor, non-test query, but no `is_test` chunks → nothing
+        // moves and the caller skips the re-sort. A production chunk whose PATH
+        // contains "test" as a substring (`src/contest.rs`) carries `is_test =
+        // false` from the parser and must not be demoted here.
         let mut results = vec![
-            result("parse_config", "src/parser.rs", 0.9),
-            result("build_index", "src/index.rs", 0.8),
+            result("parse_config", "src/parser.rs", 0.9, false),
+            result("build_index", "src/index.rs", 0.8, false),
+            result("run", "src/contest.rs", 0.7, false),
         ];
         let demoted = apply_testcode_demote(&mut results, 0.5, false);
         assert!(!demoted);
         assert_eq!(results[0].score, 0.9);
         assert_eq!(results[1].score, 0.8);
-    }
-
-    #[test]
-    fn substring_trap_paths_are_not_test_origin() {
-        // `src/contest.rs` and `latest_results.rs` contain "test" as a
-        // substring but are NOT test files — the canonical classifier uses
-        // anchored patterns (`_test.`, `/tests/`, `.spec.`), never a bare
-        // substring. A production chunk in either must not be demoted.
-        for file in ["src/contest.rs", "src/latest_results.rs", "src/manifest.rs"] {
-            let mut results = vec![result("run", file, 0.9)];
-            let demoted = apply_testcode_demote(&mut results, 0.5, false);
-            assert!(!demoted, "{file} must not read as test-origin");
-            assert_eq!(results[0].score, 0.9);
-        }
+        assert_eq!(results[2].score, 0.7);
     }
 }

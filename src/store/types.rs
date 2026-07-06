@@ -395,8 +395,8 @@ impl<Mode> Store<Mode> {
             for batch in type_names.chunks(BATCH_SIZE) {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 // target_type_name appended AFTER the pinned ChunkRow columns
-                // so the ordinal contract for `from_row` (0..15) holds; read
-                // by ordinal 16.
+                // so the ordinal contract for `from_row` (0..16) holds; read
+                // by ordinal 17.
                 let sql = format!(
                     "SELECT {cols}, te.target_type_name \
                      FROM type_edges te \
@@ -412,7 +412,7 @@ impl<Mode> Store<Mode> {
                 let rows: Vec<_> = q.fetch_all(&self.pool).await?;
                 for row in rows {
                     use sqlx::Row;
-                    let type_name: String = row.get(16);
+                    let type_name: String = row.get(17);
                     let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
                     result.entry(type_name).or_default().push(chunk);
                 }

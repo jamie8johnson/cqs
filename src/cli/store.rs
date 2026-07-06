@@ -747,6 +747,7 @@ mod base_index_tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         store
             .upsert_chunks_batch(&[(chunk, make_embedding(0.7, store.dim()))], Some(0))

@@ -722,6 +722,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
         let chunk_b = cqs::parser::Chunk {
             id: "src/svc.rs:10:b".to_string(),
@@ -741,6 +742,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Sentinel-mode upsert → needs_embedding=1, zero-vec embeddings.

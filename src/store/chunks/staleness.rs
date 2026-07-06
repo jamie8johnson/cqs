@@ -1214,6 +1214,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Get current mtime
@@ -1266,6 +1267,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Store with an old mtime (before the file was created)
@@ -1327,6 +1329,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Store with None mtime (will be NULL in DB)
@@ -1382,6 +1385,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let mtime = crate::duration_to_mtime_millis(
@@ -1430,6 +1434,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let fresh_mtime = crate::duration_to_mtime_millis(
@@ -1469,6 +1474,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         store
@@ -1527,6 +1533,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Stored mtime sits well above the disk mtime — the disk file was
@@ -1793,6 +1800,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         }
     }
 
@@ -2162,6 +2170,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Store with the exact mtime currently on disk.
@@ -2227,6 +2236,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         // Store with an mtime 10_000_000 ms (~2.7 hours) in the future
@@ -2293,6 +2303,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let disk_mtime = crate::duration_to_mtime_millis(
@@ -2390,6 +2401,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         let gone = make_chunk("gone", "/no/such/file.rs");
@@ -2453,6 +2465,7 @@ mod tests {
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: 0,
+                is_test: false,
             }
         };
         let c1 = mk(&p1, "a", "ahash");
@@ -2509,6 +2522,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         store
@@ -2616,6 +2630,7 @@ mod tests {
             window_idx: None,
             parent_type_name: None,
             parser_version: 0,
+            is_test: false,
         };
 
         store

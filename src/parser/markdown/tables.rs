@@ -105,6 +105,7 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
                 &table_hash,
                 &format!("t{table_idx}"),
             );
+            let is_test = crate::is_test_chunk(&table_name, &ctx.path.to_string_lossy());
             chunks.push(Chunk {
                 id: table_id,
                 file: ctx.path.to_path_buf(),
@@ -123,6 +124,7 @@ pub(super) fn extract_table_chunks(ctx: &TableContext<'_>, chunks: &mut Vec<Chun
                 window_idx: None,
                 parent_type_name: None,
                 parser_version: super::super::chunk::PARSER_VERSION,
+                is_test,
             });
         } else {
             // Split row-wise with headers preserved
@@ -207,6 +209,7 @@ fn emit_table_window(
         window_idx: Some(window_idx),
         parent_type_name: None,
         parser_version: super::super::chunk::PARSER_VERSION,
+        is_test: crate::is_test_chunk(ctx.name, &ctx.path.to_string_lossy()),
     });
 }
 

@@ -356,6 +356,7 @@ mod tests {
             content_hash: content_hash.to_string(),
             window_idx,
             parser_version: 0,
+            is_test: false,
             vendored: false,
         }
     }
