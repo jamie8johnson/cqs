@@ -175,8 +175,10 @@ fn dial(_cqs_dir: &Path, _command: &str, _arguments: &Value) -> Dialed {
 // ── shaping helpers ──────────────────────────────────────────────────────────
 
 /// The related-task `_meta` object: `{ "io.modelcontextprotocol/related-task":
-/// { taskId } }`.
-fn related_task_meta(task_id: &str) -> Value {
+/// { taskId } }`. Reused by the SSE transport for the `notifications/progress`
+/// frame's `_meta` (a spec MUST on task-associated notifications), so it is
+/// visible to the sibling `http` module.
+pub(super) fn related_task_meta(task_id: &str) -> Value {
     json!({ RELATED_TASK_META_KEY: { "taskId": task_id } })
 }
 
@@ -201,8 +203,10 @@ fn resolve_ttl(task: &Value) -> u64 {
 /// outbound conversion point, applied wherever a descriptor is shaped into a
 /// spec `Task` (`CreateTaskResult` nested, `GetTaskResult` flat). `null`
 /// (unlimited) passes through untouched; a saturating multiply keeps a
-/// pathological stored value from wrapping.
-fn descriptor_ttl_secs_to_ms(task: &mut Value) {
+/// pathological stored value from wrapping. Reused by the SSE transport to shape
+/// the optional terminal `notifications/tasks/status` frame's `ttl`, so it is
+/// visible to the sibling `http` module.
+pub(super) fn descriptor_ttl_secs_to_ms(task: &mut Value) {
     if let Some(obj) = task.as_object_mut() {
         if let Some(ttl_secs) = obj.get("ttl").and_then(|v| v.as_u64()) {
             obj.insert("ttl".to_string(), json!(ttl_secs.saturating_mul(1000)));
@@ -622,6 +626,74 @@ pub(super) fn block_for_result_stdio(
                 std::thread::sleep(INTERNAL_POLL_INTERVAL);
             }
         }
+    }
+}
+
+// ── SSE progress poll (HTTP-only) ────────────────────────────────────────────
+
+/// One SSE progress observation of a watched task's `task-get` descriptor. The
+/// HTTP stream loop dials `task-get` ~1/s and classifies it into this step; the
+/// daemon-restart rule lives in the `Data{gone}` vs `Transport` split (D3).
+/// HTTP-only: the stdio surface is poll-only and never opens a stream.
+#[cfg(all(feature = "mcp-http", unix))]
+pub(super) enum ProgressStep {
+    /// A live `found` descriptor. `progress` is `None` when the descriptor omits
+    /// the `{done,total}` key (a counter-less or pre-PR1 daemon — degraded mode,
+    /// keep-alive only, NEVER a synthesized value). `terminal` is true once the
+    /// observed status left `working`. `descriptor` is the flat daemon descriptor,
+    /// carried so the loop can shape the optional terminal `tasks/status` frame.
+    Found {
+        progress: Option<(u64, u64)>,
+        terminal: bool,
+        descriptor: Value,
+    },
+    /// An authoritative `gone` state after a successful dial (GC'd, or the
+    /// `cqs watch --serve` process restarted and lost the task): drop the token,
+    /// close the stream. NEVER a fabricated terminal progress frame.
+    Gone,
+    /// A dial / transport failure (daemon momentarily absent): keep the stream
+    /// alive and retry on the next tick (backoff = the poll interval).
+    DialFailed,
+}
+
+/// Dial `task-get` ONCE for a watched task and classify it into a [`ProgressStep`]
+/// for the SSE stream loop. Mirrors [`poll_result_once`]'s dial+classify shape.
+///
+/// The daemon-restart discriminator (D3): a `Dialed::Data` with `state:"gone"`
+/// (or any non-`found` state) is an AUTHORITATIVE gone → [`ProgressStep::Gone`];
+/// a `Dialed::HandlerError` / `Dialed::Transport` is a transient dial failure →
+/// [`ProgressStep::DialFailed`] (retry), so a `cqs watch --serve` restart never
+/// fabricates a terminal frame.
+#[cfg(all(feature = "mcp-http", unix))]
+pub(super) fn poll_progress_once(cqs_dir: &Path, task_id: &str) -> ProgressStep {
+    match dial(
+        cqs_dir,
+        crate::cli::batch::tasks::CMD_TASK_GET,
+        &json!({ "taskId": task_id }),
+    ) {
+        Dialed::Data(data) => match data.get("state").and_then(|s| s.as_str()) {
+            Some("found") => {
+                let descriptor = data.get("descriptor").cloned().unwrap_or(Value::Null);
+                let terminal = descriptor
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s != "working")
+                    .unwrap_or(false);
+                let progress = descriptor
+                    .get("progress")
+                    .and_then(|p| Some((p.get("done")?.as_u64()?, p.get("total")?.as_u64()?)));
+                ProgressStep::Found {
+                    progress,
+                    terminal,
+                    descriptor,
+                }
+            }
+            // `gone` (or an unrecognized state) after a successful dial ⇒ the task
+            // is authoritatively gone; close the stream.
+            _ => ProgressStep::Gone,
+        },
+        // A daemon-absent / transport / handler fault is transient — retry.
+        Dialed::HandlerError { .. } | Dialed::Transport { .. } => ProgressStep::DialFailed,
     }
 }
 
