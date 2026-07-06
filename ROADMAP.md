@@ -16,19 +16,7 @@ v1.x release history, shipped/closed roadmap items, and experiment post-mortems:
 
 ### Retrieval quality
 
-- [ ] **Expand the v3 label set with Gemma-generated synthetic queries.** Current v3 train + dev + test = 544 queries. Categorical optimization (alpha sweep, distilled classifier, per-query α regression) is data-bound past 50-100q per category. Generate ~5-10k more via the existing chunk-driven pipeline (`evals/generate_from_chunks.py`), classified self-consistently via Gemma. Bias generation toward thin categories (`conceptual` 0% rule fire, `negation` small-N noise on test). Prerequisite for the distilled classifier and per-query α regression items above. ~1 day of compute (Gemma already up via vLLM); negligible engineering since the pipeline is already working.
-
-- [ ] **Context-aware classification.** Currently the router classifies the query in isolation. Add features available at query time: index language distribution (Rust-heavy vs Python-heavy vs polyglot), project category if known, top-N most-recently-searched terms. The intuition: same query in different project shapes might want different α (e.g., "function with retry" in a Go project routes to behavioral, in a Rust project might route to structural because Rust queries are more often structural in nature). Cheap to add as additional input dims to the distilled classifier or per-query α regression heads (no separate model needed). Effort: ~1 day after the distilled head is in place. Speculative ceiling — could be 0pp if context doesn't predict, or +3-5pp if there's signal we're not using. Also unlocks better behavior when an index spans heterogeneous projects (refs).
-
-- [ ] **Soft routing — distribution over categories instead of argmax.** Today the classifier returns a single `QueryCategory`, the router picks `α(category)`, and a marginal misclassification fully swaps the alpha (e.g., behavioral=0.80 vs structural=0.90 — close enough, but multi_step=0.10 vs structural=0.90 if the classifier puts a multi_step query in `structural` is catastrophic). Soft routing: classifier outputs `P(c)` per category, effective α = `Σ P(c) × α(c)`. A query that's 60% behavioral / 30% structural / 10% multi_step gets α = 0.6×0.80 + 0.3×0.90 + 0.1×0.10 = 0.79.
-
-  **Why now**: this whole arc is fundamentally a classification-and-routing problem. Hard routing throws away the classifier's confidence — even today's centroid classifier internally has soft cosine scores per category, but we softmax → argmax → pick one. Soft routing reuses that signal end-to-end.
-
-  **Compatible with everything**: works on rule+centroid (use centroid cosines as the soft distribution), works on the distilled head (softmax outputs natural), works on the per-query α regression (the regression IS already producing a soft α). Probably a half-day in `src/search/router.rs` to wire centroid-based soft routing today; the rest follows for free when the distilled head lands.
-
-  **Risk**: mixing alphas may attenuate their effect — if behavioral wants 0.80 and structural wants 0.90, mixing gives 0.85, which might be in the "neither helps much" middle ground. Worth measuring with a synthetic test where we know the true category from fixture metadata.
-
-  **Pairs particularly well with the per-query α regression**: train on a soft target (R@5-weighted distribution over categories) instead of a hard one-hot, which gives the model nuanced training signal.
+- [ ] **Expand the retrieval-INDEPENDENT gold set (PR-mined, off-self).** Replaces the culled synthetic-query expansion item (2026-07-06, archive): the v3/synthetic fixtures are retrieval-SEEDED — gold reached via the retriever, so R@K is inflated by construction — while the retrieval-independent number (PR-mined behavioral gold, n=2 cross-lang) sits near ~21% R@20. More seeded synthetic queries grow the flattering fixture, not the honest one. The valuable expansion mines independent gold from merged PRs at enough per-category N to make the independent number load-bearing for release gates; numbers live in ~/training-data/RESULTS.md.
 
 - [ ] **Index-time HyDE re-eval** — never tested at proper N. v2-era single-config measurement showed +14pp structural / +12pp type_filtered / −22pp conceptual / −15pp behavioral. Per-category routing (only enable hyde-augmented chunks for categories where sweep says it helps) was never tried. Properly testing requires (1) regenerate HyDE for all chunks via Claude Batches pipeline, (2) reindex with `--hyde-queries`, (3) per-category A/B harness toggling the hyde-augmented embedding column. Lower expected lift than the now-exhausted classifier work; cheap if revisited.
 
@@ -38,24 +26,19 @@ v1.x release history, shipped/closed roadmap items, and experiment post-mortems:
 **Empirically closed — reopen only on new evidence (full post-mortems in [docs/roadmap-archive.md](docs/roadmap-archive.md)):**
 - **Rerankers** — off-the-shelf ms-marco, the in-domain-trained V2 family (three losses), and the post-v1.39.0 re-verification: every variant net-negative at the rank-5 boundary (R@20 stays flat — gold is in the pool; the cross-encoder demotes it). Stays opt-in via `--rerank`. Revisit gates: v4-scale labelled fixture, a ≥5× base, or off-corpus proof of lift.
 - **Query-time HyDE** — R@5 = 0.0% across all categories on both splits; killed. (The index-time re-eval above is a different direction and stays open.)
-- **Alpha-routing arc** — distilled/fused heads and per-query α regression tested at proper N (v4, 1526/split): R@5 is alpha-insensitive across [0, 1] on this corpus; routing-side levers exhausted. Future R@5 work targets signal-side levers (chunking, embedder, multi-granularity index) under paired-reindex protocol. The soft-routing / context-aware items above predate this closure; whether more labelled data reopens the arc is exactly what the label-set expansion would test.
+- **Alpha-routing arc** — distilled/fused heads and per-query α regression tested at proper N (v4, 1526/split): R@5 is alpha-insensitive across [0, 1] on this corpus; routing-side levers exhausted. Future R@5 work targets signal-side levers (chunking, embedder, multi-granularity index) under paired-reindex protocol. The routing-side items that predated this closure (soft routing, context-aware classification, seeded synthetic label expansion) were culled 2026-07-06 — full text in the archive.
 - **USearch backend** — HNSW is already recall-saturated at the candidate-pool layer (`CQS_HNSW_EF_SEARCH` 1000→8000: byte-identical R@K); the headroom lived in the `candidate_count` floor (#1583).
 - **Embedder scale** — the Qwen3-4B ceiling probe finished 2.7-2.8pp below gemma-300m at 13× the params; NV-Embed-v2 / llama-nv-embedqa dropped by transitivity. Scale retired as a knob for cqs.
 - **v9-200k vs the default** — v9 un-retired once the eval-matcher line-drift artifact was fixed; stays an opt-in preset for memory/latency-bound cases. Default remains EmbeddingGemma-300m (since v1.35.0).
 
 **Features (queued, no immediate work):**
 - [ ] **Temporal search — `cqs history`** — query by author + time range, ranks by how little a chunk's been touched since. Uses git log + file/line mapping.
-- [ ] **Author-weighted search** — `cqs search "..." --author X --boost 0.5`. Complements temporal search.
-- [ ] **Auto-notes on commit** — post-commit hook runs `cqs notes add` with message + changed chunk names. Sentiment inferred from heuristics with override flag.
-- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`.
-- [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being production default. Spec: `docs/plans/adaptive-retrieval.md`.
-- [ ] **Paper v1.0** — clean rewrite done, needs review/polish + adaptive retrieval results.
+- [ ] **Paper v1.0** — clean rewrite done, needs review/polish. Unblocked 2026-07-06: the adaptive-retrieval results it awaited now exist as definitive nulls (rerankers / routing / embedder scale) plus the seeded-vs-independent eval finding — a negative-results story.
 
 **Agent adoption:**
 - [ ] **Slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + pointer to `cqs --help`. Measure with telemetry before/after.
-- [ ] **Composite search results** — `cqs search` returns mini-impact (caller + test counts) alongside each result. One call instead of search + impact.
-- [ ] **`cqs trace "query"`** — show every routing decision: classifier → category → strategy → α → SPLADE top-K → dense top-K → RRF fusion → final ranking. Today understanding why a query ranked X requires `RUST_LOG=debug` + log grepping. Bigger lift; design separately. The agent-facing version of "explain my retrieval".
-- [ ] **`cqs repl`** — interactive prompt (sqlite-shell-style) for iterating queries + ad-hoc exploration without `cqs batch` JSONL friction. Persistent connection to daemon, command history, in-line config tweaks. Replaces the heredoc-into-batch dance for exploratory work.
+- [ ] **Composite search results** — `cqs search` returns mini-impact (caller + test counts) alongside each result. One call instead of search + impact. *(In flight 2026-07-06 — implementation lane running.)*
+- [ ] **`cqs trace "query"`** — show every routing decision: classifier → category → strategy → α → SPLADE top-K → dense top-K → RRF fusion → final ranking. Today understanding why a query ranked X requires `RUST_LOG=debug` + log grepping. Bigger lift; design separately. The agent-facing version of "explain my retrieval". *(Design doc in progress, 2026-07-06.)*
 
 ### Cross-Project Architecture
 

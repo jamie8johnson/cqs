@@ -403,3 +403,55 @@ Two designs, both docs landed and reviewable, no implementation yet:
 | v1.13.0 | 296-query eval, 9th audit, 16 commands. |
 | v1.12.0 | Pre-edit hooks, query expansion, diff impact cap. |
 | v1.11.0 | Synonym expansion, f32→f64 cosine, 80/88 audit fixes. |
+
+---
+
+## Culled 2026-07-06
+
+Open items removed from ROADMAP.md when the evidence base closed them (user-approved cull). Original text verbatim; verdict appended per item.
+
+### Routing-side (closed by the alpha-arc null above)
+
+- [ ] **Expand the v3 label set with Gemma-generated synthetic queries.** Current v3 train + dev + test = 544 queries. Categorical optimization (alpha sweep, distilled classifier, per-query α regression) is data-bound past 50-100q per category. Generate ~5-10k more via the existing chunk-driven pipeline (`evals/generate_from_chunks.py`), classified self-consistently via Gemma. Bias generation toward thin categories (`conceptual` 0% rule fire, `negation` small-N noise on test). Prerequisite for the distilled classifier and per-query α regression items above. ~1 day of compute (Gemma already up via vLLM); negligible engineering since the pipeline is already working.
+
+  **Verdict:** superseded by the seeded-vs-independent eval finding — the v3/synthetic fixtures are retrieval-SEEDED (gold reached via the retriever, inflated by construction), and the routing bet this expansion was a prerequisite for was already re-tested at v4 N=1526 and stayed null. Replaced in ROADMAP.md by a retrieval-independent (PR-mined) gold-expansion item.
+
+- [ ] **Context-aware classification.** Currently the router classifies the query in isolation. Add features available at query time: index language distribution (Rust-heavy vs Python-heavy vs polyglot), project category if known, top-N most-recently-searched terms. The intuition: same query in different project shapes might want different α (e.g., "function with retry" in a Go project routes to behavioral, in a Rust project might route to structural because Rust queries are more often structural in nature). Cheap to add as additional input dims to the distilled classifier or per-query α regression heads (no separate model needed). Effort: ~1 day after the distilled head is in place. Speculative ceiling — could be 0pp if context doesn't predict, or +3-5pp if there's signal we're not using. Also unlocks better behavior when an index spans heterogeneous projects (refs).
+
+  **Verdict:** routing-side lever; closed by the alpha-arc null.
+
+- [ ] **Soft routing — distribution over categories instead of argmax.** Today the classifier returns a single `QueryCategory`, the router picks `α(category)`, and a marginal misclassification fully swaps the alpha (e.g., behavioral=0.80 vs structural=0.90 — close enough, but multi_step=0.10 vs structural=0.90 if the classifier puts a multi_step query in `structural` is catastrophic). Soft routing: classifier outputs `P(c)` per category, effective α = `Σ P(c) × α(c)`. A query that's 60% behavioral / 30% structural / 10% multi_step gets α = 0.6×0.80 + 0.3×0.90 + 0.1×0.10 = 0.79.
+
+  **Why now**: this whole arc is fundamentally a classification-and-routing problem. Hard routing throws away the classifier's confidence — even today's centroid classifier internally has soft cosine scores per category, but we softmax → argmax → pick one. Soft routing reuses that signal end-to-end.
+
+  **Compatible with everything**: works on rule+centroid (use centroid cosines as the soft distribution), works on the distilled head (softmax outputs natural), works on the per-query α regression (the regression IS already producing a soft α). Probably a half-day in `src/search/router.rs` to wire centroid-based soft routing today; the rest follows for free when the distilled head lands.
+
+  **Risk**: mixing alphas may attenuate their effect — if behavioral wants 0.80 and structural wants 0.90, mixing gives 0.85, which might be in the "neither helps much" middle ground. Worth measuring with a synthetic test where we know the true category from fixture metadata.
+
+  **Pairs particularly well with the per-query α regression**: train on a soft target (R@5-weighted distribution over categories) instead of a hard one-hot, which gives the model nuanced training signal.
+
+  **Verdict:** routing-side lever; "which routing weight" is explicitly in the closure's exhausted set.
+
+### Features
+
+- [ ] **Author-weighted search** — `cqs search "..." --author X --boost 0.5`. Complements temporal search.
+
+  **Verdict:** single-author corpus — no author signal to weight.
+
+- [ ] **Auto-notes on commit** — post-commit hook runs `cqs notes add` with message + changed chunk names. Sentiment inferred from heuristics with override flag.
+
+  **Verdict:** actively harmful as specced — notes carry ranking boosts and sentiment is a deliberate 5-value manual judgment; heuristic sentiment at commit frequency would pollute the boost signal.
+
+- [ ] **Config file support** — `[splade.alpha]` per-category overrides in `.cqs.toml`.
+
+  **Verdict:** a per-category α knob for a lever the alpha-arc closure proved R@5-insensitive.
+
+- [ ] **Phase 6: Explainable search** — depends on SPLADE-Code being production default. Spec: `docs/plans/adaptive-retrieval.md`.
+
+  **Verdict:** superseded — the stated dependency (SPLADE-Code as production default) never materialized; rank_signals (#1847) shipped the per-hit "why", and `cqs trace` is the designed successor.
+
+### Agent adoption
+
+- [ ] **`cqs repl`** — interactive prompt (sqlite-shell-style) for iterating queries + ad-hoc exploration without `cqs batch` JSONL friction. Persistent connection to daemon, command history, in-line config tweaks. Replaces the heredoc-into-batch dance for exploratory work.
+
+  **Verdict:** MCP + daemon auto-connect + batch mode cover the use case.
