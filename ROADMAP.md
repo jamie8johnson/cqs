@@ -44,7 +44,7 @@ Post-v1.53.0 window (29 PRs): the MCP-trial trio, overlay-marker degradation fam
 
 **Agent adoption:**
 - [ ] **Slim CLAUDE.md** — reduce 30-command reference to top 5 (search, context, read, impact, review) + pointer to `cqs --help`. Measure with telemetry before/after.
-- [ ] **Composite search results** — `cqs search` returns mini-impact (caller + test counts) alongside each result. One call instead of search + impact. *(In flight 2026-07-06 — implementation lane running.)*
+- [x] **Composite search results — SHIPPED 2026-07-06 (#2260, closes #2257).** `cqs search` JSON surfaces return `caller_count` + `test_count` beside each callable hit (`Some(0)` meaningful, absent on non-callables); `--no-hints` opt-out; `doc_reference` excluded from caller counts across the whole graph-count family (search/scout/brief/context + all four hints.rs fallbacks). Warm-daemon marginal ~11 ms. Follow-ups: #2258 (explain's doc-inclusive count), #2259 (daemon cache pre-warm post-reindex).
 - [ ] **`cqs why "query"`** (né `cqs trace "query"` — the trace name is taken by the graph command) — show every routing decision: classifier → category → strategy → α → legs → fusion → finalize → final ranking. Today this requires `RUST_LOG=debug` + log grepping, and several decisions (RRF internals, boost mutations, drop counts, centroid declines) are invisible at any log level. The agent-facing version of "explain my retrieval". *(Design locked 2026-07-06: `docs/plans/2026-07-06-cqs-why-query-trace-design.md` — same-execution side-channel capture riding the search-legs core; per-token SPLADE attribution deferred to v2.)*
 
 ### Cross-Project Architecture

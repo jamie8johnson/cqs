@@ -2,9 +2,14 @@
 
 ## Right Now
 
-**▶ Idle, post-v1.54.0 (2026-07-06). Board clean of cleanly-actionable non-parked work.** v1.54.0 released 2026-07-03; a large post-release arc landed this session (bg `f1d91387`), all deployed.
+**▶ Post-composite-search (2026-07-06, bg `f1d91387` post-/clear continuation). Agent-adoption arc active.** v1.54.0 released 2026-07-03; the SSE/is_test arc below landed pre-/clear, the agent-adoption arc same day after.
 
-**DEPLOY:** daemon on `41429bfe` (= main after #2254), MainPID 468914, **schema v33, PARSER_VERSION 18, 18,806 chunks, is_test populated on 8,282**. Unix socket only, no network port. **Viz serve OFF by default** (user 2026-07-05 — do NOT relaunch `cqs serve :8080` after deploys; explicit request only). GPU free.
+**DEPLOY:** daemon on `e57962fc` (= main after #2260 composite search), MainPID 682146, **schema v33, PARSER_VERSION 18, ~18.8k chunks**; live-verified serving `caller_count`/`test_count`. Unix socket only, no network port. **Viz serve OFF by default** (user 2026-07-05 — do NOT relaunch `cqs serve :8080` after deploys; explicit request only). GPU free.
+
+**Landed 2026-07-06 after the /clear (same job):**
+- **#2260 composite search results (closes #2257)** — `caller_count`+`test_count` on callable search hits (Some(0) meaningful, absent on non-callables), `--no-hints` opt-out, `doc_reference` excluded across the whole graph-count family (shared helper + all four hints.rs fallbacks), 4th Store OnceLock (`test_reachability_cache`), `seed-only` overlay marker on the daemon path. Fable review FIX-FIRST → all three items applied; full sweep 5286/0. Warm-daemon marginal ~11 ms. Follow-ups filed: **#2258** (explain's doc-inclusive count — last one-semantic straggler), **#2259** (daemon cache pre-warm post-reindex; the first search per store generation now pays the graph load).
+- **#2256 roadmap archive+cull** — ROADMAP.md 439→~110 lines (history+post-mortems verbatim in `docs/roadmap-archive.md`); 8 evidence-closed items culled with verdicts (routing-side trio, author-weighted, auto-notes, `[splade.alpha]` config, Phase-6, repl); seeded label-expansion replaced by a retrieval-INDEPENDENT PR-mined gold item; **`cqs why` design locked** (`docs/plans/2026-07-06-cqs-why-query-trace-design.md` — the trace-name clash resolved, same-execution side-channel, v1 scope). NOTE: collided at merge with this job's own pre-/clear #2255 — reconciled; lesson noted in notes.toml.
+- **Notes groom 234→231** — 6 activity logs removed (three at sentiment 1.0 were boosting old audit code), 2 superseded notes rewritten (HNSW "already crash-safe", test-detection layers), 24 mention path-fixes, 3 lessons added.
 
 **Session arc landed (all merged + on the deployed daemon):**
 - **MCP Phase 3 SSE complete** — #2244 progress plumbing (P3a-2 PR1) + **#2250 SSE server-push (P3a-2 PR2)**. PR2 got a full trust-boundary probe from an Opus session (5 unbiddable-auditors, live PoCs): **41 HELD / 0 BREACH** — auth uniform, 16-stream budget + takeover-transfer, zero secret leakage, crypto-id entropy, SSE-injection defeated. `mcp-http`+unix-gated (out of the deployed default build). Umbrella #2216 stays open for the remaining 3b Tasks bits; **PR3 = a second probe against the deployed binary is still scheduled** (defer if orchestrating from Fable — [[feedback_no_boundary_probe_on_fable]]).
@@ -33,10 +38,12 @@
 - ⏳ **#1459 (P3 API design)** — 1 of 8 remaining (project/ref verb consolidation; ref + project are genuinely distinct primitives).
 - ✅ closed: #1460/#1461/#1462 (v1.38), #1366/#1452/#1453/#1458, the v1.42 + v1.48 (→v1.49) 16-category cycles.
 
-## Open issues (current 2026-07-06, 17 open)
+## Open issues (current 2026-07-06, 19 open)
 
 | # | Group | Note |
 |---|---|---|
+| #2258 | composite-search residual | explain's `compute_hints` counts doc_reference edges — last straggler of the one-caller-semantic family |
+| #2259 | composite-search residual | daemon: pre-warm graph/test-reachability caches post-reindex (first search per store generation pays the graph load) |
 | #2253 | this-session residual | switch test-map / dead-verdict / dead-code-SQL / chunk_importance off path-name onto the stored `is_test` flag |
 | #2245 | this-session residual | fence the `*_core` daemon-request-path closure (30 invariant-shaped hits, none input-reachable) |
 | #2241 | this-session residual | pin the outer-permit-held-for-full-request invariant (test-adequacy, needs a prod seam) |
