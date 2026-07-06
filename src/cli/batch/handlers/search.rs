@@ -8,6 +8,10 @@ use crate::cli::commands::search::query::{
     merge_references, prepare_query, query_core, retrieve_project, retrieve_ref_scoped,
     search_legs_core, Prepared, ProjectSurface, QueryArgs,
 };
+// Brings `BatchView::overlay()` into scope — the participation gate for the
+// `_meta.overlay_graph = "seed-only"` marker (plan §8), the same seam
+// `dispatch_scout` reads.
+use crate::cli::commands::search::search_ctx::SearchCtx;
 // Shared search `--limit` cap. The CLI dispatcher clamps `cli.limit` to the
 // same constant (`cli::dispatch`), so daemon-up and daemon-down invocations
 // agree on the bound — CLI==daemon parity is the requirement, not a
@@ -158,6 +162,8 @@ fn daemon_query_args(args: &SearchArgs) -> QueryArgs {
         // The daemon surface is always JSON, so provenance is on unless the
         // caller suppresses it for a tight token budget.
         record_rank_signals: !args.no_rank_signals,
+        // Mini-impact hints on unless the caller opts out with `--no-hints`.
+        include_hints: !args.no_hints,
         // Overlay activation (daemon-side): opt-out wins, else opt-in (wire flag
         // OR the daemon's own env). Default-on is a client-side decision, so the
         // daemon passes `overlay_eligible = false` — it only ever sees an
@@ -277,6 +283,19 @@ pub(in crate::cli::batch) fn dispatch_search(
         strip_content(&mut value);
     }
 
+    // Overlay honesty (plan §8): when the worktree overlay participated, the
+    // hits are overlay-truth but the per-result mini-impact counts are computed
+    // from the PARENT call graph (parent-truth) — structurally scout's
+    // situation, so the answer carries the same `_meta.overlay_graph =
+    // "seed-only"` marker. Gated on ACTUAL participation exactly like
+    // `dispatch_scout`: `ctx.overlay()` is `Some` only when a request was
+    // stamped and the overlay built (LRU-cached, so this re-resolve is cheap);
+    // it stays `None` on non-worktree / non-participating responses, which emit
+    // no marker.
+    if ctx.overlay().is_some() {
+        super::attach_overlay_graph_meta(&mut value);
+    }
+
     let origins = result_origins(&output.results);
     attach_stale_origins_meta(ctx, args, &origins, &mut value);
     Ok(value)
@@ -319,6 +338,9 @@ fn legs_query_args(args: &SearchLegsArgs) -> QueryArgs {
         // The legs are the side channel; per-result rank_signals are not needed
         // for the mechanism view and would only add cost to the final scoring.
         record_rank_signals: false,
+        // The legs inspector describes raw retrieval, not the packed final view;
+        // mini-impact hints are irrelevant here.
+        include_hints: false,
         overlay: false,
     }
 }
@@ -1289,6 +1311,119 @@ mod tests {
                 assert!(tl.is_string(), "trust_level must serialize as a string");
             }
         }
+    }
+
+    // ─── Mini-impact hints on the daemon surface ────────────────────────────
+
+    /// A callable (Function) hit carries the mini-impact `caller_count` /
+    /// `test_count` on the daemon JSON by default; with no call graph seeded
+    /// both are `0` (the dead-ish / untested signal), which still emits.
+    #[test]
+    fn dispatch_search_callable_hit_carries_usage_counts() {
+        let (_dir, ctx) = ctx_with_chunks(vec![make_chunk(
+            "src/lib.rs:1:9abc0001",
+            "src/lib.rs",
+            Language::Rust,
+            ChunkType::Function,
+            "parse_config",
+            "fn parse_config()",
+            "fn parse_config() {}",
+        )]);
+        let view = ctx.build_view(None);
+        let json = dispatch_search(
+            &view,
+            &parse_search_args(&["parse_config", "--name-only", "--no-stale-check"]),
+        )
+        .expect("dispatch_search");
+        let hit = &json["results"][0];
+        assert_eq!(hit["name"], "parse_config");
+        assert_eq!(
+            hit["caller_count"], 0,
+            "callable hit carries caller_count: {json}"
+        );
+        assert_eq!(
+            hit["test_count"], 0,
+            "callable hit carries test_count: {json}"
+        );
+    }
+
+    /// `--no-hints` suppresses both mini-impact fields on the daemon surface.
+    #[test]
+    fn dispatch_search_no_hints_suppresses_usage_counts() {
+        let (_dir, ctx) = ctx_with_chunks(vec![make_chunk(
+            "src/lib.rs:1:9abc0002",
+            "src/lib.rs",
+            Language::Rust,
+            ChunkType::Function,
+            "parse_config",
+            "fn parse_config()",
+            "fn parse_config() {}",
+        )]);
+        let view = ctx.build_view(None);
+        let json = dispatch_search(
+            &view,
+            &parse_search_args(&[
+                "parse_config",
+                "--name-only",
+                "--no-hints",
+                "--no-stale-check",
+            ]),
+        )
+        .expect("dispatch_search");
+        let hit = &json["results"][0];
+        assert!(
+            hit.get("caller_count").is_none() && hit.get("test_count").is_none(),
+            "--no-hints must drop both usage-count fields: {json}"
+        );
+    }
+
+    /// Overlay honesty (plan §8): when the overlay participated, the daemon
+    /// `search` answer carries `_meta.overlay_graph = "seed-only"` — the hits are
+    /// overlay-truth but the per-result counts are parent-truth (scout's
+    /// situation). Driven via the `set_test_overlay_override` seam so no embedder
+    /// / git build is needed.
+    #[test]
+    fn dispatch_search_overlay_participation_carries_seed_only_marker() {
+        let (_dir, ctx) = ctx_with_chunks(vec![make_chunk(
+            "src/lib.rs:1:9abc0003",
+            "src/lib.rs",
+            Language::Rust,
+            ChunkType::Function,
+            "parse_config",
+            "fn parse_config()",
+            "fn parse_config() {}",
+        )]);
+        let view = ctx.build_view(None);
+
+        // Minimal empty overlay: participation is what the marker gates on, not
+        // whether the overlay produced a hit.
+        let mut ov_store = Store::open_memory().expect("open_memory");
+        ov_store
+            .init(&ModelInfo::default())
+            .expect("init overlay store");
+        ov_store.set_dim(cqs::EMBEDDING_DIM);
+        let overlay = std::sync::Arc::new(cqs::worktree_overlay::WorktreeOverlay {
+            store: ov_store,
+            masked_origins: std::collections::HashSet::new(),
+            fingerprint: [0u8; 32],
+            worktree_root: PathBuf::from("/wt"),
+            stats: cqs::worktree_overlay::OverlayStats {
+                files_in_delta: 0,
+                chunks_indexed: 0,
+                build_ms: 0,
+            },
+        });
+        let _guard = crate::cli::batch::view::set_test_overlay_override(overlay);
+
+        let json = dispatch_search(
+            &view,
+            &parse_search_args(&["parse_config", "--name-only", "--no-stale-check"]),
+        )
+        .expect("dispatch_search");
+        assert_eq!(
+            json["_meta"]["overlay_graph"], "seed-only",
+            "an overlay-participating search must mark seed-only (hits overlay, counts parent): {json}"
+        );
     }
 
     // ─── Staleness meta (`_meta.stale_origins`) ─────────────────────────────

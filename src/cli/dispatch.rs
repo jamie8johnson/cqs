@@ -498,6 +498,7 @@ const SEARCH_KNOB_ARG_IDS: &[&str] = &[
     "no_stale_check",
     "no_demote",
     "no_rank_signals",
+    "no_hints",
     "overlay",
     "no_overlay",
 ];
@@ -1589,6 +1590,7 @@ mod tests {
             Just(vec!["--no-stale-check".to_string()]),
             Just(vec!["--no-demote".to_string()]),
             Just(vec!["--no-rank-signals".to_string()]),
+            Just(vec!["--no-hints".to_string()]),
         ]
     }
 
@@ -1872,6 +1874,7 @@ mod tests {
             prop_assert_eq!(sa.no_stale_check, cli.no_stale_check, "no_stale_check: argv={:?}", argv);
             prop_assert_eq!(sa.no_demote, cli.no_demote, "no_demote: argv={:?}", argv);
             prop_assert_eq!(sa.no_rank_signals, cli.no_rank_signals, "no_rank_signals: argv={:?}", argv);
+            prop_assert_eq!(sa.no_hints, cli.no_hints, "no_hints: argv={:?}", argv);
             prop_assert_eq!(sa.overlay.overlay, cli.overlay, "overlay: argv={:?}", argv);
             prop_assert_eq!(
                 sa.overlay.no_overlay,
@@ -1880,5 +1883,27 @@ mod tests {
                 argv
             );
         }
+    }
+
+    /// Focused round-trip guard for the mini-impact hints knob: `--no-hints`
+    /// survives the daemon translate → batch `SearchArgs` re-parse identically to
+    /// the CLI-direct `Cli` parse, and the default (flag absent) is hints-on on
+    /// both surfaces. Complements the property test above with a deterministic
+    /// pin the moment `--no-hints` was added to the search surface.
+    #[test]
+    fn no_hints_round_trips_daemon_and_cli() {
+        let spec = cli_arg_spec();
+
+        let with_flag = vec!["q".to_string(), "--no-hints".to_string()];
+        let cli = parse_cli(&with_flag).expect("cli parse --no-hints");
+        assert!(cli.no_hints, "CLI must capture --no-hints");
+        let sa = parse_daemon_search_args(&with_flag, &spec).expect("daemon SearchArgs --no-hints");
+        assert!(sa.no_hints, "daemon path must forward --no-hints");
+
+        let default = vec!["q".to_string()];
+        let cli_def = parse_cli(&default).expect("cli parse bare");
+        assert!(!cli_def.no_hints, "hints on by default (CLI)");
+        let sa_def = parse_daemon_search_args(&default, &spec).expect("daemon SearchArgs bare");
+        assert!(!sa_def.no_hints, "hints on by default (daemon)");
     }
 }

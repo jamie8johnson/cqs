@@ -129,7 +129,28 @@ cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 cqs --no-stale-check "query" # Skip staleness checks (useful on NFS)
 cqs --no-demote "query"      # Disable score demotion for low-quality matches
+cqs --no-hints "query"       # Drop the per-result caller_count/test_count (saves tokens)
 ```
+
+### Composite results — one `search` replaces `search` + `impact`
+
+Under `--json`, each **callable** hit (function / method / …) carries a
+mini-impact alongside the chunk:
+
+- `caller_count` — real callers (a `doc_reference` prose mention is **not** a
+  caller); the same doc-excluded count `cqs scout` reports. (`cqs impact`'s
+  caller *list* is a separate, unfiltered surface and may still show
+  `doc_reference`-tagged rows, so its list length can differ.)
+- `test_count` — tests that transitively reach the hit (forward-BFS, the same
+  reachability scout and impact share — never a divergent count).
+
+`caller_count: 0` / `test_count: 0` are the highest-value signals (dead-ish /
+untested) and are emitted. Non-callable hits (structs, markdown sections,
+config keys) omit both keys. On by default for JSON consumers; the text surface
+never renders them. Pass `--no-hints` (CLI) — or set `include_hints: false` on
+the MCP `search` input — to skip the counts on a tight token budget. A warm
+daemon amortizes the one call-graph load + reachability BFS across every search
+of a store generation.
 
 ## Configuration
 

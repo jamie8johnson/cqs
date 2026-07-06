@@ -49,11 +49,9 @@ pub fn compute_hints_with_graph(
     // what the caller already displayed, avoiding confusing mismatches.
     let caller_count = match prefetched_caller_count {
         Some(n) => n,
-        None => graph
-            .reverse
-            .get(function_name)
-            .map(|v| v.len())
-            .unwrap_or(0),
+        // Doc-excluded (real-caller) count, so the graph fallback agrees with
+        // `get_caller_counts_batch` — a `doc_reference`-only callee reads 0.
+        None => graph.real_caller_count(function_name),
     };
     let ancestors = reverse_bfs(graph, function_name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
     let test_count = test_chunks
@@ -148,7 +146,11 @@ pub fn compute_hints_batch(
             let caller_count = caller_counts
                 .get(name)
                 .map(|&c| c as usize)
-                .unwrap_or_else(|| graph.reverse.get(name).map(|v| v.len()).unwrap_or(0));
+                // Fallback (name absent from the doc-excluded batch map) must
+                // ALSO exclude doc_reference edges, or a doc-only-caller callee
+                // would fall through to a `graph.reverse` count of ≥1 where the
+                // batch reported 0 — the doc-only ≈ dead-ish leak.
+                .unwrap_or_else(|| graph.real_caller_count(name));
             let test_count = reachability.get(name).copied().unwrap_or(0);
             FunctionHints {
                 caller_count,
@@ -187,7 +189,9 @@ pub fn compute_risk_batch(
     names
         .iter()
         .map(|name| {
-            let caller_count = graph.reverse.get(*name).map(|v| v.len()).unwrap_or(0);
+            // Real-caller count (doc_reference excluded) so risk scoring matches
+            // the caller counts search/scout/impact report.
+            let caller_count = graph.real_caller_count(name);
             let test_count = reachability.get(*name).copied().unwrap_or(0);
             let test_ratio = if caller_count == 0 {
                 if test_count > 0 {
@@ -303,7 +307,8 @@ pub fn compute_risk_and_tests(
     let mut scores = Vec::with_capacity(targets.len());
     for (i, &name) in targets.iter().enumerate() {
         // Risk scoring: use forward BFS reachability (consistent with compute_risk_batch)
-        let caller_count = graph.reverse.get(name).map(|v| v.len()).unwrap_or(0);
+        // and the doc-excluded real-caller count (consistent with the batch map).
+        let caller_count = graph.real_caller_count(name);
         let test_count = reachability.get(name).copied().unwrap_or(0);
         let test_ratio = if caller_count == 0 {
             if test_count > 0 {
@@ -924,6 +929,90 @@ mod tests {
             hints[0].test_count, 3,
             "supplied reachability map should be used verbatim, not recomputed"
         );
+    }
+
+    // ===== doc_reference caller exclusion in the graph fallback =====
+
+    /// A graph with a single `doc_reference` inbound edge:
+    /// `doc_mentioner --doc_reference--> doc_only`. `doc_only` has NO real
+    /// caller, so a doc-excluded count reads 0 — but a naive `graph.reverse.len()`
+    /// would count the prose mention as 1. `from_string_maps` can't express a
+    /// non-`call` kind (it synthesizes every edge as `call`), so the graph is
+    /// hand-built with an explicit `DocReference` edge in `edges`.
+    fn graph_with_doc_only_caller() -> CallGraph {
+        use crate::parser::CallEdgeKind;
+        use crate::store::CallEdgeMeta;
+        use std::sync::Arc;
+
+        let caller: Arc<str> = Arc::from("doc_mentioner");
+        let callee: Arc<str> = Arc::from("doc_only");
+        let mut forward: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        forward.insert(Arc::clone(&caller), vec![Arc::clone(&callee)]);
+        let mut reverse: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        reverse.insert(Arc::clone(&callee), vec![Arc::clone(&caller)]);
+        let mut edges: HashMap<(Arc<str>, Arc<str>), CallEdgeMeta> = HashMap::new();
+        edges.insert(
+            (Arc::clone(&caller), Arc::clone(&callee)),
+            CallEdgeMeta {
+                edge_kind: CallEdgeKind::DocReference,
+                file: String::new(),
+                caller_line: 0,
+                call_line: 0,
+            },
+        );
+        CallGraph {
+            forward,
+            reverse,
+            edges,
+        }
+    }
+
+    #[test]
+    fn compute_hints_batch_fallback_excludes_doc_reference_caller() {
+        // The scout path: `get_caller_counts_batch` returns no row for a doc-only
+        // callee (its SQL already drops doc_reference), so `compute_hints_batch`
+        // hits its graph fallback — which must ALSO exclude the doc_reference edge.
+        let graph = graph_with_doc_only_caller();
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let caller_counts: HashMap<String, u64> = HashMap::new();
+        let hints = compute_hints_batch(&graph, &test_chunks, &["doc_only"], &caller_counts, None);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].caller_count, 0,
+            "a doc_reference-only caller must not count in the graph fallback (scout ⇄ search parity)"
+        );
+    }
+
+    #[test]
+    fn compute_hints_with_graph_excludes_doc_reference_caller() {
+        let graph = graph_with_doc_only_caller();
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let hints = compute_hints_with_graph(&graph, &test_chunks, "doc_only", None);
+        assert_eq!(hints.caller_count, 0);
+    }
+
+    #[test]
+    fn compute_risk_batch_excludes_doc_reference_caller() {
+        // Risk scoring reads the graph directly (no batch map), so it too must
+        // count only real callers — else a doc-only function scores as though it
+        // had a caller instead of the entry-point (0-caller) shape.
+        let graph = graph_with_doc_only_caller();
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["doc_only"], &graph, &test_chunks);
+        assert_eq!(
+            scores[0].caller_count, 0,
+            "risk scoring must exclude doc_reference callers"
+        );
+        // 0 real callers + 0 tests → the entry-point Medium heuristic.
+        assert_eq!(scores[0].risk_level, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn compute_risk_and_tests_excludes_doc_reference_caller() {
+        let graph = graph_with_doc_only_caller();
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let (scores, _tests) = compute_risk_and_tests(&["doc_only"], &graph, &test_chunks, None);
+        assert_eq!(scores[0].caller_count, 0);
     }
 
     #[test]

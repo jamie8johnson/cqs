@@ -140,6 +140,14 @@ pub struct SearchResultSchema {
     /// Ranking provenance (skip-when-empty). Reuses the canonical
     /// [`cqs::store::RankSignal`] schema.
     pub rank_signals: Vec<cqs::store::RankSignal>,
+    /// Mini-impact: real-caller count (`doc_reference`-excluded). Present only on
+    /// a callable hit when hints are enabled (default-on JSON; suppress with
+    /// `--no-hints`) — skip-when-absent, and `0` is emitted (dead-ish signal).
+    pub caller_count: u32,
+    /// Mini-impact: count of tests that transitively reach the hit (forward-BFS,
+    /// shared with scout/impact). Same presence rule as `caller_count`; `0`
+    /// (untested) is emitted.
+    pub test_count: u32,
     /// Parent context, emitted under `--expand-parent` when a parent resolved.
     pub parent_name: String,
     pub parent_content: String,
@@ -1050,6 +1058,10 @@ mod output_schema_tests {
             signal: "dense",
             value: 1.0,
         }];
+        // Callable hit with populated mini-impact hints → caller_count /
+        // test_count emit and must be declared in the schema.
+        sr.caller_count = Some(3);
+        sr.test_count = Some(0);
         let unified = UnifiedResult::Code(sr);
         let parent = ParentContext {
             name: "Parent".to_string(),
@@ -1073,6 +1085,8 @@ mod output_schema_tests {
             "injection_flags",
             "reference_name",
             "rank_signals",
+            "caller_count",
+            "test_count",
             "parent_name",
             "parent_content",
             "source",

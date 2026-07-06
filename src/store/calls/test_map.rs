@@ -60,6 +60,48 @@ impl<Mode> Store<Mode> {
         let _ = self.test_chunks_cache.set(std::sync::Arc::clone(&arc));
         Ok(arc)
     }
+
+    /// Cached forward-BFS test-reachability map: `function_name -> count of
+    /// tests that transitively reach it` at [`DEFAULT_MAX_TEST_SEARCH_DEPTH`].
+    ///
+    /// Composes the two caches it depends on ([`get_call_graph`] +
+    /// [`find_test_chunks`]) and runs [`crate::impact::test_reachability`] —
+    /// the SAME forward BFS scout and impact use — once, then memoizes the
+    /// result. This is what lets `cqs search`'s per-result `test_count` share
+    /// scout/impact's code path instead of a divergent direct-SQL count, and
+    /// what lets a warm daemon amortize the BFS across every search of a Store
+    /// generation.
+    ///
+    /// **No invalidation by design** — identical write-once contract to
+    /// [`get_call_graph`] / [`find_test_chunks`]. `clear_caches(&mut self)`
+    /// swaps in a fresh `OnceLock`; long-lived modes re-open the Store to pick
+    /// up index changes. Returns `Arc<…>` so repeat access is an `Arc::clone`.
+    ///
+    /// [`get_call_graph`]: Store::get_call_graph
+    /// [`find_test_chunks`]: Store::find_test_chunks
+    /// [`DEFAULT_MAX_TEST_SEARCH_DEPTH`]: crate::impact::DEFAULT_MAX_TEST_SEARCH_DEPTH
+    pub fn get_test_reachability(
+        &self,
+    ) -> Result<std::sync::Arc<std::collections::HashMap<std::sync::Arc<str>, usize>>, StoreError>
+    {
+        if let Some(cached) = self.test_reachability_cache.get() {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let _span = tracing::info_span!("get_test_reachability").entered();
+        let graph = self.get_call_graph()?;
+        let test_chunks = self.find_test_chunks()?;
+        let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+        let map = crate::impact::test_reachability(
+            &graph,
+            &test_names,
+            crate::impact::DEFAULT_MAX_TEST_SEARCH_DEPTH,
+        );
+        let arc = std::sync::Arc::new(map);
+        let _ = self
+            .test_reachability_cache
+            .set(std::sync::Arc::clone(&arc));
+        Ok(arc)
+    }
 }
 
 impl<Mode> Store<Mode> {

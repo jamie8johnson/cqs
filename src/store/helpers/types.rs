@@ -209,6 +209,21 @@ pub struct SearchResult {
     /// the originating search — recording is a side channel, never a scoring
     /// change. Emitted (skip-when-empty) as `rank_signals` in the chunk JSON.
     pub rank_signals: Vec<RankSignal>,
+    /// Mini-impact: how many real callers this chunk has (the `doc_reference`-
+    /// excluded caller count, `get_caller_counts_batch` semantics). `Some` only
+    /// on a callable chunk (`ChunkType::is_callable`) when the search populated
+    /// hints; `None` for non-callable chunks and hint-suppressed searches.
+    /// `Some(0)` is meaningful — a callable chunk with zero real callers
+    /// (dead-ish). Emitted (skip-when-None) as `caller_count` in the chunk JSON;
+    /// a side channel that never participates in scoring or ordering.
+    pub caller_count: Option<u32>,
+    /// Mini-impact: how many tests transitively reach this chunk (forward-BFS
+    /// reachability at `DEFAULT_MAX_TEST_SEARCH_DEPTH`, the same code path scout
+    /// and impact use — never a divergent count). `Some` only on a callable
+    /// chunk when the search populated hints; `None` otherwise. `Some(0)` is
+    /// meaningful — a callable chunk no test reaches (untested). Emitted
+    /// (skip-when-None) as `test_count` in the chunk JSON.
+    pub test_count: Option<u32>,
 }
 
 /// Wrap chunk content in trust-boundary delimiters unless `CQS_TRUST_DELIMITERS=0`.
@@ -237,6 +252,8 @@ impl SearchResult {
             chunk,
             score,
             rank_signals: Vec::new(),
+            caller_count: None,
+            test_count: None,
         }
     }
 
@@ -358,6 +375,18 @@ impl SearchResult {
                 "rank_signals".to_string(),
                 serde_json::json!(self.rank_signals),
             );
+        }
+        // Skip-when-None: the mini-impact usage counts are populated only for
+        // callable chunks by a hint-enabled search (the assemble_output
+        // post-pass); a non-callable chunk or a `--no-hints` search leaves them
+        // `None` and pays zero output overhead. `Some(0)` IS emitted — a dead-ish
+        // / untested callable is the highest-value signal. Same recorded-side-
+        // channel discipline as `rank_signals`.
+        if let Some(caller_count) = self.caller_count {
+            map.insert("caller_count".to_string(), serde_json::json!(caller_count));
+        }
+        if let Some(test_count) = self.test_count {
+            map.insert("test_count".to_string(), serde_json::json!(test_count));
         }
         obj
     }
@@ -638,6 +667,34 @@ impl CallGraph {
             .get(&(Arc::clone(caller), Arc::clone(callee)))
             .cloned()
             .unwrap_or_else(CallEdgeMeta::default_call)
+    }
+
+    /// Count the REAL callers of `callee` — every inbound edge whose kind is
+    /// [`CallEdgeKind::is_real_caller`] (all kinds except `doc_reference`, which
+    /// is a prose mention that invokes nothing).
+    ///
+    /// This is the in-memory-graph twin of `get_caller_counts_batch`'s
+    /// `doc_reference`-excluded SQL count, so a caller-count derived from the
+    /// graph (the fallback in `compute_hints_batch` / `compute_risk_batch`, for a
+    /// callee absent from the doc-excluded batch map) cannot silently reintroduce
+    /// a doc reference the batch query already dropped — the exact place the
+    /// doc-only-callee ≈ dead-ish case would otherwise leak. A synthesized graph
+    /// carries no `edges` metadata, so every edge falls back to the default
+    /// `call` kind (real), matching [`edge_meta`](Self::edge_meta).
+    pub fn real_caller_count(&self, callee: &str) -> usize {
+        let Some(callers) = self.reverse.get(callee) else {
+            return 0;
+        };
+        let callee_arc: Arc<str> = Arc::from(callee);
+        callers
+            .iter()
+            .filter(|caller| {
+                self.edges
+                    .get(&(Arc::clone(caller), Arc::clone(&callee_arc)))
+                    .map(|m| m.edge_kind.is_real_caller())
+                    .unwrap_or(true)
+            })
+            .count()
     }
 }
 
@@ -1398,5 +1455,48 @@ mod tests {
         let unified = UnifiedResult::Code(result);
         let ujson = unified.to_json();
         assert_eq!(ujson["rank_signals"], json["rank_signals"]);
+    }
+
+    // ===== mini-impact usage counts (caller_count / test_count) =====
+
+    #[test]
+    fn test_usage_counts_skipped_when_none() {
+        // Default (hints not populated) → neither key in the lean shape.
+        let result = SearchResult::new(make_chunk("foo", None), 0.7);
+        let json = result.to_json();
+        assert!(
+            json.get("caller_count").is_none(),
+            "skips caller_count when None; got: {json}"
+        );
+        assert!(
+            json.get("test_count").is_none(),
+            "skips test_count when None; got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_usage_counts_emitted_when_present() {
+        // Pinning the emit through `build_chunk_json_inner` pins both surfaces'
+        // wire shape (CLI `to_json_relative_with_origin` and daemon `to_json`
+        // funnel through the one serializer) — same structural parity argument
+        // as `rank_signals`.
+        let mut result = SearchResult::new(make_chunk("foo", None), 0.7);
+        result.caller_count = Some(3);
+        result.test_count = Some(0); // Some(0) must emit — untested is a signal.
+        let json = result.to_json();
+        assert_eq!(json["caller_count"], 3);
+        assert_eq!(json["test_count"], 0);
+
+        // Same shape through the relative-path emitter (the CLI's surface).
+        let root = std::path::Path::new("src");
+        let rel = result.to_json_relative(root);
+        assert_eq!(rel["caller_count"], 3);
+        assert_eq!(rel["test_count"], 0);
+
+        // And wrapped in UnifiedResult (both surfaces emit code results this way).
+        let unified = UnifiedResult::Code(result);
+        let ujson = unified.to_json();
+        assert_eq!(ujson["caller_count"], 3);
+        assert_eq!(ujson["test_count"], 0);
     }
 }
