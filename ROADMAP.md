@@ -1,5 +1,16 @@
 # Roadmap
 
+## Released: v1.54.0 (2026-07-03, crates.io + GitHub Release)
+
+Post-v1.53.0 window (29 PRs): the MCP-trial trio, overlay-marker degradation family complete, slot-pin hot-reload (#2128 closed), error-taxonomy `unavailable`, a 4-part telemetry-honesty arc, **PARSER_VERSION 15** (doc-comment fallback #2206), reranker preamble parity (#2207, +4.6pp both fixtures but still below reranker-off), full MCP outputSchemas (#2204/#2209/#2210, #2203 closed). Recall gate at tag time: test 43.1/66.1/82.6, dev 44.0/73.4/84.4 (0 dead golds; scoring diff-clean, movement = corpus churn + HNSW variance). Cross-build dry-run all-3-green before tag.
+
+**Post-v1.54.0 arc (2026-07-03 → 07-06, all landed + deployed, no new tag yet):**
+- **MCP Phase 3 SSE complete** — #2244 eval-task progress plumbing (P3a-2 PR1) + **#2250 SSE server-push (P3a-2 PR2)**: a `GET Accept: text/event-stream` opens a notifications-only progress stream (16-stream budget, takeover-transfers-permit, high-water CAS monotonicity, teed shutdown). Pre-land trust-boundary probe from an Opus session (5 unbiddable-auditors, live raw-HTTP PoCs): **41 HELD / 0 BREACH**. `mcp-http`+unix-gated. Umbrella #2216/#2124 stays open for the 3b Tasks-store/cancel bits; a PR3 second probe against the deployed binary is scheduled.
+- **is_test flag — schema v33, PARSER_VERSION 17→18 (#2249/#2254).** Parse-time AST `#[cfg(test)]`/`#[test]`/ancestor-mod detection so rank-time consumers see cfg-test-in-src test code; read by the new `CQS_TESTCODE_DEMOTE` knob (#2251, default-inert) + `test_demote` rank-signal.
+- **#2248 (#2240 live e2e)** — the e2e's first run caught a production defect: the MCP task wire verbs double-wrapped (`output.data.data`) → the whole task lifecycle was non-functional against a real daemon since #2237/#2242; fixed + single-wrap guard.
+- **Eval harness** gained gold_set + file-level recall columns (#2252); the R@5 failure-mode audit script un-broken (#2247, envelope drift); eval-worker panic fence (#2246, #2239 closed).
+- **Two headline RESULTS** (eval.md/RESULTS.md): (1) **first-ever + replicated-n=2 off-self eval** — behavioral function-exact R@20 ≈21% on hugo+pydantic; the ~70% home-fixture number is inflated because v3 self-fixtures are retrieval-SEEDED while PR-mined gold is independent (the honest instrument). (2) **testcode-demote A/B** — mechanism works post-#2249 but recall splits (test R@5 +1.8 / dev flat-neg, test R@1 −2.8); no paired win, stays inert.
+
 ## Released: v1.53.0 (2026-07-02, crates.io + GitHub Release)
 
 **HNSW manifest-generation persistence** (#2165 — generation-suffixed artifacts behind an atomic manifest pointer; the post-crash save-wedge is GONE, pinned RED; live-migrated in production with the full audit battery: fable crash-matrix review held every cell + caught the model-show sizing straggler, sweep-audit confirmed code uniformity + fixed the SECURITY.md footprint straggler + landed the layout guard #2166, legacy-state audit landed six frozen-artifact guards #2168 + filed the dot-metric boundary finding #2167). Around it, the 27-PR post-v1.52.0 idle-loop batch: **the `--force` race family closed** (#2141 stale-sidecar guards, #2143 quiet-repo store reopen, #2153 orphaned-WAL replay + close-under-lock at the source), **worktree-overlay honesty campaign completed** (#2145 seed-family degradation markers, #2149 qualified-path merge, #2151 --ref marker gate, #2160 origin-aware def freshness, #2162 impact kind classification), **cross-project six completed** (#2152 deps was the last stub), `plan` text-mode token budget (#2139), write-time SPLADE scrubbing (#2146), insert_batch borrowed ids (#2150), JSON-noise re-decay guards CLI+lib (#2158/#2164), slow-tests lint gate (#2161), onnx reranker coverage (#2155). **Recall gate PASSED with `--require-fresh` ON** (the #2133-fixed freshness API's first release gate) — agg **45.9/71.1/85.8**; `src/search/` diff vs v1.52.0 EMPTY (scoring byte-identical; movement = live-migration rebuild noise + churn). Cross-build dry-run all-3-green before tagging.
@@ -25,7 +36,7 @@ Shipped the post-v1.49.0 autopilot/ultracode arc as v1.50.0, then patched a Wind
 
 ---
 
-## Current: v1.49.0 (cut 2026-06-24, crates.io + GitHub Release)
+## v1.49.0 (cut 2026-06-24, crates.io + GitHub Release)
 
 Minor — **v1.48.0 16-category audit fix cycle.** A full audit (16 parallel category auditors → per-category adversarial verification → triage, all opus) produced 36 verified findings → 19 rows; **all P1–P3 + 2 of 3 P4 fixed** across PRs #2038–#2042. Scoring path **byte-identical** to v1.48.0 — retrieval unchanged (recall carried: 72.0% R@5 / 47.2% R@1 / 87.2% R@20).
 - **Security:** RT-RELAY honest-relay completion (#2039) — `explain --tokens` / `read --focus` / `trace` / kind-fallback signatures now scanned; **scan == relayed, both directions**; `leading-directive` corrected to line-start anchoring after a review caught an "instead of" false-positive explosion. Parser depth rail made non-defeatable (#2040) — `CQS_PARSER_MAX_WALK_DEPTH` clamped `[1,800]`, only-lowerable.
