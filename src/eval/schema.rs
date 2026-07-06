@@ -48,6 +48,15 @@ pub struct EvalQuery {
     pub category: Option<String>,
     #[serde(default)]
     pub gold_chunk: Option<GoldChunk>,
+    /// The full set of valid target chunks a multi-gold PR-mined query
+    /// changed. When present, `gold_chunk` is the primary member (the single
+    /// scored headline gold); `gold_set` is scored as a hit@K if ANY member
+    /// ranks. Absent ⇒ the query scores on `gold_chunk` alone, identical to a
+    /// pre-`gold_set` v3 fixture (full back-compat). Members carry only the
+    /// match key `(origin, name)`; `line_start` is optional and unused for
+    /// matching (the same line-agnostic key `gold_chunk` uses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gold_set: Option<Vec<GoldSetMember>>,
     /// Optional grouping for partitioned eval reports. Common values:
     /// `"telemetry"`, `"generated"`, `"consensus"`. The runner ignores
     /// it but it's modeled so `deny_unknown_fields` doesn't trip.
@@ -107,6 +116,21 @@ pub struct GoldChunk {
     pub language: Option<String>,
 }
 
+/// One member of a query's `gold_set` — a valid alternate target chunk.
+///
+/// Carries only the match key `(origin, name)` the runner scores against
+/// (line-agnostic, exactly as `gold_chunk`). `line_start` is optional and
+/// present purely for round-trip fidelity with the on-disk fixture; matching
+/// never reads it. A dedicated (lighter) type rather than reusing [`GoldChunk`]
+/// so a set member can omit `line_start`, which `GoldChunk` requires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoldSetMember {
+    pub name: String,
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +181,45 @@ mod tests {
         assert_eq!(set.queries.len(), 1);
         assert!(set.queries[0].gold_chunk.is_none());
         assert!(set.queries[0].category.is_none());
+    }
+
+    /// Back-compat: an existing v3 query with NO `gold_set` parses with
+    /// `gold_set == None` — the field is optional and defaults absent, so every
+    /// pre-`gold_set` fixture loads unchanged.
+    #[test]
+    fn test_gold_set_absent_defaults_none() {
+        let raw = r#"{"queries": [{
+            "query": "q",
+            "gold_chunk": {"name": "foo", "origin": "src/a.rs", "line_start": 1}
+        }]}"#;
+        let set: QuerySet = serde_json::from_str(raw).expect("must parse without gold_set");
+        assert!(set.queries[0].gold_set.is_none());
+    }
+
+    /// A `gold_set` array parses into `GoldSetMember`s; `line_start` is
+    /// optional on a member (present on one, absent on another).
+    #[test]
+    fn test_gold_set_parses_with_optional_line_start() {
+        let raw = r#"{"queries": [{
+            "query": "q",
+            "gold_chunk": {"name": "primary", "origin": "src/a.rs", "line_start": 10},
+            "gold_set": [
+                {"name": "primary", "origin": "src/a.rs", "line_start": 10},
+                {"name": "sibling", "origin": "src/a.rs"}
+            ]
+        }]}"#;
+        let set: QuerySet = serde_json::from_str(raw).expect("must parse gold_set");
+        let members = set.queries[0]
+            .gold_set
+            .as_ref()
+            .expect("gold_set must be Some");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name, "primary");
+        assert_eq!(members[0].line_start, Some(10));
+        assert_eq!(members[1].name, "sibling");
+        assert_eq!(
+            members[1].line_start, None,
+            "line_start is optional on a member"
+        );
     }
 }

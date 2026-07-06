@@ -424,9 +424,10 @@ pub struct AuxModelSection {
 /// adding a new scoring knob is one row in that table, no field churn here.
 ///
 /// Known knob names (full set in [`crate::search::scoring::knob`]): `rrf_k`,
-/// `type_boost`, `name_exact`, `name_contains`, `name_contained_by`,
-/// `name_max_overlap`, `note_boost_factor`, `importance_test`,
-/// `importance_private`, `parent_boost_per_child`, `parent_boost_cap`.
+/// `type_boost`, `testcode_demote`, `name_exact`, `name_contains`,
+/// `name_contained_by`, `name_max_overlap`, `note_boost_factor`,
+/// `importance_test`, `importance_private`, `parent_boost_per_child`,
+/// `parent_boost_cap`.
 /// Unknown keys are logged at WARN; out-of-range values are clamped at
 /// load time using each knob's `[min, max]`.
 ///

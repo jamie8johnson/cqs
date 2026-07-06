@@ -313,6 +313,7 @@ const EVAL_QUERY_KNOWN_FIELDS: &[&str] = &[
     "query",
     "category",
     "gold_chunk",
+    "gold_set",
     "source",
     "judges",
     "metadata",
