@@ -1084,7 +1084,7 @@ fn test_check_origins_stale_across_batch_boundary() {
         let content = format!("fn f{}() {{ {} }}", i, i);
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let chunk = cqs::parser::Chunk {
-            id: format!("{}:1:{}", &filename, &hash[..8]),
+            id: format!("{}:1:{}", filename, &hash[..8]),
             file: PathBuf::from(&filename),
             language: Language::Rust,
             chunk_type: ChunkType::Function,

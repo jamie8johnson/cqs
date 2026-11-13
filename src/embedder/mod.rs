@@ -20,6 +20,7 @@ pub const DEFAULT_DIM: usize = ModelConfig::DEFAULT_DIM;
 /// `&'static str` rather than `default_model().repo` (a `String`).
 pub const DEFAULT_MODEL_REPO: &str = ModelConfig::DEFAULT_REPO;
 
+pub use provider::ort_environment;
 pub(crate) use provider::{create_session, select_provider};
 
 use thiserror::Error;

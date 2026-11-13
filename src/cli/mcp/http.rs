@@ -816,7 +816,7 @@ async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Respon
             Ok(r) => r,
             Err(resp) => {
                 state.sessions.remove(&new_id);
-                return resp;
+                return *resp;
             }
         };
         return json_response(&response, Some(&new_id));
@@ -874,7 +874,7 @@ async fn handle_post(State(state): State<HttpState>, mut req: Request) -> Respon
     let is_notification = request.id.is_none();
     let response = match route_blocking(&state, request).await {
         Ok(r) => r,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if let Some(token) = progress_token {
         if let Some(task_id) = response
@@ -1253,17 +1253,21 @@ async fn handle_delete(State(state): State<HttpState>, headers: HeaderMap) -> Re
 /// Route one request through the shared bridge, off the async worker: the
 /// `tools/call` leg does a blocking daemon-socket round-trip, so it runs on a
 /// blocking thread. A routing-task panic maps to a 500 rather than aborting.
+/// The error response is boxed: an axum `Response` is large, and an unboxed
+/// one makes every `Result` here that size (`result_large_err`).
 async fn route_blocking(
     state: &HttpState,
     request: JsonRpcRequest,
-) -> Result<JsonRpcResponse, Response> {
+) -> Result<JsonRpcResponse, Box<Response>> {
     let cqs_dir = Arc::clone(&state.cqs_dir);
     let mutations = state.mutations_permitted;
     match tokio::task::spawn_blocking(move || route_with(&cqs_dir, request, mutations)).await {
         Ok(resp) => Ok(resp),
         Err(e) => {
             tracing::error!(error = %e, "mcp-http: routing task panicked");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response())
+            Err(Box::new(
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+            ))
         }
     }
 }

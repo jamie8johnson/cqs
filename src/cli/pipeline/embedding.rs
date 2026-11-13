@@ -208,18 +208,14 @@ fn flush_to_cpu(
     } else {
         (prepared.relationships, prepared.empty_file_fingerprints)
     };
-    if fail_tx
+    fail_tx
         .send(ParsedBatch {
             chunks: prepared.to_embed,
             relationships: rels,
             file_fingerprints: prepared.file_fingerprints,
             empty_file_fingerprints: empty_fps,
         })
-        .is_err()
-    {
-        return false;
-    }
-    true
+        .is_ok()
 }
 
 /// Stage 2a: GPU embedder — embed chunks, requeue failures to CPU fallback.
