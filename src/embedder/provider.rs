@@ -248,6 +248,29 @@ fn trt_cache_dir() -> Option<PathBuf> {
 /// Cached GPU provider detection result
 static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
 
+/// The process-wide ONNX Runtime environment.
+///
+/// `ort` takes the environment as an explicit handle on every
+/// `Session::builder` call (since 2.0.0-rc.14; earlier releases created one
+/// implicitly). ONNX Runtime allows one environment per process, so it is
+/// built once on first use and shared by every session cqs creates.
+static ORT_ENVIRONMENT: OnceCell<ort::environment::Environment> = OnceCell::new();
+
+/// Return the shared ONNX Runtime environment, building it on first use.
+///
+/// Public because `ort` refuses a second environment in one process: code
+/// outside the crate that builds its own `Session` beside a cqs embedder (the
+/// model-eval harness) has to use this one.
+pub fn ort_environment() -> Result<&'static ort::environment::Environment, EmbedderError> {
+    ORT_ENVIRONMENT.get_or_try_init(|| {
+        let _span = tracing::info_span!("ort_environment").entered();
+        ort::init().with_name("cqs").build().map_err(|e| {
+            tracing::warn!(error = %e, "Failed to create the ONNX Runtime environment");
+            ort_err(e)
+        })
+    })
+}
+
 /// Select the best available execution provider (cached)
 /// Provider detection is expensive (checks CUDA/TensorRT availability).
 /// Result is cached in a static OnceCell for subsequent calls.
@@ -285,8 +308,7 @@ fn detect_provider() -> ExecutionProvider {
     // perf wins.
     if std::env::var("CQS_DISABLE_TENSORRT").as_deref() != Ok("1") {
         use ort::ep::TensorRT;
-        let tensorrt = TensorRT::default();
-        if tensorrt.is_available().unwrap_or(false) {
+        if TensorRT::is_available().unwrap_or(false) {
             let provider = ExecutionProvider::TensorRT { device_id: 0 };
             tracing::info!(provider = ?provider, "Execution provider selected");
             return provider;
@@ -298,8 +320,7 @@ fn detect_provider() -> ExecutionProvider {
     // ── NVIDIA CUDA ────────────────────────────────────────────────
     {
         use ort::ep::CUDA;
-        let cuda = CUDA::default();
-        if cuda.is_available().unwrap_or(false) {
+        if CUDA::is_available().unwrap_or(false) {
             let provider = ExecutionProvider::CUDA { device_id: 0 };
             tracing::info!(provider = ?provider, "Execution provider selected");
             return provider;
@@ -355,7 +376,7 @@ pub(crate) fn create_session(
 
     tracing::info!(provider = ?provider, model_path = %model_path.display(), "Creating ONNX session");
 
-    let mut builder = Session::builder().map_err(ort_err)?;
+    let mut builder = Session::builder(ort_environment()?).map_err(ort_err)?;
 
     // Pre-flight model-incompatibility check for TensorRT.
     //

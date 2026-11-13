@@ -226,7 +226,8 @@ impl<'a> EvalEmbedder<'a> {
         };
 
         eprintln!("  Creating ONNX session...");
-        let session = Session::builder()?.commit_from_file(&model_path)?;
+        let session =
+            Session::builder(cqs::embedder::ort_environment()?)?.commit_from_file(&model_path)?;
 
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Tokenizer error: {}", e))?;
@@ -1707,7 +1708,11 @@ fn test_cuda_compatibility() {
         };
 
         // Load session and inspect
-        let session = match Session::builder().and_then(|mut b| b.commit_from_file(&model_path)) {
+        let session = match cqs::embedder::ort_environment()
+            .map_err(|e| ort::Error::new(e.to_string()))
+            .and_then(Session::builder)
+            .and_then(|mut b| b.commit_from_file(&model_path))
+        {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("  SKIP: {}\n", e);

@@ -133,12 +133,7 @@ pub fn is_wsl_drvfs_path(path: &Path) -> bool {
     // host the `//wsl.localhost/`, `//wsl$/` patterns can be legitimate CIFS
     // mounts that should NOT receive DrvFS treatment (advisory-lock skips,
     // 0o777 permission assumptions, 2 s mtime resolution).
-    if (is_wsl() || cfg!(windows))
-        && (s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/"))
-    {
-        return true;
-    }
-    false
+    (is_wsl() || cfg!(windows)) && (s.starts_with("//wsl.localhost/") || s.starts_with("//wsl$/"))
 }
 
 /// Cached resolution of `automount.root` from `/etc/wsl.conf`. Single
