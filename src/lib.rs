@@ -876,12 +876,8 @@ pub fn enumerate_files_iter(
             // the worktree would duplicate the entire source tree under a
             // different prefix — this is the root cause of `.claude/worktrees/`
             // pollution in the index.
-            if entry.file_type().is_some_and(|ft| ft.is_dir())
-                && entry.path().join(".git").is_file()
-            {
-                return false;
-            }
-            true
+            !(entry.file_type().is_some_and(|ft| ft.is_dir())
+                && entry.path().join(".git").is_file())
         })
         .build();
 

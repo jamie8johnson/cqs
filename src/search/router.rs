@@ -1324,10 +1324,7 @@ fn is_cross_language_query(query: &str, words: &[&str]) -> bool {
         || query.contains("translate")
         || query.contains("convert ")
         || words.iter().any(|w| *w == "port" || *w == "ports");
-    if lang_count >= 1 && has_translate_verb {
-        return true;
-    }
-    false
+    lang_count >= 1 && has_translate_verb
 }
 
 /// Check if query is structural (about code structure, not behavior).
