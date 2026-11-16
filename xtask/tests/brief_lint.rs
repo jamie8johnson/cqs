@@ -292,6 +292,47 @@ fn no_line_holds_the_briefs_text_or_its_path() {
 }
 
 #[test]
+fn an_item_of_backtick_runs_that_never_close_is_read_in_linear_time() {
+    // Runs of 1, 2, 3, ... backticks: no run has a later run of its own
+    // length, so none opens a code span. A reader that searches forward
+    // from each run does work quadratic in the item's length.
+    let head = "Branch: `x`\nMODEL: m\n## Premises\n1. a ";
+    let tail =
+        "[counted: c]\n## Task statements\nx\n## Decided judgment calls\nx\n## Stopping\nx\n";
+    let mut brief = head.to_owned();
+    let mut n = 1;
+    while brief.len() + n + 1 + tail.len() <= BRIEF_MAX_BYTES {
+        brief.push_str(&"`".repeat(n));
+        brief.push(' ');
+        n += 1;
+    }
+    brief.push_str(tail);
+    assert!(n > 1000, "{n} runs");
+    let sb = Sandbox::plain();
+    let path = sb.write_outside("runs.md", brief);
+    let mut child = sb
+        .command(env!("CARGO_BIN_EXE_xtask"))
+        .arg("brief-lint")
+        .arg(&path)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("start xtask");
+    let start = Instant::now();
+    while child.try_wait().expect("poll xtask").is_none() {
+        if start.elapsed() > Duration::from_secs(5) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("brief-lint did not end within 5 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().expect("collect xtask");
+    let (code, stdout) = code_and_stdout(&out);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, summary(0, 0));
+}
+
+#[test]
 fn an_unknown_task_prints_the_usage_line() {
     let sb = Sandbox::plain();
     let out = sb

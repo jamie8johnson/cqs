@@ -10,6 +10,7 @@
 //! `## ` headings, items that start in the first column, backtick code spans
 //! and bracketed tags. Nothing else of Markdown changes what a rule sees.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -296,35 +297,44 @@ fn is_item_start(line: &str) -> bool {
 /// For each byte of an item, whether it lies in a code span (delimiters
 /// included). A run of N backticks closes at the next run of exactly N; a
 /// run with no close is plain text.
+///
+/// Linear in the item's length: each run length keeps a cursor into the
+/// list of runs of that length, and the cursor only moves forward, so no
+/// run is passed over twice in the search for a close.
 fn code_mask(b: &[u8]) -> Vec<bool> {
     let mut mask = vec![false; b.len()];
+    // Every maximal run of backticks, as (start, length), in order.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        if b[i] != b'`' {
+        if b[i] == b'`' {
+            let n = backtick_run(b, i);
+            runs.push((i, n));
+            i += n;
+        } else {
             i += 1;
-            continue;
         }
-        let n = backtick_run(b, i);
-        let mut j = i + n;
-        let mut close = None;
-        while j < b.len() {
-            if b[j] == b'`' {
-                let m = backtick_run(b, j);
-                if m == n {
-                    close = Some(j);
-                    break;
-                }
-                j += m;
-            } else {
-                j += 1;
-            }
+    }
+    let mut by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (r, &(_, n)) in runs.iter().enumerate() {
+        by_len.entry(n).or_default().push(r);
+    }
+    let mut cursor: HashMap<usize, usize> = HashMap::new();
+    let mut r = 0;
+    while r < runs.len() {
+        let (start, n) = runs[r];
+        let same = by_len.get(&n).map(Vec::as_slice).unwrap_or(&[]);
+        let c = cursor.entry(n).or_insert(0);
+        while *c < same.len() && same[*c] <= r {
+            *c += 1;
         }
-        match close {
-            Some(j) => {
-                mask[i..j + n].iter_mut().for_each(|m| *m = true);
-                i = j + n;
+        match same.get(*c) {
+            Some(&close) => {
+                let end = runs[close].0 + n;
+                mask[start..end].iter_mut().for_each(|m| *m = true);
+                r = close + 1;
             }
-            None => i += n,
+            None => r += 1,
         }
     }
     mask
@@ -872,6 +882,59 @@ mod tests {
         // plain text, so the word is read.
         let item = "2. The file says ` all `` of it. [opened: lever.txt line 3]";
         assert_eq!(faults(&with_premise(item)), one(7, Rule::OpenedWholeSet));
+    }
+
+    /// The rule of `code_mask` read directly: from each run, search forward
+    /// for the next run of the same length.
+    fn code_mask_by_search(b: &[u8]) -> Vec<bool> {
+        let mut mask = vec![false; b.len()];
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] != b'`' {
+                i += 1;
+                continue;
+            }
+            let n = backtick_run(b, i);
+            let mut j = i + n;
+            let mut close = None;
+            while j < b.len() {
+                if b[j] == b'`' {
+                    let m = backtick_run(b, j);
+                    if m == n {
+                        close = Some(j);
+                        break;
+                    }
+                    j += m;
+                } else {
+                    j += 1;
+                }
+            }
+            match close {
+                Some(j) => {
+                    mask[i..j + n].iter_mut().for_each(|m| *m = true);
+                    i = j + n;
+                }
+                None => i += n,
+            }
+        }
+        mask
+    }
+
+    #[test]
+    fn code_mask_matches_the_forward_search_on_every_short_item() {
+        for len in 0..=12u32 {
+            for bits in 0..(1u32 << len) {
+                let item: Vec<u8> = (0..len)
+                    .map(|k| if bits >> k & 1 == 1 { b'`' } else { b'a' })
+                    .collect();
+                assert_eq!(
+                    code_mask(&item),
+                    code_mask_by_search(&item),
+                    "{}",
+                    String::from_utf8_lossy(&item)
+                );
+            }
+        }
     }
 
     #[test]
