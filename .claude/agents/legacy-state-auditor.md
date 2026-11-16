@@ -42,7 +42,7 @@ A **frozen-artifact guard**, distinct from a property round-trip precisely becau
 - For migrations: run the migration against a frozen *oldest*-version DB and assert the result, not just vN-1.
 - Strongest: an enumerate-the-versions guard — every shipped format version has a frozen predecessor fixture, so a future version bump must add its predecessor's artifact or the test fails.
 
-Red when current code mishandles the frozen old shape; green when it reads correctly (hardening — say so; a guard that finds nothing is weaker evidence). Calibrate by mutating a load-bearing assertion (or a migration step) and confirming the guard goes red — a frozen-artifact test that stays green under mutation is vacuous.
+Red when current code mishandles the frozen old shape; green when it reads correctly (hardening — say so; a guard that finds nothing is weaker evidence). Calibrate by mutating the code the guard watches (a migration step, a load-bearing check of the read path), not the guard's own assertion, and confirming the guard goes red — a frozen-artifact test that stays green under mutation is vacuous.
 
 ## Gates (you write code)
 
