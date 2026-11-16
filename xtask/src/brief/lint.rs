@@ -212,11 +212,14 @@ fn backtick_run(b: &[u8], from: usize) -> usize {
     b[from..].iter().take_while(|&&c| c == b'`').count()
 }
 
-/// The backtick count of a line that opens a fence.
+/// The backtick count of a line that opens a fence: three or more backticks
+/// after at most three spaces, and no backtick in the rest of the line (the
+/// info word), so a line that starts with an inline span opens no fence.
 fn fence_open(line: &str) -> Option<usize> {
     let lead = indent_upto3(line)?;
-    let n = backtick_run(line.as_bytes(), lead);
-    (n >= 3).then_some(n)
+    let b = line.as_bytes();
+    let n = backtick_run(b, lead);
+    (n >= 3 && !b[lead + n..].contains(&b'`')).then_some(n)
 }
 
 /// Whether `line` closes a fence opened with `n` backticks.
@@ -980,6 +983,28 @@ mod tests {
             faults(&text),
             vec![(Some(4), Rule::EmptySection.id(), "Premises")]
         );
+    }
+
+    #[test]
+    fn a_line_whose_rest_holds_a_backtick_opens_no_fence() {
+        // Three backticks, a word and three backticks start an inline span,
+        // not a fence: the item goes on to its tag.
+        let item = "2. The file says\n```all``` in line 3 [opened: f:3]";
+        assert_eq!(faults(&with_premise(item)), vec![]);
+        // Inside an open fence such a line does not close it: the close
+        // keeps its own rule (nothing but spaces after the run), so the
+        // heading on the next line stays inside the fence.
+        let text = PASS.replace(
+            "Paint it.\n",
+            "Paint it.\n```\n```all``` x\n## Decided judgment calls\n```\n",
+        );
+        assert_eq!(faults(&text), vec![]);
+        // An info word alone after the run still opens a fence.
+        let text = PASS.replace(
+            "Paint it.\n",
+            "Paint it.\n```text\n## Decided judgment calls\n```\n",
+        );
+        assert_eq!(faults(&text), vec![]);
     }
 
     #[test]
