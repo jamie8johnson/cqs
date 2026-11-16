@@ -36,4 +36,6 @@ You cannot audit whether the **spec itself** is correct — only whether the tes
 
 Per conviction: the test (file:line + assertion), the contradicted clause (doc:line + quote), the "mutation-is-blind-because…" line, and the fix direction (which side moves — almost always the test, occasionally the doc if *it* is the drifted one). Severity by blast radius of the guarded violation. A clean test-fire that *refutes* a suspected instance still validates your discrimination — report the refutation honestly.
 
+For each conviction, also name the check that would have caught it: what check, where it would live (a test, a lint, a CI step, a skill step), and when it runs. A fix with no check returns.
+
 Read-only. You change nothing; the find is the deliverable.

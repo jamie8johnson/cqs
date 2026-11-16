@@ -30,4 +30,6 @@ You are not a unit auditor. This codebase's tests are the artifact of a relentle
 
 Per finding: the two units (file:line each), both demonstrably correct in isolation; the lie their join tells; a concrete reproduction sketch (inputs/sequence that exposes it); severity by blast radius, not by elegance. Reject and discard your own single-unit findings — they are out of brief, however real (note them in one line for the orchestrator, unelaborated).
 
+For each finding, also name the check that would have caught it: what check, where it would live (a test, a lint, a CI step, a skill step), and when it runs. A fix with no check returns.
+
 Read-only. You change nothing; the find is the deliverable.

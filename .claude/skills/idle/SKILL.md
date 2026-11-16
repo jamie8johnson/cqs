@@ -27,10 +27,10 @@ Judgment call, biased by: user-stated priorities first; then highest-value-per-t
 ## 4. Dispatch
 
 - Implementation → **lane-implementer** agent (opus), one branch per coherent batch; worktree isolation.
-- Risky lanes (live scoring path, schema migrations, cross-surface signatures) → fable code-reviewer pass before landing.
+- Risky lanes (live scoring path, schema migrations, cross-surface signatures) → fable code-reviewer pass before landing; its verdict names the range it read, and the PR body carries the verdict with that range.
 - Security-adjacent → opus for the analysis lane.
 - Land via **/land**; close linked issues on merge (verify, don't assume).
 
 ## 5. Loop
 
-On lane completion: land it, file its residuals, return to step 1. Update tears when the board changes shape.
+On lane completion: land it, file its residuals, return to step 1. A red guard whose fix is not written yet stays on its branch: file an issue that names the branch and the test. Update tears when the board changes shape.

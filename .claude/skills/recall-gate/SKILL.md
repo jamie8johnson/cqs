@@ -42,6 +42,7 @@ Pin BOTH sides to `CQS_NO_DAEMON=1` (daemon vs CLI path differences pollute the 
 
 ## 4. Record and sync
 
-- Append the gate block to `~/training-data/research/eval.md` (table, verdict, re-pins).
+- Append the gate block to `~/training-data/research/eval.md` (table, verdict, re-pins). The block names the command of each run, the substrate (step 1), and the fixture's class: pooled (gold drawn from cqs's own results, as the v3 fixtures are) or independent. A figure without these cannot be set beside the next one: a resident run against a fresh-built baseline manufactures a phantom delta (step 1).
 - On release gates, sync the three public surfaces to the new snapshot: README TL;DR line, `Cargo.toml` description, `gh repo edit --description`.
 - Fixture re-pins commit with the gate (release branch or a docs PR).
+- A PR whose body says `Retrieval: unchanged` for a branch that touches what search runs cites this record (`.claude/skills/pr/SKILL.md` step 3).

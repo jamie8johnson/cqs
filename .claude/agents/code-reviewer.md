@@ -24,13 +24,15 @@ You review uncommitted changes for risk and correctness. Your output is a review
    - Missing tracing spans on new public functions
    - Hardcoded values that should be configurable
    - Long-running scripts without observability/robustness/resumability (per `feedback_orr_default` memory)
+   - Trust boundaries: when the diff touches a parsing, path, FTS, notes, overlay, serve or relay surface, judge it against input that a hostile indexed file or an untrusted client can hold (`SECURITY.md` "Trust Boundaries"), not against well-formed input
 
 ## Output
 
 A short report with at minimum:
 - Overall risk (LOW / MEDIUM / HIGH) and why
 - Specific issues with file:line references (so the reader can jump straight in)
-- A clear verdict: APPROVE, or NEEDS WORK with the concrete fixes required
+- For each issue, whether the diff opens it, widens it, or meets it as it was; the last kind goes to the orchestrator as an issue to file and is not a reason for NEEDS WORK
+- A clear verdict: APPROVE, or NEEDS WORK with the concrete fixes required. The verdict names the range it read (`<base>..<commit>`, from `git rev-parse`), and "plus uncommitted changes" when the tree was not clean. It covers that state and no later one
 
 For trivial diffs, three lines is fine. For risky diffs, group by file or by issue class — whatever serves the reader best.
 

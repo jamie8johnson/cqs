@@ -23,10 +23,15 @@ Take a committed branch through push → PR → CI → merge → cleanup. One in
    ```
    CI diffs the merge ref, so MOVED comment lines count as added — a local pass on the pre-merge diff can be a false negative.
 
+Before the push, read the lane's report, when the branch came from a lane:
+- `STATUS:` is `done`, or you have decided what to do with a `partial`. A check graded `NOT RUN` is a check nobody ran: run it now, or name it in the PR body.
+- Re-run each search under `ABSENCE CLAIMS:` and compare the result with what the lane quoted.
+- A risky lane (live scoring path, schema migration, cross-surface signature change) has a code-reviewer verdict that names the range from the branch base to the lane's last commit; the merge of step 3, when it had no conflict, brings in main only and needs no new verdict.
+
 ## Push and PR
 
 5. Push: `git push origin <branch>` (direct WSL usually works; on "could not read Username" fall back to `powershell.exe -Command "cd C:\Projects\cqs; git push origin <branch>"`).
-6. Body to `/mnt/c/Projects/cqs/pr_body.md` (NEVER inline; must live on C: for Windows gh). Include `closes #N` for every issue the branch resolves. Delete the file after.
+6. Body to `/mnt/c/Projects/cqs/pr_body.md` (NEVER inline; must live on C: for Windows gh). Include `closes #N` for every issue the branch resolves, the `Retrieval:` line and tagged figures as `.claude/skills/pr/SKILL.md` step 3 gives them, and for a risky lane the reviewer's verdict with the range it read. Delete the file after.
 7. `powershell.exe -Command 'cd C:\Projects\cqs; gh pr create --head <branch> --title "..." --body-file pr_body.md'`
 
 ## CI — pin the run ID

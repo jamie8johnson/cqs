@@ -47,3 +47,4 @@ cqs notes add "note text" --sentiment 0.5 --mentions file.rs,concept
 - Focus on state that would be lost: what's in progress, what decisions were made, what's blocked
 - Keep PROJECT_CONTINUITY.md concise — it's read on every resume
 - Check for dirty files with `git status` and note uncommitted work in Pending Changes
+- A figure you write (a count, a test total, a chunk count, an eval number) carries how it is known: `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`. An eval number also names its fixture and whether that fixture's gold was pooled from cqs's own results. The next session can re-run a tagged figure; an untagged one it can only believe.

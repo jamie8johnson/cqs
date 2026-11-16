@@ -25,11 +25,15 @@ Create a PR from the current branch using WSL-safe patterns.
    ## Summary
    - Bullet points summarizing changes
 
+   Retrieval: unchanged (<why>) | changed (<what you expect to move>) | not checked (<why>)
+
    ## Test plan
    - [ ] cargo test passes
    - [ ] cargo clippy clean
    - [ ] Manual verification steps
    ```
+   - **The `Retrieval:` line** is in every body, with one of its three values. `unchanged` on a branch that touches what search runs (parsing and chunking, embedding, the index, scoring and ranking, the eval fixtures) cites a `/recall-gate` record; without one, write `not checked` and why. A gate that finds a regression bisects from the PRs that claimed "no ranking change" (`.claude/skills/recall-gate/SKILL.md` step 3), and a gate that meets many PRs at once has to bisect them all.
+   - **A figure in the body** (a count, a test total, an eval number, a timing) carries how it is known: `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`. An eval number also names its fixture and substrate.
 
 4. **Create PR** via PowerShell:
    ```
