@@ -39,7 +39,7 @@ Thank you for your interest in contributing to cqs!
 
 ## Developer tools (`xtask/`)
 
-Small developer tasks live in `xtask/`: a Rust binary crate with its own `[workspace]` table and its own `Cargo.lock`. It is not a member of the root workspace, the root package excludes it, and it has no runtime dependency outside the standard library (`tempfile` is its one dev-dependency, for the tests' temporary folders). Each task is one source file under `xtask/src/`. A task runs as:
+Small developer tasks live in `xtask/`: a Rust binary crate with its own `[workspace]` table and its own `Cargo.lock`. It is not a member of the root workspace, the root package excludes it, and it has no runtime dependency outside the standard library (`tempfile` is its one dev-dependency, for the tests' temporary folders). Each task is one source file under `xtask/src/`, or one folder for a family of tasks (`xtask/src/brief/`). A task runs as:
 
 ```bash
 cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task> [args]
@@ -83,6 +83,10 @@ What a commit costs: the first commit after a change to `xtask/` builds the task
 ### `hooks-check`
 
 `hooks-check` asks git where it runs hooks from for this checkout: `core.hooksPath` (a relative value is resolved against the top of the checkout), else git's own hooks folder. It exits 0 when every file of `.githooks/` has a byte-identical file of its name there. Otherwise it exits 1, naming that folder and the command that points git at `.githooks/` (`git config core.hooksPath .githooks`). Exit 2 means git or `.githooks/` could not be read.
+
+### `brief-lint`
+
+`brief-lint <file>` reads a lane's brief (`CLAUDE.md`, "Agent Teams") and checks its form. It finds the parts by their marks: a line that starts `Branch: ` with the branch name in backticks, a line that starts `MODEL: `, and the sections `## Premises`, `## Task statements`, `## Decided judgment calls` and `## Stopping`. Each numbered or bulleted item of the Premises section is a premise. A premise needs a tag, `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`, and a premise that says none, all, every or only needs a `counted` or an `unchecked` tag, or, where the word is quoted from a file, the quotation in inline code. Fenced code blocks and inline code are not read. It prints one line per fault, `brief-lint: line <n>: <rule>: <message>` (`brief-lint: <rule>: <message>` for a missing part), then one line per premise tagged unchecked, then `brief-lint: summary: faults=<f> unchecked=<u>`; no line holds the brief's text or its path. Exit 0 when there is no fault, 1 when there is one, 2 when the file could not be checked (`brief-lint: not checked: <reason>`).
 
 ## Code Style
 
@@ -524,7 +528,9 @@ xtask/          - Developer tasks (see Developer tools): a crate of its own, wit
   src/main.rs         - Task dispatch (`cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task>`)
   src/private_scan.rs - `private-scan`: private-term scan of a staged change, a commit message, a commit range, named files or one literal
   src/hooks_check.rs  - `hooks-check`: whether git runs this checkout's hooks from a folder that matches `.githooks/`
-  tests/              - Temporary-repository tests of both tasks, and of the `.githooks/` hooks with a stand-in `cargo`
+  src/brief/mod.rs    - The `brief-lint` task
+  src/brief/lint.rs   - `brief-lint`: the form of a lane's brief (its parts, and a tag on each premise)
+  tests/              - Temporary-repository tests of each task, and of the `.githooks/` hooks with a stand-in `cargo`
 .githooks/      - `pre-commit` (private-term scan, fmt check, Cargo.lock notice, env-var docs test) and `commit-msg` (private-term scan of the message)
 .claude/
   skills/       - Claude Code skills (auto-discovered)
