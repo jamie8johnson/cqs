@@ -28,7 +28,7 @@ Workflow({ name: 'audit', args: { churn: '<recently-changed areas to scrutinize>
 
 Route by **fix-nature, not tier**: a high-impact finding whose fix is a judgment call (architecture/API/perf-tradeoff) is `issue`, never `auto-fix`.
 
-The team-based process below is the legacy reference — kept for the category scopes and the fix-prompt-review detail the workflow embodies. Teams are currently unavailable, so use the workflow.
+The team-based process below is the legacy reference — kept for the category scopes and the fix-prompt-review detail the workflow embodies. Run the audit with the workflow.
 
 ## Arguments
 

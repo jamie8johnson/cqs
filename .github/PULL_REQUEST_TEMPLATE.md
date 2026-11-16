@@ -17,6 +17,6 @@
 ## Checklist
 
 - [ ] Tests pass (`cargo test`)
-- [ ] No clippy warnings (`cargo clippy -- -D warnings`)
+- [ ] No clippy warnings (`cargo clippy --all-targets -- -D warnings`)
 - [ ] Formatted (`cargo fmt --check`)
 - [ ] Documentation updated (if applicable)

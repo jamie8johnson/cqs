@@ -37,25 +37,25 @@ echo "4. callers:" && cqs callers search_filtered --json 2>/dev/null | python3 -
 echo "5. callees:" && cqs callees search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"count\"]} callees)')" 2>&1 || echo "  FAIL"
 
 # 6. Explain
-echo "6. explain:" && cqs explain search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS (callers:{len(r.get(\"callers\",[]))}, callees:{len(r.get(\"callees\",[]))})')" 2>&1 || echo "  FAIL"
+echo "6. explain:" && cqs explain search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS (callers:{len(r[\"callers\"])}, callees:{len(r[\"callees\"])})')" 2>&1 || echo "  FAIL"
 
 # 7. Impact
-echo "7. impact:" && cqs impact search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS (callers:{len(r.get(\"callers\",[]))}, tests:{len(r.get(\"tests\",[]))})')" 2>&1 || echo "  FAIL"
+echo "7. impact:" && cqs impact search_filtered --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS (callers:{len(r[\"callers\"])}, tests:{len(r[\"tests\"])})')" 2>&1 || echo "  FAIL"
 
 # 8. Stats
 echo "8. stats:" && cqs stats --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"total_chunks\"]} chunks)')" 2>&1 || echo "  FAIL"
 
 # 9. Health
-echo "9. health:" && cqs health --json 2>/dev/null | python3 -c "import sys,json; print('  PASS')" 2>&1 || echo "  FAIL"
+echo "9. health:" && cqs health --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"stats\"][\"total_chunks\"]} chunks, {len(r[\"warnings\"])} warnings)')" 2>&1 || echo "  FAIL"
 
 # 10. Doctor
-echo "10. doctor:" && cqs doctor 2>/dev/null | grep -c "✓" | xargs -I{} echo "  PASS ({} checks)"
+echo "10. doctor:" && doctor_out="$(cqs doctor 2>/dev/null)"; if printf '%s\n' "$doctor_out" | grep -q '^All checks passed\.$'; then echo "  PASS ($(printf '%s\n' "$doctor_out" | grep -c '✓') checks)"; else echo "  FAIL"; fi
 
 # 11. Notes
 echo "11. notes:" && cqs notes list --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"count\"]} notes)')" 2>&1 || echo "  FAIL"
 
 # 12. Dead code
-echo "12. dead:" && cqs dead --json 2>/dev/null | python3 -c "import sys,json; print('  PASS')" 2>&1 || echo "  FAIL"
+echo "12. dead:" && cqs dead --json 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print(f'  PASS ({r[\"count\"]} dead, {r[\"possibly_pub_count\"]} possibly-dead pub)')" 2>&1 || echo "  FAIL"
 ```
 
 ## Rules

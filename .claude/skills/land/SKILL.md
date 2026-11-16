@@ -44,7 +44,7 @@ Background this (run_in_background) and do other work; the notification carries 
 
 8. On green: `powershell.exe -Command 'gh pr merge <N> -R jamie8johnson/cqs --squash --delete-branch'`, then confirm `gh pr view <N> --json state` == MERGED.
 9. **Verify every linked issue actually closed** (`gh issue view <N> --json state`); close manually with a PR pointer if GitHub missed it. "Partially addresses" PRs: comment the remaining scope on the issue instead.
-10. Cleanup: `cd /mnt/c/Projects/cqs && git pull origin main --ff-only`, `git worktree remove <path> --force`, `git branch -D <branch>`, `cqs index` (inotify misses bulk git ops on /mnt/c).
+10. Cleanup, once step 8 showed MERGED: `cd /mnt/c/Projects/cqs && git pull origin main --ff-only`, `git worktree remove <path> --force`, `git branch -D <branch>`, `rm -rf /home/user001/.cargo-target/<branch-dir>` (the lane's build folder, by its full path typed out: `<branch-dir>` is the branch name with each `/` replaced by `-`; no shell variable and no command substitution in this path; a path that ends in `/` is wrong; the folder is outside the worktree, so `git worktree remove` leaves it; never `/home/user001/.cargo-target/cqs`, the main checkout's build folder), `cqs index` (inotify misses bulk git ops on /mnt/c).
 
 ## On CI failure
 
