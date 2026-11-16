@@ -48,12 +48,12 @@ Return your findings the way your dispatch prompt names. The audit workflow (`.c
 - **Introduced by:** the PR, from `git blame` or `git log -L`; or "before the last audit" (the last row of `docs/audit-ledger.md` names that commit); or `unknown` with why (a missing thing has no blame line)
 ```
 
-Where your dispatch asks for findings through a form that has no field for the last two (the audit workflow's form has none), put them at the end of the description. A fix with no check returns: the HNSW index went three months unused because nothing checked that `search()` called it (`CLAUDE.md` "Completion Checklist").
+Where your dispatch asks for findings through a form, put the last two in its fields for them (the audit workflow's form names them `catching_check` and `introduced_by`), or at the end of the description when the form has none. A fix with no check returns: the HNSW index went three months unused because nothing checked that `search()` called it (`CLAUDE.md` "Completion Checklist").
 
 ## Rules
 
 - Read prior audit findings first — skip anything already reported
-- Read archived triage files (`docs/audit-triage-v*.md`) — skip anything already triaged
+- Read the triage of the previous run: the file in the "Triage file" column of the last row of `docs/audit-ledger.md`, read as committed (`git show HEAD:<that path>`) — skip anything already triaged
 - Use cqs tools for exploration, not just raw file reads
 - Report findings, do NOT fix them
 - A finding that rests on an absence ("no test covers it", "no caller checks this") names the search, what it covered (lib, bins, tests, feature-gated code, doctests, non-Rust files) and one known case the same search finds; without the known case, write it as unchecked. `cqs dead` gives a confident absence only with the `dead` verdict (`CLAUDE.md` "Result trust").
