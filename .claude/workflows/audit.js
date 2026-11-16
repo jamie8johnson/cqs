@@ -1,16 +1,15 @@
 export const meta = {
   name: 'audit',
-  description: '16-category code-audit fan-out (one parallel stage) + a synthesize stage that triages and writes the findings/triage files',
+  description: '16-category code-audit fan-out (one parallel stage), a synthesize stage that triages and writes the findings/triage files, and a disposition stage that prepares checked fix specs and issue drafts',
   whenToUse:
-    'The discovery + synthesis half of the /audit skill. Runs all 16 audit categories as independent auditors in a single parallel stage, then a synthesize agent dedups/clusters, buckets into P1-P4 (by the difficulty x impact the auditors return), and WRITES docs/audit-findings.md + docs/audit-triage.md. The orchestrator still reviews the triage (the cornerstone P1-vs-P2 call) and owns fix-prompt generation/review + the serialized landing. Optional args.churn = a string of recently-changed areas to scrutinize.',
-  phases: [{ title: 'Audit' }, { title: 'Synthesize' }],
+    'The discovery, synthesis and disposition part of the /audit skill. Runs all 16 audit categories as independent auditors in a single parallel stage, then a synthesize agent dedups/clusters, buckets into P1-P4 (by the difficulty x impact the auditors return), and WRITES docs/audit-findings.md + docs/audit-triage.md; then a disposition stage turns each auto-fix row into a fix spec that a second agent checks against the source, and each issue row into an issue draft. The orchestrator still reviews the triage (the cornerstone P1-vs-P2 call) and keeps the gated acts: landing the verified fixes and filing the issues. Optional args.churn = a string of recently-changed areas to scrutinize (default: the commits since the last row of docs/audit-ledger.md); optional args.implement = true also applies each verified fix on a branch in a worktree.',
+  phases: [{ title: 'Audit' }, { title: 'Synthesize' }, { title: 'Disposition' }],
 }
 
-// Auditors run on the review/judge model. Per the 2026-06-12 fable US-export
-// disable that is opus for now — flip AUDITOR_MODEL back to 'fable' when it is
-// restored. Security is ALWAYS opus: fable's cyber classifiers risk a mid-run
+// Auditors run on the review/judge model, fable (CLAUDE.md "Agent Teams", the
+// model split). Security is ALWAYS opus: fable's cyber classifiers risk a mid-run
 // refusal that would kill that category's coverage for the whole audit.
-const AUDITOR_MODEL = 'opus'
+const AUDITOR_MODEL = 'fable'
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -26,9 +25,11 @@ const FINDINGS_SCHEMA = {
           location: { type: 'string', description: 'file:line(s) or symbol' },
           description: { type: 'string', description: 'What is wrong + why it matters; cite the code you read' },
           suggested_fix: { type: 'string' },
+          catching_check: { type: 'string', description: 'The check that would have caught it: what check, where it would live (a test, a lint, a CI step, a skill step), and when it runs' },
+          introduced_by: { type: 'string', description: 'The PR that introduced it, from git blame or git log -L; or "before the last audit" (the last row of docs/audit-ledger.md names that commit); or "unknown: <why>" (a missing thing has no blame line)' },
           existing_issue: { type: 'string', description: 'open issue # if this overlaps one, else empty' },
         },
-        required: ['title', 'difficulty', 'impact', 'location', 'description', 'suggested_fix'],
+        required: ['title', 'difficulty', 'impact', 'location', 'description', 'suggested_fix', 'catching_check', 'introduced_by'],
       },
     },
     cleared: { type: 'string', description: 'Brief note on what was examined and found clean (the adversarial refutation)' },
@@ -57,12 +58,14 @@ const CATEGORIES = [
   ['Test Coverage (happy path)', 'Missing tests for high-caller public functions, untested modules, integration-test gaps, weak/meaningless assertions (assert!(true)-shaped, assert-no-panic but not the result).', 'Run `cqs health --json` (untested hotspots); find high-caller public fns with no direct test + assertions that do not bite.'],
 ]
 
-const churn = (typeof args === 'object' && args && args.churn) ? String(args.churn) : 'Scrutinize the most recently-changed subsystems hardest (check `git log --oneline -30` and the newest modules).'
+const churn = (typeof args === 'object' && args && args.churn) ? String(args.churn) : 'Scrutinize hardest the subsystems changed since the last audit: the last row of `docs/audit-ledger.md` names the commit it audited; read `git log --first-parent --oneline <that commit>..HEAD` and the newest modules.'
+
+const PREVIOUS_TRIAGE = 'the triage of the previous run: the file in the "Triage file" column of the last row of `docs/audit-ledger.md`, read as committed (`git show HEAD:<that path>`, since this run writes a new `docs/audit-triage.md`)'
 
 const COMMON = `Repo: cqs (Rust semantic code-search, cwd is the repo root). AUDIT MODE IS ON — examine code DIRECTLY, do not trust notes; cqs excludes notes while audit-mode is on. Be skeptical and concrete: every finding must cite the actual code at a real file:line you READ, not a guess.
 
 Dedup discipline:
-- Read the most recent archived triage (the highest-version \`docs/audit-triage-v*.md\` — \`ls\` to find it) and skim older titles — SKIP anything already triaged/fixed there.
+- Read ${PREVIOUS_TRIAGE}, and skim the titles of older triage files — SKIP anything already triaged/fixed there.
 - Cross-check against open issues (\`gh issue list\` via PowerShell if needed). If a finding overlaps one, set existing_issue and only report if there is something NEW.
 
 Churn focus: ${churn}
@@ -85,14 +88,21 @@ const results = await parallel(
       label: `audit:${cat}`,
       phase: 'Audit',
       schema: FINDINGS_SCHEMA,
-    }).then((r) => ({ cat, ...r }))
+    }).then((r) => (r ? { cat, ...r } : null))
   )
 ).then((rs) => rs.filter(Boolean))
 
 const findings = results.flatMap((r) => (r.findings || []).map((f) => ({ category: r.cat, ...f })))
-const byCategory = results.map((r) => ({ category: r.cat, count: r.findings?.length || 0, cleared: r.cleared }))
+// A category whose auditor returned nothing (agent() gives null when a subagent
+// dies on a terminal error, and parallel() gives null for a thunk that throws)
+// is recorded as not run: never as a category with 0 findings.
+const notRun = CATEGORIES.map(([cat]) => cat).filter((cat) => !results.some((r) => r.cat === cat))
+const byCategory = CATEGORIES.map(([cat]) => {
+  const r = results.find((x) => x.cat === cat)
+  return r ? { category: cat, count: r.findings?.length || 0, cleared: r.cleared } : { category: cat, not_run: true }
+})
 const total = findings.length
-log(`audit discovery: ${total} findings across ${results.length} categories`)
+log(`audit discovery: ${total} findings across ${results.length} categories${notRun.length ? `; NOT RUN (no result, not 0 findings): ${notRun.join(', ')}` : ''}`)
 
 // Deterministic first-pass triage from the (difficulty x impact) the auditors
 // already return. P1 easy+high / P2 medium+high / P3 easy+(low|med) / P4 the
@@ -136,18 +146,18 @@ const TRIAGE_SCHEMA = {
   },
   required: ['summary', 'rows'],
 }
-const synthPrompt = `You are the audit synthesizer for the cqs repo (cwd is the repo root). The 16-category discovery fan-out produced these ${total} findings (each with a deterministic proposed_tier you should REFINE, not blindly accept):
+const synthPrompt = `You are the audit synthesizer for the cqs repo (cwd is the repo root). The discovery fan-out produced these ${total} findings from ${results.length} of the 16 categories${notRun.length ? ` (NOT RUN, their auditor returned no result: ${notRun.join(', ')}; name each in the triage summary as not run, never as a category with 0 findings)` : ''} (each with a deterministic proposed_tier you should REFINE, not blindly accept):
 
 ${JSON.stringify(proposed)}
 
 Do, in order:
-1. Stamp the version (from Cargo.toml \`version\`) and today's date (\`date +%Y-%m-%d\`).
-2. DEDUP / CLUSTER: merge same-root-cause findings across categories into one row (note the merge); drop any that re-state an already-fixed item in the latest archived triage \`docs/audit-triage-v1.42.0.md\`.
+1. Stamp the version (from Cargo.toml \`version\`), today's date (\`date +%Y-%m-%d\`) and the commit audited (\`git rev-parse --short HEAD\`).
+2. DEDUP / CLUSTER: merge same-root-cause findings across categories into one row (note the merge); drop any that re-state an already-fixed item in ${PREVIOUS_TRIAGE}. If that file is not in HEAD, say so in the summary and carry nothing forward in step 7.
 3. Assign stable IDs: \`<CAT>-V<version>-<n>\` (e.g. RM-V1.46.1-1). Pick a short category prefix.
 4. REFINE tiers with judgment (P1 easy+high → fix now; P2 medium+high → fix in batch; P3 easy+low/med → fix if time; P4 hard/low/already-tracked → issue or inline). Note when you override a proposed_tier and why. Findings with existing_issue stay P4 (tracked) unless there's a NEW slice.
 5. Assign each row a DISPOSITION route + fix_approach: \`auto-fix\` (the fix is mechanical AND verifiable — doc corrections, added tests, one-line warns, dead-code deletion, simple renames), \`issue\` (needs a human/judgment call — architecture, API shape, perf tradeoff, or hard), \`tracked\` (already an open GitHub issue — name it in fix_approach), \`inline\` (a trivial rider that lands with another row), or \`drop\` (not a real finding). ROUTE BY FIX-NATURE, NOT TIER: a high-impact finding whose fix is a judgment call (e.g. a panic-policy or API decision) is \`issue\`, never \`auto-fix\`, even at P1/P2.
-6. WRITE \`docs/audit-findings.md\`: a \`# Audit Findings — v<version>\` header, then \`## <Category>\` sections, each finding as \`#### <title>\` + Difficulty/Impact, Location, Description, Suggested fix (bullets). Overwrite the file.
-7. WRITE \`docs/audit-triage.md\`: \`# Audit Triage (v<version>)\` + date, a Summary-by-priority count table, then \`## P1\`/\`## P2\`/\`## P3\`/\`## P4\` tables with columns \`| ID | Finding | Location | Route | Status |\` (Status starts "open"). Then a \`## Carried forward from v1.42.0\` section: read \`docs/audit-triage-v1.42.0.md\`'s still-open items, spot-grep the ambiguous ones against current main, list the survivors as CF-P2/CF-P3 — and explicitly flag that full carry-forward reconciliation against all PRs since v1.42.0 is the orchestrator's to confirm.
+6. WRITE \`docs/audit-findings.md\`: a \`# Audit Findings — v<version>\` header, then \`## <Category>\` sections, each finding as \`#### <title>\` + Difficulty/Impact, Location, Description, Suggested fix, Check that would have caught it (\`catching_check\`), Introduced by (\`introduced_by\`) (bullets). Overwrite the file.
+7. WRITE \`docs/audit-triage.md\`: \`# Audit Triage (v<version>)\` + date and the commit audited, a Summary-by-priority count table, then \`## P1\`/\`## P2\`/\`## P3\`/\`## P4\` tables with columns \`| ID | Finding | Location | Route | Status |\` (Status starts "open"). Then a \`## Carried forward\` section: read the still-open items of ${PREVIOUS_TRIAGE}, spot-grep the ambiguous ones against current main, list the survivors as CF-P2/CF-P3 — and explicitly flag that full carry-forward reconciliation against all PRs since the commit of the last ledger row is the orchestrator's to confirm.
 8. Use \`cat > file <<'EOF' ... EOF\` (heredoc) or the Write tool to write the files. Do NOT touch any source code.
 
 Return via StructuredOutput: a tight \`summary\` (per-tier counts, P1+P2 titles+IDs, dedup merges, files-written confirmation) AND the \`rows\` array (one per triaged row: id, category, title, location, tier, route, fix_approach).`
