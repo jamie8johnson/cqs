@@ -4,7 +4,7 @@ description: Trust-boundary security audit of cqs — fans out unbiddable-audito
 disable-model-invocation: true
 ---
 
-# Red Team Audit
+# Boundary Probe
 
 Trust-boundary security audit — attacker mindset, attacks RUN against the local binary, every finding pinned as a regression guard.
 

@@ -36,7 +36,7 @@ For the strongest real survivor: write the **killing test** — a `#[test]` (or 
 
 ## cargo-mutants process discipline (learned the hard way)
 
-- **One cargo-mutants run per private `CARGO_TARGET_DIR` at a time.** Two concurrent runs collide on `mutants.out`/the target dir and corrupt each other. `export CARGO_TARGET_DIR=/home/user001/.cargo-target/adequacy-<scope>`.
+- **One cargo-mutants run per private `CARGO_TARGET_DIR` at a time.** Two concurrent runs collide on `mutants.out`/the target dir and corrupt each other. Put `CARGO_TARGET_DIR=/home/user001/.cargo-target/adequacy-<scope>` in front of each cargo command you run, `cargo mutants` included: each shell command starts a new shell, so an `export` does not last to the next command.
 - **A long unscoped run can outlive and clobber its own worktree** — keep every run bounded (one file, tiny test filter); if a file's full run would exceed ~15 min, do 3-4 hand-mutations on its most logic-dense functions instead.
 - **Clean up after**: `mutants.out` and the (multi-GB) target dir.
 - Tests over CLI/daemon code often live in the **bin** crate, not `--lib` (`cargo test --features cuda-index --bin cqs <filter>`).

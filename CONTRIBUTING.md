@@ -87,7 +87,7 @@ What a commit costs: the first commit after a change to `xtask/` builds the task
 ## Code Style
 
 - Run `cargo fmt` before committing
-- No clippy warnings: `cargo clippy -- -D warnings`
+- No clippy warnings: `cargo clippy --all-targets -- -D warnings` (CI runs clippy with `--all-targets`; without it, tests, benches and examples go unchecked)
 - Add tests for new features
 - Follow existing code patterns
 
@@ -251,7 +251,7 @@ so parallel tests never collide on disk.
 3. Ensure all checks pass:
    ```bash
    cargo test --features cuda-index
-   cargo clippy --features cuda-index -- -D warnings
+   cargo clippy --all-targets --features cuda-index -- -D warnings
    cargo fmt --check
    ```
 4. Update documentation if needed (README, CLAUDE.md)
@@ -532,7 +532,7 @@ xtask/          - Developer tasks (see Developer tools): a crate of its own, wit
     update-tears/ - Session state capture for context persistence
     release/      - Version bump, changelog, publish workflow
     audit/        - 16-category code audit with parallel agents
-    red-team/     - Adversarial security audit (attacker mindset, PoC-required)
+    boundary-probe/ - Trust-boundary security audit (attacker mindset, PoC-required)
     pr/           - WSL-safe PR creation
     cqs-bootstrap/ - New project setup with tears infrastructure
     cqs/          - Unified CLI dispatcher (search, graph, quality, notes, infrastructure)
@@ -546,6 +546,10 @@ xtask/          - Developer tasks (see Developer tools): a crate of its own, wit
     investigate/  - Investigation workflow: structured code exploration
     check-my-work/ - Post-implementation verification checklist
     cqs-verify/   - Exercise all command categories, catch regressions
+    land/         - Land a ready branch: push, PR, pinned CI watch, squash-merge, cleanup
+    idle/         - Idle work loop: enumerate issues and triage rows, pick, dispatch
+    archeo/       - Comment-archaeology sweep: TODO/FIXME language into issues or trivial fixes
+    recall-gate/  - Retrieval recall gate with dead-gold triage and a binary A/B test
 ```
 
 **Key design notes:**

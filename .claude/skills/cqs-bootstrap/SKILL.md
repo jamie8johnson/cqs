@@ -101,7 +101,7 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
    - `idle` — the idle work loop: enumerate issues + triage rows, classify, pick, dispatch
    - `archeo` — comment-archaeology sweep: TODO/FIXME/deferral language → issues or trivial fixes
    - `recall-gate` — retrieval recall gate with dead-gold triage + binary A/B regression test
-   - `red-team` — adversarial testing against cqs
+   - `boundary-probe` — trust-boundary security audit of cqs (unbiddable-auditor fan-out, PoC-required)
    - `audit` — code audit with parallel category agents
    - `pr` — WSL-safe PR creation (always --body-file)
    - `release` — version bump, changelog, publish, GitHub release
@@ -118,6 +118,11 @@ mentions = ["docs/notes.toml", "PROJECT_CONTINUITY.md"]
    - `seam-auditor` — composition adversary (finds two correct units whose join lies)
    - `property-auditor` — property-based testing lane (proptest: invariant + generator finds the input examples miss)
    - `interleaving-auditor` — concurrency adversary (loom/stress: finds the schedule that breaks a shared invariant)
+   - `sweep-auditor` — completeness adversary (finds the member of a should-be-uniform set that diverged)
+   - `legacy-state-auditor` — version adversary (finds persisted state from a past version that current code mishandles)
+   - `unbiddable-auditor` — trust-boundary auditor (runs a crafted input against the local binary for a PoC; always opus)
+   - `adequacy-auditor` — meta adversary (mutation testing: finds tests whose assertions do not bite)
+   - `spec-fidelity-auditor` — oracle adversary (finds a test whose assertion contradicts an external contract)
 
 ### Phase 3: cqs Init & Index
 

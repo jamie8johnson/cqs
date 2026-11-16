@@ -11,7 +11,7 @@ Standing directive: there is no "waiting" state. Between lane completions, after
 
 ```bash
 powershell.exe -Command 'gh issue list -R jamie8johnson/cqs --state open --limit 50 --json number,title,labels'
-grep -c '| open |' docs/audit-triage.md   # plus the rows themselves if any
+grep -nE '\| open[^|]*\|$' docs/audit-triage.md   # the open rows: a Status cell that starts with "open", "open (#N)" included
 ```
 
 ## 2. Classify

@@ -13,7 +13,7 @@ Run `pwd` first. Work ONLY inside your worktree; never use absolute paths into /
 
 ## Process
 
-1. Create the branch named in your prompt. `export CARGO_TARGET_DIR=/home/user001/.cargo-target/<branch>` — NEVER share the default target dir (stale-binary races with parallel lanes).
+1. Create the branch named in your prompt. Put `CARGO_TARGET_DIR=/home/user001/.cargo-target/<branch-dir>` in front of every cargo command you run, and in front of `git commit`, whose pre-commit hook runs cargo when a file under `src/`, `README.md` or a manifest is staged; `<branch-dir>` is the branch name with each `/` replaced by `-`. Each shell command starts a new shell, so an `export` does not last to the next command. NEVER share the default target dir (stale-binary races with parallel lanes).
 2. Scout before editing: `cqs scout`/`cqs impact`/`cqs callers` (read-only). DISTRUST task descriptions' file:line references — the codebase moves fast; read current code before acting.
 3. Implement. Project conventions: no `unwrap()` outside tests; `thiserror` lib / `anyhow` CLI; every new public function gets a `tracing::info_span!` entry + `tracing::warn!` on error fallbacks; new dual-surface commands follow the command-core pattern (core + typed Args/Output + thin adapters + parity test, both surfaces in the same PR).
 4. Code comments state invariants only — NEVER audit IDs, issue/PR numbers, or "fixed by" provenance. The CI lint scans comments (string literals are inert) and diffs the merge ref, so moved comment lines count as added.
