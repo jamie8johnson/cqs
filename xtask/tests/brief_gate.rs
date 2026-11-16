@@ -536,6 +536,64 @@ fn a_failing_brief_is_refused_with_the_lints_lines() {
 }
 
 #[test]
+fn a_root_with_a_trailing_slash_holds_its_files() {
+    let fx = Fixture::new();
+    let root = PathBuf::from(format!("{}/", fx.root.display()));
+    let (code, out) = gate(&fx.sb, Some(&root), hook_json(&naming(&fx.fail())));
+    assert_eq!(code, 1);
+    assert_eq!(out, refused_untagged());
+}
+
+#[test]
+fn a_missing_file_in_a_sibling_folder_of_the_root_is_outside() {
+    // `<tmp>/briefs2` starts with the text `<tmp>/briefs` but is not under
+    // it: the comparison is by path components.
+    let fx = Fixture::new();
+    let sibling = fx.sb.outside.join("briefs2");
+    fs::create_dir_all(&sibling).expect("create sibling");
+    for path in [sibling.join("nosuch.md"), sibling.join("x").join("a.md")] {
+        let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&path)));
+        assert_eq!(code, 2, "{}", path.display());
+        assert_eq!(out, OUTSIDE, "{}", path.display());
+    }
+}
+
+#[test]
+fn git_not_on_the_path_is_git_failed() {
+    let fx = Fixture::new();
+    let empty = fx.sb.outside.join("empty-bin");
+    fs::create_dir_all(&empty).expect("create folder");
+    let mut cmd = gate_cmd(&fx.sb, None);
+    cmd.env("PATH", &empty);
+    let (code, out) = run_with_input(cmd, hook_json(&naming(&fx.fail())), Duration::from_secs(10));
+    assert_eq!(code, 2);
+    assert_eq!(out, "brief-gate: not checked: git failed\n");
+}
+
+#[test]
+fn a_root_that_is_not_a_folder_comes_before_two_task_file_lines() {
+    let fx = Fixture::new();
+    let fail = fx.fail();
+    let prompt = format!("{}{}", naming(&fail), naming(&fail));
+    let (code, out) = gate(&fx.sb, Some(&fail), hook_json(&prompt));
+    assert_eq!(code, 2);
+    assert_eq!(out, "brief-gate: not checked: brief root is not a folder\n");
+}
+
+#[test]
+fn a_folder_named_like_a_brief_is_refused_as_unreadable() {
+    let fx = Fixture::new();
+    let folder = fx.root.join("x.md");
+    fs::create_dir_all(&folder).expect("create folder");
+    let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&folder)));
+    assert_eq!(code, 1);
+    assert_eq!(
+        out,
+        format!("{UNREADABLE}brief-lint: not checked: file unreadable\n")
+    );
+}
+
+#[test]
 fn a_refusal_forwards_fifty_lines_then_a_count_then_the_summary() {
     // Lines 4 to 63 are 60 untagged premises, lines 64 and 65 two premises
     // tagged unchecked: 62 lines before the lint's summary.

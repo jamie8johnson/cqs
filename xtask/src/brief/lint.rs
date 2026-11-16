@@ -1008,6 +1008,68 @@ mod tests {
     }
 
     #[test]
+    fn a_fence_closes_only_on_a_run_as_long_and_nothing_after_it() {
+        // Text after the run: no close, so the heading stays fenced.
+        let text = PASS.replace(
+            "Paint it.\n",
+            "Paint it.\n```\n``` x\n## Decided judgment calls\n```\n",
+        );
+        assert_eq!(faults(&text), vec![]);
+        // A longer run closes, so the brief after it is read.
+        let text = PASS.replace("Paint it.\n", "Paint it.\n```\nx\n````\nText.\n");
+        assert_eq!(faults(&text), vec![]);
+        // Four spaces before the run: no close.
+        let text = PASS.replace(
+            "Paint it.\n",
+            "Paint it.\n```\nx\n    ```\n## Decided judgment calls\n```\n",
+        );
+        assert_eq!(faults(&text), vec![]);
+    }
+
+    #[test]
+    fn a_level_one_heading_ends_a_section() {
+        let text = PASS.replace(
+            "3. The paint is dry. [unchecked: not touched]\n",
+            "3. The paint is dry. [unchecked: not touched]\n# Notes\n- not a premise\n",
+        );
+        assert_eq!(faults(&text), vec![]);
+        let text = PASS.replace(
+            "## Stopping\n\nStop when it is blue.\n",
+            "## Stopping\n# Appendix\nStop when it is blue.\n",
+        );
+        assert_eq!(
+            faults(&text),
+            vec![(Some(18), Rule::EmptySection.id(), "Stopping")]
+        );
+    }
+
+    #[test]
+    fn branch_and_model_lines_inside_a_fence_are_not_read() {
+        let text = PASS.replace(
+            "Branch: `feat/knob`\nMODEL: any\n",
+            "```\nBranch: `feat/knob`\nMODEL: any\n```\n",
+        );
+        assert_eq!(
+            faults(&text),
+            vec![
+                (None, Rule::MissingBranch.id(), ""),
+                (None, Rule::MissingModel.id(), ""),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tag_with_no_closing_bracket_runs_to_the_end_of_the_item() {
+        let item = "2. The lever is green. [opened: f.txt all of it";
+        assert_eq!(faults(&with_premise(item)), vec![]);
+        let item = "2. The lever is green. [unchecked: a guess,\nall of it";
+        assert_eq!(faults(&with_premise(item)), vec![]);
+        assert_eq!(lint(&with_premise(item)).unchecked, vec![7, 9]);
+        let item = "2. The lever is green. [counted:";
+        assert_eq!(faults(&with_premise(item)), one(7, Rule::EmptyTag));
+    }
+
+    #[test]
     fn tags_do_not_nest() {
         // A bracket inside a tag is text of that tag: the inner opener is
         // no tag, so it neither saves the outer one, nor lists the item as
