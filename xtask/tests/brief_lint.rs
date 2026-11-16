@@ -14,7 +14,7 @@ use common::{assert_no_term, code_and_stdout, Sandbox};
 /// Keep equal to `BRIEF_MAX_BYTES` in `src/brief/lint.rs`.
 const BRIEF_MAX_BYTES: usize = 1 << 20;
 
-const USAGE: &str = "xtask: usage: xtask <private-scan|hooks-check|brief-lint> [args]\n";
+const USAGE: &str = "xtask: usage: xtask <private-scan|hooks-check|brief-lint|brief-gate> [args]\n";
 
 const UNCHECKED_11: &str = "brief-lint: line 11: unchecked premise\n";
 const OPENED_WHOLE_SET: &str = "opened-whole-set: premise says none, all, every or only and its tags are all opened: count it, mark it unchecked, or put a word quoted from a file in inline code";

@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
 
-const USAGE: &str = "xtask: usage: xtask <private-scan|hooks-check|brief-lint> [args]";
+const USAGE: &str = "xtask: usage: xtask <private-scan|hooks-check|brief-lint|brief-gate> [args]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         Some("private-scan") => private_scan::run(&rest),
         Some("hooks-check") => hooks_check::run(&rest),
         Some("brief-lint") => brief::lint::run(&rest),
+        Some("brief-gate") => brief::gate::run(&rest),
         // The task name is never echoed: it is an argument's text.
         _ => {
             let _ = writeln!(std::io::stdout().lock(), "{USAGE}");
