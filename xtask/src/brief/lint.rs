@@ -983,6 +983,20 @@ mod tests {
     }
 
     #[test]
+    fn tags_do_not_nest() {
+        // A bracket inside a tag is text of that tag: the inner opener is
+        // no tag, so it neither saves the outer one, nor lists the item as
+        // unchecked, nor counts as an empty tag.
+        let item = "2. All knobs are round. [opened: f.txt:3 [counted: `ls`]]";
+        assert_eq!(faults(&with_premise(item)), one(7, Rule::OpenedWholeSet));
+        let item = "2. The lever is green. [opened: f.txt:3 [unchecked: guess]]";
+        assert_eq!(lint(&with_premise(item)).unchecked, vec![8]);
+        assert_eq!(faults(&with_premise(item)), vec![]);
+        let item = "2. The lever is green. [opened: [counted:]]";
+        assert_eq!(faults(&with_premise(item)), vec![]);
+    }
+
+    #[test]
     fn a_section_of_white_space_or_a_fence_alone_has_no_text() {
         for body in ["\t\n", "  \t \n", "```\nPaint it.\n```\n"] {
             let text = PASS.replace("Paint it.\n", body);
