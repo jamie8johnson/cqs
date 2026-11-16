@@ -33,4 +33,4 @@ Judgment call, biased by: user-stated priorities first; then highest-value-per-t
 
 ## 5. Loop
 
-On lane completion: land it, file its residuals, return to step 1. A red guard whose fix is not written yet stays on its branch: file an issue that names the branch and the test. Update tears when the board changes shape.
+On lane completion: land it, file its residuals, return to step 1. A red guard whose fix is not written yet stays on its branch: file an issue that names the branch and the test (a private security advisory when the guard is of a trust boundary, as `SECURITY.md` asks for sensitive issues). Update tears when the board changes shape.

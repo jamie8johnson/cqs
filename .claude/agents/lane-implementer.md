@@ -66,7 +66,7 @@ When the lane genuinely decomposes you may spawn subagents (foreground — you b
 
 Fields in this order; a field with nothing to say reads `none`.
 
-- `STATUS:` first line: `done`, `partial` or `blocked`. `done` means every statement of the brief is met and every gate that applies ran and passed; a check graded `PENDING CI` may stand beside `done` when it is named. Otherwise the status is `partial`, with what is unmet. `partial` and `blocked` are honest answers and are read as such.
+- `STATUS:` first line: `done`, `partial` or `blocked`. `done` means every statement of the brief is met and every gate that applies ran and passed; a check graded `PENDING CI` may stand beside `done` when it is named. Otherwise the status is `partial`, with what is unmet, or `blocked`, with what blocks. `partial` and `blocked` are honest answers and are read as such.
 - `COMMIT:` the commit id or ids on your branch.
 - `CHANGES:` each file and what it serves; why, where judgment was involved.
 - `TESTS:` each test added or changed with its red run quoted, the counts of the targeted runs, the baseline failures, the bite check.
