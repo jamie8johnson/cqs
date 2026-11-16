@@ -19,6 +19,8 @@ use super::lint;
 
 /// Largest hook input read, in bytes.
 pub const HOOK_INPUT_MAX_BYTES: u64 = 8 << 20;
+/// Most lines of `brief-lint` a refusal forwards before the lint's summary.
+pub const REFUSAL_MAX_LINES: usize = 50;
 
 const TASK_FILE_LINE: &str = "Your task file is ";
 const ROOT_VAR: &str = "CQS_BRIEF_ROOT";
@@ -241,8 +243,25 @@ fn verdict(prompt: &str, root: impl FnOnce() -> Result<PathBuf, NotChecked>) -> 
     if report.faults.is_empty() {
         Verdict::Pass
     } else {
-        Verdict::Refused(Refused::Faults, report.lines())
+        Verdict::Refused(Refused::Faults, bounded(report.lines()))
     }
+}
+
+/// The lint's lines as a refusal forwards them: at most `REFUSAL_MAX_LINES`
+/// of the lines before the summary (faults first, then unchecked premises,
+/// as the lint orders them), then one line that counts the rest, then the
+/// summary, which carries the full counts.
+fn bounded(mut lines: Vec<String>) -> Vec<String> {
+    let summary = lines.pop();
+    let more = lines.len().saturating_sub(REFUSAL_MAX_LINES);
+    lines.truncate(REFUSAL_MAX_LINES);
+    if more > 0 {
+        lines.push(format!(
+            "brief-gate: {more} more lines of brief-lint not shown"
+        ));
+    }
+    lines.extend(summary);
+    lines
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -289,6 +308,23 @@ mod tests {
         let prompt =
             "Do this.\n  \tYour task file is /a.md\nyour task file is /b.md\n Your task file is";
         assert_eq!(task_file_lines(prompt), ["/a.md"]);
+    }
+
+    #[test]
+    fn a_refusal_forwards_at_most_fifty_lines_before_the_summary() {
+        let lines = |n: usize| -> Vec<String> {
+            (0..n)
+                .map(|i| format!("l{i}"))
+                .chain(std::iter::once("s".to_owned()))
+                .collect()
+        };
+        assert_eq!(bounded(lines(REFUSAL_MAX_LINES)), lines(REFUSAL_MAX_LINES));
+        let mut want = lines(REFUSAL_MAX_LINES);
+        want.pop();
+        want.push("brief-gate: 1 more lines of brief-lint not shown".to_owned());
+        want.push("s".to_owned());
+        assert_eq!(bounded(lines(REFUSAL_MAX_LINES + 1)), want);
+        assert_eq!(REFUSAL_MAX_LINES, 50);
     }
 
     #[test]

@@ -536,6 +536,32 @@ fn a_failing_brief_is_refused_with_the_lints_lines() {
 }
 
 #[test]
+fn a_refusal_forwards_fifty_lines_then_a_count_then_the_summary() {
+    // Lines 4 to 63 are 60 untagged premises, lines 64 and 65 two premises
+    // tagged unchecked: 62 lines before the lint's summary.
+    let mut brief = "Branch: `b`\nMODEL: m\n## Premises\n".to_owned();
+    for _ in 0..60 {
+        brief.push_str("- p\n");
+    }
+    brief.push_str("- q [unchecked: u]\n- r [unchecked: u]\n");
+    brief.push_str("## Task statements\nx\n## Decided judgment calls\nx\n## Stopping\nx\n");
+    let fx = Fixture::new();
+    let path = fx.root.join("many.md");
+    fs::write(&path, brief).expect("write brief");
+    let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&path)));
+    let mut want = "brief-gate: refused: the task file does not pass brief-lint\n".to_owned();
+    for line in 4..54 {
+        want.push_str(&format!(
+            "brief-lint: line {line}: untagged-premise: premise has no [counted: ], [opened: ] or [unchecked: ] tag\n"
+        ));
+    }
+    want.push_str("brief-gate: 12 more lines of brief-lint not shown\n");
+    want.push_str("brief-lint: summary: faults=60 unchecked=2\n");
+    assert_eq!(code, 1);
+    assert_eq!(out, want);
+}
+
+#[test]
 fn a_passing_brief_passes_silently() {
     let fx = Fixture::new();
     let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&fx.pass())));
