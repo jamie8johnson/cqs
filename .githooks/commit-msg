@@ -1,0 +1,23 @@
+#!/bin/sh
+# commit-msg hook: private-term scan of the commit message file git passes
+# as $1 (xtask/). Its own build folder keeps it from waiting on a build of
+# the main crate. Exit 1 stops the commit; exit 2 (not checked) and a scan
+# that could not run print a line and let it go on.
+
+top="$(git rev-parse --show-toplevel)"
+scan_out="$(cargo run --quiet --manifest-path "$top/xtask/Cargo.toml" \
+    --target-dir "$top/xtask/target" --locked -- private-scan --message "$1" 2>/dev/null)"
+case $? in
+    0|2)
+        printf '%s\n' "$scan_out"
+        ;;
+    1)
+        printf '%s\n' "$scan_out"
+        echo "Commit stopped: private-scan found a private term in the commit message."
+        exit 1
+        ;;
+    *)
+        echo "private-scan: not checked: could not run"
+        ;;
+esac
+exit 0

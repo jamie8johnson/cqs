@@ -57,6 +57,7 @@ libonnxruntime_providers_*.so
 # skips them at runtime to prevent indexing duplicated source trees.
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
 
 # Reranker V2 retrain artifacts (large jsonl, train weights live in ~/training-data/)
 evals/reranker_v3/
