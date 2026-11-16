@@ -44,7 +44,11 @@ Return your findings the way your dispatch prompt names. The audit workflow (`.c
 - **Location:** file:line
 - **Description:** ...
 - **Suggested fix:** ...
+- **Check that would have caught it:** what check, where it would live (a test, a lint, a CI step, a skill step), and when it runs
+- **Introduced by:** the PR, from `git blame` or `git log -L`; or "before the last audit" (the last row of `docs/audit-ledger.md` names that commit); or `unknown` with why (a missing thing has no blame line)
 ```
+
+Where your dispatch asks for findings through a form that has no field for the last two (the audit workflow's form has none), put them at the end of the description. A fix with no check returns: the HNSW index went three months unused because nothing checked that `search()` called it (`CLAUDE.md` "Completion Checklist").
 
 ## Rules
 
@@ -52,6 +56,7 @@ Return your findings the way your dispatch prompt names. The audit workflow (`.c
 - Read archived triage files (`docs/audit-triage-v*.md`) — skip anything already triaged
 - Use cqs tools for exploration, not just raw file reads
 - Report findings, do NOT fix them
+- A finding that rests on an absence ("no test covers it", "no caller checks this") names the search, what it covered (lib, bins, tests, feature-gated code, doctests, non-Rust files) and one known case the same search finds; without the known case, write it as unchecked. `cqs dead` gives a confident absence only with the `dead` verdict (`CLAUDE.md` "Result trust").
 - **Spawning sub-scanners/verifiers**: for a broad category you may fan out subagents — one per sub-scope to scan in parallel, or one per candidate finding to confirm it reproduces before you report it (foreground). The stop conditions below bound the WHOLE lane (findings + tool calls across you and your subagents), and subagents report back to you — only YOU return or append the findings, keeping the format consistent.
 - **Worktree leakage guard (#1254)**: in a `.claude/worktrees/` worktree of this repo, `cqs` does NOT error — it detects the Cargo workspace root and the default-on overlay reflects *this* worktree's edits per-command (read each result's `_meta.overlay_graph` marker): `search` / `callers` / `callees` / `dead` are `"full"` (trust them directly — they reflect your worktree); `impact` is `"callers-only"` (direct callers reflect the worktree, the affected-tests / transitive / risk sections are parent-truth); `explain` / `similar` / `test-map` / `health` carry no overlay marker and reflect main's branch state. Trust the `"full"` commands; verify any finding resting on a parent-truth surface by reading the file at its relative path under CWD before reporting. Never cite or read absolute paths under `/mnt/c/Projects/cqs/...` — that's the documented leakage path. If `cqs` does error with "No cqs index found" (non-Cargo project worktree), refuse the task with a note that the worktree needs `cqs index` first.
 

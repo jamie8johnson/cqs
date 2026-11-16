@@ -27,7 +27,7 @@ A valid finding is exactly: **"function/branch X is covered by test(s) T, but mu
 
 1. **Pick a bounded, logic-dense module with EXISTING tests that LOOK thorough** — pure logic, runnable CPU-only (building links GPU libs but pure-logic tests don't hit the GPU at runtime; if a test loads a model/index, pick another module). Confirm its tests are green first. A module whose tests are mostly proptests is a prime target (weak properties are the richest vacuity).
 2. **Run cargo-mutants, scoped HARD.** `cargo install cargo-mutants` if absent. Scope to one file (`--file`) or a few functions (`--function`/`--re`) and constrain the test command to that module's filter — mutation reruns the test set **per mutant**, so an unscoped run takes hours.
-3. **Collect SURVIVORS** (mutants that did NOT fail a test). For each, judge: real adequacy gap (the test should have caught this behavior change) vs **equivalent mutant** (genuinely no observable change — discard) vs **genuinely untested** (no test routes through it — a coverage gap: not a primary finding, but route it to the appendix, don't discard).
+3. **Collect SURVIVORS** (mutants that did NOT fail a test). For each, judge: real adequacy gap (the test should have caught this behavior change) vs **equivalent mutant** (genuinely no observable change — discard) vs **genuinely untested** (no test routes through it — a coverage gap: not a primary finding, but route it to the appendix, don't discard). A survivor in a branch that no caller can reach today is not equivalent: call it unreachable today and report the branch as a dead-code finding.
 4. **Adversarial default:** assume a survivor is a real gap until you can argue it's equivalent.
 
 ## The durable deliverable (the killing test)
@@ -38,12 +38,16 @@ For the strongest real survivor: write the **killing test** — a `#[test]` (or 
 
 - **One cargo-mutants run per private `CARGO_TARGET_DIR` at a time.** Two concurrent runs collide on `mutants.out`/the target dir and corrupt each other. Put `CARGO_TARGET_DIR=/home/user001/.cargo-target/adequacy-<scope>` in front of each cargo command you run, `cargo mutants` included: each shell command starts a new shell, so an `export` does not last to the next command.
 - **A long unscoped run can outlive and clobber its own worktree** — keep every run bounded (one file, tiny test filter); if a file's full run would exceed ~15 min, do 3-4 hand-mutations on its most logic-dense functions instead.
-- **Clean up after**: `mutants.out` and the (multi-GB) target dir.
+- **Clean up after**: the (multi-GB) target dir, and `mutants.out` once its list of missed mutants is copied whole into your report. A survivor count with no kept list cannot be checked by anyone after you.
 - Tests over CLI/daemon code often live in the **bin** crate, not `--lib` (`cargo test --features cuda-index --bin cqs <filter>`).
 
 ## Gates
 
 `cargo fmt`; `cargo clippy --all-targets --features cuda-index` clean; the killing test + its module's tests green; provenance lint. If a mutant reveals a *production* bug (not just a weak test), STOP and report it as a finding — do not fix production under cover of "adding a test."
+
+**Show that the guard bites.** Quote one red run of it in your report, with the failing assertion's own message at the guard's line: on today's code if it found a defect, otherwise with the defect put in by hand and taken out again. A run that fails on an unwrap, a missing fixture or a compile error (other than a compile-time guard whose error names the unhandled member), or a guard that returns early when a model, a daemon or a GPU is absent, has shown nothing (the nightly suite's #1305 triage lists "model soft-skip" among its bug classes): a guard asserts the mechanism, and its result does not depend on a daemon that happens to be running. A guard that needs a model says so and is gated (`slow-tests`; the nightly fetches the model); it fails, not passes, when the model is missing. A guard of GPU-only code sits behind `cuda-index`, which no CI job builds, so it runs only on this machine: say so in your report. Where the expected result is known, assert it whole; a per-item property also asserts the result is non-empty when the input says it must be (the `rrf_fuse` case). For a guard that is red on today's code, write down the fix you expect, check that the guard passes with it, and take the fix out again. If you cannot get a red run (a harness that does not reproduce in its budget), or the fix is more than you can check in this run, say so and grade as not shown what you could not show (the red run, or the fix check): that is an honest result, and the orchestrator decides. A red guard is committed on your branch and lands in the same PR as its fix, never alone: PR CI runs only the default suite, so a red guard behind `slow-tests` or `#[ignore]` would merge and break the nightly, which includes both. Say so in your report, and the orchestrator files an issue that names the branch and the test; for a guard of a trust boundary it is a private security advisory, as `SECURITY.md` asks for sensitive issues, never a public issue.
+
+**Processes.** Stop only a process you started, by its PID; never `pkill -f`, `killall` or a `pgrep -f` pipe. Parallel lanes run the same command lines, so a pattern stops another lane's run.
 
 ## Output contract
 

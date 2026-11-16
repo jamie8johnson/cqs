@@ -189,6 +189,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 - **The `unbiddable-auditor` (trust-boundary probe) and the `/boundary-probe` skill run on `opus`, from any orchestrator.** Tested on Fable 5.2, 2026-11-12, one limited trial (same brief twice, on a small local script): with the auditor on Opus and a Fable 5.2 orchestrator the run finished clean and the session stayed on Fable; with the auditor itself on Fable the model's safeguards stopped it after two probes (`API Error: Fable 5.2's safeguards flagged this message`, details `[cyber]`, stop reason `refusal`), and the orchestrating session was not downgraded either. The July 2026 symptom (a probe orchestrated from Fable downgrading the whole session Fable→Opus, on Fable 5.1 per the user) did not reproduce. So: never set the auditor's model to `fable`; do not reword a brief to get a flagged run through; if a session downgrade does show again, record it and restore the old rule. Correctness auditors (seam/adequacy/interleaving/etc.) are unaffected. See [[feedback_no_boundary_probe_on_fable]].
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
+- A lane or auditor stops only a process it started, by its PID; never `pkill -f`, `killall` or a `pgrep -f` pipe. Parallel lanes run the same command lines, so a pattern stops another lane's run, and a pattern can match the shell that runs it. A service that a skill names (`systemctl --user stop cqs-watch`) is stopped by its unit, as the skill says.
 
 **Task workflow:**
 1. `spawnTeam` — create team
@@ -199,6 +200,8 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 6. `Teammate cleanup` to tear down
 
 **Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria.
+
+**A lane's brief has a fixed form**: premises (what it takes as true of the code, each tagged `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`; a premise that says none, all, every or only is counted or unchecked), task statements, decided judgment calls, a stopping line, a MODEL line and the branch; a shorter dispatch, such as an audit fix spec, is allowed, and the lane treats what it says of the code as unchecked (`.claude/agents/lane-implementer.md`, "What your brief holds"). A brief that is wrong about the code sends a lane to build on it: the audit's fix prompts are checked by a second agent, and 16 to 42% of them needed a fix (`.claude/skills/audit/SKILL.md` step 9).
 
 ## Custom Agents
 
@@ -223,6 +226,8 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 The seam/property/interleaving/sweep/legacy-state/spec-fidelity **sextet** are the *relational* orthogonally-shaped auditors of #1826 — each staffs a region the happy/sad-path unit suite is structurally blind to: seam=joins between units, property=the input space between examples, interleaving=schedules, sweep=the relation across a peer-set, legacy-state=old-bytes×new-code across a version boundary, spec-fidelity=the relation between a test's assertion and an external contract (the null of the meta-null — a wrong-but-tight test mutation rates maximally adequate). Two more orthogonal auditors sit beside them but are *enumerable* (independent findings, so they get `Agent`): **unbiddable** (the security axis — oracle is a trust boundary) and **adequacy** (the meta-null — does the suite's own assertion bite?). Their shared value test: each must find a bug class the example suite *cannot express*; if one only re-finds happy/sad bugs, it's the wrong shape. (Each proved it on its test-fire: sweep found the gather BFS-depth-clamp straggler #1771 missed; legacy-state guarded the v10→v31 migration chain the suite never built; adequacy found `rrf_fuse → vec![]` survive all 5 of its proptests; unbiddable ran `--overlay-root /etc` off the daemon socket and pinned the rejection; spec-fidelity convicted `context.rs`'s always-present-`injection_flags` test against SECURITY.md:83 — a green, mutation-rated-adequate test guarding a contract violation, its `read.rs` sibling asserting the *opposite* for the same field.)
 
 **Agent-tool grant/withhold principle.** Grant `Agent` (subagent spawning) to roles whose findings are *independent* — they decompose into parallel scans: the general `auditor` (per-sub-scope), `code-reviewer` (per-finding refuters), `unbiddable-auditor` (per-PoC verifiers), `adequacy-auditor` (per-surviving-mutant verifiers), `investigator`/`implementer`/`lane-implementer` (per-subtask). **Withhold it from the relational orthogonal auditors** (seam/property/interleaving/sweep/legacy-state/spec-fidelity): their findings *are* relations (a join, an input space, a schedule, a peer-set, a version boundary, a test-assertion-vs-contract contradiction) that only exist when one mind holds the whole thing — decompose them and the finding evaporates. The map parallelizes; the reduce doesn't. (Enumerable ≠ correctness-null: `unbiddable-auditor` and `adequacy-auditor` are orthogonal-shaped *and* get `Agent`, because their findings are independent — PoCs and surviving-mutants respectively — not a relation; the grant tracks decomposability, not family membership.) When you need to cover several independent families/boundaries, the orchestrator fans out one focused auditor per family — the auditor itself stays a leaf.
+
+**Guard-writing auditors run in their own worktree.** Dispatch property, sweep, legacy-state, interleaving and adequacy with `isolation: "worktree"`: they write guards into the checkout, and two writers in one checkout overwrite each other's files. The read-only ones (seam, spec-fidelity, code-reviewer) need none. (`unbiddable-auditor` writes guards too, but `/boundary-probe` has its six append to one findings file, `docs/audit-findings.md`, which a worktree each would split; dispatch them as that skill says.)
 
 **Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` (fable) before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
 
@@ -249,6 +254,8 @@ The configurable models disaster: `build_batched_with_dim()` existed and worked,
 
 6. **Update the roadmap.** Check off completed items in `ROADMAP.md`. Stale roadmaps cause duplicate work.
 
+7. **Back every absence claim.** "No other callers", "all N sites updated", "no test covers it": the claim names the search, what it covered (lib, bins, tests, feature-gated code, doctests, non-Rust files), one known case the same search finds, and its output or count; without the known case it is written as unchecked. A call-graph absence says which verdict or edge kinds it rests on ("Result trust" above). The orchestrator re-runs each absence claim of a lane's report before landing: one search for the old function would have listed the 20 callers of the configurable-models disaster above.
+
 ## Project Conventions
 
 - Rust edition 2021
@@ -257,6 +264,7 @@ The configurable models disaster: `build_batched_with_dim()` existed and worked,
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback
 - **GPU available** — always use `--features cuda-index` for cargo build/test/clippy. This is the default, not the exception. Env vars are in `~/.bashrc` (above the interactive guard). The legacy `gpu-index` name is preserved as an alias (#956 Phase A renamed it to make CUDA-specificity explicit), so existing scripts and muscle memory keep working.
+- A decisions record (`docs/plans/*-decisions.md`) binds a lane: a lane whose task contradicts one, where its brief does not say that it changes that record, stops on that part and reports it; a brief that changes a record says so in a statement.
 
 ## Documentation
 
@@ -317,6 +325,8 @@ cqs notes list --json
 Do NOT use values like 0.7 or 0.8. Pick the closest discrete value.
 
 Don't log activity - git history has that.
+
+A figure written to tears, a triage row or a PR body (a count, a test total, an eval number, a timing) carries how it is known: `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`; an eval number also names its fixture and whether that fixture's gold was pooled from cqs's own results. A figure with no command behind it cannot be re-run, only believed or doubted.
 
 ## Bootstrap (New Project)
 

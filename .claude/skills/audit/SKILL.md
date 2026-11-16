@@ -17,12 +17,14 @@ The discovery + synthesis + disposition phases now run as one reusable workflow,
 Workflow({ name: 'audit', args: { churn: '<recently-changed areas to scrutinize>' } })
 ```
 
+**Churn and the ledger.** `docs/audit-ledger.md` has one row per audit run. Before a run, take the last row's commit and pass as `churn` the areas changed by the commits of `git log --first-parent --oneline <that commit>..HEAD`, not a fixed window: the workflow's default looks at the last 30 commits, and 153 reached main after the last audited commit [counted: `git rev-list --count --first-parent c519bf9d..HEAD` at `db391d93`]. After the run, append its row (date, commit audited, what ran, the triage file) in the PR that carries the triage.
+
 - **Discovery** — all 16 categories in ONE parallel stage (auditors return structured findings; no team, no 2-batch split — the concurrency cap schedules them).
 - **Synthesize** — one agent dedups/clusters, triages P1–P4 (refining the deterministic difficulty×impact first-pass), assigns each row a disposition `route`, and WRITES `docs/audit-findings.md` + `docs/audit-triage.md`.
 - **Disposition** — per row: `auto-fix` → generate a fix-spec + adversarially verify it against source; `issue` → draft a title+body; `tracked`/`inline`/`drop` → skip. Gen/verify/draft agents are **read-only** (`Explore`) so prepare-mode can't mutate the tree. `args.implement=true` additionally runs worktree-isolated implementers on verified fixes.
 
 **The orchestrator (main loop) keeps the gated acts** — deliberately NOT in the workflow because they're irreversible / outward-facing / serialized to protected `main`:
-- Review the triage — the cornerstone P1-vs-P2 + accept/reject/route-override call.
+- Review the triage — the cornerstone P1-vs-P2 + accept/reject/route-override call. While there, for each finding introduced by a PR merged since the last audited commit (the auditor's "Introduced by"), add one line to the triage: did that PR's body claim what the finding disproves (a check passed, a set complete, retrieval unchanged)?
 - `/land` the verified fixes (serialized, CI-gated).
 - `gh issue create` the drafts, after dedup against open issues.
 
@@ -68,7 +70,7 @@ There are 16 categories split into 2 batches of 8. Each batch spawns 8 parallel 
    - Instruction to read archived triage files (e.g., `docs/audit-triage-v*.md`) — skip anything already triaged in prior audits
    - Instruction to read `docs/audit-findings.md` first — skip anything already reported by earlier batches in this audit
    - Instruction to append findings to `docs/audit-findings.md` **via bash heredoc append** (`cat >> docs/audit-findings.md <<'EOF' ... EOF`) — never Edit/Write on that file; 8 agents append concurrently and Edit fails with "file modified since read". This replaces the old per-category scratch-file + aggregation step: v1.42 ran 8 concurrent heredoc appenders with zero conflicts. (Initialize the findings file with a header before spawning so appends have a base.)
-   - Format: `## [Category]\n\n#### [Finding title]\n- **Difficulty:** easy | medium | hard\n- **Location:** ...\n- **Description:** ...\n- **Suggested fix:** ...`
+   - Format: `## [Category]\n\n#### [Finding title]\n- **Difficulty:** easy | medium | hard\n- **Location:** ...\n- **Description:** ...\n- **Suggested fix:** ...\n- **Check that would have caught it:** ...\n- **Introduced by:** the PR | before the last audit | unknown with why`
    - Use `subagent_type: "auditor"` when spawning — the auditor agent definition (`.claude/agents/auditor.md`) has cqs tools built in
 
 6. **Shutdown team** after all agents complete
