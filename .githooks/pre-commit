@@ -1,5 +1,26 @@
 #!/bin/sh
-# Pre-commit hook: cargo fmt check, Cargo.lock sync, env-var docs sync.
+# Pre-commit hook: private-term scan, cargo fmt check, Cargo.lock sync,
+# env-var docs sync.
+
+# private-scan --staged (xtask/). Its own build folder keeps it from waiting
+# on a build of the main crate. Exit 1 stops the commit; exit 2 (not
+# checked) and a scan that could not run print a line and let it go on.
+top="$(git rev-parse --show-toplevel)"
+scan_out="$(cargo run --quiet --manifest-path "$top/xtask/Cargo.toml" \
+    --target-dir "$top/xtask/target" --locked -- private-scan --staged 2>/dev/null)"
+case $? in
+    0|2)
+        printf '%s\n' "$scan_out"
+        ;;
+    1)
+        printf '%s\n' "$scan_out"
+        echo "Commit stopped: private-scan found a private term in the staged change."
+        exit 1
+        ;;
+    *)
+        echo "private-scan: not checked: could not run"
+        ;;
+esac
 
 echo "Running cargo fmt --check..."
 cargo fmt --check
@@ -10,11 +31,12 @@ if [ $? -ne 0 ]; then
 fi
 echo "Format check passed."
 
-# Check if Cargo.lock needs updating (only if Cargo.toml is staged)
-if git diff --cached --name-only | grep -q "Cargo.toml"; then
+# Check if Cargo.lock needs updating (only if a manifest of the root
+# workspace is staged; xtask/ keeps its own lock file).
+if git diff --cached --name-only | grep -qE '^(cqs-macros/)?Cargo\.toml$'; then
     echo "Checking Cargo.lock sync..."
     cargo check --quiet 2>/dev/null
-    if git diff --name-only | grep -q "Cargo.lock"; then
+    if git diff --name-only | grep -qE '^Cargo\.lock$'; then
         echo ""
         echo "Warning: Cargo.lock changed after cargo check."
         echo "Consider staging Cargo.lock: git add Cargo.lock"
@@ -26,11 +48,13 @@ fi
 # introduced) or README.md (where the env-var table lives). The
 # substring-match-vs-token-match fix is pinned by 8 sibling tests
 # inside the same test binary; any regression of the matcher itself
-# fails CI loudly.
+# fails CI loudly. The output is held in a variable so the test's own
+# exit status decides (a pipe into tail would report tail's).
 staged="$(git diff --cached --name-only)"
 if echo "$staged" | grep -qE '^src/.*\.rs$|^README\.md$|^tests/env_var_docs\.rs$'; then
     echo "Running cargo test --test env_var_docs..."
-    if ! cargo test --test env_var_docs --features gpu-index --quiet 2>&1 | tail -20; then
+    if ! docs_out="$(cargo test --test env_var_docs --features gpu-index --quiet 2>&1)"; then
+        printf '%s\n' "$docs_out" | tail -20
         echo ""
         echo "Error: env_var_docs test failed. Either:"
         echo "  - add the missing CQS_* var to the env-var table in README.md, or"

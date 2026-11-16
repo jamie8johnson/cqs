@@ -29,6 +29,8 @@ exclude = [
     "evals/",
     "samples/",
     "tools/",
+    # Developer tasks: a crate of its own with its own workspace and lock file.
+    "xtask/",
 ]
 
 [lints.rust]

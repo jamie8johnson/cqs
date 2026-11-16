@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.96"
+publish = false
+description = "Developer tasks for the cqs repository; not part of the published crate."
+
+# A workspace of its own: xtask is not a member of the root workspace, keeps
+# its own Cargo.lock, and stays out of the root package.
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"

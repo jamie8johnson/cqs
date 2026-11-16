@@ -31,11 +31,58 @@ Thank you for your interest in contributing to cqs!
    cargo run -- "your search query"
    ```
 
-5. Set up pre-commit hook (recommended):
+5. Set up the git hooks (recommended):
    ```bash
    git config core.hooksPath .githooks
    ```
-   This runs `cargo fmt --check` before each commit.
+   `pre-commit` runs the private-term scan of the staged change, then `cargo fmt --check`, then a `Cargo.lock` sync notice when `Cargo.toml` or `cqs-macros/Cargo.toml` is staged, then the env-var docs test when a staged path is a `.rs` file under `src/`, `README.md` or `tests/env_var_docs.rs`. `commit-msg` runs the private-term scan on the commit message. `cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- hooks-check` tells you whether git runs them. See [Developer tools](#developer-tools-xtask).
+
+## Developer tools (`xtask/`)
+
+Small developer tasks live in `xtask/`: a Rust binary crate with its own `[workspace]` table and its own `Cargo.lock`. It is not a member of the root workspace, the root package excludes it, and it has no runtime dependency outside the standard library (`tempfile` is its one dev-dependency, for the tests' temporary folders). Each task is one source file under `xtask/src/`. A task runs as:
+
+```bash
+cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task> [args]
+```
+
+CI's `xtask` job runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on `xtask/Cargo.toml`.
+
+### `private-scan`
+
+cqs is a public repository, and a push cannot be recalled. `private-scan` searches what is about to leave the machine for the terms of a private list kept outside the repository.
+
+**The list.** Read from the files that `CQS_PRIVATE_TERMS` names (one path, or several separated by `:`); when that variable is unset or empty, from every path that `git config --type=path --get-all cqs.privateTerms` prints (for example, set once with `git config --global --add cqs.privateTerms ~/.config/cqs/private-terms.txt`). There is no default path and no list in the repository. A list holds one term per line: a UTF-8 byte order mark at the start is dropped, each line is trimmed of ASCII whitespace (carriage returns included), and empty lines and lines that start with `#` are skipped. A term matches anywhere in the text, without regard to ASCII case. Several lists are one union.
+
+**Modes**, exactly one per run:
+
+| Mode | What it searches |
+|---|---|
+| `--staged` | the lines the staged change adds, and the new-side path of every staged entry but a deletion; a binary file is searched as its whole new blob |
+| `--message <file>` | a commit message file, comment lines included, up to a scissors line |
+| `--range <a>..<b>` | each commit of the range: the lines it adds, its new-side paths and its message; a merge is compared with its first parent, the first commit of a history with the empty tree |
+| `--files <path>...` | the named files, whole, and their paths |
+| `--text <literal>` | one literal, such as a branch name |
+
+**Output.** Everything goes to standard output. One line per place with a hit, `private-scan: hit: <mode> <place> terms=<n>`, where `<n>` counts the list terms that match there. A place is `<path>:<line>` for an added line (`<path>:binary` for a binary file's blob), with `<commit>:` before it in a range; `message:<line>` (again with `<commit>:` in a range); `text`; or `path <n>` for a path itself, its 1-based position among the mode's paths: git's order with deletions left out for `--staged` (`git diff --cached --name-only --find-renames --diff-filter=d`), the same per commit in a range, the argument order for `--files`. A path that holds a term or a byte outside printable ASCII is never printed, and its content places read `path <n>:<line>`; `--files` never prints its paths at all, since they are arguments. Then, on exit 0 and exit 1, one summary line: `private-scan: summary: hits=<n> not_checked=<m>`, with ` commits=<k>` in a range. An input the scan cannot check prints `private-scan: not checked: <reason>`, the reason from a fixed set, and the scan goes on to the next input. No line holds a term, the text that matched, a list's path or an argument's text, and git's standard error is captured and dropped. The one thing it cannot keep out: a term that is part of the scan's own fixed words (`private-scan`, `hit`, `summary` and the like). A place that would hold a term reads `withheld`, and a commit id that holds one reads `commit <k>`.
+
+**Limits.** 1 MiB for a list file; 8 MiB for an input read whole (a `--files` file, a message, a binary blob); 64 MiB for the output of one git command (one diff, or the commit list of a range). An input over its limit is not checked.
+
+**Exit codes.**
+- `0`: nothing found, and everything checked.
+- `1`: a hit, also when part of the input was not checked (a hit wins).
+- `2`: not checked, and no hit: no list configured, a list or an input file that cannot be read, a git command that failed, an input over its limit, or a usage error (the argument is not echoed).
+
+The hooks run `--staged` and `--message`. `--range`, `--files` and `--text` are for the landing routine (a pull request's commits, its body file, its branch name), which a later change wires to them; until then they are run by hand.
+
+### The hooks
+
+`.githooks/pre-commit` runs `private-scan --staged` before its other steps, and `.githooks/commit-msg` runs `private-scan --message` on the file git passes it. Both run the task through `cargo run --quiet` with `--target-dir xtask/target` under the top of the checkout, so a scan never waits on a build of the main crate or on its target folder. Exit 1 stops the commit and shows the scan's lines; exit 2 shows the scan's line and lets the commit go on; any other exit (no `cargo`, a failed build) prints `private-scan: not checked: could not run` and lets the commit go on.
+
+What a commit costs: the first commit after a change to `xtask/` builds the task (about 2 s; it has no dependencies to build). After that, each hook is a cargo freshness check (about 0.1 s) plus the scan, a few git commands (about half a second for a staged change of a dozen new files on a WSL `/mnt/c` checkout, less on a native file system). The rest of `pre-commit` is as before, except that the env-var docs test now stops the commit when it fails.
+
+### `hooks-check`
+
+`hooks-check` asks git where it runs hooks from for this checkout: `core.hooksPath` (a relative value is resolved against the top of the checkout), else git's own hooks folder. It exits 0 when every file of `.githooks/` has a byte-identical file of its name there. Otherwise it exits 1, naming that folder and the command that points git at `.githooks/` (`git config core.hooksPath .githooks`). Exit 2 means git or `.githooks/` could not be read.
 
 ## Code Style
 
@@ -473,6 +520,12 @@ src/
 examples/
   exp_level_scale.rs - HNSW level-scale sweep harness (the modify_level_scale(0.5) / LEVEL_SCALE_FACTOR tuning study: orphan rate + recall across M / ef-construction)
   bench_embed.rs     - Embedding throughput micro-benchmark
+xtask/          - Developer tasks (see Developer tools): a crate of its own, with its own [workspace] and Cargo.lock; not part of the published package
+  src/main.rs         - Task dispatch (`cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task>`)
+  src/private_scan.rs - `private-scan`: private-term scan of a staged change, a commit message, a commit range, named files or one literal
+  src/hooks_check.rs  - `hooks-check`: whether git runs this checkout's hooks from a folder that matches `.githooks/`
+  tests/              - Temporary-repository tests of both tasks, and of the `.githooks/` hooks with a stand-in `cargo`
+.githooks/      - `pre-commit` (private-term scan, fmt check, Cargo.lock notice, env-var docs test) and `commit-msg` (private-term scan of the message)
 .claude/
   skills/       - Claude Code skills (auto-discovered)
     groom-notes/  - Interactive note review and cleanup

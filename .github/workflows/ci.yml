@@ -164,3 +164,23 @@ jobs:
           name: windows-cargo-check-json
           path: cargo-check.json
           if-no-files-found: ignore
+
+  xtask:
+    # The developer-tools crate under xtask/: its own workspace and lock file,
+    # so it is formatted, linted and tested on its own manifest. Its tests run
+    # git and /bin/sh in temporary repositories.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xtask
+      - name: Format check
+        run: cargo fmt --check --manifest-path xtask/Cargo.toml
+      - name: Clippy
+        run: cargo clippy --manifest-path xtask/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path xtask/Cargo.toml --locked
