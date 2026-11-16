@@ -18,6 +18,12 @@ use common::Sandbox;
 
 const NOT_RUN_PREFIX: &str = "brief-gate: not checked: ";
 
+/// The gate's refusal of `fail-untagged-premise.md`.
+const REFUSED_UNTAGGED: &str = "brief-gate: refused: the task file does not pass brief-lint\n\
+     brief-lint: line 9: untagged-premise: premise has no [counted: ], [opened: ] or [unchecked: ] tag\n\
+     brief-lint: line 11: unchecked premise\n\
+     brief-lint: summary: faults=1 unchecked=1\n";
+
 fn checkout_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -205,18 +211,7 @@ fn the_documented_entry_runs_the_gate() {
     let names = |p: &Path| hook_json(&format!("Your task file is {}", p.display()));
 
     let refused = run_entry(&co, &top, Some(&top), Some(&co.root), names(&fail));
-    assert_eq!(
-        refused,
-        (
-            2,
-            String::new(),
-            "brief-gate: refused: the task file does not pass brief-lint\n\
-             brief-lint: line 9: untagged-premise: premise has no [counted: ], [opened: ] or [unchecked: ] tag\n\
-             brief-lint: line 11: unchecked premise\n\
-             brief-lint: summary: faults=1 unchecked=1\n"
-                .to_owned()
-        )
-    );
+    assert_eq!(refused, (2, String::new(), REFUSED_UNTAGGED.to_owned()));
 
     let passed = run_entry(&co, &top, Some(&top), Some(&co.root), names(&pass));
     assert_eq!(passed, (0, String::new(), String::new()));
@@ -254,8 +249,8 @@ fn the_documented_entry_from_a_subfolder_without_a_project_folder_lets_the_dispa
     );
     // The same folder with the project folder set finds the script.
     let top = co.sb.repo.clone();
-    let (code, stdout, _) = run_entry(&co, &sub, Some(&top), Some(&co.root), input);
-    assert_eq!((code, stdout.as_str()), (2, ""));
+    let refused = run_entry(&co, &sub, Some(&top), Some(&co.root), input);
+    assert_eq!(refused, (2, String::new(), REFUSED_UNTAGGED.to_owned()));
 }
 
 #[test]
@@ -347,4 +342,90 @@ fn a_gate_that_runs_past_the_time_limit_lets_the_dispatch_go_on() {
         )
     );
     assert!(took < Duration::from_secs(12), "took {took:?}");
+}
+
+#[test]
+fn a_gate_that_ignores_the_first_signal_is_killed_a_second_later() {
+    // The ignored TERM is inherited by `sleep`, so only the KILL that
+    // `timeout -k 1` sends a second after it ends the stand-in.
+    let co = Checkout::new().with_stand_in("trap '' TERM\nsleep 30");
+    let ((code, stdout, stderr), took) = run_script(&co, Vec::new());
+    assert_eq!(
+        (code, stdout.as_str(), stderr.as_str()),
+        (
+            0,
+            context_line("brief-gate: not checked: the gate did not run (exit 137)").as_str(),
+            ""
+        )
+    );
+    assert!(took < Duration::from_secs(12), "took {took:?}");
+}
+
+#[test]
+fn a_not_checked_line_that_json_cannot_hold_is_not_shown() {
+    let hidden = context_line("brief-gate: not checked: the gate's line could not be shown");
+    for body in [
+        r#"echo 'brief-gate: not checked: a "quoted" reason'; exit 2"#,
+        r#"echo 'brief-gate: not checked: a \ reason'; exit 2"#,
+        r#"printf 'brief-gate: not checked: a\ttab\n'; exit 2"#,
+    ] {
+        let co = Checkout::new().with_stand_in(body);
+        let ((code, stdout, stderr), _) = run_script(&co, Vec::new());
+        assert_eq!(
+            (code, stdout.as_str(), stderr.as_str()),
+            (0, hidden.as_str(), ""),
+            "{body}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+        assert_eq!(
+            parsed["hookSpecificOutput"]["additionalContext"],
+            "brief-gate: not checked: the gate's line could not be shown"
+        );
+    }
+    // Without the gate's prefix the line is no gate's line at all.
+    let co = Checkout::new().with_stand_in(r#"echo 'a "quoted" line'; exit 2"#);
+    let ((code, stdout, _), _) = run_script(&co, Vec::new());
+    assert_eq!(
+        (code, stdout.as_str()),
+        (
+            0,
+            context_line("brief-gate: not checked: the gate did not run (exit 2)").as_str()
+        )
+    );
+}
+
+/// A folder holding links to the two programs the script needs besides
+/// the shell's own commands, and nothing else: no `timeout`.
+fn path_without_timeout(co: &Checkout) -> PathBuf {
+    let dir = co.sb.outside.join("bin-no-timeout");
+    fs::create_dir_all(&dir).expect("create bin folder");
+    let path = std::env::var_os("PATH").expect("PATH is set");
+    for program in ["dirname", "head"] {
+        let found = std::env::split_paths(&path)
+            .map(|d| d.join(program))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("{program} on PATH"));
+        std::os::unix::fs::symlink(found, dir.join(program)).expect("symlink");
+    }
+    dir
+}
+
+#[test]
+fn the_script_runs_the_gate_when_timeout_is_not_on_the_path() {
+    let co = Checkout::new().with_real_binary();
+    let bin_dir = path_without_timeout(&co);
+    let fail = co.brief("fail-untagged-premise.md");
+    let pass = co.brief("pass.md");
+    for (brief, want) in [
+        (&fail, (2, String::new(), REFUSED_UNTAGGED.to_owned())),
+        (&pass, (0, String::new(), String::new())),
+    ] {
+        let mut cmd = co.sb.command("/bin/sh");
+        cmd.arg(co.script())
+            .env("PATH", &bin_dir)
+            .env("CQS_BRIEF_ROOT", &co.root);
+        let input = hook_json(&format!("Your task file is {}", brief.display()));
+        let (out, _) = run(cmd, input, Duration::from_secs(20));
+        assert_eq!(streams(&out), want, "{}", brief.display());
+    }
 }
