@@ -88,7 +88,7 @@ impl Rule {
             Rule::MissingModel => "no line that starts with MODEL:".to_owned(),
             Rule::MissingSection => format!("no section ## {section}"),
             Rule::DuplicateSection => format!("a second section ## {section}"),
-            Rule::EmptySection => format!("section ## {section} has no text"),
+            Rule::EmptySection => format!("section ## {section} has no text outside fenced blocks"),
             Rule::NoPremise => {
                 "the Premises section has no numbered or bulleted item".to_owned()
             }
@@ -197,7 +197,7 @@ pub fn read_brief(path: &OsStr) -> Result<String, Reason> {
     String::from_utf8(buf).map_err(|_| Reason::NotUtf8)
 }
 
-/// Whether `s` holds no character but ASCII whitespace.
+/// Whether `s` holds nothing but white space (ASCII: space, tab, line ends).
 fn is_blank(s: &str) -> bool {
     s.bytes().all(|b| b.is_ascii_whitespace())
 }
@@ -345,7 +345,7 @@ fn code_mask(b: &[u8]) -> Vec<bool> {
 struct ItemFacts {
     /// The kind of each tag, as an index in `TAG_KINDS`.
     tags: Vec<usize>,
-    /// Some tag's text holds nothing but whitespace.
+    /// Some tag's text holds nothing but white space.
     empty_tag: bool,
     /// Some word outside code spans and tags is in `WHOLE_SET_WORDS`.
     whole_set_word: bool,
@@ -979,6 +979,22 @@ mod tests {
         assert_eq!(
             faults(&text),
             vec![(Some(4), Rule::EmptySection.id(), "Premises")]
+        );
+    }
+
+    #[test]
+    fn a_section_of_white_space_or_a_fence_alone_has_no_text() {
+        for body in ["\t\n", "  \t \n", "```\nPaint it.\n```\n"] {
+            let text = PASS.replace("Paint it.\n", body);
+            assert_eq!(
+                faults(&text),
+                vec![(Some(10), Rule::EmptySection.id(), "Task statements")],
+                "{body:?}"
+            );
+        }
+        assert_eq!(
+            Rule::EmptySection.message("Task statements"),
+            "section ## Task statements has no text outside fenced blocks"
         );
     }
 

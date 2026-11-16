@@ -88,7 +88,7 @@ fn each_fail_fixture_has_its_one_fault() {
         ),
         (
             "empty-section",
-            "brief-lint: line 25: empty-section: section ## Decided judgment calls has no text\n",
+            "brief-lint: line 25: empty-section: section ## Decided judgment calls has no text outside fenced blocks\n",
             1,
         ),
         (
