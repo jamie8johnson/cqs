@@ -11,6 +11,7 @@ description = "Developer tasks for the cqs repository; not part of the published
 [workspace]
 
 [dependencies]
+serde_json = "1.0.150"
 
 [dev-dependencies]
 tempfile = "3"

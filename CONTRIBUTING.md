@@ -39,7 +39,7 @@ Thank you for your interest in contributing to cqs!
 
 ## Developer tools (`xtask/`)
 
-Small developer tasks live in `xtask/`: a Rust binary crate with its own `[workspace]` table and its own `Cargo.lock`. It is not a member of the root workspace, the root package excludes it, and it has no runtime dependency outside the standard library (`tempfile` is its one dev-dependency, for the tests' temporary folders). Each task is one source file under `xtask/src/`. A task runs as:
+Small developer tasks live in `xtask/`: a Rust binary crate with its own `[workspace]` table and its own `Cargo.lock`. It is not a member of the root workspace, the root package excludes it, and its one runtime dependency is `serde_json`, which reads the hook input of `brief-gate` (`tempfile` is its one dev-dependency, for the tests' temporary folders). Each task is one source file under `xtask/src/`, or one folder for a family of tasks (`xtask/src/brief/`). A task runs as:
 
 ```bash
 cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task> [args]
@@ -78,11 +78,34 @@ The hooks run `--staged` and `--message`. `--range`, `--files` and `--text` are 
 
 `.githooks/pre-commit` runs `private-scan --staged` before its other steps, and `.githooks/commit-msg` runs `private-scan --message` on the file git passes it. Both run the task through `cargo run --quiet` with `--target-dir xtask/target` under the top of the checkout, so a scan never waits on a build of the main crate or on its target folder. Exit 1 stops the commit and shows the scan's lines; exit 2 shows the scan's line and lets the commit go on; any other exit (no `cargo`, a failed build) prints `private-scan: not checked: could not run` and lets the commit go on.
 
-What a commit costs: the first commit after a change to `xtask/` builds the task (about 2 s; it has no dependencies to build). After that, each hook is a cargo freshness check (about 0.1 s) plus the scan, a few git commands (about half a second for a staged change of a dozen new files on a WSL `/mnt/c` checkout, less on a native file system). The rest of `pre-commit` is as before, except that the env-var docs test now stops the commit when it fails.
+What a commit costs: the first commit after a change to `xtask/` builds the task, and the first time also `serde_json` and the packages it needs. After that, each hook is a cargo freshness check (about 0.1 s) plus the scan, a few git commands (about half a second for a staged change of a dozen new files on a WSL `/mnt/c` checkout, less on a native file system). The rest of `pre-commit` is as before, except that the env-var docs test now stops the commit when it fails.
 
 ### `hooks-check`
 
 `hooks-check` asks git where it runs hooks from for this checkout: `core.hooksPath` (a relative value is resolved against the top of the checkout), else git's own hooks folder. It exits 0 when every file of `.githooks/` has a byte-identical file of its name there. Otherwise it exits 1, naming that folder and the command that points git at `.githooks/` (`git config core.hooksPath .githooks`). Exit 2 means git or `.githooks/` could not be read.
+
+### `brief-lint`
+
+`brief-lint <file>` reads a lane's brief (`CLAUDE.md`, "Agent Teams") and checks its form. It finds the parts by their marks: a line that starts `Branch: ` with the branch name in backticks, a line that starts `MODEL: `, and the sections `## Premises`, `## Task statements`, `## Decided judgment calls` and `## Stopping`. Each numbered or bulleted item of the Premises section is a premise. A premise needs a tag, `[counted: <command>]`, `[opened: <file:line>]` or `[unchecked: <reason>]`, and a premise that says none, all, every or only needs a `counted` or an `unchecked` tag, or, where the word is quoted from a file, the quotation in inline code. Tags do not nest: a bracket inside a tag is text of that tag, so a premise known two ways carries its two tags side by side. Fenced code blocks and inline code are not read. It prints one line per fault, `brief-lint: line <n>: <rule>: <message>` (`brief-lint: <rule>: <message>` for a missing part), then one line per premise tagged unchecked, then `brief-lint: summary: faults=<f> unchecked=<u>`; no line holds the brief's text or its path. Exit 0 when there is no fault, 1 when there is one, 2 when the file could not be checked (`brief-lint: not checked: <reason>`).
+
+### `brief-gate`
+
+`brief-gate` is a `PreToolUse` hook for the `Agent` tool: the settings entry below runs `.claude/hooks/brief-gate.sh`, which runs `xtask/target/debug/xtask brief-gate` on the hook's input. The user sets the brief root, in `CQS_BRIEF_ROOT` or in the git config key `cqs.briefRoot`; there is no default, and no file of the repository sets it. With no root set the gate refuses nothing: every dispatch goes on, and one that names a task file is told `brief-gate: not checked: no brief root configured`. With a root set, a dispatch whose prompt has a line `Your task file is <absolute path>.md`, for a file under the root, is refused when `brief-lint` faults that file or cannot read it, and the session is shown the lint's lines: at most the first 50 before its summary line, then one line that counts the rest, then the summary. Each prompt line that starts, after spaces or tabs, with `Your task file is ` is read as a task-file line: with a root set, a dispatch with two such lines, or with one that does not name an absolute path ending in `.md`, is refused, even when the line quotes this rule. A dispatch that names no task file goes on unchecked, since a shorter dispatch is allowed. A task file under the root that is no lane's brief (a review task, say) states that it has no branch, with the line ``Branch: `none` ``, which the lint reads as its branch line, and holds the other parts; that is the intended form, not a way around the rule, and a lane given a task file with that line stops (`lane-implementer.md`). When the gate does not check (no root set, a file outside the root, input it cannot read, the binary not built or built before the task existed, the time limit), the dispatch goes on and the session is told `brief-gate: not checked: <reason>`. The hook never blocks a dispatch for a fault of its own, except a script that `sh` cannot read or parse, which blocks every dispatch until the script is repaired: run `git checkout -- .claude/hooks/brief-gate.sh` in the checkout. The script's time limit (`timeout -k 1 8`) ends the gate's own process; where a `timeout` sends a signal to that process alone and not to its process group, a child the gate left behind holding standard output keeps the script waiting until that child ends (a child that slept 12 s held it 12 s), and the settings entry's `timeout` of 10 s is then the only bound. The gate itself starts one short child, `git config`, whose output goes into a pipe of the gate's own and not to the hook. After a pull that changes `xtask/`, build it by hand, `cargo build --manifest-path xtask/Cargo.toml --target-dir xtask/target --locked`; the commit hooks rebuild it only on a commit made in that checkout; until then the gate applies the old binary's rules, and unsetting the root turns it off.
+
+The repository does not turn the hook on: a hook that can refuse every dispatch is the user's to add. The user adds this entry to the `PreToolUse` list of `.claude/settings.json`:
+
+```json
+{
+  "matcher": "Agent",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "f=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/brief-gate.sh\"; if [ -f \"$f\" ]; then sh \"$f\"; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"brief-gate: not checked: the hook script was not found\"}}'; fi",
+      "timeout": 10
+    }
+  ]
+}
+```
 
 ## Code Style
 
@@ -524,7 +547,10 @@ xtask/          - Developer tasks (see Developer tools): a crate of its own, wit
   src/main.rs         - Task dispatch (`cargo run --quiet --manifest-path xtask/Cargo.toml --locked -- <task>`)
   src/private_scan.rs - `private-scan`: private-term scan of a staged change, a commit message, a commit range, named files or one literal
   src/hooks_check.rs  - `hooks-check`: whether git runs this checkout's hooks from a folder that matches `.githooks/`
-  tests/              - Temporary-repository tests of both tasks, and of the `.githooks/` hooks with a stand-in `cargo`
+  src/brief/mod.rs    - The `brief-lint` and `brief-gate` tasks
+  src/brief/lint.rs   - `brief-lint`: the form of a lane's brief (its parts, and a tag on each premise)
+  src/brief/gate.rs   - `brief-gate`: the `Agent` hook, which runs `brief-lint` on the task file a dispatch names
+  tests/              - Temporary-repository tests of each task, of the `.githooks/` hooks with a stand-in `cargo`, and of `.claude/hooks/brief-gate.sh`
 .githooks/      - `pre-commit` (private-term scan, fmt check, Cargo.lock notice, env-var docs test) and `commit-msg` (private-term scan of the message)
 .claude/
   skills/       - Claude Code skills (auto-discovered)

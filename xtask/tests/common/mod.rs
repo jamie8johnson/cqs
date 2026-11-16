@@ -1,9 +1,10 @@
 //! Shared fixtures: a temporary git repository whose child processes run
-//! with a scrubbed environment. Every child gets `CQS_PRIVATE_TERMS`, every
-//! `GIT_*` variable and `XDG_CONFIG_HOME` removed, `HOME` pointed at a
-//! temporary folder, and `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` pointed
-//! at an empty file. The environment is set on each child, never on the
-//! test process.
+//! with a scrubbed environment. Every child gets `CQS_PRIVATE_TERMS`,
+//! `CQS_BRIEF_ROOT`, `CLAUDE_PROJECT_DIR`, every `GIT_*` variable and
+//! `XDG_CONFIG_HOME` removed, `HOME` pointed at a temporary folder, and
+//! `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` pointed at an empty file. The
+//! environment is set on each child, never on the test process; a test that
+//! needs one of the removed variables sets it on its own child.
 
 #![allow(dead_code)]
 
@@ -68,6 +69,8 @@ impl Sandbox {
         let mut cmd = Command::new(program);
         cmd.current_dir(&self.repo);
         cmd.env_remove("CQS_PRIVATE_TERMS");
+        cmd.env_remove("CQS_BRIEF_ROOT");
+        cmd.env_remove("CLAUDE_PROJECT_DIR");
         cmd.env_remove("XDG_CONFIG_HOME");
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_") {
