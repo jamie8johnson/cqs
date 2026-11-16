@@ -331,7 +331,9 @@ fn an_exit_without_the_gates_prefix_lets_the_dispatch_go_on() {
 
 #[test]
 fn a_gate_that_runs_past_the_time_limit_lets_the_dispatch_go_on() {
-    let co = Checkout::new().with_stand_in("sleep 30");
+    // One process with no child: TERM ends it whichever processes a
+    // `timeout` signals.
+    let co = Checkout::new().with_stand_in("exec sleep 30");
     let ((code, stdout, stderr), took) = run_script(&co, Vec::new());
     assert_eq!(
         (code, stdout.as_str(), stderr.as_str()),
@@ -346,9 +348,11 @@ fn a_gate_that_runs_past_the_time_limit_lets_the_dispatch_go_on() {
 
 #[test]
 fn a_gate_that_ignores_the_first_signal_is_killed_a_second_later() {
-    // The ignored TERM is inherited by `sleep`, so only the KILL that
-    // `timeout -k 1` sends a second after it ends the stand-in.
-    let co = Checkout::new().with_stand_in("trap '' TERM\nsleep 30");
+    // The shell ignores TERM and replaces itself with `sleep`, which keeps
+    // TERM ignored: one process, no child behind it, so only the KILL that
+    // `timeout -k 1` sends a second later ends it, whichever processes a
+    // `timeout` sends its signals to.
+    let co = Checkout::new().with_stand_in("trap '' TERM\nexec sleep 30");
     let ((code, stdout, stderr), took) = run_script(&co, Vec::new());
     assert_eq!(
         (code, stdout.as_str(), stderr.as_str()),
@@ -359,6 +363,100 @@ fn a_gate_that_ignores_the_first_signal_is_killed_a_second_later() {
         )
     );
     assert!(took < Duration::from_secs(12), "took {took:?}");
+}
+
+/// A stand-in `timeout -k K D cmd...` that starts its command in a process
+/// group of its own, sends TERM to that whole group after D seconds, and
+/// KILL K seconds later to the command's own process alone.
+const TIMEOUT_TERM_GROUP_KILL_CHILD: &str = r#"#!/bin/sh
+[ "$1" = "-k" ] || exit 125
+k="$2"
+d="$3"
+shift 3
+exec 3<&0
+setsid "$@" <&3 3<&- &
+pid=$!
+(sleep "$d"; env kill -s TERM -- "-$pid"; sleep "$k"; env kill -s KILL -- "$pid") >/dev/null 2>&1 &
+watcher=$!
+wait "$pid"
+st=$?
+kill "$watcher" 2>/dev/null
+case "$st" in
+    143) exit 124 ;;
+    *) exit "$st" ;;
+esac
+"#;
+
+/// A stand-in `timeout -k K D cmd...` that sends both signals to the
+/// command's own process alone, TERM after D seconds and KILL K seconds
+/// later.
+const TIMEOUT_CHILD_ONLY: &str = r#"#!/bin/sh
+[ "$1" = "-k" ] || exit 125
+k="$2"
+d="$3"
+shift 3
+exec 3<&0
+"$@" <&3 3<&- &
+pid=$!
+(sleep "$d"; kill -TERM "$pid"; sleep "$k"; kill -KILL "$pid") >/dev/null 2>&1 &
+watcher=$!
+wait "$pid"
+st=$?
+kill "$watcher" 2>/dev/null
+case "$st" in
+    143) exit 124 ;;
+    *) exit "$st" ;;
+esac
+"#;
+
+#[test]
+fn a_timeout_that_misses_a_child_holding_the_output_waits_for_that_child() {
+    // What the script does today when the gate's process ends at the time
+    // limit but leaves a child that holds its standard output: the command
+    // substitution reads until that child ends (here a `sleep 12`, past the
+    // script's 9 s), and then reports the gate's end as `timeout` gave it.
+    let cases = [
+        // TERM reaches the group but both ignore it; KILL reaches the shell
+        // alone, and its `sleep` goes on.
+        (
+            TIMEOUT_TERM_GROUP_KILL_CHILD,
+            "trap '' TERM\nsleep 12\nexit 0",
+            137,
+        ),
+        // TERM reaches the shell alone; its `sleep` goes on.
+        (TIMEOUT_CHILD_ONLY, "sleep 12\nexit 0", 124),
+    ];
+    for (timeout, stand_in, exit) in cases {
+        let co = Checkout::new().with_stand_in(stand_in);
+        let bin_dir = co.sb.outside.join("timeout-bin");
+        fs::create_dir_all(&bin_dir).expect("create bin folder");
+        let timeout_path = bin_dir.join("timeout");
+        fs::write(&timeout_path, timeout).expect("write stand-in timeout");
+        fs::set_permissions(&timeout_path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = co.sb.command("/bin/sh");
+        cmd.arg(co.script()).env("PATH", path);
+        let (out, took) = run(cmd, Vec::new(), Duration::from_secs(25));
+        assert_eq!(
+            streams(&out),
+            (
+                0,
+                context_line(&format!(
+                    "brief-gate: not checked: the gate did not run (exit {exit})"
+                )),
+                String::new()
+            ),
+            "{stand_in}"
+        );
+        assert!(
+            took >= Duration::from_secs(11) && took < Duration::from_secs(20),
+            "{stand_in}: took {took:?}"
+        );
+    }
 }
 
 #[test]
