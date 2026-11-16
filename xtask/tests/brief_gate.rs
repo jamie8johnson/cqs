@@ -388,6 +388,51 @@ fn a_file_outside_the_root_is_not_checked() {
 
 #[cfg(unix)]
 #[test]
+fn a_missing_file_is_placed_by_its_nearest_existing_ancestor() {
+    let fx = Fixture::new();
+    let elsewhere = fx.sb.outside.join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create folder");
+    fs::create_dir_all(fx.root.join("sub")).expect("create sub");
+    std::os::unix::fs::symlink(&elsewhere, fx.root.join("dirlink")).expect("symlink");
+    let outside = [
+        fx.root.join("..").join("elsewhere").join("nosuch.md"),
+        fx.root
+            .join("sub")
+            .join("..")
+            .join("..")
+            .join("elsewhere")
+            .join("nosuch.md"),
+        fx.root.join("dirlink").join("nosuch.md"),
+        // The parent is missing too, and the nearest ancestor that exists
+        // lies outside the root.
+        fx.root.join("..").join("x").join("y").join("a.md"),
+        // The nearest ancestor that exists is the root, and the rest of the
+        // path holds `..`.
+        fx.root.join("nosuch-dir").join("..").join("a.md"),
+    ];
+    for path in &outside {
+        let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(path)));
+        assert_eq!(code, 2, "{}", path.display());
+        assert_eq!(out, OUTSIDE, "{}", path.display());
+    }
+    let inside = [
+        fx.root.join("nosuch-dir").join("a.md"),
+        fx.root.join("sub").join("nosuch.md"),
+    ];
+    for path in &inside {
+        let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(path)));
+        assert_eq!(code, 1, "{}", path.display());
+        assert_eq!(
+            out,
+            format!("{UNREADABLE}brief-lint: not checked: file unreadable\n"),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_symlink_inside_the_root_to_a_file_outside_is_outside() {
     let fx = Fixture::new();
     let target = fx.sb.outside.join("fail.md");

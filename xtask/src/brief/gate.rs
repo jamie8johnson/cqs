@@ -12,7 +12,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use super::lint;
@@ -174,20 +174,36 @@ fn brief_root() -> Result<PathBuf, NotChecked> {
 }
 
 /// The path to read when `file` lies under `root`, compared by path
-/// components: the file's canonical path under the root's canonical path;
-/// for a file that cannot be canonicalized, the path as written under the
-/// root as configured or under its canonical path.
+/// components against the root's canonical path.
+///
+/// A file that exists is under the root when its canonical path is. A file
+/// that does not exist is placed by its nearest ancestor that does: that
+/// ancestor's canonical path must be under the root, and the rest of the
+/// path as written, from that ancestor on, must hold no `..` component. So
+/// a missing file never counts as under the root through a `..` or a
+/// symlinked folder that leads out of it.
 fn inside_root(file: &Path, root: &Path) -> Option<PathBuf> {
-    let canon_root = fs::canonicalize(root).ok();
-    match fs::canonicalize(file) {
-        Ok(canon) => canon_root
-            .is_some_and(|r| canon.starts_with(r))
-            .then_some(canon),
-        Err(_) => {
-            let under = file.starts_with(root) || canon_root.is_some_and(|r| file.starts_with(r));
-            under.then(|| file.to_path_buf())
-        }
+    let canon_root = fs::canonicalize(root).ok()?;
+    if let Ok(canon) = fs::canonicalize(file) {
+        return canon.starts_with(&canon_root).then_some(canon);
     }
+    for ancestor in file.ancestors().skip(1) {
+        let Ok(canon) = fs::canonicalize(ancestor) else {
+            continue;
+        };
+        if !canon.starts_with(&canon_root) {
+            return None;
+        }
+        let rest = file.strip_prefix(ancestor).ok()?;
+        if rest
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return None;
+        }
+        return Some(canon.join(rest));
+    }
+    None
 }
 
 /// The steps of the gate after its input is read, in order.
