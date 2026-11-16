@@ -4,8 +4,9 @@
 # gate's lines on standard error. Anything else lets the dispatch through: a
 # pass silently; a gate that did not check, or did not run, with one line of
 # context that says so. The gate's own not-checked line goes into the JSON only
-# when it holds no `"`, no `\` and no control character; otherwise a fixed
-# line says it could not be shown. The time limit ends the gate with TERM
+# when it is printable ASCII and holds no `"` and no `\`; otherwise (a control
+# character, a byte outside ASCII, so a non-ASCII letter too) a fixed line
+# says it could not be shown. The time limit ends the gate with TERM
 # after 8 s and with KILL one second later.
 
 top="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -40,7 +41,7 @@ case "$code" in
         ;;
     2)
         case "$first" in
-            *[\"\\[:cntrl:]]*)
+            *[\"\\]* | *[!\ -~]*)
                 case "$first" in
                     "brief-gate: not checked: "*)
                         not_checked "brief-gate: not checked: the gate's line could not be shown"

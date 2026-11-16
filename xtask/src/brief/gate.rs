@@ -178,19 +178,28 @@ fn brief_root() -> Result<PathBuf, NotChecked> {
 /// The path to read when `file` lies under `root`, compared by path
 /// components against the root's canonical path.
 ///
-/// A file that exists is under the root when its canonical path is. A file
+/// A file that exists is under the root when its canonical path is. An
+/// entry of the path that exists but cannot be canonicalized (a link whose
+/// target is missing, a link loop), the file itself or a folder above it,
+/// makes the file outside: where that link leads cannot be known. A file
 /// that does not exist is placed by its nearest ancestor that does: that
 /// ancestor's canonical path must be under the root, and the rest of the
 /// path as written, from that ancestor on, must hold no `..` component. So
-/// a missing file never counts as under the root through a `..` or a
-/// symlinked folder that leads out of it.
+/// a missing file never counts as under the root through a `..` or a link
+/// that leads out of it.
 fn inside_root(file: &Path, root: &Path) -> Option<PathBuf> {
     let canon_root = fs::canonicalize(root).ok()?;
     if let Ok(canon) = fs::canonicalize(file) {
         return canon.starts_with(&canon_root).then_some(canon);
     }
+    if fs::symlink_metadata(file).is_ok() {
+        return None;
+    }
     for ancestor in file.ancestors().skip(1) {
         let Ok(canon) = fs::canonicalize(ancestor) else {
+            if fs::symlink_metadata(ancestor).is_ok() {
+                return None;
+            }
             continue;
         };
         if !canon.starts_with(&canon_root) {
@@ -256,8 +265,9 @@ fn bounded(mut lines: Vec<String>) -> Vec<String> {
     let more = lines.len().saturating_sub(REFUSAL_MAX_LINES);
     lines.truncate(REFUSAL_MAX_LINES);
     if more > 0 {
+        let noun = if more == 1 { "line" } else { "lines" };
         lines.push(format!(
-            "brief-gate: {more} more lines of brief-lint not shown"
+            "brief-gate: {more} more {noun} of brief-lint not shown"
         ));
     }
     lines.extend(summary);
@@ -321,7 +331,7 @@ mod tests {
         assert_eq!(bounded(lines(REFUSAL_MAX_LINES)), lines(REFUSAL_MAX_LINES));
         let mut want = lines(REFUSAL_MAX_LINES);
         want.pop();
-        want.push("brief-gate: 1 more lines of brief-lint not shown".to_owned());
+        want.push("brief-gate: 1 more line of brief-lint not shown".to_owned());
         want.push("s".to_owned());
         assert_eq!(bounded(lines(REFUSAL_MAX_LINES + 1)), want);
         assert_eq!(REFUSAL_MAX_LINES, 50);

@@ -433,6 +433,25 @@ fn a_missing_file_is_placed_by_its_nearest_existing_ancestor() {
 
 #[cfg(unix)]
 #[test]
+fn a_link_in_the_root_that_cannot_be_followed_is_outside() {
+    let fx = Fixture::new();
+    let link = |name: &str, target: &Path| {
+        let path = fx.root.join(name);
+        std::os::unix::fs::symlink(target, &path).expect("symlink");
+        path
+    };
+    let dangling = link("dangling.md", &fx.sb.outside.join("missing.md"));
+    let dangling_dir = link("danglingdir", &fx.sb.outside.join("missing-dir"));
+    let looped = link("loop.md", &fx.root.join("loop.md"));
+    for path in [dangling, dangling_dir.join("a.md"), looped] {
+        let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&path)));
+        assert_eq!(code, 2, "{}", path.display());
+        assert_eq!(out, OUTSIDE, "{}", path.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_symlink_inside_the_root_to_a_file_outside_is_outside() {
     let fx = Fixture::new();
     let target = fx.sb.outside.join("fail.md");
@@ -615,6 +634,29 @@ fn a_refusal_forwards_fifty_lines_then_a_count_then_the_summary() {
     }
     want.push_str("brief-gate: 12 more lines of brief-lint not shown\n");
     want.push_str("brief-lint: summary: faults=60 unchecked=2\n");
+    assert_eq!(code, 1);
+    assert_eq!(out, want);
+}
+
+#[test]
+fn a_refusal_of_51_faults_counts_one_more_line() {
+    let mut brief = "Branch: `b`\nMODEL: m\n## Premises\n".to_owned();
+    for _ in 0..51 {
+        brief.push_str("- p\n");
+    }
+    brief.push_str("## Task statements\nx\n## Decided judgment calls\nx\n## Stopping\nx\n");
+    let fx = Fixture::new();
+    let path = fx.root.join("fifty-one.md");
+    fs::write(&path, brief).expect("write brief");
+    let (code, out) = gate(&fx.sb, Some(&fx.root), hook_json(&naming(&path)));
+    let mut want = "brief-gate: refused: the task file does not pass brief-lint\n".to_owned();
+    for line in 4..54 {
+        want.push_str(&format!(
+            "brief-lint: line {line}: untagged-premise: premise has no [counted: ], [opened: ] or [unchecked: ] tag\n"
+        ));
+    }
+    want.push_str("brief-gate: 1 more line of brief-lint not shown\n");
+    want.push_str("brief-lint: summary: faults=51 unchecked=0\n");
     assert_eq!(code, 1);
     assert_eq!(out, want);
 }

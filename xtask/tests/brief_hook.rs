@@ -368,6 +368,9 @@ fn a_not_checked_line_that_json_cannot_hold_is_not_shown() {
         r#"echo 'brief-gate: not checked: a "quoted" reason'; exit 2"#,
         r#"echo 'brief-gate: not checked: a \ reason'; exit 2"#,
         r#"printf 'brief-gate: not checked: a\ttab\n'; exit 2"#,
+        // A byte that is not UTF-8, and a letter outside ASCII.
+        r#"printf 'brief-gate: not checked: a \377 byte\n'; exit 2"#,
+        r#"printf 'brief-gate: not checked: caf\303\251\n'; exit 2"#,
     ] {
         let co = Checkout::new().with_stand_in(body);
         let ((code, stdout, stderr), _) = run_script(&co, Vec::new());
