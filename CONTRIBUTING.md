@@ -576,6 +576,14 @@ xtask/          - Developer tasks (see Developer tools): a crate of its own, wit
     idle/         - Idle work loop: enumerate issues and triage rows, pick, dispatch
     archeo/       - Comment-archaeology sweep: TODO/FIXME language into issues or trivial fixes
     recall-gate/  - Retrieval recall gate with dead-gold triage and a binary A/B test
+  agents/       - Custom agent definitions, one `.md` file each (15)
+  hooks/        - Hook scripts
+    brief-gate.sh      - PreToolUse hook for the Agent tool: runs `xtask brief-gate` on a dispatch (the repository does not enable it; the user adds the settings entry)
+    pre-edit-context.py - PreToolUse hook for Edit: injects cqs module context for `.rs` files
+    pre-edit-impact.py - PreToolUse hook for Edit: runs `cqs impact` when `old_string` declares a function; fires only for this repository's `src/` and `tests/`
+    stop-review.sh     - Stop hook: runs `cqs review` on uncommitted changes and surfaces risk when changed functions have callers or tests at risk
+  workflows/    - Workflow scripts
+    audit.js      - 16-category code-audit fan-out with synthesize and disposition stages (the discovery part of `/audit`)
 ```
 
 **Key design notes:**
