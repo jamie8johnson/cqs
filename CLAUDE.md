@@ -185,7 +185,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Conventions:**
 - Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
-- Model split: `opus` implements, `fable` orchestrates/reviews/audits. EXCEPTION: security lanes (audit Security category, /boundary-probe, security reviews) stay `opus`. Sonnet only for mechanical test-only tasks; haiku for doc-only edits. (Fable was disabled 2026-06-12–2026-07-01 by a US export order, since lifted; this split is the restored default.)
+- Model split: every agent runs on `opus`, whatever its role (the user's word, 2026-11-17, for cost; before that `opus` implemented and `fable` reviewed, audited and judged). An agent definition names `opus` and does not inherit: a session on another model would hand its model down. Security lanes (audit Security category, /boundary-probe, security reviews) were `opus` before this and stay `opus` under any later split. Sonnet only for mechanical test-only tasks; haiku for doc-only edits.
 - **The `unbiddable-auditor` (trust-boundary probe) and the `/boundary-probe` skill run on `opus`, from any orchestrator.** Tested on Fable 5.2, 2026-11-12, one limited trial (same brief twice, on a small local script): with the auditor on Opus and a Fable 5.2 orchestrator the run finished clean and the session stayed on Fable; with the auditor itself on Fable the model's safeguards stopped it after two probes (`API Error: Fable 5.2's safeguards flagged this message`, details `[cyber]`, stop reason `refusal`), and the orchestrating session was not downgraded either. The July 2026 symptom (a probe orchestrated from Fable downgrading the whole session Fable→Opus, on Fable 5.1 per the user) did not reproduce. So: never set the auditor's model to `fable`; do not reword a brief to get a flagged run through; if a session downgrade does show again, record it and restore the old rule. Correctness auditors (seam/adequacy/interleaving/etc.) are unaffected. See [[feedback_no_boundary_probe_on_fable]].
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
@@ -229,7 +229,7 @@ The seam/property/interleaving/sweep/legacy-state/spec-fidelity **sextet** are t
 
 **Guard-writing auditors run in their own worktree.** Dispatch property, sweep, legacy-state, interleaving and adequacy with `isolation: "worktree"`: they write guards into the checkout, and two writers in one checkout overwrite each other's files. The read-only ones (seam, spec-fidelity, code-reviewer) need none. (`unbiddable-auditor` writes guards too, but `/boundary-probe` has its six append to one findings file, `docs/audit-findings.md`, which a worktree each would split; dispatch them as that skill says.)
 
-**Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` (fable) before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
+**Use these agents.** Dispatch `investigator` before starting any non-trivial implementation, `lane-implementer` for fix/feature lanes, and `code-reviewer` before landing risky lanes — live scoring paths, schema migrations, cross-surface signature changes. These replace the need to manually include cqs instructions in every agent prompt.
 
 ## Code Audit
 

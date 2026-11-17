@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: "Codebase exploration using cqs semantic search and call graph navigation"
-model: inherit
+model: opus
 tools:
   - Bash
   - Read

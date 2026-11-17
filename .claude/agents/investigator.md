@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: "Pre-implementation investigation — scout + gather + brief before writing code"
-model: inherit
+model: opus
 tools:
   - Bash
   - Read

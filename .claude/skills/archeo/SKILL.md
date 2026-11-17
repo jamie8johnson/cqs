@@ -20,7 +20,7 @@ For scale, dispatch finder agents per area (src/store, src/search, src/cli, docs
 
 ## Judge pass
 
-For each hit, decide (nested judge agents for big batches; fable for judgment):
+For each hit, decide (nested judge agents for big batches; opus for judgment):
 
 - **Already done** — the deferral shipped but the comment survived → queue a comment scrub (trivial lane).
 - **Stale premise** — the referenced issue/feature is closed/deleted → scrub or rewrite to the surviving invariant.

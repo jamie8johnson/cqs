@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: "Review current diff for risk, impact, and correctness before commit/PR"
-model: fable
+model: opus
 tools:
   - Bash
   - Read
