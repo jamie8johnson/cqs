@@ -6,10 +6,11 @@ export const meta = {
   phases: [{ title: 'Audit' }, { title: 'Synthesize' }, { title: 'Disposition' }],
 }
 
-// Auditors run on the review/judge model, fable (CLAUDE.md "Agent Teams", the
-// model split). Security is ALWAYS opus: fable's cyber classifiers risk a mid-run
+// Auditors and the disposition stage's read-only agents run on opus, as every
+// agent does (CLAUDE.md "Agent Teams", the model split); a call that names no
+// model would take the session's. Security is opus under ANY split: fable's cyber classifiers risk a mid-run
 // refusal that would kill that category's coverage for the whole audit.
-const AUDITOR_MODEL = 'fable'
+const AUDITOR_MODEL = 'opus'
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -205,11 +206,11 @@ async function disposeFix(r) {
   // over-apply a "ready-to-apply fix"; tool-restriction is the real guard.)
   const gen = await agent(
     `Produce a fix SPECIFICATION (data only — do NOT modify, create, or write any file) for audit finding ${r.id}: "${r.title}" at ${r.location}. Intended change: ${r.fix_approach}. READ the real source at the cited lines first. Return the file path(s), the exact CURRENT code verbatim (so it can be matched), the REPLACEMENT code, and a one-line why. If on reading the source the fix actually needs a judgment call or doesn't apply cleanly, set 'blocked' with the reason instead of forcing it.`,
-    { agentType: 'Explore', label: `fix-gen:${r.id}`, phase: 'Disposition', schema: FIXPROMPT_SCHEMA }
+    { agentType: 'Explore', model: AUDITOR_MODEL, label: `fix-gen:${r.id}`, phase: 'Disposition', schema: FIXPROMPT_SCHEMA }
   )
   const ver = await agent(
     `Adversarially verify this proposed fix against the REAL current source (read the file — do NOT modify anything). Check: does current_code match the file verbatim (line drift)? does the replacement compile — types, imports, API existence? any edge case missed? Default to NEEDS-FIX if unsure.\n\n${JSON.stringify(gen)}`,
-    { agentType: 'Explore', label: `fix-verify:${r.id}`, phase: 'Disposition', schema: VERDICT_SCHEMA }
+    { agentType: 'Explore', model: AUDITOR_MODEL, label: `fix-verify:${r.id}`, phase: 'Disposition', schema: VERDICT_SCHEMA }
   )
   let implemented = null
   if (wantImplement && ver.verdict === 'VERIFIED' && !(gen.blocked || '').trim()) {
@@ -224,7 +225,7 @@ async function disposeFix(r) {
 async function disposeIssue(r) {
   const draft = await agent(
     `Draft a GitHub issue for audit finding ${r.id}: "${r.title}" at ${r.location}. It is NOT auto-fixable because: ${r.fix_approach}. Return a concise title and a markdown body (Problem / Location / Impact / Options or considerations for the human deciding). Read source as needed but do NOT modify any file, and do NOT post the issue.`,
-    { agentType: 'Explore', label: `issue-draft:${r.id}`, phase: 'Disposition', schema: ISSUE_SCHEMA }
+    { agentType: 'Explore', model: AUDITOR_MODEL, label: `issue-draft:${r.id}`, phase: 'Disposition', schema: ISSUE_SCHEMA }
   )
   return { id: r.id, tier: r.tier, kind: 'issue', title: draft.title, body: draft.body }
 }

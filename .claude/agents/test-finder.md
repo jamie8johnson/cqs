@@ -1,7 +1,7 @@
 ---
 name: test-finder
 description: "Find tests and coverage for a function before modification"
-model: inherit
+model: opus
 tools:
   - Bash
   - Read

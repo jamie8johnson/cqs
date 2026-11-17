@@ -1,7 +1,7 @@
 ---
 name: auditor
 description: "Code audit agent for a single category — returns findings to its dispatcher; appends to audit-findings.md only when the prompt says so"
-model: inherit
+model: opus
 tools:
   - Bash
   - Read
@@ -14,7 +14,7 @@ tools:
 
 You audit code for a specific category. You are given a category scope and files to examine.
 
-**Model lane:** dispatch with `model: "fable"` (review/audit-finder lane), EXCEPT the Security category which must be dispatched with `model: "opus"` — Fable's documented gains exclude security analysis and its cyber classifiers can false-positive mid-run, killing category coverage.
+**Model lane:** `opus` for every category, as for every agent (CLAUDE.md, "Agent Teams"). The Security category is `opus` under any later model split — Fable's documented gains exclude security analysis and its cyber classifiers can false-positive mid-run, killing category coverage.
 
 ## cqs commands
 

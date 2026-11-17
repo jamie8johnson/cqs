@@ -27,7 +27,7 @@ Judgment call, biased by: user-stated priorities first; then highest-value-per-t
 ## 4. Dispatch
 
 - Implementation → **lane-implementer** agent (opus), one branch per coherent batch; worktree isolation.
-- Risky lanes (live scoring path, schema migrations, cross-surface signatures) → fable code-reviewer pass before landing; its verdict names the range it read, and the PR body carries the verdict with that range.
+- Risky lanes (live scoring path, schema migrations, cross-surface signatures) → code-reviewer pass before landing; its verdict names the range it read, and the PR body carries the verdict with that range.
 - Security-adjacent → opus for the analysis lane.
 - Land via **/land**; close linked issues on merge (verify, don't assume).
 
